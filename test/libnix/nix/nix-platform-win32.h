@@ -259,6 +259,55 @@ int nix_platform_win32_aflocal_getsockopt_ex(int sockfd, int level, int optname,
 											  void *optval, socklen_t *optlen);
 
 /*
+ * Symbolic Links and Hard Links
+ */
+
+/* Create symbolic link (Vista+ native, NT+ via junctions) */
+int nix_platform_win32_symlink(const char *target, const char *linkpath);
+
+/* Read symbolic link target */
+ssize_t nix_platform_win32_readlink(const char *path, char *buf, size_t bufsiz);
+
+/* Create hard link (Windows 2000+) */
+int nix_platform_win32_link(const char *oldpath, const char *newpath);
+
+/*
+ * Extended Attributes (via Alternate Data Streams)
+ */
+
+/* Set extended attribute with offset support */
+int nix_platform_win32_setxattr(const char *path, const char *name,
+								 const void *value, size_t size, size_t offset, int flags);
+
+/* Get extended attribute with offset support */
+ssize_t nix_platform_win32_getxattr(const char *path, const char *name,
+									void *value, size_t size, size_t offset);
+
+/* List extended attributes */
+ssize_t nix_platform_win32_listxattr(const char *path, char *list, size_t size);
+
+/* Remove extended attribute */
+int nix_platform_win32_removexattr(const char *path, const char *name);
+
+/*
+ * macOS Compatibility Functions
+ */
+
+/* Get resource fork (com.apple.ResourceFork) with offset */
+ssize_t nix_platform_win32_getresourcefork(const char *path, void *data,
+											size_t size, size_t offset);
+
+/* Set resource fork with offset */
+int nix_platform_win32_setresourcefork(const char *path, const void *data,
+										size_t size, size_t offset);
+
+/* Get Finder info (com.apple.FinderInfo, 32 bytes) */
+ssize_t nix_platform_win32_getfinderinfo(const char *path, void *info);
+
+/* Set Finder info (32 bytes) */
+int nix_platform_win32_setfinderinfo(const char *path, const void *info);
+
+/*
  * POSIX Protection Flags (for reference)
  */
 #define NIX_PROT_NONE   0x00
@@ -445,6 +494,36 @@ int nix_platform_win32_aflocal_getsockopt_ex(int sockfd, int level, int optname,
 #endif
 #ifndef MSG_TRUNC
 #define MSG_TRUNC   0x0020  /* Message truncated */
+#endif
+
+/*
+ * Extended attribute flags
+ */
+#ifndef XATTR_CREATE
+#define XATTR_CREATE  0x01  /* Create only, fail if exists */
+#endif
+#ifndef XATTR_REPLACE
+#define XATTR_REPLACE 0x02  /* Replace only, fail if doesn't exist */
+#endif
+
+/*
+ * Extended attribute constants
+ */
+#define XATTR_NAME_MAX     127
+#define XATTR_SIZE_MAX     (64 * 1024)
+#define XATTR_LIST_MAX     (64 * 1024)
+
+/*
+ * macOS extended attribute names
+ */
+#define XATTR_RESOURCEFORK_NAME "com.apple.ResourceFork"
+#define XATTR_FINDERINFO_NAME   "com.apple.FinderInfo"
+
+/*
+ * Error codes for xattr
+ */
+#ifndef ENOATTR
+#define ENOATTR  93  /* Attribute not found */
 #endif
 
 #endif /* NIX_HOST_WIN32 */

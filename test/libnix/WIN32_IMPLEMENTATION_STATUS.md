@@ -4,7 +4,7 @@ This document tracks the current implementation status of Win32 platform support
 
 ## Summary
 
-**Current Status:** ✅ **127+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
+**Current Status:** ✅ **138+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
 
 The platform abstraction layer enables libnix to host guest OS emulation on Windows NT 3.1+ through Windows 11, with intelligent runtime API detection for optimal performance on each Windows version.
 
@@ -17,6 +17,8 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 - ✅ Socket operations AF_INET/AF_INET6 (14 functions)
 - ✅ AF_LOCAL (Unix domain sockets) emulation (13 functions)
 - ✅ AF_LOCAL advanced features: peer credentials and rights transfer (4 functions)
+- ✅ Symbolic links and hard links (3 functions)
+- ✅ Extended attributes with offset support (4 + 4 macOS functions)
 - ✅ Event notification poll/ppoll/pselect (3 functions)
 - ✅ Process syscalls with NT API fork (40+ functions)
 - ✅ Session and terminal control (8 functions)
@@ -336,6 +338,47 @@ Unix: /var/run/app   → Mailslot: \\.\mailslot\nix_aflocal_app
 - `WIN32_AFLOCAL_SUPPORT.md` (comprehensive documentation)
 - `WIN32_AFLOCAL_ADVANCED.md` (detailed advanced features guide)
 
+### Symbolic Links, Hard Links, and Extended Attributes - ✅ COMPLETE (11 functions)
+
+Full emulation of Unix/Linux/macOS file system features for symbolic navigation, multiple references, and metadata storage.
+
+| Operation | Implementation | Windows API | Status |
+|-----------|---------------|-------------|--------|
+| symlink | Vista: CreateSymbolicLink, NT: junctions | CreateSymbolicLink / FSCTL_SET_REPARSE_POINT | ✅ |
+| readlink | Reparse point reading | FSCTL_GET_REPARSE_POINT | ✅ |
+| link | Hard link creation | CreateHardLink (2000+) | ✅ |
+| setxattr | Alternate Data Streams | CreateFile / WriteFile | ✅ |
+| getxattr | ADS reading with offset | CreateFile / ReadFile | ✅ |
+| listxattr | Stream enumeration | FindFirstStreamW / FindNextStreamW | ✅ |
+| removexattr | ADS deletion | DeleteFile | ✅ |
+| getresourcefork | macOS resource fork | setxattr wrapper | ✅ |
+| setresourcefork | macOS resource fork | getxattr wrapper | ✅ |
+| getfinderinfo | macOS Finder info (32 bytes) | setxattr wrapper | ✅ |
+| setfinderinfo | macOS Finder info | getxattr wrapper | ✅ |
+
+**Symbolic Links:**
+- **Vista+**: Native symbolic links via CreateSymbolicLink()
+  - Requires administrator or developer mode
+  - Supports files and directories
+- **NT+**: Junction points for directories
+  - No privilege requirements
+  - Uses reparse points (IO_REPARSE_TAG_MOUNT_POINT)
+
+**Hard Links:**
+- **2000+**: CreateHardLink() API
+- Multiple directory entries to same file
+- Reference counted deletion
+
+**Extended Attributes:**
+- **NT 3.1+**: Via Alternate Data Streams on NTFS
+- Format: `filename:xattr_name:$DATA`
+- **Offset support**: Read/write large xattrs incrementally
+- **macOS compatibility**: Resource forks, Finder info
+
+**Files:**
+- `nix-platform-win32-links-xattr.c` (773 lines) - Complete implementation
+- `WIN32_LINKS_XATTR.md` (comprehensive documentation)
+
 **Implementation Strategy:**
 
 1. **AF_INET/AF_INET6** - Direct Winsock wrappers:
@@ -514,11 +557,13 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 | `nix-platform-win32-icmp.c` | 696 | ✅ ICMP protocol support |
 | `nix-platform-win32-aflocal.c` | 931 | ✅ AF_LOCAL socket emulation |
 | `nix-platform-win32-aflocal-advanced.c` | 653 | ✅ Peer credentials and rights transfer |
+| `nix-platform-win32-links-xattr.c` | 773 | ✅ Symbolic/hard links and xattrs |
 | `WIN32_SUPPORT.md` | 620+ | ✅ Documentation complete |
 | `WIN32_SIGNAL_MMAP.md` | 522 | ✅ Signal and mmap documentation |
 | `WIN32_ICMP_SUPPORT.md` | 800+ | ✅ ICMP documentation |
 | `WIN32_AFLOCAL_SUPPORT.md` | 1,100+ | ✅ AF_LOCAL documentation |
 | `WIN32_AFLOCAL_ADVANCED.md` | 900+ | ✅ Advanced features documentation |
+| `WIN32_LINKS_XATTR.md` | 1,000+ | ✅ Links and xattrs documentation |
 | `WIN32_IMPLEMENTATION_STATUS.md` | This file | ✅ Up to date |
 
 ---
