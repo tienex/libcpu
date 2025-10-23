@@ -152,6 +152,52 @@ const char *nix_platform_win32_icmp_type_name(uint8_t type);
 int nix_platform_win32_icmp_check_admin(void);
 
 /*
+ * AF_LOCAL (Unix Domain Sockets) Functions
+ */
+
+/* Create AF_LOCAL socket */
+int nix_platform_win32_aflocal_socket(int type, int protocol);
+
+/* Bind AF_LOCAL socket to path */
+int nix_platform_win32_aflocal_bind(int sockfd, const char *path);
+
+/* Listen for connections */
+int nix_platform_win32_aflocal_listen(int sockfd, int backlog);
+
+/* Accept connection */
+int nix_platform_win32_aflocal_accept(int sockfd, char *addr, size_t *addrlen);
+
+/* Connect to AF_LOCAL socket */
+int nix_platform_win32_aflocal_connect(int sockfd, const char *path);
+
+/* Send data */
+ssize_t nix_platform_win32_aflocal_send(int sockfd, const void *buf, size_t len, int flags);
+
+/* Receive data */
+ssize_t nix_platform_win32_aflocal_recv(int sockfd, void *buf, size_t len, int flags);
+
+/* Send datagram to address */
+ssize_t nix_platform_win32_aflocal_sendto(int sockfd, const void *buf, size_t len,
+										  int flags, const char *dest_path);
+
+/* Receive datagram with source address */
+ssize_t nix_platform_win32_aflocal_recvfrom(int sockfd, void *buf, size_t len,
+											int flags, char *src_path, size_t *pathlen);
+
+/* Create connected socket pair */
+int nix_platform_win32_aflocal_socketpair(int type, int protocol, int sv[2]);
+
+/* Close socket */
+int nix_platform_win32_aflocal_close(int sockfd);
+
+/* Shutdown connection */
+int nix_platform_win32_aflocal_shutdown(int sockfd, int how);
+
+/* Get socket options */
+int nix_platform_win32_aflocal_getsockopt(int sockfd, int level, int optname,
+										   void *optval, socklen_t *optlen);
+
+/*
  * POSIX Protection Flags (for reference)
  */
 #define NIX_PROT_NONE   0x00
@@ -277,6 +323,32 @@ int nix_platform_win32_icmp_check_admin(void);
 #define NIX_SIGIO     29
 #define NIX_SIGPWR    30
 #define NIX_SIGSYS    31
+
+/*
+ * Socket Types (for AF_LOCAL)
+ */
+#ifndef SOCK_STREAM
+#define SOCK_STREAM    1
+#endif
+#ifndef SOCK_DGRAM
+#define SOCK_DGRAM     2
+#endif
+#ifndef SOCK_SEQPACKET
+#define SOCK_SEQPACKET 5
+#endif
+
+/*
+ * Shutdown options
+ */
+#ifndef SHUT_RD
+#define SHUT_RD   0
+#endif
+#ifndef SHUT_WR
+#define SHUT_WR   1
+#endif
+#ifndef SHUT_RDWR
+#define SHUT_RDWR 2
+#endif
 
 #endif /* NIX_HOST_WIN32 */
 

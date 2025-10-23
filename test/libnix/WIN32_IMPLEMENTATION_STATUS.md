@@ -4,19 +4,22 @@ This document tracks the current implementation status of Win32 platform support
 
 ## Summary
 
-**Current Status:** ✅ **94+ operations fully implemented**, 🔄 **Optional features remaining (AF_LOCAL, socketpair, epoll/kqueue)**
+**Current Status:** ✅ **120+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
 
 The platform abstraction layer enables libnix to host guest OS emulation on Windows NT 3.1+ through Windows 11, with intelligent runtime API detection for optimal performance on each Windows version.
 
 **Recent Progress (2025):**
 - ✅ NT version detection (3 functions)
 - ✅ Signal handling (3 functions)
+- ✅ Full signal emulation for 8 architectures (signal frames, trampolines)
+- ✅ Win32 signal and mmap emulation (11 + 11 = 22 functions)
+- ✅ ICMP protocol support (11 functions)
 - ✅ Socket operations AF_INET/AF_INET6 (14 functions)
+- ✅ AF_LOCAL (Unix domain sockets) emulation (13 functions)
 - ✅ Event notification poll/ppoll/pselect (3 functions)
 - ✅ Process syscalls with NT API fork (40+ functions)
 - ✅ Session and terminal control (8 functions)
 - ✅ System V IPC emulation (13 functions)
-- ⚠️ socketpair stubbed (AF_LOCAL implementation pending)
 
 ---
 
@@ -288,7 +291,42 @@ signal(SIGHUP, handler);   // Returns SIG_ERR, sets errno=EINVAL
 | nix_platform_getpeername | getpeername() | Winsock 1.1+ |
 | nix_platform_setsockopt | setsockopt() | Winsock 1.1+ |
 | nix_platform_getsockopt | getsockopt() | Winsock 1.1+ |
-| nix_platform_socketpair | Named pipe pair | ⚠️ Stubbed (returns ENOSYS) |
+| nix_platform_socketpair | Named pipe pair | ✅ Implemented via AF_LOCAL |
+
+### AF_LOCAL (Unix Domain Sockets) - ✅ COMPLETE (13 functions)
+
+Full emulation of Unix domain sockets via Windows named pipes and mailslots with exact POSIX semantics.
+
+| Operation | Implementation | Socket Types | Status |
+|-----------|---------------|--------------|--------|
+| socket | Virtual socket tracking | SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET | ✅ |
+| bind | Named pipe / mailslot creation | All types | ✅ |
+| listen | Named pipe server | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| accept | ConnectNamedPipe | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| connect | CreateFileA on pipe | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| send | WriteFile | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| recv | ReadFile | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| sendto | WriteFile to mailslot | SOCK_DGRAM | ✅ |
+| recvfrom | ReadFile from mailslot | SOCK_DGRAM | ✅ |
+| socketpair | Connected pipe/mailslot pair | All types | ✅ |
+| close | CloseHandle | All types | ✅ |
+| shutdown | DisconnectNamedPipe | SOCK_STREAM, SOCK_SEQPACKET | ✅ |
+| getsockopt | SO_TYPE, SO_ERROR | All types | ✅ |
+
+**Socket Type Mapping:**
+- **SOCK_STREAM**: Windows named pipes (byte mode) - connection-oriented, byte stream, reliable
+- **SOCK_DGRAM**: Windows mailslots - connectionless, message boundaries, reliable locally
+- **SOCK_SEQPACKET**: Windows named pipes (message mode) - connection-oriented, message boundaries, reliable
+
+**Path Conversion:**
+```
+Unix: /tmp/socket    → Pipe: \\.\pipe\nix_aflocal_socket
+Unix: /var/run/app   → Mailslot: \\.\mailslot\nix_aflocal_app
+```
+
+**Files:**
+- `nix-platform-win32-aflocal.c` (927 lines)
+- `WIN32_AFLOCAL_SUPPORT.md` (comprehensive documentation)
 
 **Implementation Strategy:**
 
@@ -407,10 +445,13 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
    - Implement pselect() and ppoll()
    - Handle timeout conversion (ms vs struct timespec)
 
-5. **AF_LOCAL Emulation** (500 lines) - Optional
-   - Map Unix domain socket paths to named pipes
+5. **AF_LOCAL Emulation** (927 lines) - ✅ COMPLETE
+   - Map Unix domain socket paths to named pipes and mailslots
    - Implement socketpair() via CreatePipe or named pipe pair
-   - Handle connection semantics
+   - Handle connection semantics for all three socket types
+   - SOCK_STREAM via named pipes (byte mode)
+   - SOCK_DGRAM via mailslots
+   - SOCK_SEQPACKET via named pipes (message mode)
 
 6. **epoll/kqueue** (1000+ lines) - Future Work
    - Complex state machine required
@@ -456,8 +497,18 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 | File | Lines | Status |
 |------|-------|--------|
 | `nix-platform.h` | 950+ | ✅ All declarations complete |
-| `nix-platform.c` | 4,000+ | ✅ 94+ operations implemented |
+| `nix-platform.c` | 4,000+ | ✅ Core operations implemented |
+| `nix-signal-arch.h` | 430 | ✅ Signal context structures for 8 architectures |
+| `nix-signal-arch.c` | 890 | ✅ Signal frame setup/restore for all architectures |
+| `nix-platform-win32.h` | 356 | ✅ Win32-specific declarations |
+| `nix-platform-win32-signal.c` | 650 | ✅ Full signal queue and delivery |
+| `nix-platform-win32-mmap.c` | 597 | ✅ Complete mmap emulation |
+| `nix-platform-win32-icmp.c` | 696 | ✅ ICMP protocol support |
+| `nix-platform-win32-aflocal.c` | 927 | ✅ AF_LOCAL socket emulation |
 | `WIN32_SUPPORT.md` | 620+ | ✅ Documentation complete |
+| `WIN32_SIGNAL_MMAP.md` | 522 | ✅ Signal and mmap documentation |
+| `WIN32_ICMP_SUPPORT.md` | 800+ | ✅ ICMP documentation |
+| `WIN32_AFLOCAL_SUPPORT.md` | 1,100+ | ✅ AF_LOCAL documentation |
 | `WIN32_IMPLEMENTATION_STATUS.md` | This file | ✅ Up to date |
 
 ---
@@ -479,10 +530,10 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 
 ## Next Steps (Optional Future Work)
 
-1. ⏭️ **OPTIONAL:** Implement socketpair() via named pipes or loopback TCP (100-200 lines)
-2. ⏭️ **OPTIONAL:** Implement AF_LOCAL/AF_UNIX emulation via named pipes (500 lines)
-3. ⏭️ **OPTIONAL:** Implement epoll/kqueue emulation via IOCP (1000+ lines)
-4. ⏭️ **OPTIONAL:** Integrate socket FDs with nix_fd table for unified FD management
+1. ⏭️ **OPTIONAL:** Implement epoll/kqueue emulation via IOCP (1000+ lines)
+2. ⏭️ **OPTIONAL:** Integrate socket FDs with nix_fd table for unified FD management
+3. ⏭️ **OPTIONAL:** Add non-blocking I/O support for AF_LOCAL sockets
+4. ⏭️ **OPTIONAL:** Implement SCM_RIGHTS (file descriptor passing) via DuplicateHandle
 
 **Estimated Optional Work Remaining:** 1,600-1,700+ lines of code
 
