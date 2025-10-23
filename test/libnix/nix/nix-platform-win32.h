@@ -387,6 +387,161 @@ int nix_platform_win32_unlinkat(int dirfd, const char *pathname, int flags);
 int nix_platform_win32_mkdirat(int dirfd, const char *pathname, mode_t mode);
 
 /*
+ * Directory Operations
+ */
+
+/* Open directory stream */
+DIR *nix_platform_win32_opendir(const char *dirname);
+
+/* Read directory entry */
+struct dirent *nix_platform_win32_readdir(DIR *dirp);
+
+/* Close directory stream */
+int nix_platform_win32_closedir(DIR *dirp);
+
+/* Reset directory stream to beginning */
+void nix_platform_win32_rewinddir(DIR *dirp);
+
+/* Get current position in directory stream */
+long nix_platform_win32_telldir(DIR *dirp);
+
+/* Set position in directory stream */
+void nix_platform_win32_seekdir(DIR *dirp, long loc);
+
+/* Get file descriptor from directory stream */
+int nix_platform_win32_dirfd(DIR *dirp);
+
+/* Open directory stream from file descriptor */
+DIR *nix_platform_win32_fdopendir(int fd);
+
+/* Scan directory for matching entries */
+int nix_platform_win32_scandir(
+	const char *dirname,
+	struct dirent ***namelist,
+	int (*filter)(const struct dirent *),
+	int (*compar)(const struct dirent **, const struct dirent **)
+);
+
+/* Compare directory entries alphabetically */
+int nix_platform_win32_alphasort(const struct dirent **a, const struct dirent **b);
+
+/* Compare directory entries by version */
+int nix_platform_win32_versionsort(const struct dirent **a, const struct dirent **b);
+
+/* Get directory entries (Linux syscall) */
+ssize_t nix_platform_win32_getdents(int fd, void *buf, size_t count);
+
+/* Get directory entries with 64-bit inodes (Linux syscall) */
+ssize_t nix_platform_win32_getdents64(int fd, void *buf, size_t count);
+
+/*
+ * Timing and Profiling Operations
+ */
+
+/* Get clock resolution */
+int nix_platform_win32_clock_getres(clockid_t clk_id, struct timespec *res);
+
+/* Get current time of clock */
+int nix_platform_win32_clock_gettime(clockid_t clk_id, struct timespec *tp);
+
+/* Set time of clock */
+int nix_platform_win32_clock_settime(clockid_t clk_id, const struct timespec *tp);
+
+/* Get process times */
+clock_t nix_platform_win32_times(struct tms *buf);
+
+/* Set alarm signal */
+unsigned int nix_platform_win32_alarm(unsigned int seconds);
+
+/* Set alarm in microseconds (BSD) */
+unsigned int nix_platform_win32_ualarm(unsigned int usecs, unsigned int interval);
+
+/* High-resolution sleep */
+int nix_platform_win32_nanosleep(const struct timespec *req, struct timespec *rem);
+
+/* Sleep on specific clock */
+int nix_platform_win32_clock_nanosleep(
+	clockid_t clk_id,
+	int flags,
+	const struct timespec *request,
+	struct timespec *remain
+);
+
+/* Statistical profiling */
+int nix_platform_win32_profil(
+	unsigned short *buf,
+	size_t bufsiz,
+	size_t offset,
+	unsigned int scale
+);
+
+/*
+ * Utility Syscalls
+ */
+
+/* Reboot the system */
+int nix_platform_win32_reboot(int cmd);
+
+/* Synchronize filesystems */
+void nix_platform_win32_sync(void);
+
+/* Synchronize a filesystem */
+int nix_platform_win32_syncfs(int fd);
+
+/* Enable swapping on device */
+int nix_platform_win32_swapon(const char *path, int swapflags);
+
+/* Disable swapping on device */
+int nix_platform_win32_swapoff(const char *path);
+
+/* Mount filesystem */
+int nix_platform_win32_mount(
+	const char *source,
+	const char *target,
+	const char *filesystemtype,
+	unsigned long mountflags,
+	const void *data
+);
+
+/* Unmount filesystem */
+int nix_platform_win32_umount(const char *target);
+
+/* Unmount filesystem with flags */
+int nix_platform_win32_umount2(const char *target, int flags);
+
+/* Get domain name */
+int nix_platform_win32_getdomainname(char *name, size_t len);
+
+/* Set domain name */
+int nix_platform_win32_setdomainname(const char *name, size_t len);
+
+/* Device I/O control */
+int nix_platform_win32_ioctl(int fd, unsigned long request, ...);
+
+/* Enable/disable process accounting */
+int nix_platform_win32_acct(const char *filename);
+
+/* Disk quota control */
+int nix_platform_win32_quotactl(
+	int cmd,
+	const char *special,
+	int id,
+	void *addr
+);
+
+/* Open connection to syslog */
+void nix_platform_win32_openlog(const char *ident, int option, int facility);
+
+/* Write message to syslog */
+void nix_platform_win32_syslog(int priority, const char *format, ...);
+
+/* Close connection to syslog */
+void nix_platform_win32_closelog(void);
+
+/* Set syslog priority mask */
+int nix_platform_win32_setlogmask(int mask);
+
+/*
  * POSIX Protection Flags (for reference)
  */
 #define NIX_PROT_NONE   0x00
@@ -654,6 +809,124 @@ int nix_platform_win32_mkdirat(int dirfd, const char *pathname, mode_t mode);
 #define AT_SYMLINK_FOLLOW     0x400 /* Follow symbolic links */
 #define AT_REMOVEDIR          0x200 /* Remove directory instead of file */
 #define AT_EACCESS            0x200 /* Use effective IDs for access check */
+#endif
+
+/*
+ * Clock IDs
+ */
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME           0
+#define CLOCK_MONOTONIC          1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID  3
+#define CLOCK_MONOTONIC_RAW      4
+#define CLOCK_REALTIME_COARSE    5
+#define CLOCK_MONOTONIC_COARSE   6
+#define CLOCK_BOOTTIME           7
+#endif
+
+/*
+ * Reboot commands
+ */
+#ifndef RB_AUTOBOOT
+#define RB_AUTOBOOT    0x01234567  /* Reboot */
+#define RB_HALT_SYSTEM 0xCDEF0123  /* Halt */
+#define RB_POWER_OFF   0x4321FEDC  /* Power off */
+#define RB_SW_SUSPEND  0xD000FCE2  /* Suspend */
+#define RB_KEXEC       0x45584543  /* Kexec */
+#endif
+
+/*
+ * Mount flags
+ */
+#ifndef MS_RDONLY
+#define MS_RDONLY      1
+#define MS_NOSUID      2
+#define MS_NODEV       4
+#define MS_NOEXEC      8
+#define MS_SYNCHRONOUS 16
+#define MS_REMOUNT     32
+#define MS_MANDLOCK    64
+#define MS_DIRSYNC     128
+#define MS_NOATIME     1024
+#define MS_NODIRATIME  2048
+#define MS_BIND        4096
+#endif
+
+/*
+ * Unmount flags
+ */
+#ifndef MNT_FORCE
+#define MNT_FORCE  1
+#define MNT_DETACH 2
+#define MNT_EXPIRE 4
+#endif
+
+/*
+ * Syslog priority
+ */
+#ifndef LOG_EMERG
+#define LOG_EMERG   0  /* System is unusable */
+#define LOG_ALERT   1  /* Action must be taken immediately */
+#define LOG_CRIT    2  /* Critical conditions */
+#define LOG_ERR     3  /* Error conditions */
+#define LOG_WARNING 4  /* Warning conditions */
+#define LOG_NOTICE  5  /* Normal but significant condition */
+#define LOG_INFO    6  /* Informational */
+#define LOG_DEBUG   7  /* Debug-level messages */
+#endif
+
+/*
+ * Syslog facility
+ */
+#ifndef LOG_KERN
+#define LOG_KERN     (0<<3)  /* Kernel messages */
+#define LOG_USER     (1<<3)  /* User-level messages */
+#define LOG_MAIL     (2<<3)  /* Mail system */
+#define LOG_DAEMON   (3<<3)  /* System daemons */
+#define LOG_AUTH     (4<<3)  /* Security/authorization */
+#define LOG_SYSLOG   (5<<3)  /* Syslog internal */
+#define LOG_LPR      (6<<3)  /* Line printer subsystem */
+#define LOG_NEWS     (7<<3)  /* Network news subsystem */
+#define LOG_UUCP     (8<<3)  /* UUCP subsystem */
+#define LOG_CRON     (9<<3)  /* Clock daemon */
+#define LOG_AUTHPRIV (10<<3) /* Security/authorization (private) */
+#define LOG_FTP      (11<<3) /* FTP daemon */
+#define LOG_LOCAL0   (16<<3) /* Local use 0 */
+#define LOG_LOCAL1   (17<<3) /* Local use 1 */
+#define LOG_LOCAL2   (18<<3) /* Local use 2 */
+#define LOG_LOCAL3   (19<<3) /* Local use 3 */
+#define LOG_LOCAL4   (20<<3) /* Local use 4 */
+#define LOG_LOCAL5   (21<<3) /* Local use 5 */
+#define LOG_LOCAL6   (22<<3) /* Local use 6 */
+#define LOG_LOCAL7   (23<<3) /* Local use 7 */
+#endif
+
+/*
+ * Syslog options
+ */
+#ifndef LOG_PID
+#define LOG_PID    0x01  /* Log process ID */
+#define LOG_CONS   0x02  /* Log on console if error */
+#define LOG_ODELAY 0x04  /* Delay open until first syslog() */
+#define LOG_NDELAY 0x08  /* Don't delay open */
+#define LOG_NOWAIT 0x10  /* Don't wait for child processes */
+#define LOG_PERROR 0x20  /* Log to stderr as well */
+#endif
+
+/*
+ * Directory entry types
+ */
+#ifndef DT_UNKNOWN
+#define DT_UNKNOWN 0
+#define DT_FIFO    1
+#define DT_CHR     2
+#define DT_DIR     4
+#define DT_BLK     6
+#define DT_REG     8
+#define DT_LNK     10
+#define DT_SOCK    12
+#define DT_WHT     14
 #endif
 
 #endif /* NIX_HOST_WIN32 */
