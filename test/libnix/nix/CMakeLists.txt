@@ -120,6 +120,7 @@ ADD_LIBRARY(nix
 			nix-signal-arch.c
 			nix-platform-win32-signal.c
 			nix-platform-win32-mmap.c
+			nix-platform-win32-icmp.c
 			nix-socket.c
 			nix-structs.c
 			nix-time.c
