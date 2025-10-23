@@ -76,19 +76,27 @@ is_valid_vr_size(size_t size)
 // cpu_t
 //////////////////////////////////////////////////////////////////////
 
-cpu_t *
-cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
+static cpu_t *
+cpu_new_internal(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags, backend_type_t backend_type)
 {
 	cpu_t *cpu;
-
-	llvm::InitializeNativeTarget();
-	llvm::InitializeNativeTargetAsmPrinter();
 
 	cpu = new cpu_t;
 	assert(cpu != NULL);
 	memset(&cpu->info, 0, sizeof(cpu->info));
 	memset(&cpu->rf, 0, sizeof(cpu->rf));
 
+	/* Initialize backend */
+	cpu->backend_type = backend_type;
+	cpu->backend = backend_create(backend_type);
+	if (cpu->backend == NULL) {
+		fprintf(stderr, "Failed to create backend: %s\n", backend_get_name(backend_type));
+		delete cpu;
+		return NULL;
+	}
+	cpu->backend->Initialize(cpu->backend);
+
+	/* For LLVM backend compatibility, still create context */
 	cpu->ctx = new LLVMContext();
 	cpu->info.type = arch;
 	cpu->info.name = "noname";
@@ -218,6 +226,19 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	return cpu;
 }
 
+cpu_t *
+cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
+{
+	/* Default to LLVM backend for backward compatibility */
+	return cpu_new_internal(arch, flags, arch_flags, BACKEND_LLVM);
+}
+
+cpu_t *
+cpu_new_with_backend(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags, backend_type_t backend)
+{
+	return cpu_new_internal(arch, flags, arch_flags, backend);
+}
+
 void
 cpu_free(cpu_t *cpu)
 {
@@ -231,6 +252,12 @@ cpu_free(cpu_t *cpu)
 	}
 	if (cpu->ctx != NULL)
 		delete cpu->ctx;
+
+	/* Release backend */
+	if (cpu->backend_module != NULL)
+		cpu->backend_module->base.Release(cpu->backend_module);
+	if (cpu->backend != NULL)
+		cpu->backend->base.Release(cpu->backend);
 	if (cpu->ptr_FLAG != NULL)
 		free(cpu->ptr_FLAG);
 	if (cpu->in_ptr_fpr != NULL)

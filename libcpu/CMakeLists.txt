@@ -16,7 +16,12 @@ ADD_LIBRARY(cpu SHARED
 			stat.cpp
 			sha1.cpp
 			interface.cpp
-			timings.cpp)
+			timings.cpp
+			backend_impl.cpp
+			backend_llvm.cpp
+			backend_qbe.cpp
+			backend_gccjit.cpp
+			backend_tcg.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
 
