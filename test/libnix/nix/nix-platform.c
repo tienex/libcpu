@@ -1017,6 +1017,222 @@ nix_platform_socketpair(int domain, int type, int protocol, int sv[2])
 
 /*
  * ========================================================================
+ * PLATFORM EVENT NOTIFICATION (poll/select)
+ * ========================================================================
+ */
+
+int
+nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows poll() implementation with version detection:
+     * - Vista+: Use WSAPoll() (most compatible)
+     * - NT 3.1-XP: Emulate via select()
+     */
+
+    /* Check if WSAPoll is available (Vista+) */
+    if (nix_platform_win32_has_api("ws2_32.dll:WSAPoll")) {
+        /* Use WSAPoll directly - same signature as POSIX poll() */
+        typedef int (WSAAPI *WSAPoll_t)(struct pollfd *, ULONG, INT);
+        HMODULE ws2_32 = GetModuleHandleA("ws2_32.dll");
+        if (ws2_32) {
+            WSAPoll_t pWSAPoll = (WSAPoll_t)GetProcAddress(ws2_32, "WSAPoll");
+            if (pWSAPoll) {
+                return pWSAPoll(fds, (ULONG)nfds, timeout);
+            }
+        }
+    }
+
+    /*
+     * Fall back to select() emulation for NT 3.1-XP
+     * Convert poll() semantics to select() semantics
+     */
+
+    if (nfds == 0) {
+        /* Just sleep for timeout milliseconds */
+        if (timeout > 0) {
+            Sleep((DWORD)timeout);
+            return 0;
+        } else if (timeout == 0) {
+            return 0;
+        } else {
+            /* Infinite timeout with no fds - not useful, but valid */
+            Sleep(INFINITE);
+            return 0;
+        }
+    }
+
+    fd_set readfds, writefds, exceptfds;
+    FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
+    FD_ZERO(&exceptfds);
+
+    int max_fd = -1;
+    nfds_t i;
+
+    /* Build fd_sets from pollfd array */
+    for (i = 0; i < nfds; i++) {
+        if (fds[i].fd < 0) {
+            continue;  /* Negative fd means ignore this entry */
+        }
+
+        if (fds[i].events & POLLIN) {
+            FD_SET((SOCKET)fds[i].fd, &readfds);
+        }
+        if (fds[i].events & POLLOUT) {
+            FD_SET((SOCKET)fds[i].fd, &writefds);
+        }
+        /* Always check for exceptions */
+        FD_SET((SOCKET)fds[i].fd, &exceptfds);
+
+        if (fds[i].fd > max_fd) {
+            max_fd = fds[i].fd;
+        }
+    }
+
+    /* Convert timeout from milliseconds to struct timeval */
+    struct timeval tv;
+    struct timeval *ptv = NULL;
+    if (timeout >= 0) {
+        tv.tv_sec = timeout / 1000;
+        tv.tv_usec = (timeout % 1000) * 1000;
+        ptv = &tv;
+    }
+    /* timeout < 0 means infinite - ptv remains NULL */
+
+    /* Call select() */
+    int result = select(max_fd + 1, &readfds, &writefds, &exceptfds, ptv);
+    if (result == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    /* Convert fd_set results back to pollfd revents */
+    int count = 0;
+    for (i = 0; i < nfds; i++) {
+        fds[i].revents = 0;
+
+        if (fds[i].fd < 0) {
+            continue;
+        }
+
+        if (FD_ISSET((SOCKET)fds[i].fd, &readfds)) {
+            fds[i].revents |= POLLIN;
+        }
+        if (FD_ISSET((SOCKET)fds[i].fd, &writefds)) {
+            fds[i].revents |= POLLOUT;
+        }
+        if (FD_ISSET((SOCKET)fds[i].fd, &exceptfds)) {
+            fds[i].revents |= POLLERR;
+        }
+
+        if (fds[i].revents != 0) {
+            count++;
+        }
+    }
+
+    return count;
+
+#else
+    /* Standard POSIX poll() */
+    return poll(fds, nfds, timeout);
+#endif
+}
+
+int
+nix_platform_ppoll(struct pollfd *fds, nfds_t nfds,
+                   const struct timespec *timeout, const void *sigmask)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have signal masks, so we ignore the sigmask parameter.
+     * Convert timeout from timespec to milliseconds and call poll().
+     */
+    (void)sigmask;  /* Unused on Windows */
+
+    int timeout_ms;
+    if (!timeout) {
+        timeout_ms = -1;  /* Infinite timeout */
+    } else {
+        /* Convert timespec to milliseconds */
+        timeout_ms = (int)(timeout->tv_sec * 1000 + timeout->tv_nsec / 1000000);
+    }
+
+    return nix_platform_poll(fds, nfds, timeout_ms);
+
+#elif defined(HAVE_PPOLL)
+    /* Use native ppoll() if available */
+    return ppoll(fds, nfds, timeout, (const sigset_t *)sigmask);
+
+#else
+    /* Emulate ppoll() via poll() - ignore signal mask */
+    (void)sigmask;
+
+    int timeout_ms;
+    if (!timeout) {
+        timeout_ms = -1;
+    } else {
+        timeout_ms = (int)(timeout->tv_sec * 1000 + timeout->tv_nsec / 1000000);
+    }
+
+    return poll(fds, nfds, timeout_ms);
+#endif
+}
+
+int
+nix_platform_pselect(int nfds, fd_set *readfds, fd_set *writefds,
+                     fd_set *exceptfds, const struct timespec *timeout,
+                     const void *sigmask)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have signal masks, so we ignore the sigmask parameter.
+     * Convert timeout from timespec to timeval and call select().
+     */
+    (void)sigmask;  /* Unused on Windows */
+
+    struct timeval tv;
+    struct timeval *ptv = NULL;
+
+    if (timeout) {
+        tv.tv_sec = (long)timeout->tv_sec;
+        tv.tv_usec = (long)(timeout->tv_nsec / 1000);
+        ptv = &tv;
+    }
+
+    int result = select(nfds, readfds, writefds, exceptfds, ptv);
+    if (result == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    return result;
+
+#elif defined(HAVE_PSELECT)
+    /* Use native pselect() if available */
+    return pselect(nfds, readfds, writefds, exceptfds, timeout,
+                   (const sigset_t *)sigmask);
+
+#else
+    /* Emulate pselect() via select() - ignore signal mask */
+    (void)sigmask;
+
+    struct timeval tv;
+    struct timeval *ptv = NULL;
+
+    if (timeout) {
+        tv.tv_sec = (long)timeout->tv_sec;
+        tv.tv_usec = (long)(timeout->tv_nsec / 1000);
+        ptv = &tv;
+    }
+
+    return select(nfds, readfds, writefds, exceptfds, ptv);
+#endif
+}
+
+/*
+ * ========================================================================
  * PLATFORM FILE OPERATIONS
  * ========================================================================
  */
