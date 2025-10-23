@@ -336,6 +336,240 @@ nix_platform_win32_has_api(const char *api_name)
 
 /*
  * ========================================================================
+ * PLATFORM SIGNAL OPERATIONS
+ * ========================================================================
+ */
+
+nix_signal_handler_t
+nix_platform_signal(int signum, nix_signal_handler_t handler)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows supports a limited subset of POSIX signals through signal().
+     * Supported: SIGINT, SIGTERM, SIGABRT, SIGBREAK (Windows-specific)
+     * Not supported: SIGHUP, SIGQUIT, SIGKILL, SIGUSR1/2, etc.
+     */
+
+    /* Map Linux/POSIX signal numbers to Windows signal numbers */
+    int win_signum;
+    switch (signum) {
+    case 2:   /* SIGINT */
+        win_signum = SIGINT;
+        break;
+    case 15:  /* SIGTERM */
+        win_signum = SIGTERM;
+        break;
+    case 6:   /* SIGABRT */
+        win_signum = SIGABRT;
+        break;
+    case 21:  /* SIGBREAK (Windows-specific, Linux doesn't have this) */
+        win_signum = 21;  /* SIGBREAK */
+        break;
+
+    /* Unsupported signals - return error */
+    case 1:   /* SIGHUP */
+    case 3:   /* SIGQUIT */
+    case 9:   /* SIGKILL */
+    case 10:  /* SIGUSR1 */
+    case 12:  /* SIGUSR2 */
+    default:
+        NIX_DPRINTF("Signal %d not supported on Win32", signum);
+        nix_platform_set_errno(EINVAL);
+        return NIX_SIG_ERR;
+    }
+
+    /* Install the signal handler */
+    void (*result)(int) = signal(win_signum, (void (*)(int))handler);
+    if (result == SIG_ERR) {
+        nix_platform_set_errno(EINVAL);
+        return NIX_SIG_ERR;
+    }
+
+    return (nix_signal_handler_t)result;
+
+#elif defined(NIX_HOST_HAIKU)
+    /* Haiku has standard POSIX signal support */
+    void (*result)(int) = signal(signum, (void (*)(int))handler);
+    if (result == SIG_ERR) {
+        return NIX_SIG_ERR;
+    }
+    return (nix_signal_handler_t)result;
+
+#elif defined(NIX_HOST_OS2)
+    /* OS/2 has limited signal support, similar to Windows */
+    void (*result)(int) = signal(signum, (void (*)(int))handler);
+    if (result == SIG_ERR) {
+        return NIX_SIG_ERR;
+    }
+    return (nix_signal_handler_t)result;
+
+#elif defined(NIX_HOST_OPENVMS)
+    /* OpenVMS has signal support through C RTL */
+    void (*result)(int) = signal(signum, (void (*)(int))handler);
+    if (result == SIG_ERR) {
+        return NIX_SIG_ERR;
+    }
+    return (nix_signal_handler_t)result;
+
+#else
+    /* Standard POSIX signal() */
+    void (*result)(int) = signal(signum, (void (*)(int))handler);
+    if (result == SIG_ERR) {
+        return NIX_SIG_ERR;
+    }
+    return (nix_signal_handler_t)result;
+#endif
+}
+
+int
+nix_platform_raise(int signum)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows raise() supports SIGINT, SIGTERM, SIGABRT, SIGBREAK
+     */
+
+    /* Map Linux/POSIX signal numbers to Windows signal numbers */
+    int win_signum;
+    switch (signum) {
+    case 2:   /* SIGINT */
+        win_signum = SIGINT;
+        break;
+    case 15:  /* SIGTERM */
+        win_signum = SIGTERM;
+        break;
+    case 6:   /* SIGABRT */
+        win_signum = SIGABRT;
+        break;
+    case 21:  /* SIGBREAK */
+        win_signum = 21;
+        break;
+
+    /* Unsupported signals */
+    default:
+        NIX_DPRINTF("raise: Signal %d not supported on Win32", signum);
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    return raise(win_signum);
+
+#else
+    /* Standard POSIX raise() */
+    return raise(signum);
+#endif
+}
+
+int
+nix_platform_kill_signal(nix_host_pid_t pid, int signum)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have a real kill() syscall. We can:
+     * 1. Use GenerateConsoleCtrlEvent() for SIGINT/SIGBREAK (same console)
+     * 2. Use TerminateProcess() for SIGKILL/SIGTERM (forceful termination)
+     * 3. Return ENOSYS for other signals
+     */
+
+    HANDLE hProcess;
+    BOOL result;
+
+    /* Special case: pid 0 means current process */
+    if (pid == 0) {
+        pid = GetCurrentProcessId();
+    }
+
+    switch (signum) {
+    case 2:  /* SIGINT - Generate Ctrl+C event */
+        /*
+         * GenerateConsoleCtrlEvent() only works for processes in the same
+         * console process group. Passing 0 for dwProcessGroupId sends to
+         * all processes sharing the console.
+         */
+        result = GenerateConsoleCtrlEvent(CTRL_C_EVENT, (DWORD)pid);
+        if (!result) {
+            /* If we can't send console event, fail gracefully */
+            nix_platform_set_errno(EPERM);
+            return -1;
+        }
+        return 0;
+
+    case 21:  /* SIGBREAK - Generate Ctrl+Break event */
+        result = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, (DWORD)pid);
+        if (!result) {
+            nix_platform_set_errno(EPERM);
+            return -1;
+        }
+        return 0;
+
+    case 9:   /* SIGKILL - Forceful termination */
+    case 15:  /* SIGTERM - Termination (Windows has no graceful request) */
+        /*
+         * Open the target process and terminate it.
+         * Note: This is forceful and doesn't allow cleanup.
+         */
+        hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+        if (!hProcess) {
+            /* Process doesn't exist or no permission */
+            DWORD error = GetLastError();
+            if (error == ERROR_INVALID_PARAMETER) {
+                nix_platform_set_errno(ESRCH);  /* No such process */
+            } else {
+                nix_platform_set_errno(EPERM);  /* Permission denied */
+            }
+            return -1;
+        }
+
+        result = TerminateProcess(hProcess, 1);
+        CloseHandle(hProcess);
+
+        if (!result) {
+            nix_platform_set_errno(EPERM);
+            return -1;
+        }
+        return 0;
+
+    case 0:  /* Signal 0 - Check if process exists */
+        /*
+         * Signal 0 is used to check if a process exists without sending
+         * a signal. Try to open the process with minimal permissions.
+         */
+        hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+        if (!hProcess) {
+            nix_platform_set_errno(ESRCH);
+            return -1;
+        }
+        CloseHandle(hProcess);
+        return 0;
+
+    /* Unsupported signals */
+    default:
+        NIX_DPRINTF("kill: Signal %d not supported on Win32", signum);
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+#elif defined(NIX_HOST_HAIKU)
+    /* Haiku has standard POSIX kill() */
+    return kill((pid_t)pid, signum);
+
+#elif defined(NIX_HOST_OS2)
+    /* OS/2 has limited kill() support through DosSendSignalException */
+    /* For simplicity, we'll use the C runtime kill() if available */
+    return kill((pid_t)pid, signum);
+
+#elif defined(NIX_HOST_OPENVMS)
+    /* OpenVMS has signal support through SYS$SIGPRC */
+    return kill((pid_t)pid, signum);
+
+#else
+    /* Standard POSIX kill() */
+    return kill((pid_t)pid, signum);
+#endif
+}
+
+/*
+ * ========================================================================
  * PLATFORM FILE OPERATIONS
  * ========================================================================
  */
