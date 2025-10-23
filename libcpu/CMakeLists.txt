@@ -1,6 +1,10 @@
 PROJECT(libcpu)
 
-ADD_LIBRARY(cpu SHARED
+# Option to build with LLVM C API compatibility layer
+OPTION(LIBCPU_USE_LLVM_COMPAT "Build with LLVM C API compatibility layer (experimental)" OFF)
+
+# Core library sources
+SET(LIBCPU_SOURCES
 			frontend.cpp
 			disasm.cpp
 			basicblock.cpp
@@ -17,6 +21,15 @@ ADD_LIBRARY(cpu SHARED
 			sha1.cpp
 			interface.cpp
 			timings.cpp)
+
+# Add LLVM compatibility layer if enabled
+IF(LIBCPU_USE_LLVM_COMPAT)
+	MESSAGE(STATUS "Building with LLVM C API compatibility layer")
+	LIST(APPEND LIBCPU_SOURCES llvm_compat.cpp)
+	ADD_DEFINITIONS(-DLIBCPU_HAVE_LLVM_COMPAT=1)
+ENDIF()
+
+ADD_LIBRARY(cpu SHARED ${LIBCPU_SOURCES})
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
 

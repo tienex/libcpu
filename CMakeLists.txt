@@ -32,8 +32,16 @@ ENDIF()
 #
 # Find LLVM, we need it.
 #
+OPTION(USE_IMPROVED_FINDLLVM "Use improved LLVM detection (better Win32 support)" ON)
+
 SET(LLVM_FIND_REQUIRED TRUE)
-INCLUDE(CMake/FindLLVM.cmake)
+IF(USE_IMPROVED_FINDLLVM)
+	MESSAGE(STATUS "Using improved LLVM detection (Win32-friendly)")
+	INCLUDE(CMake/FindLLVM_Improved.cmake)
+ELSE()
+	MESSAGE(STATUS "Using legacy LLVM detection")
+	INCLUDE(CMake/FindLLVM.cmake)
+ENDIF()
 
 INCLUDE(CMake/BuildConfigH.cmake)
 IF(MSVC)
