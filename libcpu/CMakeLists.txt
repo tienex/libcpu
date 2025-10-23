@@ -18,6 +18,7 @@ ADD_LIBRARY(cpu SHARED
 			cache.cpp
 			jumpcache.cpp
 			mmu.cpp
+			static_recompiler.cpp
 			interface.cpp
 			timings.cpp)
 
