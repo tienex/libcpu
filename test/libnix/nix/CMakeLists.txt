@@ -117,6 +117,7 @@ ADD_LIBRARY(nix
 			nix-s5-sem.c
 			nix-s5-shm.c
 			nix-signal.c
+			nix-signal-arch.c
 			nix-socket.c
 			nix-structs.c
 			nix-time.c
