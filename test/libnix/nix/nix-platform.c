@@ -165,6 +165,177 @@ nix_platform_set_errno(int error)
 
 /*
  * ========================================================================
+ * PLATFORM VERSION DETECTION (Win32)
+ * ========================================================================
+ */
+
+#if defined(NIX_HOST_WIN32)
+
+/*
+ * Windows version information cache
+ * Populated on first call to avoid repeated system calls
+ */
+static int win32_version_major = -1;
+static int win32_version_minor = -1;
+
+/*
+ * Initialize version information using the most appropriate API
+ * - RtlGetVersion: Windows Vista+ (not subject to manifest compatibility shims)
+ * - GetVersionEx: Windows NT 3.1+ (deprecated on Windows 10+, but works)
+ */
+static void
+win32_init_version(void)
+{
+    if (win32_version_major >= 0) {
+        return;  /* Already initialized */
+    }
+
+    /*
+     * Try RtlGetVersion first (Vista+)
+     * This is the recommended method on modern Windows as it bypasses
+     * compatibility shims that can cause GetVersionEx to lie about the version.
+     */
+    typedef LONG (WINAPI *RtlGetVersion_t)(OSVERSIONINFOEXW *);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+
+    if (ntdll) {
+        RtlGetVersion_t pRtlGetVersion =
+            (RtlGetVersion_t)GetProcAddress(ntdll, "RtlGetVersion");
+
+        if (pRtlGetVersion) {
+            OSVERSIONINFOEXW osvi;
+            ZeroMemory(&osvi, sizeof(OSVERSIONINFOEXW));
+            osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
+
+            if (pRtlGetVersion(&osvi) == 0) {  /* STATUS_SUCCESS */
+                win32_version_major = (int)osvi.dwMajorVersion;
+                win32_version_minor = (int)osvi.dwMinorVersion;
+                NIX_DPRINTF("Win32 version detected via RtlGetVersion: %d.%d",
+                           win32_version_major, win32_version_minor);
+                return;
+            }
+        }
+    }
+
+    /*
+     * Fall back to GetVersionEx (NT 3.1+)
+     * This works on all Windows NT versions but may return incorrect
+     * results on Windows 10+ if the application doesn't have a manifest
+     * declaring compatibility.
+     */
+    OSVERSIONINFOA osvi;
+    ZeroMemory(&osvi, sizeof(OSVERSIONINFOA));
+    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOA);
+
+#pragma warning(push)
+#pragma warning(disable: 4996)  /* 'GetVersionExA': was declared deprecated */
+    if (GetVersionExA(&osvi)) {
+        win32_version_major = (int)osvi.dwMajorVersion;
+        win32_version_minor = (int)osvi.dwMinorVersion;
+        NIX_DPRINTF("Win32 version detected via GetVersionEx: %d.%d",
+                   win32_version_major, win32_version_minor);
+        return;
+    }
+#pragma warning(pop)
+
+    /*
+     * If both methods fail (shouldn't happen), assume NT 3.1 as a safe default
+     */
+    win32_version_major = 3;
+    win32_version_minor = 1;
+    NIX_DPRINTF("Win32 version detection failed, assuming NT 3.1");
+}
+
+int
+nix_platform_win32_version_major(void)
+{
+    win32_init_version();
+    return win32_version_major;
+}
+
+int
+nix_platform_win32_version_minor(void)
+{
+    win32_init_version();
+    return win32_version_minor;
+}
+
+int
+nix_platform_win32_has_api(const char *api_name)
+{
+    /*
+     * Check if a Windows API function is available at runtime.
+     * This enables graceful degradation on older Windows versions.
+     *
+     * Expected format: "module.dll:FunctionName" or just "FunctionName"
+     * Examples:
+     *   - "kernel32.dll:CreateHardLinkA"
+     *   - "ws2_32.dll:WSAPoll"
+     *   - "ntdll.dll:RtlGetVersion"
+     */
+
+    if (!api_name || !*api_name) {
+        return 0;
+    }
+
+    /* Parse module and function name */
+    char module_name[256];
+    const char *function_name;
+    const char *colon = strchr(api_name, ':');
+
+    if (colon) {
+        /* Explicit module specified */
+        size_t module_len = colon - api_name;
+        if (module_len >= sizeof(module_name)) {
+            return 0;  /* Module name too long */
+        }
+        memcpy(module_name, api_name, module_len);
+        module_name[module_len] = '\0';
+        function_name = colon + 1;
+    } else {
+        /* No module specified, try common system DLLs */
+        function_name = api_name;
+
+        /* Try kernel32.dll first (most common) */
+        HMODULE hModule = GetModuleHandleA("kernel32.dll");
+        if (hModule && GetProcAddress(hModule, function_name)) {
+            return 1;
+        }
+
+        /* Try ntdll.dll */
+        hModule = GetModuleHandleA("ntdll.dll");
+        if (hModule && GetProcAddress(hModule, function_name)) {
+            return 1;
+        }
+
+        /* Try ws2_32.dll (Winsock) */
+        hModule = GetModuleHandleA("ws2_32.dll");
+        if (hModule && GetProcAddress(hModule, function_name)) {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    /* Load the specified module and check for function */
+    HMODULE hModule = GetModuleHandleA(module_name);
+    if (!hModule) {
+        /* Module not loaded, try to load it */
+        hModule = LoadLibraryA(module_name);
+        if (!hModule) {
+            return 0;
+        }
+        /* Note: We intentionally leak the handle here as we don't want to
+         * unload system DLLs that might be in use */
+    }
+
+    return GetProcAddress(hModule, function_name) != NULL;
+}
+
+#endif  /* NIX_HOST_WIN32 */
+
+/*
+ * ========================================================================
  * PLATFORM FILE OPERATIONS
  * ========================================================================
  */
