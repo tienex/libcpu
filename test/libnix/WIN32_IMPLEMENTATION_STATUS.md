@@ -4,7 +4,7 @@ This document tracks the current implementation status of Win32 platform support
 
 ## Summary
 
-**Current Status:** ✅ **138+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
+**Current Status:** ✅ **160+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
 
 The platform abstraction layer enables libnix to host guest OS emulation on Windows NT 3.1+ through Windows 11, with intelligent runtime API detection for optimal performance on each Windows version.
 
@@ -19,6 +19,8 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 - ✅ AF_LOCAL advanced features: peer credentials and rights transfer (4 functions)
 - ✅ Symbolic links and hard links (3 functions)
 - ✅ Extended attributes with offset support (4 + 4 macOS functions)
+- ✅ BSD file flags and symlink-aware operations (8 functions)
+- ✅ Directory-relative operations (*at functions) (14 functions)
 - ✅ Event notification poll/ppoll/pselect (3 functions)
 - ✅ Process syscalls with NT API fork (40+ functions)
 - ✅ Session and terminal control (8 functions)
@@ -56,7 +58,8 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 | isatty | GetConsoleMode | ✅ | ✅ |
 | fchmod | Not supported | ⚠️ ENOSYS | - |
 | chown/fchown | Not supported | ⚠️ ENOSYS | - |
-| symlink/readlink | Not supported | ⚠️ ENOSYS | - |
+| symlink | CreateSymbolicLink / Junctions | ✅ | ✅ |
+| readlink | FSCTL_GET_REPARSE_POINT | ✅ | ✅ |
 
 ### Directory Operations (5 functions) - ✅ COMPLETE
 
@@ -74,14 +77,14 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 |-----------|-------------|--------|---------|
 | stat | GetFileAttributesExA | ✅ | ✅ |
 | fstat | GetFileInformationByHandle | ✅ | ✅ |
-| lstat | Falls back to stat | ✅ | ✅ |
+| lstat | FILE_FLAG_OPEN_REPARSE_POINT | ✅ | ✅ |
 
 ### I/O Operations (3 functions) - ✅ COMPLETE
 
 | Operation | Windows API | Status | NT 3.1+ |
 |-----------|-------------|--------|---------|
 | pipe | CreatePipe | ✅ | ✅ |
-| fcntl | Limited (F_GETFL/F_SETFL) | ⚠️ | ✅ |
+| fcntl | F_DUPFD/F_GETFD/F_SETFD/F_GETFL/F_SETFL | ✅ | ✅ |
 | select | Winsock select() | ⚠️ Sockets only | ✅ |
 
 ### Process Operations (40+ functions) - ✅ COMPLETE
@@ -379,6 +382,70 @@ Full emulation of Unix/Linux/macOS file system features for symbolic navigation,
 - `nix-platform-win32-links-xattr.c` (773 lines) - Complete implementation
 - `WIN32_LINKS_XATTR.md` (comprehensive documentation)
 
+### BSD File Flags and Symlink-Aware Operations - ✅ COMPLETE (22 functions)
+
+Full emulation of BSD chflags and symlink-aware file operations for Windows NT.
+
+| Operation | Implementation | Windows API | Status |
+|-----------|---------------|-------------|--------|
+| chflags | Map flags to FILE_ATTRIBUTE_* | SetFileAttributes | ✅ |
+| fchflags | Via file handle | SetFileInformationByHandle | ✅ |
+| lchflags | With FILE_FLAG_OPEN_REPARSE_POINT | SetFileAttributes | ✅ |
+| lstat | Stat without following symlinks | FILE_FLAG_OPEN_REPARSE_POINT | ✅ |
+| lchown | chown without following symlinks | Not supported | ⚠️ ENOSYS |
+| lchmod | chmod without following symlinks | SetFileAttributes | ✅ |
+| lutimes | utime without following symlinks | SetFileTime | ✅ |
+| futimes | utime via file handle | SetFileTime | ✅ |
+| fcntl | File descriptor control | DuplicateHandle + flags tracking | ✅ |
+| openat | Open relative to directory fd | GetFinalPathNameByHandleA | ✅ |
+| fstatat | stat relative to directory fd | GetFileAttributesExA | ✅ |
+| fchownat | chown relative to directory fd | Not supported | ⚠️ ENOSYS |
+| fchmodat | chmod relative to directory fd | SetFileAttributes | ✅ |
+| utimensat | utimens relative to directory fd | SetFileTime | ✅ |
+| symlinkat | symlink relative to directory fd | CreateSymbolicLink | ✅ |
+| linkat | link relative to directory fd | CreateHardLink | ✅ |
+| readlinkat | readlink relative to directory fd | FSCTL_GET_REPARSE_POINT | ✅ |
+| unlinkat | unlink relative to directory fd | DeleteFile / RemoveDirectory | ✅ |
+| mkdirat | mkdir relative to directory fd | CreateDirectory | ✅ |
+| faccessat | access relative to directory fd | GetFileAttributes | ✅ |
+| renameat | rename relative to directory fd | MoveFile | ✅ |
+
+**BSD File Flags:**
+- **UF_NODUMP** (0x00000001) - No dump flag (tracked, no Windows equivalent)
+- **UF_IMMUTABLE** (0x00000002) - Maps to FILE_ATTRIBUTE_READONLY
+- **UF_APPEND** (0x00000004) - Append-only (tracked, no Windows equivalent)
+- **UF_NOUNLINK** (0x00000010) - Cannot unlink (tracked, no Windows equivalent)
+- **UF_HIDDEN** (0x00008000) - Maps to FILE_ATTRIBUTE_HIDDEN
+- **SF_IMMUTABLE** (0x00020000) - System immutable → FILE_ATTRIBUTE_READONLY
+- **SF_APPEND** (0x00040000) - System append-only (tracked, no Windows equivalent)
+- **SF_NOUNLINK** (0x00100000) - System no-unlink (tracked, no Windows equivalent)
+- **SF_ARCHIVED** (0x00010000) - Maps to FILE_ATTRIBUTE_ARCHIVE
+
+**fcntl Commands:**
+- **F_DUPFD** (0) - Duplicate file descriptor via DuplicateHandle
+- **F_GETFD** (1) - Get FD flags (FD_CLOEXEC) from global tracking array
+- **F_SETFD** (2) - Set FD flags (FD_CLOEXEC) in global tracking array
+- **F_GETFL** (3) - Get file status flags (returns O_RDWR)
+- **F_SETFL** (4) - Set file status flags (no-op on Windows)
+
+***at Function Flags:**
+- **AT_FDCWD** (-100) - Special value for current working directory
+- **AT_SYMLINK_NOFOLLOW** (0x100) - Don't follow symbolic links
+- **AT_SYMLINK_FOLLOW** (0x200) - Follow symbolic links
+- **AT_REMOVEDIR** (0x200) - Remove directory instead of file
+
+**Implementation Details:**
+- Directory fd resolution via GetFinalPathNameByHandleA (Vista+) or GetFileInformationByHandle (NT+)
+- AT_FDCWD uses GetCurrentDirectory
+- Path construction: build_path_at() combines directory path + relative pathname
+- FD_CLOEXEC tracking: Global g_fd_flags array protected by CRITICAL_SECTION
+- lstat uses FILE_FLAG_OPEN_REPARSE_POINT to avoid following symlinks
+- All *at functions forward to regular Windows APIs after path resolution
+
+**Files:**
+- `nix-platform-win32-fd-symlink.c` (692 lines) - Complete implementation
+- `WIN32_BSD_SYMLINK_FD.md` (comprehensive documentation)
+
 **Implementation Strategy:**
 
 1. **AF_INET/AF_INET6** - Direct Winsock wrappers:
@@ -558,12 +625,14 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 | `nix-platform-win32-aflocal.c` | 931 | ✅ AF_LOCAL socket emulation |
 | `nix-platform-win32-aflocal-advanced.c` | 653 | ✅ Peer credentials and rights transfer |
 | `nix-platform-win32-links-xattr.c` | 773 | ✅ Symbolic/hard links and xattrs |
+| `nix-platform-win32-fd-symlink.c` | 692 | ✅ BSD chflags, lstat, lch*, fcntl, *at functions |
 | `WIN32_SUPPORT.md` | 620+ | ✅ Documentation complete |
 | `WIN32_SIGNAL_MMAP.md` | 522 | ✅ Signal and mmap documentation |
 | `WIN32_ICMP_SUPPORT.md` | 800+ | ✅ ICMP documentation |
 | `WIN32_AFLOCAL_SUPPORT.md` | 1,100+ | ✅ AF_LOCAL documentation |
 | `WIN32_AFLOCAL_ADVANCED.md` | 900+ | ✅ Advanced features documentation |
 | `WIN32_LINKS_XATTR.md` | 1,000+ | ✅ Links and xattrs documentation |
+| `WIN32_BSD_SYMLINK_FD.md` | 1,000+ | ✅ BSD/FD/symlink documentation |
 | `WIN32_IMPLEMENTATION_STATUS.md` | This file | ✅ Up to date |
 
 ---
@@ -578,8 +647,14 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 6. ✅ **DONE:** Complete process syscalls with NT API fork (1,200+ lines)
 7. ✅ **DONE:** Session and terminal control (215 lines)
 8. ✅ **DONE:** System V IPC emulation (985 lines)
+9. ✅ **DONE:** Win32 signal and mmap emulation (650 + 597 = 1,247 lines)
+10. ✅ **DONE:** ICMP protocol support (696 lines)
+11. ✅ **DONE:** AF_LOCAL socket emulation (931 lines)
+12. ✅ **DONE:** AF_LOCAL advanced features (653 lines)
+13. ✅ **DONE:** Symbolic/hard links and xattrs (773 lines)
+14. ✅ **DONE:** BSD chflags, lstat, lch*, fcntl, *at functions (692 lines)
 
-**Total Lines Implemented:** ~3,525+ lines of new code
+**Total Lines Implemented:** ~8,517+ lines of new code
 
 ---
 
@@ -588,9 +663,8 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 1. ⏭️ **OPTIONAL:** Implement epoll/kqueue emulation via IOCP (1000+ lines)
 2. ⏭️ **OPTIONAL:** Integrate socket FDs with nix_fd table for unified FD management
 3. ⏭️ **OPTIONAL:** Add non-blocking I/O support for AF_LOCAL sockets
-4. ⏭️ **OPTIONAL:** Implement SCM_RIGHTS (file descriptor passing) via DuplicateHandle
 
-**Estimated Optional Work Remaining:** 1,600-1,700+ lines of code
+**Estimated Optional Work Remaining:** 1,200-1,300+ lines of code
 
 ---
 

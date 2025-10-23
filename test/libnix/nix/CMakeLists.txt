@@ -124,6 +124,7 @@ ADD_LIBRARY(nix
 			nix-platform-win32-aflocal.c
 			nix-platform-win32-aflocal-advanced.c
 			nix-platform-win32-links-xattr.c
+			nix-platform-win32-fd-symlink.c
 			nix-socket.c
 			nix-structs.c
 			nix-time.c

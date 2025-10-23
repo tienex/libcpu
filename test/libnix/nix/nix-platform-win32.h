@@ -308,6 +308,85 @@ ssize_t nix_platform_win32_getfinderinfo(const char *path, void *info);
 int nix_platform_win32_setfinderinfo(const char *path, const void *info);
 
 /*
+ * BSD File Flags (chflags)
+ */
+
+/* Set file flags */
+int nix_platform_win32_chflags(const char *path, unsigned long flags);
+
+/* Set file flags by fd */
+int nix_platform_win32_fchflags(int fd, unsigned long flags);
+
+/* Set file flags without following symlinks */
+int nix_platform_win32_lchflags(const char *path, unsigned long flags);
+
+/*
+ * lstat and lch* Functions (symlink-aware stat/chmod/chown)
+ */
+
+/* Stat without following symlinks */
+int nix_platform_win32_lstat(const char *path, struct stat *st);
+
+/* Chown without following symlinks */
+int nix_platform_win32_lchown(const char *path, uid_t owner, gid_t group);
+
+/* Chmod without following symlinks */
+int nix_platform_win32_lchmod(const char *path, mode_t mode);
+
+/*
+ * lutime*/futimes Functions (time modification)
+ */
+
+/* utimes without following symlinks */
+int nix_platform_win32_lutimes(const char *path, const struct timeval tv[2]);
+
+/* utimes by file descriptor */
+int nix_platform_win32_futimes(int fd, const struct timeval tv[2]);
+
+/*
+ * fcntl (file descriptor control)
+ */
+
+/* File control operations */
+int nix_platform_win32_fcntl(int fd, int cmd, ...);
+
+/*
+ * *at Functions (directory-relative operations)
+ */
+
+/* Open relative to directory fd */
+int nix_platform_win32_openat(int dirfd, const char *pathname, int flags, ...);
+
+/* Stat relative to directory fd */
+int nix_platform_win32_fstatat(int dirfd, const char *pathname, struct stat *st, int flags);
+
+/* Chown relative to directory fd */
+int nix_platform_win32_fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group, int flags);
+
+/* Chmod relative to directory fd */
+int nix_platform_win32_fchmodat(int dirfd, const char *pathname, mode_t mode, int flags);
+
+/* utimens relative to directory fd */
+int nix_platform_win32_utimensat(int dirfd, const char *pathname,
+								  const struct timespec times[2], int flags);
+
+/* Symlink relative to directory fd */
+int nix_platform_win32_symlinkat(const char *target, int newdirfd, const char *linkpath);
+
+/* Hard link relative to directory fd */
+int nix_platform_win32_linkat(int olddirfd, const char *oldpath,
+							   int newdirfd, const char *newpath, int flags);
+
+/* Readlink relative to directory fd */
+ssize_t nix_platform_win32_readlinkat(int dirfd, const char *pathname, char *buf, size_t bufsiz);
+
+/* Unlink relative to directory fd */
+int nix_platform_win32_unlinkat(int dirfd, const char *pathname, int flags);
+
+/* Mkdir relative to directory fd */
+int nix_platform_win32_mkdirat(int dirfd, const char *pathname, mode_t mode);
+
+/*
  * POSIX Protection Flags (for reference)
  */
 #define NIX_PROT_NONE   0x00
@@ -524,6 +603,57 @@ int nix_platform_win32_setfinderinfo(const char *path, const void *info);
  */
 #ifndef ENOATTR
 #define ENOATTR  93  /* Attribute not found */
+#endif
+
+/*
+ * BSD File Flags
+ */
+#ifndef UF_NODUMP
+#define UF_NODUMP      0x00000001  /* Do not dump file */
+#define UF_IMMUTABLE   0x00000002  /* File may not be changed */
+#define UF_APPEND      0x00000004  /* Writes may only append */
+#define UF_OPAQUE      0x00000008  /* Directory is opaque (union mounts) */
+#define UF_NOUNLINK    0x00000010  /* File may not be removed or renamed */
+#define UF_HIDDEN      0x00008000  /* Windows hidden file */
+
+#define SF_ARCHIVED    0x00010000  /* File is archived */
+#define SF_IMMUTABLE   0x00020000  /* File may not be changed */
+#define SF_APPEND      0x00040000  /* Writes may only append */
+#define SF_NOUNLINK    0x00100000  /* File may not be removed or renamed */
+#endif
+
+/*
+ * fcntl commands
+ */
+#ifndef F_DUPFD
+#define F_DUPFD        0   /* Duplicate file descriptor */
+#define F_GETFD        1   /* Get file descriptor flags */
+#define F_SETFD        2   /* Set file descriptor flags */
+#define F_GETFL        3   /* Get file status flags */
+#define F_SETFL        4   /* Set file status flags */
+#define F_GETOWN       5   /* Get owner */
+#define F_SETOWN       6   /* Set owner */
+#define F_GETLK        7   /* Get lock */
+#define F_SETLK        8   /* Set lock */
+#define F_SETLKW       9   /* Set lock and wait */
+#endif
+
+/*
+ * File descriptor flags (for F_GETFD/F_SETFD)
+ */
+#ifndef FD_CLOEXEC
+#define FD_CLOEXEC     1   /* Close on exec */
+#endif
+
+/*
+ * *at function flags
+ */
+#ifndef AT_FDCWD
+#define AT_FDCWD              -100  /* Use current working directory */
+#define AT_SYMLINK_NOFOLLOW   0x100 /* Do not follow symbolic links */
+#define AT_SYMLINK_FOLLOW     0x400 /* Follow symbolic links */
+#define AT_REMOVEDIR          0x200 /* Remove directory instead of file */
+#define AT_EACCESS            0x200 /* Use effective IDs for access check */
 #endif
 
 #endif /* NIX_HOST_WIN32 */
