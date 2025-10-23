@@ -118,6 +118,8 @@ ADD_LIBRARY(nix
 			nix-s5-shm.c
 			nix-signal.c
 			nix-signal-arch.c
+			nix-platform-win32-signal.c
+			nix-platform-win32-mmap.c
 			nix-socket.c
 			nix-structs.c
 			nix-time.c

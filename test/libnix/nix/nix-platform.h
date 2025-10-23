@@ -951,4 +951,9 @@ int nix_platform_is_case_sensitive_fs(void);
 #define NIX_VERSION_PATCH 0
 #define NIX_VERSION_STRING "2.0.0"
 
+/* Include Windows-specific advanced features */
+#if defined(NIX_HOST_WIN32)
+# include "nix-platform-win32.h"
+#endif
+
 #endif /* __nix_platform_h */
