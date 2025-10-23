@@ -9,6 +9,7 @@
 
 #include "nix-platform.h"
 #include <errno.h>
+#include <stdarg.h>
 
 #if defined(NIX_HOST_WIN32)
 # include <sys/types.h>
@@ -1884,10 +1885,110 @@ nix_host_pid_t
 nix_platform_fork(void)
 {
 #if defined(NIX_HOST_WIN32)
-    /* Windows doesn't have fork(), would need to use CreateProcess */
-    NIX_ERROR("fork() not supported on Win32 - use CreateProcess instead");
-    errno = ENOSYS;
-    return -1;
+    /*
+     * Windows fork() emulation via CreateProcess.
+     *
+     * True fork() is impossible on Windows because:
+     * - No copy-on-write memory mapping for arbitrary memory
+     * - DLLs may not support multiple instances in same address space
+     * - Different process creation model
+     *
+     * This implementation:
+     * 1. Creates a new process running the same executable
+     * 2. Passes special environment variable __NIX_FORK_CHILD__=<parent_pid>
+     * 3. Child process detects this and knows it's a fork child
+     * 4. Caller must check for __NIX_FORK_CHILD__ and handle accordingly
+     *
+     * Limitations:
+     * - Memory is NOT copied (major difference from Unix fork!)
+     * - File descriptors are NOT inherited automatically
+     * - Child starts from main(), not from fork() return point
+     * - This is more like spawn() than fork()
+     *
+     * For true fork-like behavior, consider:
+     * - Using Cygwin (has sophisticated fork emulation)
+     * - Restructuring code to use spawn/exec pattern
+     * - Using shared memory for state transfer
+     */
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char cmdline[4096];
+    char env_buf[8192];
+    char *env_ptr = env_buf;
+    DWORD env_size = sizeof(env_buf);
+    DWORD written = 0;
+
+    /* Get current executable path */
+    char exe_path[MAX_PATH];
+    if (!GetModuleFileNameA(NULL, exe_path, sizeof(exe_path))) {
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    /* Build command line - relaunch same executable */
+    _snprintf(cmdline, sizeof(cmdline), "\"%s\"", exe_path);
+
+    /* Build environment block with __NIX_FORK_CHILD__ marker */
+    _snprintf(env_ptr, env_size - written, "__NIX_FORK_CHILD__=%lu", GetCurrentProcessId());
+    written = (DWORD)strlen(env_ptr) + 1;
+    env_ptr += written;
+
+    /* Copy existing environment variables */
+    char *parent_env = GetEnvironmentStrings();
+    if (parent_env) {
+        char *p = parent_env;
+        while (*p && (written < env_size - 2)) {
+            size_t len = strlen(p);
+            if (strncmp(p, "__NIX_FORK_", 11) != 0) {  /* Skip our markers */
+                if (written + len + 1 < env_size) {
+                    memcpy(env_ptr, p, len + 1);
+                    env_ptr += len + 1;
+                    written += (DWORD)(len + 1);
+                }
+            }
+            p += len + 1;
+        }
+        FreeEnvironmentStrings(parent_env);
+    }
+    *env_ptr = '\0';  /* Double null terminator */
+
+    /* Initialize STARTUPINFO */
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+    /* Create the child process */
+    if (!CreateProcessA(
+            exe_path,               /* Application name */
+            cmdline,                /* Command line */
+            NULL,                   /* Process security attributes */
+            NULL,                   /* Thread security attributes */
+            TRUE,                   /* Inherit handles */
+            0,                      /* Creation flags */
+            env_buf,                /* Environment */
+            NULL,                   /* Current directory */
+            &si,                    /* Startup info */
+            &pi))                   /* Process information */
+    {
+        DWORD error = GetLastError();
+        if (error == ERROR_NOT_ENOUGH_MEMORY || error == ERROR_OUTOFMEMORY) {
+            nix_platform_set_errno(ENOMEM);
+        } else {
+            nix_platform_set_errno(EAGAIN);
+        }
+        return -1;
+    }
+
+    /* Close thread handle (we don't need it) */
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    /* Return child PID to parent */
+    return (nix_host_pid_t)pi.dwProcessId;
 
 #elif defined(NIX_HOST_HAIKU)
     return fork();
@@ -1959,33 +2060,799 @@ nix_platform_waitpid(nix_host_pid_t pid, int *status, int options)
 int
 nix_platform_kill(nix_host_pid_t pid, int sig)
 {
+    /* Use the signal-aware implementation */
+    return nix_platform_kill_signal(pid, sig);
+}
+
+nix_host_pid_t
+nix_platform_getppid(void)
+{
 #if defined(NIX_HOST_WIN32)
-    HANDLE hProcess;
+    /*
+     * Windows doesn't have a direct getppid(), but we can use NtQueryInformationProcess
+     * or traverse the process tree via CreateToolhelp32Snapshot.
+     * For simplicity, return 1 (system process) or implement snapshot approach.
+     */
+    HANDLE hSnapshot;
+    PROCESSENTRY32 pe32;
+    DWORD currentPid = GetCurrentProcessId();
+    DWORD parentPid = 0;
 
-    /* Windows doesn't have signals like Unix */
-    /* We can only terminate the process */
-    hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-    if (hProcess == NULL) {
-        return -1;
+    hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        return 1;  /* Fallback to init-like PID */
     }
 
-    if (!TerminateProcess(hProcess, 1)) {
-        CloseHandle(hProcess);
-        return -1;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+    if (!Process32First(hSnapshot, &pe32)) {
+        CloseHandle(hSnapshot);
+        return 1;
     }
 
-    CloseHandle(hProcess);
-    return 0;
+    do {
+        if (pe32.th32ProcessID == currentPid) {
+            parentPid = pe32.th32ParentProcessID;
+            break;
+        }
+    } while (Process32Next(hSnapshot, &pe32));
+
+    CloseHandle(hSnapshot);
+    return (nix_host_pid_t)parentPid;
+
+#elif defined(NIX_HOST_HAIKU)
+    /* Haiku has getppid for processes */
+    return getppid();
 
 #elif defined(NIX_HOST_OS2)
-    /* OS/2 kill implementation using DosKillProcess */
-    if (DosKillProcess(DKP_PROCESS, pid) != NO_ERROR) {
+    PTIB ptib;
+    PPIB ppib;
+    DosGetInfoBlocks(&ptib, &ppib);
+    return ppib->pib_ulppid;
+
+#else
+    return getppid();
+#endif
+}
+
+nix_host_pid_t
+nix_platform_vfork(void)
+{
+    /*
+     * vfork() is an optimization of fork() that shares memory until exec.
+     * On platforms without vfork, we can just call fork().
+     * Windows doesn't have either, so same as fork().
+     */
+    return nix_platform_fork();
+}
+
+void
+nix_platform_exit(int status)
+{
+#if defined(NIX_HOST_WIN32)
+    ExitProcess((UINT)status);
+
+#elif defined(NIX_HOST_OS2)
+    DosExit(EXIT_PROCESS, status);
+
+#else
+    exit(status);
+#endif
+}
+
+void
+nix_platform__exit(int status)
+{
+#if defined(NIX_HOST_WIN32)
+    /* _exit is immediate, no cleanup */
+    TerminateProcess(GetCurrentProcess(), (UINT)status);
+
+#elif defined(NIX_HOST_OS2)
+    DosExit(EXIT_PROCESS, status);
+
+#else
+    _exit(status);
+#endif
+}
+
+nix_host_pid_t
+nix_platform_wait(int *status)
+{
+    /* wait() is equivalent to waitpid(-1, status, 0) */
+    return nix_platform_waitpid((nix_host_pid_t)-1, status, 0);
+}
+
+nix_host_pid_t
+nix_platform_wait3(int *status, int options, void *rusage)
+{
+    /*
+     * wait3() is like waitpid(-1, ...) but also returns resource usage.
+     * Windows: We'll implement rusage collection if requested.
+     */
+#if defined(NIX_HOST_WIN32)
+    /* For now, ignore rusage and just call waitpid */
+    (void)rusage;  /* TODO: Implement rusage collection */
+    return nix_platform_waitpid((nix_host_pid_t)-1, status, options);
+
+#elif defined(HAVE_WAIT3)
+    return wait3(status, options, (struct rusage *)rusage);
+
+#else
+    /* Fallback to waitpid, ignore rusage */
+    (void)rusage;
+    return waitpid(-1, status, options);
+#endif
+}
+
+nix_host_pid_t
+nix_platform_wait4(nix_host_pid_t pid, int *status, int options, void *rusage)
+{
+    /*
+     * wait4() is like waitpid() but also returns resource usage.
+     */
+#if defined(NIX_HOST_WIN32)
+    /* For now, ignore rusage and just call waitpid */
+    (void)rusage;  /* TODO: Implement rusage collection */
+    return nix_platform_waitpid(pid, status, options);
+
+#elif defined(HAVE_WAIT4)
+    return wait4(pid, status, options, (struct rusage *)rusage);
+
+#else
+    /* Fallback to waitpid, ignore rusage */
+    (void)rusage;
+    return waitpid(pid, status, options);
+#endif
+}
+
+/*
+ * ========================================================================
+ * PROCESS EXECUTION (exec family)
+ * ========================================================================
+ */
+
+int
+nix_platform_execv(const char *path, char *const argv[])
+{
+#if defined(NIX_HOST_WIN32)
+    /* Use _execv from MSVCRT */
+    return _execv(path, argv);
+
+#else
+    return execv(path, argv);
+#endif
+}
+
+int
+nix_platform_execvp(const char *file, char *const argv[])
+{
+#if defined(NIX_HOST_WIN32)
+    /* Use _execvp from MSVCRT - searches PATH */
+    return _execvp(file, argv);
+
+#else
+    return execvp(file, argv);
+#endif
+}
+
+int
+nix_platform_execvpe(const char *file, char *const argv[], char *const envp[])
+{
+#if defined(NIX_HOST_WIN32)
+    /* Use _execvpe from MSVCRT */
+    return _execvpe(file, argv, envp);
+
+#elif defined(HAVE_EXECVPE)
+    return execvpe(file, argv, envp);
+
+#else
+    /* Emulate execvpe using execve and PATH search */
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+#endif
+}
+
+int
+nix_platform_execl(const char *path, const char *arg, ...)
+{
+    /* Build argv array from variadic arguments */
+    va_list ap;
+    int argc = 1;  /* Start with 1 for arg0 */
+    const char *a;
+
+    /* Count arguments */
+    va_start(ap, arg);
+    while ((a = va_arg(ap, const char *)) != NULL) {
+        argc++;
+    }
+    va_end(ap);
+
+    /* Allocate argv array */
+    const char **argv = (const char **)malloc((argc + 1) * sizeof(char *));
+    if (!argv) {
+        nix_platform_set_errno(ENOMEM);
         return -1;
     }
+
+    /* Populate argv */
+    argv[0] = arg;
+    va_start(ap, arg);
+    for (int i = 1; i < argc; i++) {
+        argv[i] = va_arg(ap, const char *);
+    }
+    argv[argc] = NULL;
+    va_end(ap);
+
+    /* Call execv */
+    int result = nix_platform_execv(path, (char *const *)argv);
+    free(argv);
+    return result;
+}
+
+int
+nix_platform_execlp(const char *file, const char *arg, ...)
+{
+    /* Build argv array from variadic arguments */
+    va_list ap;
+    int argc = 1;
+    const char *a;
+
+    va_start(ap, arg);
+    while ((a = va_arg(ap, const char *)) != NULL) {
+        argc++;
+    }
+    va_end(ap);
+
+    const char **argv = (const char **)malloc((argc + 1) * sizeof(char *));
+    if (!argv) {
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    argv[0] = arg;
+    va_start(ap, arg);
+    for (int i = 1; i < argc; i++) {
+        argv[i] = va_arg(ap, const char *);
+    }
+    argv[argc] = NULL;
+    va_end(ap);
+
+    int result = nix_platform_execvp(file, (char *const *)argv);
+    free(argv);
+    return result;
+}
+
+int
+nix_platform_execle(const char *path, const char *arg, ...)
+{
+    /* Build argv array, environment is after NULL terminator */
+    va_list ap;
+    int argc = 1;
+    const char *a;
+
+    va_start(ap, arg);
+    while ((a = va_arg(ap, const char *)) != NULL) {
+        argc++;
+    }
+    char *const *envp = va_arg(ap, char *const *);
+    va_end(ap);
+
+    const char **argv = (const char **)malloc((argc + 1) * sizeof(char *));
+    if (!argv) {
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    argv[0] = arg;
+    va_start(ap, arg);
+    for (int i = 1; i < argc; i++) {
+        argv[i] = va_arg(ap, const char *);
+    }
+    argv[argc] = NULL;
+    va_end(ap);
+
+    int result = nix_platform_execve(path, (char *const *)argv, envp);
+    free(argv);
+    return result;
+}
+
+/*
+ * ========================================================================
+ * PROCESS GROUPS AND SESSIONS
+ * ========================================================================
+ */
+
+nix_host_pid_t
+nix_platform_getpgid(nix_host_pid_t pid)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have process groups in the Unix sense.
+     * We could emulate this, but for now return the PID itself.
+     */
+    (void)pid;
+    return pid ? pid : GetCurrentProcessId();
+
+#elif defined(HAVE_GETPGID)
+    return getpgid(pid);
+
+#else
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+#endif
+}
+
+nix_host_pid_t
+nix_platform_getpgrp(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Return own PID as process group */
+    return GetCurrentProcessId();
+
+#else
+    return getpgrp();
+#endif
+}
+
+int
+nix_platform_setpgid(nix_host_pid_t pid, nix_host_pid_t pgid)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't support setpgid.
+     * We could create process groups via CreateProcess with CREATE_NEW_PROCESS_GROUP,
+     * but that's at creation time only.
+     */
+    (void)pid;
+    (void)pgid;
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#else
+    return setpgid(pid, pgid);
+#endif
+}
+
+int
+nix_platform_setpgrp(void)
+{
+#if defined(NIX_HOST_WIN32)
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#elif defined(HAVE_SETPGRP)
+    return setpgrp();
+
+#else
+    return setpgid(0, 0);
+#endif
+}
+
+nix_host_pid_t
+nix_platform_getsid(nix_host_pid_t pid)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows has sessions but they're different from Unix.
+     * Return process group (which is PID for us).
+     */
+    return nix_platform_getpgid(pid);
+
+#elif defined(HAVE_GETSID)
+    return getsid(pid);
+
+#else
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+#endif
+}
+
+nix_host_pid_t
+nix_platform_setsid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * We could emulate this by creating a new console or detaching,
+     * but for now just return error.
+     */
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#else
+    return setsid();
+#endif
+}
+
+/*
+ * ========================================================================
+ * USER AND GROUP IDS
+ * ========================================================================
+ */
+
+unsigned int
+nix_platform_getuid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have UIDs. We could return a hash of the username
+     * or SID, but for now just return 0 (root equivalent).
+     */
     return 0;
 
 #else
-    return kill(pid, sig);
+    return getuid();
+#endif
+}
+
+unsigned int
+nix_platform_geteuid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    return 0;
+
+#else
+    return geteuid();
+#endif
+}
+
+unsigned int
+nix_platform_getgid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    return 0;
+
+#else
+    return getgid();
+#endif
+}
+
+unsigned int
+nix_platform_getegid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    return 0;
+
+#else
+    return getegid();
+#endif
+}
+
+int
+nix_platform_setuid(unsigned int uid)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't support setuid. To truly change user,
+     * we'd need to use CreateProcessAsUser or ImpersonateLoggedOnUser.
+     */
+    (void)uid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return setuid(uid);
+#endif
+}
+
+int
+nix_platform_seteuid(unsigned int euid)
+{
+#if defined(NIX_HOST_WIN32)
+    (void)euid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return seteuid(euid);
+#endif
+}
+
+int
+nix_platform_setgid(unsigned int gid)
+{
+#if defined(NIX_HOST_WIN32)
+    (void)gid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return setgid(gid);
+#endif
+}
+
+int
+nix_platform_setegid(unsigned int egid)
+{
+#if defined(NIX_HOST_WIN32)
+    (void)egid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return setegid(egid);
+#endif
+}
+
+int
+nix_platform_setreuid(unsigned int ruid, unsigned int euid)
+{
+#if defined(NIX_HOST_WIN32)
+    (void)ruid;
+    (void)euid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return setreuid(ruid, euid);
+#endif
+}
+
+int
+nix_platform_setregid(unsigned int rgid, unsigned int egid)
+{
+#if defined(NIX_HOST_WIN32)
+    (void)rgid;
+    (void)egid;
+    nix_platform_set_errno(EPERM);
+    return -1;
+
+#else
+    return setregid(rgid, egid);
+#endif
+}
+
+/*
+ * ========================================================================
+ * PROCESS PRIORITY
+ * ========================================================================
+ */
+
+int
+nix_platform_nice(int inc)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows uses priority classes, not nice values.
+     * Map nice values to Windows priority classes:
+     * nice < -10  → HIGH_PRIORITY_CLASS
+     * nice < 0    → ABOVE_NORMAL_PRIORITY_CLASS
+     * nice == 0   → NORMAL_PRIORITY_CLASS
+     * nice < 10   → BELOW_NORMAL_PRIORITY_CLASS
+     * nice >= 10  → IDLE_PRIORITY_CLASS
+     */
+    HANDLE hProcess = GetCurrentProcess();
+    DWORD currentPriority = GetPriorityClass(hProcess);
+    DWORD newPriority;
+
+    /* Estimate current nice value from priority class */
+    int currentNice = 0;
+    if (currentPriority == HIGH_PRIORITY_CLASS) {
+        currentNice = -15;
+    } else if (currentPriority == ABOVE_NORMAL_PRIORITY_CLASS) {
+        currentNice = -5;
+    } else if (currentPriority == NORMAL_PRIORITY_CLASS) {
+        currentNice = 0;
+    } else if (currentPriority == BELOW_NORMAL_PRIORITY_CLASS) {
+        currentNice = 5;
+    } else if (currentPriority == IDLE_PRIORITY_CLASS) {
+        currentNice = 19;
+    }
+
+    int newNice = currentNice + inc;
+
+    /* Map to priority class */
+    if (newNice < -10) {
+        newPriority = HIGH_PRIORITY_CLASS;
+    } else if (newNice < 0) {
+        newPriority = ABOVE_NORMAL_PRIORITY_CLASS;
+    } else if (newNice < 10) {
+        newPriority = BELOW_NORMAL_PRIORITY_CLASS;
+    } else {
+        newPriority = IDLE_PRIORITY_CLASS;
+    }
+
+    if (!SetPriorityClass(hProcess, newPriority)) {
+        nix_platform_set_errno(EPERM);
+        return -1;
+    }
+
+    return newNice;
+
+#else
+    return nice(inc);
+#endif
+}
+
+int
+nix_platform_getpriority(int which, int who)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Map Windows priority class to Unix nice value.
+     */
+    HANDLE hProcess;
+    DWORD priority;
+
+    if (which == PRIO_PROCESS) {
+        if (who == 0) {
+            hProcess = GetCurrentProcess();
+        } else {
+            hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, (DWORD)who);
+            if (!hProcess) {
+                nix_platform_set_errno(ESRCH);
+                return -1;
+            }
+        }
+
+        priority = GetPriorityClass(hProcess);
+
+        if (who != 0) {
+            CloseHandle(hProcess);
+        }
+
+        /* Map priority class to nice value */
+        switch (priority) {
+        case HIGH_PRIORITY_CLASS:           return -15;
+        case ABOVE_NORMAL_PRIORITY_CLASS:   return -5;
+        case NORMAL_PRIORITY_CLASS:         return 0;
+        case BELOW_NORMAL_PRIORITY_CLASS:   return 5;
+        case IDLE_PRIORITY_CLASS:           return 19;
+        default:                            return 0;
+        }
+    }
+
+    /* Process groups and users not supported on Windows */
+    nix_platform_set_errno(EINVAL);
+    return -1;
+
+#else
+    return getpriority(which, who);
+#endif
+}
+
+int
+nix_platform_setpriority(int which, int who, int prio)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Map Unix nice value to Windows priority class.
+     */
+    HANDLE hProcess;
+    DWORD priority;
+
+    if (which == PRIO_PROCESS) {
+        /* Map nice value to priority class */
+        if (prio < -10) {
+            priority = HIGH_PRIORITY_CLASS;
+        } else if (prio < 0) {
+            priority = ABOVE_NORMAL_PRIORITY_CLASS;
+        } else if (prio == 0) {
+            priority = NORMAL_PRIORITY_CLASS;
+        } else if (prio < 10) {
+            priority = BELOW_NORMAL_PRIORITY_CLASS;
+        } else {
+            priority = IDLE_PRIORITY_CLASS;
+        }
+
+        if (who == 0) {
+            hProcess = GetCurrentProcess();
+        } else {
+            hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, (DWORD)who);
+            if (!hProcess) {
+                nix_platform_set_errno(ESRCH);
+                return -1;
+            }
+        }
+
+        if (!SetPriorityClass(hProcess, priority)) {
+            if (who != 0) {
+                CloseHandle(hProcess);
+            }
+            nix_platform_set_errno(EPERM);
+            return -1;
+        }
+
+        if (who != 0) {
+            CloseHandle(hProcess);
+        }
+
+        return 0;
+    }
+
+    /* Process groups and users not supported on Windows */
+    nix_platform_set_errno(EINVAL);
+    return -1;
+
+#else
+    return setpriority(which, who, prio);
+#endif
+}
+
+/*
+ * ========================================================================
+ * RESOURCE USAGE
+ * ========================================================================
+ */
+
+int
+nix_platform_getrusage(int who, void *usage)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows has GetProcessTimes and GetProcessMemoryInfo for resource usage.
+     * Map to struct rusage format.
+     */
+    struct rusage {
+        struct timeval ru_utime;  /* user CPU time */
+        struct timeval ru_stime;  /* system CPU time */
+        long ru_maxrss;           /* maximum resident set size */
+        long ru_ixrss;            /* integral shared memory size */
+        long ru_idrss;            /* integral unshared data size */
+        long ru_isrss;            /* integral unshared stack size */
+        long ru_minflt;           /* page reclaims (soft page faults) */
+        long ru_majflt;           /* page faults (hard page faults) */
+        long ru_nswap;            /* swaps */
+        long ru_inblock;          /* block input operations */
+        long ru_oublock;          /* block output operations */
+        long ru_msgsnd;           /* IPC messages sent */
+        long ru_msgrcv;           /* IPC messages received */
+        long ru_nsignals;         /* signals received */
+        long ru_nvcsw;            /* voluntary context switches */
+        long ru_nivcsw;           /* involuntary context switches */
+    };
+    struct rusage *ru = (struct rusage *)usage;
+
+    if (who == RUSAGE_SELF) {
+        HANDLE hProcess = GetCurrentProcess();
+        FILETIME createTime, exitTime, kernelTime, userTime;
+        PROCESS_MEMORY_COUNTERS_EX memInfo;
+
+        /* Get CPU times */
+        if (GetProcessTimes(hProcess, &createTime, &exitTime, &kernelTime, &userTime)) {
+            ULARGE_INTEGER uli;
+
+            /* User time */
+            uli.LowPart = userTime.dwLowDateTime;
+            uli.HighPart = userTime.dwHighDateTime;
+            ru->ru_utime.tv_sec = (long)(uli.QuadPart / 10000000ULL);
+            ru->ru_utime.tv_usec = (long)((uli.QuadPart % 10000000ULL) / 10);
+
+            /* Kernel time */
+            uli.LowPart = kernelTime.dwLowDateTime;
+            uli.HighPart = kernelTime.dwHighDateTime;
+            ru->ru_stime.tv_sec = (long)(uli.QuadPart / 10000000ULL);
+            ru->ru_stime.tv_usec = (long)((uli.QuadPart % 10000000ULL) / 10);
+        }
+
+        /* Get memory usage */
+        memInfo.cb = sizeof(memInfo);
+        if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&memInfo, sizeof(memInfo))) {
+            ru->ru_maxrss = (long)(memInfo.PeakWorkingSetSize / 1024);  /* KB */
+            ru->ru_majflt = (long)memInfo.PageFaultCount;
+        }
+
+        /* Zero out unsupported fields */
+        ru->ru_ixrss = 0;
+        ru->ru_idrss = 0;
+        ru->ru_isrss = 0;
+        ru->ru_minflt = 0;
+        ru->ru_nswap = 0;
+        ru->ru_inblock = 0;
+        ru->ru_oublock = 0;
+        ru->ru_msgsnd = 0;
+        ru->ru_msgrcv = 0;
+        ru->ru_nsignals = 0;
+        ru->ru_nvcsw = 0;
+        ru->ru_nivcsw = 0;
+
+        return 0;
+    }
+
+    /* RUSAGE_CHILDREN not easily supported on Windows */
+    nix_platform_set_errno(EINVAL);
+    return -1;
+
+#else
+    return getrusage(who, (struct rusage *)usage);
 #endif
 }
 

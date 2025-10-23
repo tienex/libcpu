@@ -161,6 +161,8 @@
 # include <io.h>
 # include <process.h>
 # include <direct.h>
+# include <tlhelp32.h>
+# include <psapi.h>
 
 #elif defined(NIX_HOST_HAIKU)
 /* Haiku includes */
@@ -284,6 +286,30 @@ typedef DWORD           nix_host_nlink_t;
 # define NIX_HOST_PATH_MAX      MAX_PATH
 # define NIX_HOST_PATH_SEP      '\\'
 # define NIX_HOST_PATH_SEP_STR  "\\"
+
+/* Wait options */
+# define WNOHANG    1
+# define WUNTRACED  2
+# define WCONTINUED 8
+
+/* Wait status macros */
+# define WIFEXITED(status)    (((status) & 0x7f) == 0)
+# define WEXITSTATUS(status)  (((status) & 0xff00) >> 8)
+# define WIFSIGNALED(status)  (((status) & 0x7f) > 0 && ((status) & 0x7f) < 0x7f)
+# define WTERMSIG(status)     ((status) & 0x7f)
+# define WIFSTOPPED(status)   (((status) & 0xff) == 0x7f)
+# define WSTOPSIG(status)     WEXITSTATUS(status)
+# define WIFCONTINUED(status) ((status) == 0xffff)
+
+/* Priority which values */
+# define PRIO_PROCESS 0
+# define PRIO_PGRP    1
+# define PRIO_USER    2
+
+/* Resource usage who values */
+# define RUSAGE_SELF     0
+# define RUSAGE_CHILDREN (-1)
+# define RUSAGE_THREAD   1
 
 #elif defined(NIX_HOST_HAIKU)
 /* Haiku type mappings */
@@ -447,12 +473,60 @@ int nix_platform_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exc
 int nix_platform_isatty(nix_host_fd_t fd);
 
 /* Platform-specific process operations */
+
+/* Process creation and termination */
 nix_host_pid_t nix_platform_getpid(void);
 nix_host_pid_t nix_platform_getppid(void);
 nix_host_pid_t nix_platform_fork(void);
+nix_host_pid_t nix_platform_vfork(void);
+void nix_platform_exit(int status);
+void nix_platform__exit(int status);
+
+/* Process waiting */
+nix_host_pid_t nix_platform_wait(int *status);
 nix_host_pid_t nix_platform_waitpid(nix_host_pid_t pid, int *status, int options);
-int nix_platform_kill(nix_host_pid_t pid, int sig);
+nix_host_pid_t nix_platform_wait3(int *status, int options, void *rusage);
+nix_host_pid_t nix_platform_wait4(nix_host_pid_t pid, int *status, int options, void *rusage);
+
+/* Process execution */
 int nix_platform_execve(const char *path, char *const argv[], char *const envp[]);
+int nix_platform_execv(const char *path, char *const argv[]);
+int nix_platform_execvp(const char *file, char *const argv[]);
+int nix_platform_execvpe(const char *file, char *const argv[], char *const envp[]);
+int nix_platform_execl(const char *path, const char *arg, ...);
+int nix_platform_execlp(const char *file, const char *arg, ...);
+int nix_platform_execle(const char *path, const char *arg, ...);
+
+/* Process and session groups */
+nix_host_pid_t nix_platform_getpgid(nix_host_pid_t pid);
+nix_host_pid_t nix_platform_getpgrp(void);
+int nix_platform_setpgid(nix_host_pid_t pid, nix_host_pid_t pgid);
+int nix_platform_setpgrp(void);
+nix_host_pid_t nix_platform_getsid(nix_host_pid_t pid);
+nix_host_pid_t nix_platform_setsid(void);
+
+/* User and group IDs */
+unsigned int nix_platform_getuid(void);
+unsigned int nix_platform_geteuid(void);
+unsigned int nix_platform_getgid(void);
+unsigned int nix_platform_getegid(void);
+int nix_platform_setuid(unsigned int uid);
+int nix_platform_seteuid(unsigned int euid);
+int nix_platform_setgid(unsigned int gid);
+int nix_platform_setegid(unsigned int egid);
+int nix_platform_setreuid(unsigned int ruid, unsigned int euid);
+int nix_platform_setregid(unsigned int rgid, unsigned int egid);
+
+/* Process priority */
+int nix_platform_nice(int inc);
+int nix_platform_getpriority(int which, int who);
+int nix_platform_setpriority(int which, int who, int prio);
+
+/* Resource usage */
+int nix_platform_getrusage(int who, void *usage);
+
+/* Signal sending (moved from below for grouping) */
+int nix_platform_kill(nix_host_pid_t pid, int sig);
 
 /* Platform-specific hostname operations */
 int nix_platform_gethostname(char *name, size_t len);
