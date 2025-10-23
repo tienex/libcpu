@@ -211,12 +211,38 @@ struct timeval {
     long tv_sec;
     long tv_usec;
 };
+struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
+};
+struct utimbuf {
+    time_t actime;
+    time_t modtime;
+};
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
+};
 #elif defined(NIX_HOST_UNIX)
 # include <sys/time.h>
+# include <sys/uio.h>
+# include <utime.h>
 #else
 struct timeval {
     time_t tv_sec;
     long tv_usec;
+};
+struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
+};
+struct utimbuf {
+    time_t actime;
+    time_t modtime;
+};
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
 };
 #endif
 
@@ -339,11 +365,27 @@ int nix_platform_access(const char *path, int mode);
 int nix_platform_unlink(const char *path);
 int nix_platform_rename(const char *oldpath, const char *newpath);
 int nix_platform_fsync(nix_host_fd_t fd);
+int nix_platform_truncate(const char *path, nix_host_off_t length);
+int nix_platform_ftruncate(nix_host_fd_t fd, nix_host_off_t length);
+ssize_t nix_platform_pread(nix_host_fd_t fd, void *buf, size_t count, nix_host_off_t offset);
+ssize_t nix_platform_pwrite(nix_host_fd_t fd, const void *buf, size_t count, nix_host_off_t offset);
+ssize_t nix_platform_readv(nix_host_fd_t fd, const struct iovec *iov, int iovcnt);
+ssize_t nix_platform_writev(nix_host_fd_t fd, const struct iovec *iov, int iovcnt);
+int nix_platform_chmod(const char *path, nix_host_mode_t mode);
+int nix_platform_fchmod(nix_host_fd_t fd, nix_host_mode_t mode);
+int nix_platform_chown(const char *path, nix_host_uid_t owner, nix_host_gid_t group);
+int nix_platform_fchown(nix_host_fd_t fd, nix_host_uid_t owner, nix_host_gid_t group);
+int nix_platform_link(const char *path1, const char *path2);
+int nix_platform_symlink(const char *path1, const char *path2);
+ssize_t nix_platform_readlink(const char *path, char *buf, size_t bufsiz);
+int nix_platform_utime(const char *path, const struct utimbuf *times);
+int nix_platform_sync(void);
 
 /* Platform-specific directory operations */
 int nix_platform_mkdir(const char *path, nix_host_mode_t mode);
 int nix_platform_rmdir(const char *path);
 int nix_platform_chdir(const char *path);
+int nix_platform_fchdir(nix_host_fd_t fd);
 char *nix_platform_getcwd(char *buf, size_t size);
 
 /* Platform-specific stat operations */
@@ -375,14 +417,28 @@ int nix_platform_socket_to_fd(SOCKET sock);  /* Convert SOCKET to fd-like handle
 SOCKET nix_platform_fd_to_socket(int fd);  /* Convert fd-like handle to SOCKET */
 #endif
 
+/* Platform-specific I/O operations */
+int nix_platform_pipe(int pipefd[2]);
+int nix_platform_fcntl(nix_host_fd_t fd, int cmd, long arg);
+int nix_platform_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
+int nix_platform_isatty(nix_host_fd_t fd);
+
 /* Platform-specific process operations */
 nix_host_pid_t nix_platform_getpid(void);
+nix_host_pid_t nix_platform_getppid(void);
 nix_host_pid_t nix_platform_fork(void);
 nix_host_pid_t nix_platform_waitpid(nix_host_pid_t pid, int *status, int options);
 int nix_platform_kill(nix_host_pid_t pid, int sig);
+int nix_platform_execve(const char *path, char *const argv[], char *const envp[]);
+
+/* Platform-specific hostname operations */
+int nix_platform_gethostname(char *name, size_t len);
+int nix_platform_sethostname(const char *name, size_t len);
 
 /* Platform-specific time operations */
 int nix_platform_gettimeofday(struct timeval *tv, void *tz);
+int nix_platform_nanosleep(const struct timespec *req, struct timespec *rem);
+unsigned int nix_platform_sleep(unsigned int seconds);
 
 /* Platform-specific error handling */
 int nix_platform_get_errno(void);

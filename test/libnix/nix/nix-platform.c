@@ -1028,3 +1028,511 @@ nix_platform_is_case_sensitive_fs(void)
     return 1;  /* Case-sensitive */
 #endif
 }
+
+/*
+ * ========================================================================
+ * ADDITIONAL FILE OPERATIONS
+ * ========================================================================
+ */
+
+int
+nix_platform_truncate(const char *path, nix_host_off_t length)
+{
+#if defined(NIX_HOST_WIN32)
+    HANDLE hFile;
+    LARGE_INTEGER li;
+    BOOL result;
+
+    hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+
+    li.QuadPart = length;
+    if (!SetFilePointerEx(hFile, li, NULL, FILE_BEGIN)) {
+        CloseHandle(hFile);
+        return -1;
+    }
+
+    result = SetEndOfFile(hFile);
+    CloseHandle(hFile);
+    return result ? 0 : -1;
+
+#else
+    return truncate(path, length);
+#endif
+}
+
+int
+nix_platform_ftruncate(nix_host_fd_t fd, nix_host_off_t length)
+{
+#if defined(NIX_HOST_WIN32)
+    LARGE_INTEGER li;
+
+    li.QuadPart = length;
+    if (!SetFilePointerEx(fd, li, NULL, FILE_BEGIN)) {
+        return -1;
+    }
+
+    return SetEndOfFile(fd) ? 0 : -1;
+
+#elif defined(NIX_HOST_OS2)
+    return (DosSetFileSize(fd, (ULONG)length) == NO_ERROR) ? 0 : -1;
+
+#else
+    return ftruncate(fd, length);
+#endif
+}
+
+ssize_t
+nix_platform_pread(nix_host_fd_t fd, void *buf, size_t count, nix_host_off_t offset)
+{
+#if defined(NIX_HOST_WIN32)
+    OVERLAPPED ov = {0};
+    DWORD bytesRead;
+
+    ov.Offset = (DWORD)(offset & 0xFFFFFFFF);
+    ov.OffsetHigh = (DWORD)(offset >> 32);
+
+    if (!ReadFile(fd, buf, (DWORD)count, &bytesRead, &ov)) {
+        return -1;
+    }
+
+    return (ssize_t)bytesRead;
+
+#else
+    return pread(fd, buf, count, offset);
+#endif
+}
+
+ssize_t
+nix_platform_pwrite(nix_host_fd_t fd, const void *buf, size_t count, nix_host_off_t offset)
+{
+#if defined(NIX_HOST_WIN32)
+    OVERLAPPED ov = {0};
+    DWORD bytesWritten;
+
+    ov.Offset = (DWORD)(offset & 0xFFFFFFFF);
+    ov.OffsetHigh = (DWORD)(offset >> 32);
+
+    if (!WriteFile(fd, buf, (DWORD)count, &bytesWritten, &ov)) {
+        return -1;
+    }
+
+    return (ssize_t)bytesWritten;
+
+#else
+    return pwrite(fd, buf, count, offset);
+#endif
+}
+
+ssize_t
+nix_platform_readv(nix_host_fd_t fd, const struct iovec *iov, int iovcnt)
+{
+#if defined(NIX_HOST_WIN32)
+    ssize_t total = 0;
+    int i;
+
+    for (i = 0; i < iovcnt; i++) {
+        ssize_t n = nix_platform_read(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) {
+            return (total > 0) ? total : -1;
+        }
+        total += n;
+        if ((size_t)n < iov[i].iov_len) {
+            break;  /* Short read */
+        }
+    }
+
+    return total;
+
+#else
+    return readv(fd, iov, iovcnt);
+#endif
+}
+
+ssize_t
+nix_platform_writev(nix_host_fd_t fd, const struct iovec *iov, int iovcnt)
+{
+#if defined(NIX_HOST_WIN32)
+    ssize_t total = 0;
+    int i;
+
+    for (i = 0; i < iovcnt; i++) {
+        ssize_t n = nix_platform_write(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) {
+            return (total > 0) ? total : -1;
+        }
+        total += n;
+        if ((size_t)n < iov[i].iov_len) {
+            break;  /* Short write */
+        }
+    }
+
+    return total;
+
+#else
+    return writev(fd, iov, iovcnt);
+#endif
+}
+
+int
+nix_platform_chmod(const char *path, nix_host_mode_t mode)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows has limited chmod support */
+    return _chmod(path, mode);
+
+#else
+    return chmod(path, mode);
+#endif
+}
+
+int
+nix_platform_fchmod(nix_host_fd_t fd, nix_host_mode_t mode)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't support fchmod */
+    (void)fd;
+    (void)mode;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return fchmod(fd, mode);
+#endif
+}
+
+int
+nix_platform_chown(const char *path, nix_host_uid_t owner, nix_host_gid_t group)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't use UID/GID */
+    (void)path;
+    (void)owner;
+    (void)group;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return chown(path, owner, group);
+#endif
+}
+
+int
+nix_platform_fchown(nix_host_fd_t fd, nix_host_uid_t owner, nix_host_gid_t group)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't use UID/GID */
+    (void)fd;
+    (void)owner;
+    (void)group;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return fchown(fd, owner, group);
+#endif
+}
+
+int
+nix_platform_link(const char *path1, const char *path2)
+{
+#if defined(NIX_HOST_WIN32)
+    /* CreateHardLink requires Windows 2000+ */
+    if (CreateHardLinkA(path2, path1, NULL)) {
+        return 0;
+    }
+    return -1;
+
+#else
+    return link(path1, path2);
+#endif
+}
+
+int
+nix_platform_symlink(const char *path1, const char *path2)
+{
+#if defined(NIX_HOST_WIN32)
+    /* CreateSymbolicLink requires Windows Vista+ and admin privileges */
+    /* For compatibility, return ENOSYS */
+    (void)path1;
+    (void)path2;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return symlink(path1, path2);
+#endif
+}
+
+ssize_t
+nix_platform_readlink(const char *path, char *buf, size_t bufsiz)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't have symlinks (pre-Vista) */
+    (void)path;
+    (void)buf;
+    (void)bufsiz;
+    errno = EINVAL;
+    return -1;
+
+#else
+    return readlink(path, buf, bufsiz);
+#endif
+}
+
+int
+nix_platform_utime(const char *path, const struct utimbuf *times)
+{
+#if defined(NIX_HOST_WIN32)
+    HANDLE hFile;
+    FILETIME ftAccess, ftModify;
+    ULARGE_INTEGER ull;
+
+    hFile = CreateFileA(path, FILE_WRITE_ATTRIBUTES, 0, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+
+    if (times != NULL) {
+        /* Convert Unix time_t to Windows FILETIME */
+        ull.QuadPart = (times->actime + 11644473600ULL) * 10000000ULL;
+        ftAccess.dwLowDateTime = ull.LowPart;
+        ftAccess.dwHighDateTime = ull.HighPart;
+
+        ull.QuadPart = (times->modtime + 11644473600ULL) * 10000000ULL;
+        ftModify.dwLowDateTime = ull.LowPart;
+        ftModify.dwHighDateTime = ull.HighPart;
+
+        if (!SetFileTime(hFile, NULL, &ftAccess, &ftModify)) {
+            CloseHandle(hFile);
+            return -1;
+        }
+    }
+
+    CloseHandle(hFile);
+    return 0;
+
+#else
+    return utime(path, times);
+#endif
+}
+
+int
+nix_platform_sync(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't have a direct sync equivalent */
+    /* FlushFileBuffers works on individual files */
+    return 0;
+
+#else
+    sync();
+    return 0;
+#endif
+}
+
+int
+nix_platform_fchdir(nix_host_fd_t fd)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows doesn't support fchdir */
+    (void)fd;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return fchdir(fd);
+#endif
+}
+
+/*
+ * ========================================================================
+ * I/O OPERATIONS
+ * ========================================================================
+ */
+
+int
+nix_platform_pipe(int pipefd[2])
+{
+#if defined(NIX_HOST_WIN32)
+    HANDLE hRead, hWrite;
+    SECURITY_ATTRIBUTES sa;
+
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
+
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+        return -1;
+    }
+
+    pipefd[0] = (int)(intptr_t)hRead;
+    pipefd[1] = (int)(intptr_t)hWrite;
+    return 0;
+
+#else
+    return pipe(pipefd);
+#endif
+}
+
+int
+nix_platform_fcntl(nix_host_fd_t fd, int cmd, long arg)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows has very limited fcntl support */
+    /* F_GETFL = 3, F_SETFL = 4, O_NONBLOCK = 0x4000 */
+
+    switch (cmd) {
+    case 3:  /* F_GETFL */
+        /* Can't query flags on Windows, return 0 */
+        return 0;
+
+    case 4:  /* F_SETFL */
+        /* Limited support - ignore most flags */
+        return 0;
+
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+
+#else
+    return fcntl(fd, cmd, arg);
+#endif
+}
+
+int
+nix_platform_select(int nfds, fd_set *readfds, fd_set *writefds,
+                    fd_set *exceptfds, struct timeval *timeout)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows select() works only for sockets */
+    /* For files/pipes, this is limited */
+    return select(nfds, readfds, writefds, exceptfds, timeout);
+
+#else
+    return select(nfds, readfds, writefds, exceptfds, timeout);
+#endif
+}
+
+int
+nix_platform_isatty(nix_host_fd_t fd)
+{
+#if defined(NIX_HOST_WIN32)
+    DWORD mode;
+    return GetConsoleMode(fd, &mode) ? 1 : 0;
+
+#else
+    return isatty(fd);
+#endif
+}
+
+/*
+ * ========================================================================
+ * ADDITIONAL PROCESS OPERATIONS
+ * ========================================================================
+ */
+
+nix_host_pid_t
+nix_platform_getppid(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Get parent process ID - requires PSAPI */
+    /* For simplicity, return 0 (no parent) */
+    return 0;
+
+#else
+    return getppid();
+#endif
+}
+
+int
+nix_platform_execve(const char *path, char *const argv[], char *const envp[])
+{
+#if defined(NIX_HOST_WIN32)
+    /* Windows uses CreateProcess instead of exec */
+    /* This is a simplified implementation */
+    (void)path;
+    (void)argv;
+    (void)envp;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return execve(path, argv, envp);
+#endif
+}
+
+/*
+ * ========================================================================
+ * HOSTNAME OPERATIONS
+ * ========================================================================
+ */
+
+int
+nix_platform_gethostname(char *name, size_t len)
+{
+#if defined(NIX_HOST_WIN32)
+    DWORD size = (DWORD)len;
+    return GetComputerNameA(name, &size) ? 0 : -1;
+
+#else
+    return gethostname(name, len);
+#endif
+}
+
+int
+nix_platform_sethostname(const char *name, size_t len)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Setting hostname requires admin privileges on Windows */
+    (void)name;
+    (void)len;
+    errno = ENOSYS;
+    return -1;
+
+#else
+    return sethostname(name, len);
+#endif
+}
+
+/*
+ * ========================================================================
+ * ADDITIONAL TIME OPERATIONS
+ * ========================================================================
+ */
+
+int
+nix_platform_nanosleep(const struct timespec *req, struct timespec *rem)
+{
+#if defined(NIX_HOST_WIN32)
+    DWORD milliseconds;
+
+    (void)rem;  /* Windows Sleep doesn't support remaining time */
+
+    /* Convert nanoseconds to milliseconds */
+    milliseconds = (DWORD)(req->tv_sec * 1000 + req->tv_nsec / 1000000);
+
+    Sleep(milliseconds);
+    return 0;
+
+#else
+    return nanosleep(req, rem);
+#endif
+}
+
+unsigned int
+nix_platform_sleep(unsigned int seconds)
+{
+#if defined(NIX_HOST_WIN32)
+    Sleep(seconds * 1000);
+    return 0;
+
+#else
+    return sleep(seconds);
+#endif
+}
