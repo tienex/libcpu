@@ -30,6 +30,8 @@ ADD_LIBRARY(cpu SHARED
 			backend_nanojit.cpp
 			backend_mir.cpp
 			backend_cranelift.cpp
+			backend_libjit.cpp
+			backend_nj.cpp
 			tiered_compilation.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
