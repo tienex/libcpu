@@ -27,6 +27,7 @@ class Value;
 using namespace llvm;
 
 struct cpu;
+struct tier_manager;
 
 typedef void        (*fp_init)(struct cpu *cpu, struct cpu_archinfo *info, struct cpu_archrf *rf);
 typedef void        (*fp_done)(struct cpu *cpu);
@@ -265,6 +266,9 @@ typedef struct cpu {
 	IBackend *backend;
 	IModule *backend_module;
 	backend_type_t backend_type;
+
+	/* Tiered compilation */
+	struct tier_manager *tier_mgr;
 } cpu_t;
 
 enum {

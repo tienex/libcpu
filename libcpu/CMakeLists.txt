@@ -21,7 +21,10 @@ ADD_LIBRARY(cpu SHARED
 			backend_llvm.cpp
 			backend_qbe.cpp
 			backend_gccjit.cpp
-			backend_tcg.cpp)
+			backend_tcg.cpp
+			backend_tcg_full.cpp
+			tcg_impl.cpp
+			tiered_compilation.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
 
