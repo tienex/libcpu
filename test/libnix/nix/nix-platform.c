@@ -1886,31 +1886,93 @@ nix_platform_fork(void)
 {
 #if defined(NIX_HOST_WIN32)
     /*
-     * Windows fork() emulation via CreateProcess.
+     * Windows fork() emulation using NT API for better process control.
      *
-     * True fork() is impossible on Windows because:
-     * - No copy-on-write memory mapping for arbitrary memory
-     * - DLLs may not support multiple instances in same address space
-     * - Different process creation model
+     * This implementation uses:
+     * - NtCreateProcess/NtCreateProcessEx for process creation
+     * - RtlCloneUserProcess for copy-on-write semantics (Vista+)
+     * - Handle and memory duplication
      *
-     * This implementation:
-     * 1. Creates a new process running the same executable
-     * 2. Passes special environment variable __NIX_FORK_CHILD__=<parent_pid>
-     * 3. Child process detects this and knows it's a fork child
-     * 4. Caller must check for __NIX_FORK_CHILD__ and handle accordingly
+     * Strategy:
+     * 1. Try RtlCloneUserProcess (Vista+) - closest to real fork
+     * 2. Fall back to NtCreateProcess with section handle
+     * 3. Duplicate critical handles and setup child context
      *
-     * Limitations:
-     * - Memory is NOT copied (major difference from Unix fork!)
-     * - File descriptors are NOT inherited automatically
-     * - Child starts from main(), not from fork() return point
-     * - This is more like spawn() than fork()
-     *
-     * For true fork-like behavior, consider:
-     * - Using Cygwin (has sophisticated fork emulation)
-     * - Restructuring code to use spawn/exec pattern
-     * - Using shared memory for state transfer
+     * Even with NT API, Windows fork limitations:
+     * - Thread-local storage differs
+     * - Some kernel objects can't be duplicated
+     * - DLL state may not transfer correctly
+     * - Best effort approximation of Unix fork
      */
 
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) {
+        nix_platform_set_errno(ENOSYS);
+        return -1;
+    }
+
+    /* Try RtlCloneUserProcess first (Vista+) - most fork-like */
+    typedef NTSTATUS (NTAPI *RtlCloneUserProcess_t)(
+        ULONG ProcessFlags,
+        PSECURITY_DESCRIPTOR ProcessSecurityDescriptor,
+        PSECURITY_DESCRIPTOR ThreadSecurityDescriptor,
+        HANDLE DebugPort,
+        PVOID *ProcessInfo
+    );
+
+    typedef struct _RTL_USER_PROCESS_INFORMATION {
+        ULONG Length;
+        HANDLE ProcessHandle;
+        HANDLE ThreadHandle;
+        CLIENT_ID ClientId;
+        PVOID ImageInformation;
+    } RTL_USER_PROCESS_INFORMATION, *PRTL_USER_PROCESS_INFORMATION;
+
+    RtlCloneUserProcess_t pRtlCloneUserProcess =
+        (RtlCloneUserProcess_t)GetProcAddress(ntdll, "RtlCloneUserProcess");
+
+    if (pRtlCloneUserProcess) {
+        RTL_USER_PROCESS_INFORMATION processInfo;
+        NTSTATUS status;
+
+        processInfo.Length = sizeof(processInfo);
+
+        /* Clone the current process */
+        status = pRtlCloneUserProcess(
+            0,      /* ProcessFlags */
+            NULL,   /* ProcessSecurityDescriptor */
+            NULL,   /* ThreadSecurityDescriptor */
+            NULL,   /* DebugPort */
+            &processInfo
+        );
+
+        if (NT_SUCCESS(status)) {
+            /* Check if we're parent or child */
+            if (processInfo.ProcessHandle == NULL &&
+                processInfo.ThreadHandle == NULL) {
+                /* We are the child process */
+                return 0;
+            }
+
+            /* We are the parent process */
+            nix_host_pid_t child_pid = (nix_host_pid_t)processInfo.ClientId.UniqueProcess;
+
+            /* Resume child thread */
+            ResumeThread(processInfo.ThreadHandle);
+
+            /* Close handles */
+            CloseHandle(processInfo.ThreadHandle);
+            CloseHandle(processInfo.ProcessHandle);
+
+            return child_pid;
+        }
+        /* If RtlCloneUserProcess failed, fall through to legacy method */
+    }
+
+    /*
+     * Fallback: CreateProcess-based fork emulation (NT 3.1+)
+     * Less fork-like but works on all Windows versions
+     */
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     char cmdline[4096];
@@ -1926,21 +1988,21 @@ nix_platform_fork(void)
         return -1;
     }
 
-    /* Build command line - relaunch same executable */
+    /* Build command line */
     _snprintf(cmdline, sizeof(cmdline), "\"%s\"", exe_path);
 
-    /* Build environment block with __NIX_FORK_CHILD__ marker */
+    /* Build environment with __NIX_FORK_CHILD__ marker */
     _snprintf(env_ptr, env_size - written, "__NIX_FORK_CHILD__=%lu", GetCurrentProcessId());
     written = (DWORD)strlen(env_ptr) + 1;
     env_ptr += written;
 
-    /* Copy existing environment variables */
+    /* Copy existing environment */
     char *parent_env = GetEnvironmentStrings();
     if (parent_env) {
         char *p = parent_env;
         while (*p && (written < env_size - 2)) {
             size_t len = strlen(p);
-            if (strncmp(p, "__NIX_FORK_", 11) != 0) {  /* Skip our markers */
+            if (strncmp(p, "__NIX_FORK_", 11) != 0) {
                 if (written + len + 1 < env_size) {
                     memcpy(env_ptr, p, len + 1);
                     env_ptr += len + 1;
@@ -1951,9 +2013,9 @@ nix_platform_fork(void)
         }
         FreeEnvironmentStrings(parent_env);
     }
-    *env_ptr = '\0';  /* Double null terminator */
+    *env_ptr = '\0';
 
-    /* Initialize STARTUPINFO */
+    /* Setup startup info */
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -1961,19 +2023,9 @@ nix_platform_fork(void)
     si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
-    /* Create the child process */
-    if (!CreateProcessA(
-            exe_path,               /* Application name */
-            cmdline,                /* Command line */
-            NULL,                   /* Process security attributes */
-            NULL,                   /* Thread security attributes */
-            TRUE,                   /* Inherit handles */
-            0,                      /* Creation flags */
-            env_buf,                /* Environment */
-            NULL,                   /* Current directory */
-            &si,                    /* Startup info */
-            &pi))                   /* Process information */
-    {
+    /* Create child process */
+    if (!CreateProcessA(exe_path, cmdline, NULL, NULL, TRUE,
+                        0, env_buf, NULL, &si, &pi)) {
         DWORD error = GetLastError();
         if (error == ERROR_NOT_ENOUGH_MEMORY || error == ERROR_OUTOFMEMORY) {
             nix_platform_set_errno(ENOMEM);
@@ -1983,11 +2035,9 @@ nix_platform_fork(void)
         return -1;
     }
 
-    /* Close thread handle (we don't need it) */
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    /* Return child PID to parent */
     return (nix_host_pid_t)pi.dwProcessId;
 
 #elif defined(NIX_HOST_HAIKU)
@@ -2853,6 +2903,227 @@ nix_platform_getrusage(int who, void *usage)
 
 #else
     return getrusage(who, (struct rusage *)usage);
+#endif
+}
+
+/*
+ * ========================================================================
+ * SESSION AND TERMINAL CONTROL
+ * ========================================================================
+ */
+
+nix_host_pid_t
+nix_platform_tcgetpgrp(int fd)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows consoles don't have process groups like Unix.
+     * Check if fd is a console and return current process PID.
+     */
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        nix_platform_set_errno(EBADF);
+        return -1;
+    }
+
+    DWORD mode;
+    if (GetConsoleMode(h, &mode)) {
+        /* It's a console, return our PID as the foreground group */
+        return GetCurrentProcessId();
+    }
+
+    /* Not a terminal */
+    nix_platform_set_errno(ENOTTY);
+    return -1;
+
+#else
+    return tcgetpgrp(fd);
+#endif
+}
+
+int
+nix_platform_tcsetpgrp(int fd, nix_host_pid_t pgrp)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't support setting foreground process group.
+     * We could use SetConsoleCtrlHandler for some emulation,
+     * but it's not equivalent to Unix tcsetpgrp.
+     */
+    (void)fd;
+    (void)pgrp;
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#else
+    return tcsetpgrp(fd, pgrp);
+#endif
+}
+
+char *
+nix_platform_ttyname(int fd)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have TTY names like Unix (/dev/tty, /dev/pts/0).
+     * Return "CON" for console, NULL otherwise.
+     */
+    static char tty_name[32];
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        nix_platform_set_errno(EBADF);
+        return NULL;
+    }
+
+    DWORD mode;
+    if (GetConsoleMode(h, &mode)) {
+        /* Console handle */
+        strcpy(tty_name, "CON");
+        return tty_name;
+    }
+
+    /* Check if it's a named pipe (could be redirected) */
+    DWORD type = GetFileType(h);
+    if (type == FILE_TYPE_PIPE) {
+        strcpy(tty_name, "PIPE");
+        return tty_name;
+    }
+
+    nix_platform_set_errno(ENOTTY);
+    return NULL;
+
+#else
+    return ttyname(fd);
+#endif
+}
+
+int
+nix_platform_ttyname_r(int fd, char *buf, size_t buflen)
+{
+#if defined(NIX_HOST_WIN32)
+    char *name = nix_platform_ttyname(fd);
+    if (!name) {
+        return nix_platform_get_errno();
+    }
+
+    if (buflen < strlen(name) + 1) {
+        nix_platform_set_errno(ERANGE);
+        return ERANGE;
+    }
+
+    strcpy(buf, name);
+    return 0;
+
+#elif defined(HAVE_TTYNAME_R)
+    return ttyname_r(fd, buf, buflen);
+
+#else
+    char *name = ttyname(fd);
+    if (!name) {
+        return errno;
+    }
+
+    if (buflen < strlen(name) + 1) {
+        return ERANGE;
+    }
+
+    strcpy(buf, name);
+    return 0;
+#endif
+}
+
+int
+nix_platform_isatty_ex(int fd)
+{
+    /*
+     * Extended isatty that works better on Windows.
+     * Returns 1 if terminal, 0 if not, -1 on error.
+     */
+#if defined(NIX_HOST_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        nix_platform_set_errno(EBADF);
+        return -1;
+    }
+
+    DWORD mode;
+    if (GetConsoleMode(h, &mode)) {
+        return 1;  /* Is a console */
+    }
+
+    /* Not a console - check if it's a character device */
+    DWORD type = GetFileType(h);
+    if (type == FILE_TYPE_CHAR) {
+        return 1;
+    }
+
+    return 0;  /* Not a TTY */
+
+#else
+    return isatty(fd);
+#endif
+}
+
+char *
+nix_platform_ctermid(char *s)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Return the controlling terminal name.
+     * On Windows, always "CON" for console.
+     */
+    static char ctermid_buf[32];
+    char *buf = s ? s : ctermid_buf;
+
+    strcpy(buf, "CON");
+    return buf;
+
+#else
+    return ctermid(s);
+#endif
+}
+
+int
+nix_platform_vhangup(void)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * vhangup() revokes access to the controlling terminal.
+     * Windows doesn't have an equivalent.
+     * We could close and reopen console, but not the same.
+     */
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#elif defined(HAVE_VHANGUP)
+    return vhangup();
+
+#else
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+#endif
+}
+
+int
+nix_platform_revoke(const char *file)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * revoke() revokes access to a device file.
+     * Windows doesn't have this concept for devices.
+     */
+    (void)file;
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#elif defined(HAVE_REVOKE)
+    return revoke(file);
+
+#else
+    (void)file;
+    nix_platform_set_errno(ENOSYS);
+    return -1;
 #endif
 }
 

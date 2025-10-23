@@ -164,6 +164,102 @@
 # include <tlhelp32.h>
 # include <psapi.h>
 
+/* NT API declarations for advanced process/memory operations */
+typedef LONG NTSTATUS;
+typedef struct _OBJECT_ATTRIBUTES OBJECT_ATTRIBUTES;
+typedef OBJECT_ATTRIBUTES *POBJECT_ATTRIBUTES;
+
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
+
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+
+typedef struct _OBJECT_ATTRIBUTES {
+    ULONG Length;
+    HANDLE RootDirectory;
+    PUNICODE_STRING ObjectName;
+    ULONG Attributes;
+    PVOID SecurityDescriptor;
+    PVOID SecurityQualityOfService;
+} OBJECT_ATTRIBUTES;
+
+#define InitializeObjectAttributes(p, n, a, r, s) { \
+    (p)->Length = sizeof(OBJECT_ATTRIBUTES); \
+    (p)->RootDirectory = r; \
+    (p)->Attributes = a; \
+    (p)->ObjectName = n; \
+    (p)->SecurityDescriptor = s; \
+    (p)->SecurityQualityOfService = NULL; \
+}
+
+typedef struct _CLIENT_ID {
+    HANDLE UniqueProcess;
+    HANDLE UniqueThread;
+} CLIENT_ID, *PCLIENT_ID;
+
+typedef struct _PROCESS_BASIC_INFORMATION {
+    PVOID Reserved1;
+    PVOID PebBaseAddress;
+    PVOID Reserved2[2];
+    ULONG_PTR UniqueProcessId;
+    PVOID Reserved3;
+} PROCESS_BASIC_INFORMATION;
+
+typedef enum _PROCESSINFOCLASS {
+    ProcessBasicInformation = 0,
+    ProcessDebugPort = 7,
+    ProcessWow64Information = 26,
+    ProcessImageFileName = 27,
+    ProcessBreakOnTermination = 29
+} PROCESSINFOCLASS;
+
+typedef NTSTATUS (NTAPI *NtQueryInformationProcess_t)(
+    HANDLE ProcessHandle,
+    PROCESSINFOCLASS ProcessInformationClass,
+    PVOID ProcessInformation,
+    ULONG ProcessInformationLength,
+    PULONG ReturnLength
+);
+
+typedef NTSTATUS (NTAPI *NtCreateProcess_t)(
+    PHANDLE ProcessHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    HANDLE ParentProcess,
+    BOOLEAN InheritObjectTable,
+    HANDLE SectionHandle,
+    HANDLE DebugPort,
+    HANDLE ExceptionPort
+);
+
+typedef NTSTATUS (NTAPI *NtCreateThread_t)(
+    PHANDLE ThreadHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    HANDLE ProcessHandle,
+    PCLIENT_ID ClientId,
+    PVOID ThreadContext,
+    PVOID InitialTeb,
+    BOOLEAN CreateSuspended
+);
+
+typedef NTSTATUS (NTAPI *RtlCreateUserThread_t)(
+    HANDLE ProcessHandle,
+    PSECURITY_DESCRIPTOR SecurityDescriptor,
+    BOOLEAN CreateSuspended,
+    ULONG StackZeroBits,
+    SIZE_T StackReserve,
+    SIZE_T StackCommit,
+    PVOID StartAddress,
+    PVOID Parameter,
+    PHANDLE ThreadHandle,
+    PCLIENT_ID ClientId
+);
+
 #elif defined(NIX_HOST_HAIKU)
 /* Haiku includes */
 # include <OS.h>
@@ -527,6 +623,16 @@ int nix_platform_getrusage(int who, void *usage);
 
 /* Signal sending (moved from below for grouping) */
 int nix_platform_kill(nix_host_pid_t pid, int sig);
+
+/* Session and terminal control */
+nix_host_pid_t nix_platform_tcgetpgrp(int fd);
+int nix_platform_tcsetpgrp(int fd, nix_host_pid_t pgrp);
+char *nix_platform_ttyname(int fd);
+int nix_platform_ttyname_r(int fd, char *buf, size_t buflen);
+int nix_platform_isatty_ex(int fd);  /* Extended isatty */
+char *nix_platform_ctermid(char *s);
+int nix_platform_vhangup(void);
+int nix_platform_revoke(const char *file);
 
 /* Platform-specific hostname operations */
 int nix_platform_gethostname(char *name, size_t len);
