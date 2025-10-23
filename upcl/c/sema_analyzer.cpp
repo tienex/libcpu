@@ -6,6 +6,7 @@
 #include "ast/dumper.h"
 
 #include <cstddef>
+#include <cinttypes>
 #include <cassert>
 #include <sstream>
 #include <iostream>
@@ -92,7 +93,7 @@ sema_analyzer::parse(ast::token_list const *root)
 		fprintf(stderr,
 				"warning: this architecture does not define any register "
 				"bound to the %%PSR pseudo register, but specifies a psr_size "
-				"of %llu bits, ignoring.\n",
+				"of %" PRIu64 " bits, ignoring.\n",
 				m_arch_tags[ast::architecture::PSR_SIZE]);
 		m_arch_tags[ast::architecture::PSR_SIZE] = 0;
 	}
@@ -110,7 +111,7 @@ sema_analyzer::parse(ast::token_list const *root)
 		} else {
 			fprintf(stderr,
 					"error: register '%s', bound to pseudo register %%PSR, "
-					"is %zu bits long while psr_size specifies %llu bits.\n",
+					"is %zu bits long while psr_size specifies %" PRIu64 " bits.\n",
 					psr->get_name().c_str(),
 					psr->get_type()->get_bits(),
 					m_arch_tags[ast::architecture::PSR_SIZE]);
@@ -926,7 +927,7 @@ sema_analyzer::process_bound_value_dep(register_info *bri, size_t &offset,
 				// No index expression, use referenced register.
 				//
 				if (index_expr == 0) {
-					snprintf(buf, sizeof(buf), "%llu", bri->repeat_index);
+					snprintf(buf, sizeof(buf), "%" PRIu64, bri->repeat_index);
 					rname.replace(rname.find('?'), 1, buf);
 				} else {
 					uint64_t index;
@@ -954,7 +955,7 @@ sema_analyzer::process_bound_value_dep(register_info *bri, size_t &offset,
 						if (!e.is_used("_"))
 							index += bri->repeat_index;
 
-						snprintf(buf, sizeof(buf), "%llu", index);
+						snprintf(buf, sizeof(buf), "%" PRIu64, index);
 						rname.replace(rname.find('?'), 1, buf);
 					}
 				}
