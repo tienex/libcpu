@@ -99,6 +99,48 @@ int nix_platform_win32_mincore(void *addr, size_t length, unsigned char *vec);
 size_t nix_platform_win32_getpagesize(void);
 
 /*
+ * Memory Protection Tracking (for mismatched guest/host page sizes)
+ */
+
+/* Set guest page size (must be called before mmap operations) */
+void nix_platform_win32_mmap_set_guest_pagesize(size_t pagesize);
+
+/* Get guest page size */
+size_t nix_platform_win32_mmap_get_guest_pagesize(void);
+
+/* Get host page size */
+size_t nix_platform_win32_mmap_get_host_pagesize(void);
+
+/* Get allocation granularity */
+size_t nix_platform_win32_mmap_get_alloc_granularity(void);
+
+/* Track mmap region with initial protection */
+int nix_platform_win32_mmap_track_region(void *addr, size_t length, int prot);
+
+/* Untrack mmap region */
+void nix_platform_win32_mmap_untrack_region(void *addr, size_t length);
+
+/* Change protection with guest page granularity */
+int nix_platform_win32_mprotect_subpage(void *addr, size_t length, int prot);
+
+/* Get protection for address (at guest page granularity) */
+int nix_platform_win32_mmap_get_protection(void *addr);
+
+/* Check if address range has uniform protection */
+int nix_platform_win32_mmap_check_uniform_protection(void *addr, size_t length, int *prot_out);
+
+/* Get protection tracking statistics */
+void nix_platform_win32_mmap_get_stats(
+	size_t *total_mappings,
+	size_t *total_protections,
+	size_t *subpage_protections,
+	size_t *host_prot_changes
+);
+
+/* Dump protection map (for debugging) */
+void nix_platform_win32_mmap_dump_protection_map(void);
+
+/*
  * ICMP (Internet Control Message Protocol) Functions
  */
 

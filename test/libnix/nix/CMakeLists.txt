@@ -120,6 +120,7 @@ ADD_LIBRARY(nix
 			nix-signal-arch.c
 			nix-platform-win32-signal.c
 			nix-platform-win32-mmap.c
+			nix-platform-win32-mmap-prot.c
 			nix-platform-win32-icmp.c
 			nix-platform-win32-aflocal.c
 			nix-platform-win32-aflocal-advanced.c
