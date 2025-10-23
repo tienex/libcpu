@@ -205,6 +205,21 @@
 #include <stdio.h>
 #include <time.h>
 
+/* Platform-specific time structures */
+#if defined(NIX_HOST_WIN32)
+struct timeval {
+    long tv_sec;
+    long tv_usec;
+};
+#elif defined(NIX_HOST_UNIX)
+# include <sys/time.h>
+#else
+struct timeval {
+    time_t tv_sec;
+    long tv_usec;
+};
+#endif
+
 /*
  * ========================================================================
  * PLATFORM-SPECIFIC TYPE DEFINITIONS
@@ -317,10 +332,57 @@ nix_host_fd_t nix_platform_open(const char *path, int flags, int mode);
 int nix_platform_close(nix_host_fd_t fd);
 ssize_t nix_platform_read(nix_host_fd_t fd, void *buf, size_t count);
 ssize_t nix_platform_write(nix_host_fd_t fd, const void *buf, size_t count);
+nix_host_off_t nix_platform_lseek(nix_host_fd_t fd, nix_host_off_t offset, int whence);
+int nix_platform_dup(nix_host_fd_t fd);
+int nix_platform_dup2(nix_host_fd_t oldfd, nix_host_fd_t newfd);
+int nix_platform_access(const char *path, int mode);
+int nix_platform_unlink(const char *path);
+int nix_platform_rename(const char *oldpath, const char *newpath);
+int nix_platform_fsync(nix_host_fd_t fd);
+
+/* Platform-specific directory operations */
+int nix_platform_mkdir(const char *path, nix_host_mode_t mode);
+int nix_platform_rmdir(const char *path);
+int nix_platform_chdir(const char *path);
+char *nix_platform_getcwd(char *buf, size_t size);
+
+/* Platform-specific stat operations */
+struct nix_platform_stat {
+    nix_host_dev_t     st_dev;
+    nix_host_ino_t     st_ino;
+    nix_host_mode_t    st_mode;
+    nix_host_nlink_t   st_nlink;
+    nix_host_uid_t     st_uid;
+    nix_host_gid_t     st_gid;
+    nix_host_dev_t     st_rdev;
+    nix_host_off_t     st_size;
+    time_t             st_atime;
+    time_t             st_mtime;
+    time_t             st_ctime;
+    long               st_blksize;
+    long               st_blocks;
+};
+
+int nix_platform_stat(const char *path, struct nix_platform_stat *buf);
+int nix_platform_fstat(nix_host_fd_t fd, struct nix_platform_stat *buf);
+int nix_platform_lstat(const char *path, struct nix_platform_stat *buf);
+
+/* Platform-specific socket operations (for Win32 Winsock abstraction) */
+#if defined(NIX_HOST_WIN32)
+int nix_platform_socket_init(void);  /* Initialize Winsock (called by nix_platform_init) */
+void nix_platform_socket_cleanup(void);  /* Cleanup Winsock */
+int nix_platform_socket_to_fd(SOCKET sock);  /* Convert SOCKET to fd-like handle */
+SOCKET nix_platform_fd_to_socket(int fd);  /* Convert fd-like handle to SOCKET */
+#endif
 
 /* Platform-specific process operations */
 nix_host_pid_t nix_platform_getpid(void);
 nix_host_pid_t nix_platform_fork(void);
+nix_host_pid_t nix_platform_waitpid(nix_host_pid_t pid, int *status, int options);
+int nix_platform_kill(nix_host_pid_t pid, int sig);
+
+/* Platform-specific time operations */
+int nix_platform_gettimeofday(struct timeval *tv, void *tz);
 
 /* Platform-specific error handling */
 int nix_platform_get_errno(void);
