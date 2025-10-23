@@ -407,6 +407,100 @@ typedef DWORD           nix_host_nlink_t;
 # define RUSAGE_CHILDREN (-1)
 # define RUSAGE_THREAD   1
 
+/* System V IPC definitions */
+typedef int key_t;
+
+/* IPC permissions structure */
+struct ipc_perm {
+    key_t key;              /* Key supplied to msgget/semget/shmget */
+    unsigned short uid;     /* Owner's user ID */
+    unsigned short gid;     /* Owner's group ID */
+    unsigned short cuid;    /* Creator's user ID */
+    unsigned short cgid;    /* Creator's group ID */
+    unsigned short mode;    /* Permissions */
+    unsigned short seq;     /* Sequence number */
+};
+
+/* Message queue structures */
+struct msqid_ds {
+    struct ipc_perm msg_perm;   /* Permissions */
+    void *msg_first;            /* First message (internal) */
+    void *msg_last;             /* Last message (internal) */
+    unsigned long msg_cbytes;   /* Current bytes in queue */
+    unsigned long msg_qnum;     /* Current number of messages */
+    unsigned long msg_qbytes;   /* Max bytes in queue */
+    int msg_lspid;              /* PID of last msgsnd */
+    int msg_lrpid;              /* PID of last msgrcv */
+    time_t msg_stime;           /* Time of last msgsnd */
+    time_t msg_rtime;           /* Time of last msgrcv */
+    time_t msg_ctime;           /* Time of last change */
+};
+
+/* Semaphore structures */
+struct semid_ds {
+    struct ipc_perm sem_perm;   /* Permissions */
+    time_t sem_otime;           /* Last semop time */
+    time_t sem_ctime;           /* Last change time */
+    unsigned short sem_nsems;   /* Number of semaphores */
+};
+
+struct sembuf {
+    unsigned short sem_num;     /* Semaphore number */
+    short sem_op;               /* Semaphore operation */
+    short sem_flg;              /* Operation flags */
+};
+
+/* Shared memory structures */
+struct shmid_ds {
+    struct ipc_perm shm_perm;   /* Permissions */
+    size_t shm_segsz;           /* Size of segment */
+    time_t shm_atime;           /* Last attach time */
+    time_t shm_dtime;           /* Last detach time */
+    time_t shm_ctime;           /* Last change time */
+    int shm_cpid;               /* Creator PID */
+    int shm_lpid;               /* Last shmat/shmdt PID */
+    unsigned short shm_nattch;  /* Number of current attaches */
+};
+
+/* IPC control commands */
+# define IPC_CREAT  01000   /* Create if key doesn't exist */
+# define IPC_EXCL   02000   /* Fail if key exists */
+# define IPC_NOWAIT 04000   /* Return error on wait */
+
+# define IPC_RMID   0       /* Remove identifier */
+# define IPC_SET    1       /* Set options */
+# define IPC_STAT   2       /* Get options */
+# define IPC_INFO   3       /* Get info */
+
+/* Special key values */
+# define IPC_PRIVATE ((key_t)0)
+
+/* Message queue limits */
+# define MSGMAX     8192    /* Max message size */
+# define MSGMNB     16384   /* Max bytes in queue */
+# define MSGMNI     128     /* Max number of queues */
+
+/* Semaphore limits */
+# define SEMMNI     128     /* Max number of semaphore sets */
+# define SEMMSL     32      /* Max semaphores per set */
+# define SEMOPM     32      /* Max operations per semop call */
+# define SEMVMX     32767   /* Max semaphore value */
+
+/* Semaphore operation flags */
+# define SEM_UNDO   0x1000  /* Undo on process exit */
+# define GETVAL     12      /* Get semval */
+# define SETVAL     16      /* Set semval */
+# define GETPID     11      /* Get sempid */
+# define GETNCNT    14      /* Get semncnt */
+# define GETZCNT    15      /* Get semzcnt */
+# define GETALL     13      /* Get all semval */
+# define SETALL     17      /* Set all semval */
+
+/* Shared memory flags */
+# define SHM_RDONLY 010000  /* Attach read-only */
+# define SHM_RND    020000  /* Round attach address */
+# define SHM_REMAP  040000  /* Take-over region on attach */
+
 #elif defined(NIX_HOST_HAIKU)
 /* Haiku type mappings */
 typedef int             nix_host_fd_t;
@@ -633,6 +727,26 @@ int nix_platform_isatty_ex(int fd);  /* Extended isatty */
 char *nix_platform_ctermid(char *s);
 int nix_platform_vhangup(void);
 int nix_platform_revoke(const char *file);
+
+/* System V IPC - Key generation */
+key_t nix_platform_ftok(const char *pathname, int proj_id);
+
+/* System V IPC - Message queues */
+int nix_platform_msgget(key_t key, int msgflg);
+int nix_platform_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+ssize_t nix_platform_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);
+int nix_platform_msgctl(int msqid, int cmd, struct msqid_ds *buf);
+
+/* System V IPC - Semaphores */
+int nix_platform_semget(key_t key, int nsems, int semflg);
+int nix_platform_semop(int semid, struct sembuf *sops, size_t nsops);
+int nix_platform_semctl(int semid, int semnum, int cmd, ...);
+
+/* System V IPC - Shared memory */
+int nix_platform_shmget(key_t key, size_t size, int shmflg);
+void *nix_platform_shmat(int shmid, const void *shmaddr, int shmflg);
+int nix_platform_shmdt(const void *shmaddr);
+int nix_platform_shmctl(int shmid, int cmd, struct shmid_ds *buf);
 
 /* Platform-specific hostname operations */
 int nix_platform_gethostname(char *name, size_t len);

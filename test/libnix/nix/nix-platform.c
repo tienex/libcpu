@@ -3129,6 +3129,877 @@ nix_platform_revoke(const char *file)
 
 /*
  * ========================================================================
+ * SYSTEM V IPC EMULATION
+ * ========================================================================
+ */
+
+/*
+ * System V IPC key generation
+ */
+key_t
+nix_platform_ftok(const char *pathname, int proj_id)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Generate a key from pathname and project ID.
+     * Use a hash of the pathname combined with proj_id.
+     */
+    key_t key = (key_t)proj_id;
+    const char *p = pathname;
+
+    while (*p) {
+        key = (key << 5) + key + (unsigned char)*p;
+        p++;
+    }
+
+    return key;
+
+#else
+    return ftok(pathname, proj_id);
+#endif
+}
+
+#if defined(NIX_HOST_WIN32)
+/*
+ * Windows IPC infrastructure using named kernel objects
+ */
+
+/* Message queue implementation using mailslots */
+typedef struct {
+    key_t key;
+    int msgflg;
+    HANDLE hMailslot;
+    char name[256];
+    struct msqid_ds ds;
+} win32_msgq_t;
+
+static win32_msgq_t *msgq_table[MSGMNI] = {NULL};
+static CRITICAL_SECTION msgq_lock;
+static int msgq_initialized = 0;
+
+static void
+win32_msgq_init(void)
+{
+    if (!msgq_initialized) {
+        InitializeCriticalSection(&msgq_lock);
+        msgq_initialized = 1;
+    }
+}
+
+static int
+win32_msgq_alloc(void)
+{
+    for (int i = 0; i < MSGMNI; i++) {
+        if (msgq_table[i] == NULL) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Semaphore implementation using Windows semaphores */
+typedef struct {
+    key_t key;
+    int nsems;
+    int semflg;
+    HANDLE *semaphores;  /* Array of semaphore handles */
+    int *values;         /* Current values */
+    char name[256];
+    struct semid_ds ds;
+} win32_sem_t;
+
+static win32_sem_t *sem_table[SEMMNI] = {NULL};
+static CRITICAL_SECTION sem_lock;
+static int sem_initialized = 0;
+
+static void
+win32_sem_init(void)
+{
+    if (!sem_initialized) {
+        InitializeCriticalSection(&sem_lock);
+        sem_initialized = 1;
+    }
+}
+
+static int
+win32_sem_alloc(void)
+{
+    for (int i = 0; i < SEMMNI; i++) {
+        if (sem_table[i] == NULL) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Shared memory implementation using memory-mapped files */
+typedef struct {
+    key_t key;
+    size_t size;
+    int shmflg;
+    HANDLE hMapping;
+    void *addr;
+    char name[256];
+    struct shmid_ds ds;
+} win32_shm_t;
+
+#define SHMMAX 128
+static win32_shm_t *shm_table[SHMMAX] = {NULL};
+static CRITICAL_SECTION shm_lock;
+static int shm_initialized = 0;
+
+static void
+win32_shm_init(void)
+{
+    if (!shm_initialized) {
+        InitializeCriticalSection(&shm_lock);
+        shm_initialized = 1;
+    }
+}
+
+static int
+win32_shm_alloc(void)
+{
+    for (int i = 0; i < SHMMAX; i++) {
+        if (shm_table[i] == NULL) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+#endif /* NIX_HOST_WIN32 */
+
+/*
+ * Message Queue Operations
+ */
+
+int
+nix_platform_msgget(key_t key, int msgflg)
+{
+#if defined(NIX_HOST_WIN32)
+    win32_msgq_init();
+
+    EnterCriticalSection(&msgq_lock);
+
+    /* Check if queue with this key already exists */
+    if (key != IPC_PRIVATE) {
+        for (int i = 0; i < MSGMNI; i++) {
+            if (msgq_table[i] && msgq_table[i]->key == key) {
+                /* Queue exists */
+                if (msgflg & IPC_CREAT && msgflg & IPC_EXCL) {
+                    LeaveCriticalSection(&msgq_lock);
+                    nix_platform_set_errno(EEXIST);
+                    return -1;
+                }
+                LeaveCriticalSection(&msgq_lock);
+                return i;
+            }
+        }
+    }
+
+    /* Create new queue */
+    if (!(msgflg & IPC_CREAT)) {
+        LeaveCriticalSection(&msgq_lock);
+        nix_platform_set_errno(ENOENT);
+        return -1;
+    }
+
+    int msqid = win32_msgq_alloc();
+    if (msqid < 0) {
+        LeaveCriticalSection(&msgq_lock);
+        nix_platform_set_errno(ENOSPC);
+        return -1;
+    }
+
+    msgq_table[msqid] = (win32_msgq_t *)malloc(sizeof(win32_msgq_t));
+    if (!msgq_table[msqid]) {
+        LeaveCriticalSection(&msgq_lock);
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    msgq_table[msqid]->key = key;
+    msgq_table[msqid]->msgflg = msgflg;
+
+    /* Create mailslot name */
+    _snprintf(msgq_table[msqid]->name, sizeof(msgq_table[msqid]->name),
+              "\\\\.\\mailslot\\nix_msgq_%08x", (unsigned int)key);
+
+    /* Create mailslot */
+    msgq_table[msqid]->hMailslot = CreateMailslotA(
+        msgq_table[msqid]->name,
+        MSGMAX,               /* Max message size */
+        MAILSLOT_WAIT_FOREVER,
+        NULL
+    );
+
+    if (msgq_table[msqid]->hMailslot == INVALID_HANDLE_VALUE) {
+        free(msgq_table[msqid]);
+        msgq_table[msqid] = NULL;
+        LeaveCriticalSection(&msgq_lock);
+        nix_platform_set_errno(EACCES);
+        return -1;
+    }
+
+    /* Initialize msqid_ds */
+    memset(&msgq_table[msqid]->ds, 0, sizeof(struct msqid_ds));
+    msgq_table[msqid]->ds.msg_perm.key = key;
+    msgq_table[msqid]->ds.msg_perm.mode = msgflg & 0777;
+    msgq_table[msqid]->ds.msg_qbytes = MSGMNB;
+    msgq_table[msqid]->ds.msg_ctime = time(NULL);
+
+    LeaveCriticalSection(&msgq_lock);
+    return msqid;
+
+#else
+    return msgget(key, msgflg);
+#endif
+}
+
+int
+nix_platform_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg)
+{
+#if defined(NIX_HOST_WIN32)
+    if (msqid < 0 || msqid >= MSGMNI || !msgq_table[msqid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    if (msgsz > MSGMAX) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    /* Open mailslot for writing */
+    HANDLE hFile = CreateFileA(
+        msgq_table[msqid]->name,
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        nix_platform_set_errno(EACCES);
+        return -1;
+    }
+
+    DWORD written;
+    BOOL result = WriteFile(hFile, msgp, (DWORD)msgsz, &written, NULL);
+    CloseHandle(hFile);
+
+    if (!result) {
+        nix_platform_set_errno(EIO);
+        return -1;
+    }
+
+    /* Update stats */
+    msgq_table[msqid]->ds.msg_qnum++;
+    msgq_table[msqid]->ds.msg_cbytes += msgsz;
+    msgq_table[msqid]->ds.msg_lspid = GetCurrentProcessId();
+    msgq_table[msqid]->ds.msg_stime = time(NULL);
+
+    return 0;
+
+#else
+    return msgsnd(msqid, msgp, msgsz, msgflg);
+#endif
+}
+
+ssize_t
+nix_platform_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg)
+{
+#if defined(NIX_HOST_WIN32)
+    if (msqid < 0 || msqid >= MSGMNI || !msgq_table[msqid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    DWORD bytesRead;
+    DWORD nextSize;
+    DWORD messageCount;
+
+    /* Check if messages available */
+    if (!GetMailslotInfo(msgq_table[msqid]->hMailslot,
+                         NULL, &nextSize, &messageCount, NULL)) {
+        nix_platform_set_errno(EIO);
+        return -1;
+    }
+
+    if (messageCount == 0) {
+        if (msgflg & IPC_NOWAIT) {
+            nix_platform_set_errno(ENOMSG);
+            return -1;
+        }
+        /* Would need to implement blocking wait */
+    }
+
+    /* Read message */
+    if (!ReadFile(msgq_table[msqid]->hMailslot, msgp, (DWORD)msgsz,
+                  &bytesRead, NULL)) {
+        nix_platform_set_errno(EIO);
+        return -1;
+    }
+
+    /* Update stats */
+    if (msgq_table[msqid]->ds.msg_qnum > 0) {
+        msgq_table[msqid]->ds.msg_qnum--;
+    }
+    if (msgq_table[msqid]->ds.msg_cbytes >= bytesRead) {
+        msgq_table[msqid]->ds.msg_cbytes -= bytesRead;
+    }
+    msgq_table[msqid]->ds.msg_lrpid = GetCurrentProcessId();
+    msgq_table[msqid]->ds.msg_rtime = time(NULL);
+
+    return (ssize_t)bytesRead;
+
+#else
+    return msgrcv(msqid, msgp, msgsz, msgtyp, msgflg);
+#endif
+}
+
+int
+nix_platform_msgctl(int msqid, int cmd, struct msqid_ds *buf)
+{
+#if defined(NIX_HOST_WIN32)
+    if (msqid < 0 || msqid >= MSGMNI || !msgq_table[msqid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    switch (cmd) {
+    case IPC_STAT:
+        if (buf) {
+            memcpy(buf, &msgq_table[msqid]->ds, sizeof(struct msqid_ds));
+        }
+        return 0;
+
+    case IPC_SET:
+        if (buf) {
+            msgq_table[msqid]->ds.msg_perm = buf->msg_perm;
+            msgq_table[msqid]->ds.msg_qbytes = buf->msg_qbytes;
+            msgq_table[msqid]->ds.msg_ctime = time(NULL);
+        }
+        return 0;
+
+    case IPC_RMID:
+        CloseHandle(msgq_table[msqid]->hMailslot);
+        free(msgq_table[msqid]);
+        msgq_table[msqid] = NULL;
+        return 0;
+
+    default:
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+#else
+    return msgctl(msqid, cmd, buf);
+#endif
+}
+
+/*
+ * Semaphore Operations
+ */
+
+int
+nix_platform_semget(key_t key, int nsems, int semflg)
+{
+#if defined(NIX_HOST_WIN32)
+    win32_sem_init();
+
+    if (nsems < 0 || nsems > SEMMSL) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    EnterCriticalSection(&sem_lock);
+
+    /* Check if semaphore set exists */
+    if (key != IPC_PRIVATE) {
+        for (int i = 0; i < SEMMNI; i++) {
+            if (sem_table[i] && sem_table[i]->key == key) {
+                if (semflg & IPC_CREAT && semflg & IPC_EXCL) {
+                    LeaveCriticalSection(&sem_lock);
+                    nix_platform_set_errno(EEXIST);
+                    return -1;
+                }
+                LeaveCriticalSection(&sem_lock);
+                return i;
+            }
+        }
+    }
+
+    /* Create new semaphore set */
+    if (!(semflg & IPC_CREAT)) {
+        LeaveCriticalSection(&sem_lock);
+        nix_platform_set_errno(ENOENT);
+        return -1;
+    }
+
+    int semid = win32_sem_alloc();
+    if (semid < 0) {
+        LeaveCriticalSection(&sem_lock);
+        nix_platform_set_errno(ENOSPC);
+        return -1;
+    }
+
+    sem_table[semid] = (win32_sem_t *)malloc(sizeof(win32_sem_t));
+    if (!sem_table[semid]) {
+        LeaveCriticalSection(&sem_lock);
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    sem_table[semid]->key = key;
+    sem_table[semid]->nsems = nsems;
+    sem_table[semid]->semflg = semflg;
+
+    /* Allocate semaphore arrays */
+    sem_table[semid]->semaphores = (HANDLE *)calloc(nsems, sizeof(HANDLE));
+    sem_table[semid]->values = (int *)calloc(nsems, sizeof(int));
+
+    if (!sem_table[semid]->semaphores || !sem_table[semid]->values) {
+        free(sem_table[semid]->semaphores);
+        free(sem_table[semid]->values);
+        free(sem_table[semid]);
+        sem_table[semid] = NULL;
+        LeaveCriticalSection(&sem_lock);
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    /* Create Windows semaphores */
+    for (int i = 0; i < nsems; i++) {
+        _snprintf(sem_table[semid]->name, sizeof(sem_table[semid]->name),
+                  "Global\\nix_sem_%08x_%d", (unsigned int)key, i);
+
+        sem_table[semid]->semaphores[i] = CreateSemaphoreA(
+            NULL,       /* Security attributes */
+            0,          /* Initial count */
+            SEMVMX,     /* Maximum count */
+            sem_table[semid]->name
+        );
+
+        if (!sem_table[semid]->semaphores[i]) {
+            /* Cleanup on failure */
+            for (int j = 0; j < i; j++) {
+                CloseHandle(sem_table[semid]->semaphores[j]);
+            }
+            free(sem_table[semid]->semaphores);
+            free(sem_table[semid]->values);
+            free(sem_table[semid]);
+            sem_table[semid] = NULL;
+            LeaveCriticalSection(&sem_lock);
+            nix_platform_set_errno(EACCES);
+            return -1;
+        }
+
+        sem_table[semid]->values[i] = 0;
+    }
+
+    /* Initialize semid_ds */
+    memset(&sem_table[semid]->ds, 0, sizeof(struct semid_ds));
+    sem_table[semid]->ds.sem_perm.key = key;
+    sem_table[semid]->ds.sem_perm.mode = semflg & 0777;
+    sem_table[semid]->ds.sem_nsems = nsems;
+    sem_table[semid]->ds.sem_ctime = time(NULL);
+
+    LeaveCriticalSection(&sem_lock);
+    return semid;
+
+#else
+    return semget(key, nsems, semflg);
+#endif
+}
+
+int
+nix_platform_semop(int semid, struct sembuf *sops, size_t nsops)
+{
+#if defined(NIX_HOST_WIN32)
+    if (semid < 0 || semid >= SEMMNI || !sem_table[semid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    if (nsops > SEMOPM) {
+        nix_platform_set_errno(E2BIG);
+        return -1;
+    }
+
+    /* Process semaphore operations */
+    for (size_t i = 0; i < nsops; i++) {
+        if (sops[i].sem_num >= sem_table[semid]->nsems) {
+            nix_platform_set_errno(EFBIG);
+            return -1;
+        }
+
+        HANDLE hSem = sem_table[semid]->semaphores[sops[i].sem_num];
+        int *value = &sem_table[semid]->values[sops[i].sem_num];
+
+        if (sops[i].sem_op > 0) {
+            /* Increment semaphore (V operation) */
+            *value += sops[i].sem_op;
+            ReleaseSemaphore(hSem, sops[i].sem_op, NULL);
+
+        } else if (sops[i].sem_op < 0) {
+            /* Decrement semaphore (P operation) */
+            int wait_count = -sops[i].sem_op;
+
+            /* Try to acquire */
+            for (int j = 0; j < wait_count; j++) {
+                DWORD timeout = (sops[i].sem_flg & IPC_NOWAIT) ? 0 : INFINITE;
+                DWORD result = WaitForSingleObject(hSem, timeout);
+
+                if (result == WAIT_TIMEOUT) {
+                    /* Restore acquired semaphores */
+                    if (j > 0) {
+                        ReleaseSemaphore(hSem, j, NULL);
+                    }
+                    nix_platform_set_errno(EAGAIN);
+                    return -1;
+                } else if (result != WAIT_OBJECT_0) {
+                    nix_platform_set_errno(EINVAL);
+                    return -1;
+                }
+            }
+
+            *value -= wait_count;
+
+        } else {
+            /* Wait for zero */
+            if (*value != 0) {
+                if (sops[i].sem_flg & IPC_NOWAIT) {
+                    nix_platform_set_errno(EAGAIN);
+                    return -1;
+                }
+                /* Would need to implement blocking wait for zero */
+            }
+        }
+    }
+
+    sem_table[semid]->ds.sem_otime = time(NULL);
+    return 0;
+
+#else
+    return semop(semid, sops, nsops);
+#endif
+}
+
+int
+nix_platform_semctl(int semid, int semnum, int cmd, ...)
+{
+#if defined(NIX_HOST_WIN32)
+    if (semid < 0 || semid >= SEMMNI || !sem_table[semid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    va_list ap;
+    va_start(ap, cmd);
+
+    switch (cmd) {
+    case IPC_STAT: {
+        struct semid_ds *buf = va_arg(ap, struct semid_ds *);
+        if (buf) {
+            memcpy(buf, &sem_table[semid]->ds, sizeof(struct semid_ds));
+        }
+        va_end(ap);
+        return 0;
+    }
+
+    case IPC_SET: {
+        struct semid_ds *buf = va_arg(ap, struct semid_ds *);
+        if (buf) {
+            sem_table[semid]->ds.sem_perm = buf->sem_perm;
+            sem_table[semid]->ds.sem_ctime = time(NULL);
+        }
+        va_end(ap);
+        return 0;
+    }
+
+    case IPC_RMID:
+        /* Remove semaphore set */
+        for (int i = 0; i < sem_table[semid]->nsems; i++) {
+            CloseHandle(sem_table[semid]->semaphores[i]);
+        }
+        free(sem_table[semid]->semaphores);
+        free(sem_table[semid]->values);
+        free(sem_table[semid]);
+        sem_table[semid] = NULL;
+        va_end(ap);
+        return 0;
+
+    case GETVAL:
+        if (semnum >= 0 && semnum < sem_table[semid]->nsems) {
+            int val = sem_table[semid]->values[semnum];
+            va_end(ap);
+            return val;
+        }
+        break;
+
+    case SETVAL: {
+        int val = va_arg(ap, int);
+        if (semnum >= 0 && semnum < sem_table[semid]->nsems && val >= 0 && val <= SEMVMX) {
+            /* Adjust Windows semaphore count */
+            int diff = val - sem_table[semid]->values[semnum];
+            if (diff > 0) {
+                ReleaseSemaphore(sem_table[semid]->semaphores[semnum], diff, NULL);
+            }
+            sem_table[semid]->values[semnum] = val;
+            va_end(ap);
+            return 0;
+        }
+        break;
+    }
+
+    case GETALL: {
+        unsigned short *array = va_arg(ap, unsigned short *);
+        if (array) {
+            for (int i = 0; i < sem_table[semid]->nsems; i++) {
+                array[i] = (unsigned short)sem_table[semid]->values[i];
+            }
+            va_end(ap);
+            return 0;
+        }
+        break;
+    }
+
+    case SETALL: {
+        unsigned short *array = va_arg(ap, unsigned short *);
+        if (array) {
+            for (int i = 0; i < sem_table[semid]->nsems; i++) {
+                int diff = array[i] - sem_table[semid]->values[i];
+                if (diff > 0) {
+                    ReleaseSemaphore(sem_table[semid]->semaphores[i], diff, NULL);
+                }
+                sem_table[semid]->values[i] = array[i];
+            }
+            va_end(ap);
+            return 0;
+        }
+        break;
+    }
+    }
+
+    va_end(ap);
+    nix_platform_set_errno(EINVAL);
+    return -1;
+
+#else
+    va_list ap;
+    va_start(ap, cmd);
+    union semun arg = va_arg(ap, union semun);
+    va_end(ap);
+    return semctl(semid, semnum, cmd, arg);
+#endif
+}
+
+/*
+ * Shared Memory Operations
+ */
+
+int
+nix_platform_shmget(key_t key, size_t size, int shmflg)
+{
+#if defined(NIX_HOST_WIN32)
+    win32_shm_init();
+
+    EnterCriticalSection(&shm_lock);
+
+    /* Check if shared memory exists */
+    if (key != IPC_PRIVATE) {
+        for (int i = 0; i < SHMMAX; i++) {
+            if (shm_table[i] && shm_table[i]->key == key) {
+                if (shmflg & IPC_CREAT && shmflg & IPC_EXCL) {
+                    LeaveCriticalSection(&shm_lock);
+                    nix_platform_set_errno(EEXIST);
+                    return -1;
+                }
+                LeaveCriticalSection(&shm_lock);
+                return i;
+            }
+        }
+    }
+
+    /* Create new shared memory */
+    if (!(shmflg & IPC_CREAT)) {
+        LeaveCriticalSection(&shm_lock);
+        nix_platform_set_errno(ENOENT);
+        return -1;
+    }
+
+    int shmid = win32_shm_alloc();
+    if (shmid < 0) {
+        LeaveCriticalSection(&shm_lock);
+        nix_platform_set_errno(ENOSPC);
+        return -1;
+    }
+
+    shm_table[shmid] = (win32_shm_t *)malloc(sizeof(win32_shm_t));
+    if (!shm_table[shmid]) {
+        LeaveCriticalSection(&shm_lock);
+        nix_platform_set_errno(ENOMEM);
+        return -1;
+    }
+
+    shm_table[shmid]->key = key;
+    shm_table[shmid]->size = size;
+    shm_table[shmid]->shmflg = shmflg;
+    shm_table[shmid]->addr = NULL;
+
+    /* Create file mapping name */
+    _snprintf(shm_table[shmid]->name, sizeof(shm_table[shmid]->name),
+              "Global\\nix_shm_%08x", (unsigned int)key);
+
+    /* Create file mapping */
+    shm_table[shmid]->hMapping = CreateFileMappingA(
+        INVALID_HANDLE_VALUE,    /* Use paging file */
+        NULL,                     /* Security attributes */
+        PAGE_READWRITE,           /* Protection */
+        0,                        /* High-order size */
+        (DWORD)size,              /* Low-order size */
+        shm_table[shmid]->name    /* Name */
+    );
+
+    if (!shm_table[shmid]->hMapping) {
+        free(shm_table[shmid]);
+        shm_table[shmid] = NULL;
+        LeaveCriticalSection(&shm_lock);
+        nix_platform_set_errno(EACCES);
+        return -1;
+    }
+
+    /* Initialize shmid_ds */
+    memset(&shm_table[shmid]->ds, 0, sizeof(struct shmid_ds));
+    shm_table[shmid]->ds.shm_perm.key = key;
+    shm_table[shmid]->ds.shm_perm.mode = shmflg & 0777;
+    shm_table[shmid]->ds.shm_segsz = size;
+    shm_table[shmid]->ds.shm_cpid = GetCurrentProcessId();
+    shm_table[shmid]->ds.shm_ctime = time(NULL);
+
+    LeaveCriticalSection(&shm_lock);
+    return shmid;
+
+#else
+    return shmget(key, size, shmflg);
+#endif
+}
+
+void *
+nix_platform_shmat(int shmid, const void *shmaddr, int shmflg)
+{
+#if defined(NIX_HOST_WIN32)
+    if (shmid < 0 || shmid >= SHMMAX || !shm_table[shmid]) {
+        nix_platform_set_errno(EINVAL);
+        return (void *)-1;
+    }
+
+    DWORD access = (shmflg & SHM_RDONLY) ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
+
+    void *addr = MapViewOfFileEx(
+        shm_table[shmid]->hMapping,
+        access,
+        0,              /* High-order offset */
+        0,              /* Low-order offset */
+        0,              /* Map entire segment */
+        (LPVOID)shmaddr /* Requested address */
+    );
+
+    if (!addr) {
+        nix_platform_set_errno(ENOMEM);
+        return (void *)-1;
+    }
+
+    /* Update stats */
+    shm_table[shmid]->ds.shm_nattch++;
+    shm_table[shmid]->ds.shm_lpid = GetCurrentProcessId();
+    shm_table[shmid]->ds.shm_atime = time(NULL);
+
+    return addr;
+
+#else
+    return shmat(shmid, shmaddr, shmflg);
+#endif
+}
+
+int
+nix_platform_shmdt(const void *shmaddr)
+{
+#if defined(NIX_HOST_WIN32)
+    if (!shmaddr) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    if (!UnmapViewOfFile(shmaddr)) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    /* Find and update stats */
+    for (int i = 0; i < SHMMAX; i++) {
+        if (shm_table[i]) {
+            if (shm_table[i]->ds.shm_nattch > 0) {
+                shm_table[i]->ds.shm_nattch--;
+            }
+            shm_table[i]->ds.shm_lpid = GetCurrentProcessId();
+            shm_table[i]->ds.shm_dtime = time(NULL);
+            break;
+        }
+    }
+
+    return 0;
+
+#else
+    return shmdt(shmaddr);
+#endif
+}
+
+int
+nix_platform_shmctl(int shmid, int cmd, struct shmid_ds *buf)
+{
+#if defined(NIX_HOST_WIN32)
+    if (shmid < 0 || shmid >= SHMMAX || !shm_table[shmid]) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    switch (cmd) {
+    case IPC_STAT:
+        if (buf) {
+            memcpy(buf, &shm_table[shmid]->ds, sizeof(struct shmid_ds));
+        }
+        return 0;
+
+    case IPC_SET:
+        if (buf) {
+            shm_table[shmid]->ds.shm_perm = buf->shm_perm;
+            shm_table[shmid]->ds.shm_ctime = time(NULL);
+        }
+        return 0;
+
+    case IPC_RMID:
+        CloseHandle(shm_table[shmid]->hMapping);
+        free(shm_table[shmid]);
+        shm_table[shmid] = NULL;
+        return 0;
+
+    default:
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+#else
+    return shmctl(shmid, cmd, buf);
+#endif
+}
+
+/*
+ * ========================================================================
  * PLATFORM TIME OPERATIONS
  * ========================================================================
  */
