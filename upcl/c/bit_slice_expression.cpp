@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cinttypes>
 #include <cstdio>
 
 #include "c/bit_slice_expression.h"
@@ -27,7 +28,7 @@ bit_slice_expression::bit_slice_expression(expression *expr,
 		size_t nbits = expr->get_type()->get_bits();
 		if (bit > nbits) {
 			fprintf(stderr, "warning: bit slice operation is bigger than the "
-					"expression size, truncating from %llu to %zu bits.\n",
+					"expression size, truncating from %" PRIu64 " to %zu bits.\n",
 					bit, expr->get_type()->get_bits());
 
 			m_type = expr->get_type();
@@ -55,7 +56,7 @@ bit_slice_expression::simplify(bool) const
 			fprintf(stderr, "warning: first bit is past the expression "
 					"size.\n");
 
-			return expression::fromInteger(0ULL, get_type()->get_bits());
+			return expression::fromInteger(static_cast<uint64_t>(0), get_type()->get_bits());
 		}
 	}
 
@@ -128,7 +129,7 @@ bit_slice_expression::evaluate_as_integer(uint64_t &value, bool sign) const
 
 		if (bit_count == 0 || first_bit + bit_count > 64) {
 			fprintf(stderr, "warning: invalid bit slice, "
-					"first_bit = %llu bit_count = %llu while limit = %u, "
+					"first_bit = %" PRIu64 " bit_count = %" PRIu64 " while limit = %u, "
 					"result will be zero.\n",
 					first_bit, bit_count, 64);
 			value = 0;

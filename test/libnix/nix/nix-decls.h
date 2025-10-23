@@ -99,6 +99,9 @@ int nix_getitimer(int timer, struct nix_itimerval *value, nix_env_t *env);
 int nix_alarm(nix_time_t secs, nix_env_t *env);
 int nix_pause(nix_env_t *env);
 uintmax_t nix_signal(int signo, uintmax_t handler, nix_env_t *env);
+/* nix-signal-arch.c */
+void nix_signal_set_architecture(nix_arch_t arch);
+nix_arch_t nix_signal_get_architecture(void);
 /* nix-dir.c */
 int nix_fchdir(int fd, nix_env_t *env);
 int nix_chdir(char const *path, nix_env_t *env);

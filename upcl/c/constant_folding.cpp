@@ -135,7 +135,7 @@ fold_constants_binary(binary_expression *expr)
 			if (fold_match_2(expr1, expr2, binary_expression::AND,
 						i1, i2, i3)) {
 				if (i3 == 2) // if there's a complement, fold always to zero.
-					return expression::fromInteger(0ULL,
+					return expression::fromInteger(static_cast<uint64_t>(0),
 							expr->get_type()->get_bits());
 				else if (i3 != 1) { // if it is non-negative, fold const
 					expression *a = i1 ? expr1 : expr2;

@@ -76,6 +76,7 @@ CONFIGURE_FILE(nix-config.h.cmake ${PROJECT_BINARY_DIR}/nix-config.h)
 
 ADD_LIBRARY(nix
 			SHARED
+			nix-platform.c
 			nix-bsd-cred.c
 			nix-bsd-dir.c
 			nix-bsd-file.c
@@ -116,6 +117,18 @@ ADD_LIBRARY(nix
 			nix-s5-sem.c
 			nix-s5-shm.c
 			nix-signal.c
+			nix-signal-arch.c
+			nix-platform-win32-signal.c
+			nix-platform-win32-mmap.c
+			nix-platform-win32-mmap-prot.c
+			nix-platform-win32-icmp.c
+			nix-platform-win32-aflocal.c
+			nix-platform-win32-aflocal-advanced.c
+			nix-platform-win32-links-xattr.c
+			nix-platform-win32-fd-symlink.c
+			nix-platform-win32-directory.c
+			nix-platform-win32-timing.c
+			nix-platform-win32-utility.c
 			nix-socket.c
 			nix-structs.c
 			nix-time.c

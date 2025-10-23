@@ -22,7 +22,7 @@
 #define CNEG expression::Neg
 #define CCOM expression::Com
 #define CNOT expression::Not
-#define CCONSTn(x,n) c::expression::fromInteger(x, n)
+#define CCONSTn(x,n) c::expression::fromInteger(static_cast<uint64_t>(x), n)
 #define CCONST(x) (((x) == 0 ? CCONSTn(0ULL, sizeof(x)*8) : \
 			CCONSTn((x), sizeof(x)*8)))
 #define CREG expression::fromRegister
