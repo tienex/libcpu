@@ -33,6 +33,7 @@ ADD_LIBRARY(cpu SHARED
 			backend_libjit.cpp
 			backend_nj.cpp
 			backend_emulation.cpp
+			backend_emulation_types.cpp
 			tiered_compilation.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
