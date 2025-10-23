@@ -24,10 +24,12 @@ ADD_LIBRARY(cpu SHARED
 			backend_gccjit_full.cpp
 			backend_tcg_full.cpp
 			tcg_impl.cpp
-			backend_asmjit.cpp
+			backend_asmjit_full.cpp
 			backend_dynasm.cpp
 			backend_sljit.cpp
 			backend_nanojit.cpp
+			backend_mir.cpp
+			backend_cranelift.cpp
 			tiered_compilation.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)

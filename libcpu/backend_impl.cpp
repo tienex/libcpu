@@ -16,6 +16,8 @@ extern "C" {
 	IBackend* backend_create_dynasm(void);
 	IBackend* backend_create_sljit(void);
 	IBackend* backend_create_nanojit(void);
+	IBackend* backend_create_mir(void);
+	IBackend* backend_create_cranelift(void);
 }
 
 static const char* backend_names[] = {
@@ -26,7 +28,9 @@ static const char* backend_names[] = {
 	"AsmJit",
 	"DynASM",
 	"SLJIT",
-	"NanoJIT"
+	"NanoJIT",
+	"MIR",
+	"Cranelift"
 };
 
 /*
@@ -51,6 +55,10 @@ IBackend* backend_create(backend_type_t type)
 		return backend_create_sljit();
 	case BACKEND_NANOJIT:
 		return backend_create_nanojit();
+	case BACKEND_MIR:
+		return backend_create_mir();
+	case BACKEND_CRANELIFT:
+		return backend_create_cranelift();
 	default:
 		return NULL;
 	}
