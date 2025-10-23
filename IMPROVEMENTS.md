@@ -1161,7 +1161,9 @@ When running `idbg_enhanced_run()`, the following commands are available:
 #### Execution Control
 ```
 s, step              - Single step one instruction
+n, next              - Step over (simplified: same as step for now)
 c, continue          - Continue execution until breakpoint
+finish               - Run until function returns (not yet implemented)
 quit, q              - Exit debugger
 ```
 
@@ -1169,6 +1171,9 @@ quit, q              - Exit debugger
 ```
 break ADDR           - Set breakpoint at address
 b 0x8000             - Short form
+
+tbreak ADDR          - Set temporary breakpoint (deleted after hit)
+tbreak 0x9000        - Temporary breakpoint example
 
 delete ID            - Delete breakpoint by ID
 d 1                  - Short form
@@ -1206,8 +1211,13 @@ search START END PAT - Search for byte pattern (future)
 info registers       - Show all registers
 info r               - Short form
 
-set $REG = VALUE     - Set register value (future)
-print $REG           - Print register (future)
+print $REG           - Print individual register
+p $r0                - Short form, print r0
+p $pc                - Print program counter
+
+set $REG = VALUE     - Set register value
+set $r0 = 0x1234     - Set r0 to 0x1234
+set $pc = 0x8000     - Set program counter
 ```
 
 #### Symbol Commands
@@ -1303,6 +1313,15 @@ Watchpoint 1 triggered at 0x2000
 
 PC = 0x8014
 => mov r4, r0
+
+(idbg) print $r0
+$r0 = 0x00000001 (1)
+
+(idbg) set $r0 = 0x42
+Register 0 set to 0x42
+
+(idbg) p $r0
+$r0 = 0x00000042 (66)
 
 (idbg) info stats
 

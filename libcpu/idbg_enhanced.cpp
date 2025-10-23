@@ -527,12 +527,13 @@ idbg_print_help_enhanced(const char *command)
 		printf("\n");
 		printf("Execution:\n");
 		printf("  s[tep]              - Single step\n");
-		printf("  n[ext]              - Step over function calls\n");
+		printf("  n[ext]              - Step over (simplified: same as step)\n");
 		printf("  c[ontinue]          - Continue execution\n");
-		printf("  finish              - Run until function returns\n");
+		printf("  finish              - Run until function returns (not yet implemented)\n");
 		printf("\n");
 		printf("Breakpoints:\n");
 		printf("  b[reak] ADDR        - Set breakpoint at address\n");
+		printf("  tbreak ADDR         - Set temporary breakpoint (deleted after hit)\n");
 		printf("  d[elete] ID         - Delete breakpoint\n");
 		printf("  enable ID           - Enable breakpoint\n");
 		printf("  disable ID          - Disable breakpoint\n");
@@ -865,6 +866,66 @@ idbg_set_logging(idbg_enhanced_t *ctx, const char *filename)
 	}
 }
 
+/* ========== Register Name Parsing ========== */
+
+static int
+parse_register_name(idbg_enhanced_t *ctx, const char *name)
+{
+	cpu_t *cpu = ctx->cpu;
+
+	/* Handle special register names */
+	if (strcmp(name, "pc") == 0 || strcmp(name, "PC") == 0) {
+		/* PC is not in the register array, handle specially */
+		return -2; /* Special code for PC */
+	}
+
+	/* Try to find by name */
+	for (int i = 0; i < cpu->info.register_count; i++) {
+		const char *reg_name = cpu->info.register_name[i];
+		if (reg_name && (strcmp(reg_name, name) == 0 ||
+		    strcasecmp(reg_name, name) == 0)) {
+			return i;
+		}
+	}
+
+	/* Try to parse as register number (e.g., "r0", "r1") */
+	if (name[0] == 'r' || name[0] == 'R') {
+		int reg_num = atoi(name + 1);
+		if (reg_num >= 0 && reg_num < cpu->info.register_count) {
+			return reg_num;
+		}
+	}
+
+	return -1; /* Not found */
+}
+
+static uint64_t
+get_register_value(idbg_enhanced_t *ctx, int reg_num)
+{
+	cpu_t *cpu = ctx->cpu;
+
+	if (reg_num == -2) {
+		/* PC */
+		return cpu->f.get_pc(cpu, 0);
+	}
+
+	if (reg_num < 0 || reg_num >= cpu->info.register_count) {
+		return 0;
+	}
+
+	void *reg_ptr = (uint8_t *)cpu->rf.grf + cpu->info.register_size * reg_num;
+	uint64_t value = 0;
+
+	switch (cpu->info.register_size) {
+		case 1: value = *(uint8_t *)reg_ptr; break;
+		case 2: value = *(uint16_t *)reg_ptr; break;
+		case 4: value = *(uint32_t *)reg_ptr; break;
+		case 8: value = *(uint64_t *)reg_ptr; break;
+	}
+
+	return value;
+}
+
 /* ========== Main Debugger Loop ========== */
 
 int
@@ -943,8 +1004,30 @@ idbg_enhanced_run(idbg_enhanced_t *ctx, debug_function_t debug_func)
 				ctx->step_count++;
 				ctx->instr_count++;
 			}
+			else if (strcmp(cmd, "next") == 0 || strcmp(cmd, "n") == 0) {
+				/* TODO: Proper step-over implementation needs to:
+				 * 1. Disassemble current instruction
+				 * 2. Check if it's a call instruction
+				 * 3. If yes, set temporary breakpoint at next instruction
+				 * 4. Continue until that breakpoint
+				 * For now, just step (same as 's')
+				 */
+				cpu->f.step(cpu, debug_func);
+				ctx->step_count++;
+				ctx->instr_count++;
+			}
 			else if (strcmp(cmd, "continue") == 0 || strcmp(cmd, "c") == 0) {
 				stepping = false;
+			}
+			else if (strcmp(cmd, "finish") == 0) {
+				/* TODO: Proper step-out implementation needs to:
+				 * 1. Get current stack pointer
+				 * 2. Set temporary breakpoint at return address
+				 * 3. Continue until that breakpoint
+				 * For now, print a message
+				 */
+				fprintf(stderr, "Command 'finish' not yet fully implemented\n");
+				fprintf(stderr, "Use 'continue' to run until next breakpoint\n");
 			}
 			else if (strcmp(cmd, "break") == 0 || strcmp(cmd, "b") == 0) {
 				char *addr_str = strtok(NULL, " \t");
@@ -953,6 +1036,26 @@ idbg_enhanced_run(idbg_enhanced_t *ctx, debug_function_t debug_func)
 					idbg_add_breakpoint(ctx, BP_TYPE_EXEC, addr);
 				} else {
 					fprintf(stderr, "Usage: break ADDRESS\n");
+				}
+			}
+			else if (strcmp(cmd, "tbreak") == 0) {
+				char *addr_str = strtok(NULL, " \t");
+				if (addr_str) {
+					addr_t addr = strtoull(addr_str, NULL, 0);
+					int id = idbg_add_breakpoint(ctx, BP_TYPE_EXEC, addr);
+					if (id > 0) {
+						/* Find and mark as temporary */
+						for (int i = 0; i < ctx->num_breakpoints; i++) {
+							if (ctx->breakpoints[i].id == id) {
+								ctx->breakpoints[i].temporary = true;
+								printf("Temporary breakpoint %d at 0x%llx\n",
+								       id, (unsigned long long)addr);
+								break;
+							}
+						}
+					}
+				} else {
+					fprintf(stderr, "Usage: tbreak ADDRESS\n");
 				}
 			}
 			else if (strcmp(cmd, "delete") == 0 || strcmp(cmd, "d") == 0) {
@@ -1025,13 +1128,38 @@ idbg_enhanced_run(idbg_enhanced_t *ctx, debug_function_t debug_func)
 			}
 			else if (strcmp(cmd, "set") == 0) {
 				char *what = strtok(NULL, " \t");
-				if (what && strcmp(what, "trace") == 0) {
+				if (!what) {
+					fprintf(stderr, "Usage: set trace {on|off} | set $REG = VALUE\n");
+				} else if (strcmp(what, "trace") == 0) {
 					char *value = strtok(NULL, " \t");
 					if (value) {
 						idbg_enable_trace(ctx, strcmp(value, "on") == 0);
+					} else {
+						fprintf(stderr, "Usage: set trace {on|off}\n");
+					}
+				} else if (what[0] == '$') {
+					/* set $REG = VALUE */
+					char *reg_name = what + 1;
+					char *eq = strtok(NULL, " \t");
+					char *val_str = strtok(NULL, " \t");
+
+					if (!eq || !val_str) {
+						fprintf(stderr, "Usage: set $REG = VALUE\n");
+					} else {
+						int reg_num = parse_register_name(ctx, reg_name);
+						uint64_t value = strtoull(val_str, NULL, 0);
+
+						if (reg_num == -2) {
+							/* PC */
+							idbg_set_pc(ctx, value);
+						} else if (reg_num >= 0) {
+							idbg_set_register(ctx, reg_num, value);
+						} else {
+							fprintf(stderr, "Error: Unknown register: %s\n", reg_name);
+						}
 					}
 				} else {
-					fprintf(stderr, "Usage: set trace {on|off}\n");
+					fprintf(stderr, "Usage: set trace {on|off} | set $REG = VALUE\n");
 				}
 			}
 			else if (strcmp(cmd, "source") == 0) {
@@ -1040,6 +1168,59 @@ idbg_enhanced_run(idbg_enhanced_t *ctx, debug_function_t debug_func)
 					idbg_run_script(ctx, filename);
 				} else {
 					fprintf(stderr, "Usage: source FILENAME\n");
+				}
+			}
+			else if (strcmp(cmd, "enable") == 0) {
+				char *id_str = strtok(NULL, " \t");
+				if (id_str) {
+					int id = atoi(id_str);
+					idbg_enable_breakpoint(ctx, id);
+				} else {
+					fprintf(stderr, "Usage: enable ID\n");
+				}
+			}
+			else if (strcmp(cmd, "disable") == 0) {
+				char *id_str = strtok(NULL, " \t");
+				if (id_str) {
+					int id = atoi(id_str);
+					idbg_disable_breakpoint(ctx, id);
+				} else {
+					fprintf(stderr, "Usage: disable ID\n");
+				}
+			}
+			else if (strcmp(cmd, "print") == 0 || strcmp(cmd, "p") == 0) {
+				char *reg_str = strtok(NULL, " \t");
+				if (reg_str) {
+					/* Remove leading $ if present */
+					if (reg_str[0] == '$') {
+						reg_str++;
+					}
+					int reg_num = parse_register_name(ctx, reg_str);
+					if (reg_num >= -2) {
+						uint64_t value = get_register_value(ctx, reg_num);
+						if (reg_num == -2) {
+							printf("$pc = 0x%llx\n", (unsigned long long)value);
+						} else {
+							const char *name = cpu->info.register_name[reg_num];
+							printf("$%s = 0x%llx (%llu)\n",
+							       name ? name : "??",
+							       (unsigned long long)value,
+							       (unsigned long long)value);
+						}
+					} else {
+						fprintf(stderr, "Error: Unknown register: %s\n", reg_str);
+					}
+				} else {
+					fprintf(stderr, "Usage: print $REGISTER\n");
+				}
+			}
+			else if (strcmp(cmd, "frame") == 0) {
+				char *num_str = strtok(NULL, " \t");
+				if (num_str) {
+					int frame_num = atoi(num_str);
+					idbg_print_frame(ctx, frame_num);
+				} else {
+					fprintf(stderr, "Usage: frame N\n");
 				}
 			}
 			else {
