@@ -4,9 +4,16 @@ This document tracks the current implementation status of Win32 platform support
 
 ## Summary
 
-**Current Status:** ✅ **60+ operations fully implemented**, 🔄 **35+ operations declared (implementation in progress)**
+**Current Status:** ✅ **81+ operations fully implemented**, 🔄 **14+ operations remaining (AF_LOCAL, socketpair, epoll/kqueue)**
 
 The platform abstraction layer enables libnix to host guest OS emulation on Windows NT 3.1+ through Windows 11, with intelligent runtime API detection for optimal performance on each Windows version.
+
+**Recent Progress (2025):**
+- ✅ NT version detection (3 functions)
+- ✅ Signal handling (3 functions)
+- ✅ Socket operations AF_INET/AF_INET6 (14 functions)
+- ✅ Event notification poll/ppoll/pselect (3 functions)
+- ⚠️ socketpair stubbed (AF_LOCAL implementation pending)
 
 ---
 
@@ -108,9 +115,9 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 
 ---
 
-## Declared But Not Yet Implemented (35+)
+## Recently Implemented (21 functions)
 
-### Version Detection (3 functions) - 🔄 IN PROGRESS
+### Version Detection (3 functions) - ✅ IMPLEMENTED
 
 | Operation | Purpose | Implementation |
 |-----------|---------|----------------|
@@ -123,7 +130,7 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 - Use `RtlGetVersion()` on Windows 10+ (GetVersionEx deprecated)
 - Runtime detection via `GetProcAddress()` for optional APIs
 
-### Signal Operations (3 functions) - 🔄 DECLARED
+### Signal Operations (3 functions) - ✅ IMPLEMENTED
 
 | Operation | Windows Support | NT 3.1+ |
 |-----------|-----------------|---------|
@@ -151,7 +158,7 @@ signal(SIGHUP, handler);   // Returns SIG_ERR, sets errno=EINVAL
 // or TerminateProcess for others
 ```
 
-### Socket Operations (15 functions) - 🔄 DECLARED
+### Socket Operations (14 functions) - ✅ IMPLEMENTED (1 stubbed)
 
 | Operation | Windows API | NT 3.1+ |
 |-----------|-------------|---------|
@@ -169,7 +176,7 @@ signal(SIGHUP, handler);   // Returns SIG_ERR, sets errno=EINVAL
 | nix_platform_getpeername | getpeername() | Winsock 1.1+ |
 | nix_platform_setsockopt | setsockopt() | Winsock 1.1+ |
 | nix_platform_getsockopt | getsockopt() | Winsock 1.1+ |
-| nix_platform_socketpair | Named pipe pair | Custom |
+| nix_platform_socketpair | Named pipe pair | ⚠️ Stubbed (returns ENOSYS) |
 
 **Implementation Strategy:**
 
@@ -205,7 +212,7 @@ int nix_platform_socket(int domain, int type, int protocol) {
 - Winsock 2.0 adds overlapped I/O, QoS (NT 4.0+)
 - Use runtime detection: `WSAStartup(MAKEWORD(2,2))` → falls back to 1.1
 
-### Event Notification (3 functions) - 🔄 DECLARED
+### Event Notification (3 functions) - ✅ IMPLEMENTED
 
 | Operation | Windows Implementation | NT 3.1+ |
 |-----------|------------------------|---------|
@@ -337,22 +344,32 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 | File | Lines | Status |
 |------|-------|--------|
 | `nix-platform.h` | 600+ | ✅ All declarations complete |
-| `nix-platform.c` | 1,500+ | ✅ 60+ operations implemented |
+| `nix-platform.c` | 2,400+ | ✅ 81+ operations implemented |
 | `WIN32_SUPPORT.md` | 620+ | ✅ Documentation complete |
-| `WIN32_IMPLEMENTATION_STATUS.md` | This file | 🔄 In progress |
+| `WIN32_IMPLEMENTATION_STATUS.md` | This file | ✅ Up to date |
 
 ---
 
-## Next Steps
+## Completed Work (2025)
 
-1. ✅ **DONE:** API declarations for signals, sockets, events
-2. 🔄 **IN PROGRESS:** Documentation of implementation requirements
-3. ⏭️ **NEXT:** Implement NT version detection (100 lines)
-4. ⏭️ **NEXT:** Implement socket wrappers (400 lines)
-5. ⏭️ **NEXT:** Implement signal handling (200 lines)
-6. ⏭️ **NEXT:** Implement poll operations (300 lines)
+1. ✅ **DONE:** API declarations for signals, sockets, events (58 lines)
+2. ✅ **DONE:** NT version detection (170 lines)
+3. ✅ **DONE:** Signal handling (234 lines)
+4. ✅ **DONE:** Socket wrappers AF_INET/AF_INET6 (447 lines)
+5. ✅ **DONE:** poll/ppoll/pselect operations (216 lines)
 
-**Estimated Total Work Remaining:** 1,000-2,500 lines of code
+**Total Lines Implemented:** ~1,125 lines of new code
+
+---
+
+## Next Steps (Optional Future Work)
+
+1. ⏭️ **OPTIONAL:** Implement socketpair() via named pipes or loopback TCP (100-200 lines)
+2. ⏭️ **OPTIONAL:** Implement AF_LOCAL/AF_UNIX emulation via named pipes (500 lines)
+3. ⏭️ **OPTIONAL:** Implement epoll/kqueue emulation via IOCP (1000+ lines)
+4. ⏭️ **OPTIONAL:** Integrate socket FDs with nix_fd table for unified FD management
+
+**Estimated Optional Work Remaining:** 1,600-1,700+ lines of code
 
 ---
 
