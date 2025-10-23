@@ -76,6 +76,7 @@ CONFIGURE_FILE(nix-config.h.cmake ${PROJECT_BINARY_DIR}/nix-config.h)
 
 ADD_LIBRARY(nix
 			SHARED
+			nix-platform.c
 			nix-bsd-cred.c
 			nix-bsd-dir.c
 			nix-bsd-file.c
