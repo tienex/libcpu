@@ -12,13 +12,21 @@ extern "C" {
 	IBackend* backend_create_qbe(void);
 	IBackend* backend_create_gccjit(void);
 	IBackend* backend_create_tcg(void);
+	IBackend* backend_create_asmjit(void);
+	IBackend* backend_create_dynasm(void);
+	IBackend* backend_create_sljit(void);
+	IBackend* backend_create_nanojit(void);
 }
 
 static const char* backend_names[] = {
 	"LLVM",
 	"QBE",
 	"GCCJIT",
-	"TCG"
+	"TCG",
+	"AsmJit",
+	"DynASM",
+	"SLJIT",
+	"NanoJIT"
 };
 
 /*
@@ -35,6 +43,14 @@ IBackend* backend_create(backend_type_t type)
 		return backend_create_gccjit();
 	case BACKEND_TCG:
 		return backend_create_tcg();
+	case BACKEND_ASMJIT:
+		return backend_create_asmjit();
+	case BACKEND_DYNASM:
+		return backend_create_dynasm();
+	case BACKEND_SLJIT:
+		return backend_create_sljit();
+	case BACKEND_NANOJIT:
+		return backend_create_nanojit();
 	default:
 		return NULL;
 	}

@@ -6,10 +6,17 @@ This document describes the backend abstraction layer introduced to libcpu, whic
 
 The libcpu backend abstraction layer provides a COM-style interface system that decouples the CPU emulation frontend from the code generation backend. This allows libcpu to support multiple JIT compilation backends including:
 
+**Tier 1 Backends (Fully Implemented):**
 - **LLVM** - Full-featured optimizing compiler with multi-version support (Legacy JIT, MCJIT, ORC v1, ORC v2)
-- **QBE** - Quick Backend, lightweight SSA-based compiler (fully implemented)
-- **GCCJIT** - GNU GCC JIT library with GCC-quality optimization (fully implemented)
-- **TCG** - Tiny Code Generator with native x86-64 emission (fully implemented)
+- **QBE** - Quick Backend, lightweight SSA-based compiler
+- **GCCJIT** - GNU GCC JIT library with GCC-quality optimization
+- **TCG** - Tiny Code Generator with native x86-64 emission
+
+**Tier 2 Backends (Framework Implemented):**
+- **AsmJit** - Modern C++ x86/x64 JIT assembler library
+- **DynASM** - LuaJIT-style preprocessor-based dynamic assembler
+- **SLJIT** - Stack-Less portable JIT compiler
+- **NanoJIT** - Mozilla's lightweight trace-based JIT from TraceMonkey
 
 ## Architecture
 
@@ -272,6 +279,8 @@ case BACKEND_MYBACKEND:
 
 ## Backend Comparison
 
+### Tier 1 Backends (Fully Implemented)
+
 | Feature | LLVM | QBE | GCCJIT | TCG |
 |---------|------|-----|--------|-----|
 | Status | Complete | Complete | Complete | Complete |
@@ -284,6 +293,22 @@ case BACKEND_MYBACKEND:
 | LLVM Versions | 3.0-18.0+ | N/A | N/A | N/A |
 | IR Format | LLVM IR | QBE IL (SSA) | libgccjit API | Custom TCG IR |
 | Use Case | Production | Fast startup | Balanced | Interpreter |
+
+### Tier 2 Backends (Framework Implemented)
+
+| Feature | AsmJit | DynASM | SLJIT | NanoJIT |
+|---------|--------|--------|-------|---------|
+| Status | Framework | Framework | Framework | Framework |
+| Optimization | Minimal | Minimal | Basic | Basic |
+| Compile Speed | Very Fast (50-500μs) | Ultra Fast (10-50μs) | Fast (100μs-1ms) | Fast (100μs-2ms) |
+| Code Quality | Good (2-3x) | Good (2-3x) | Good (2-4x) | Good (2-4x) |
+| Architecture | x86/x64 | x86/ARM/PPC/MIPS | Portable | x86/ARM/PPC/MIPS |
+| Binary Size | Small (500KB) | Tiny (embedded) | Small (300KB) | Medium (1MB) |
+| Dependencies | libasm jit | None | None | None (standalone) |
+| IR Format | Direct ASM | Preprocessed ASM | SLJIT IR | LIR (traces) |
+| Use Case | Fast codegen | Minimal overhead | Portable JIT | Trace compilation |
+
+**Note**: Tier 2 backends have framework and stubs implemented. Full implementations can be completed when the respective libraries are integrated.
 
 ## Integration with libcpu
 
