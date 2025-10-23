@@ -1,0 +1,52 @@
+# Build directories
+build/
+Build/
+BUILD/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Compiled Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Generated files
+*.autosave
+*~
+.*.swp
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+
+# UPCL generated files (when testing)
+*_arch.h
+*_arch.cpp
+*_regfile.h
+*_opc.h
+*_tag_stub.cpp
+*_tcond.cpp
+*_translate_stub.cpp
