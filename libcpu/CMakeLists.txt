@@ -15,6 +15,9 @@ ADD_LIBRARY(cpu SHARED
 			idbg.cpp
 			stat.cpp
 			sha1.cpp
+			cache.cpp
+			jumpcache.cpp
+			mmu.cpp
 			interface.cpp
 			timings.cpp)
 

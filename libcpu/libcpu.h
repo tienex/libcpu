@@ -206,12 +206,18 @@ typedef struct cpu_archrf {
 typedef std::map<addr_t, BasicBlock *> bbaddr_map;
 typedef std::map<Function *, bbaddr_map> funcbb_map;
 
+/* Forward declarations */
+struct jump_cache;
+struct mmu_context;
+
 typedef struct cpu {
 	cpu_archinfo_t info;
 	cpu_archrf_t rf;
 	arch_func_t f;
 
 	funcbb_map func_bb; // faster bb lookup
+	struct jump_cache *jmp_cache; // indirect jump cache for fast dispatch
+	struct mmu_context *mmu; // soft MMU for system mode support
 
 	uint16_t pc_offset;
 	addr_t code_start;
@@ -286,6 +292,15 @@ enum {
 // and we start tagging at these addresses on load if the
 // cache exists.
 #define CPU_CODEGEN_TAG_LIMIT (1<<2)
+
+// Enable on-disk caching of translated code
+#define CPU_CODEGEN_CACHE     (1<<3)
+
+// Enable indirect jump cache for faster dispatch
+#define CPU_CODEGEN_JUMPCACHE (1<<4)
+
+// Enable soft MMU for system mode support
+#define CPU_CODEGEN_MMU       (1<<5)
 
 //////////////////////////////////////////////////////////////////////
 // debug flags
