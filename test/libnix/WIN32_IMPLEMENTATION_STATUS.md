@@ -4,7 +4,7 @@ This document tracks the current implementation status of Win32 platform support
 
 ## Summary
 
-**Current Status:** ✅ **120+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
+**Current Status:** ✅ **127+ operations fully implemented**, 🔄 **Optional features remaining (epoll/kqueue)**
 
 The platform abstraction layer enables libnix to host guest OS emulation on Windows NT 3.1+ through Windows 11, with intelligent runtime API detection for optimal performance on each Windows version.
 
@@ -16,6 +16,7 @@ The platform abstraction layer enables libnix to host guest OS emulation on Wind
 - ✅ ICMP protocol support (11 functions)
 - ✅ Socket operations AF_INET/AF_INET6 (14 functions)
 - ✅ AF_LOCAL (Unix domain sockets) emulation (13 functions)
+- ✅ AF_LOCAL advanced features: peer credentials and rights transfer (4 functions)
 - ✅ Event notification poll/ppoll/pselect (3 functions)
 - ✅ Process syscalls with NT API fork (40+ functions)
 - ✅ Session and terminal control (8 functions)
@@ -324,9 +325,16 @@ Unix: /tmp/socket    → Pipe: \\.\pipe\nix_aflocal_socket
 Unix: /var/run/app   → Mailslot: \\.\mailslot\nix_aflocal_app
 ```
 
+**Advanced Features:**
+- ✅ **Peer Credentials** (SO_PEERCRED) - Get peer PID, UID, GID using Windows APIs
+- ✅ **Rights Transfer** (SCM_RIGHTS) - Pass file descriptors via sendmsg/recvmsg + DuplicateHandle
+- ✅ **Scatter/Gather I/O** - iovec support in sendmsg/recvmsg
+
 **Files:**
-- `nix-platform-win32-aflocal.c` (927 lines)
+- `nix-platform-win32-aflocal.c` (931 lines) - Core socket operations
+- `nix-platform-win32-aflocal-advanced.c` (653 lines) - Credentials and rights transfer
 - `WIN32_AFLOCAL_SUPPORT.md` (comprehensive documentation)
+- `WIN32_AFLOCAL_ADVANCED.md` (detailed advanced features guide)
 
 **Implementation Strategy:**
 
@@ -504,11 +512,13 @@ int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 | `nix-platform-win32-signal.c` | 650 | ✅ Full signal queue and delivery |
 | `nix-platform-win32-mmap.c` | 597 | ✅ Complete mmap emulation |
 | `nix-platform-win32-icmp.c` | 696 | ✅ ICMP protocol support |
-| `nix-platform-win32-aflocal.c` | 927 | ✅ AF_LOCAL socket emulation |
+| `nix-platform-win32-aflocal.c` | 931 | ✅ AF_LOCAL socket emulation |
+| `nix-platform-win32-aflocal-advanced.c` | 653 | ✅ Peer credentials and rights transfer |
 | `WIN32_SUPPORT.md` | 620+ | ✅ Documentation complete |
 | `WIN32_SIGNAL_MMAP.md` | 522 | ✅ Signal and mmap documentation |
 | `WIN32_ICMP_SUPPORT.md` | 800+ | ✅ ICMP documentation |
 | `WIN32_AFLOCAL_SUPPORT.md` | 1,100+ | ✅ AF_LOCAL documentation |
+| `WIN32_AFLOCAL_ADVANCED.md` | 900+ | ✅ Advanced features documentation |
 | `WIN32_IMPLEMENTATION_STATUS.md` | This file | ✅ Up to date |
 
 ---

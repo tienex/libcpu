@@ -198,6 +198,67 @@ int nix_platform_win32_aflocal_getsockopt(int sockfd, int level, int optname,
 										   void *optval, socklen_t *optlen);
 
 /*
+ * Advanced AF_LOCAL Features
+ */
+
+/* Peer credentials structure */
+typedef struct {
+	DWORD pid;  /* Process ID */
+	DWORD uid;  /* User ID (RID from SID) */
+	DWORD gid;  /* Group ID (RID from SID) */
+} nix_ucred_t;
+
+/* I/O vector for scatter/gather I/O */
+typedef struct {
+	void *iov_base;    /* Starting address */
+	size_t iov_len;    /* Number of bytes */
+} nix_iovec_t;
+
+/* Message header for sendmsg/recvmsg */
+typedef struct {
+	void *msg_name;           /* Address (unused for connected sockets) */
+	size_t msg_namelen;       /* Address length */
+	nix_iovec_t *msg_iov;     /* I/O vector */
+	size_t msg_iovlen;        /* Number of elements in msg_iov */
+	void *msg_control;        /* Ancillary data */
+	size_t msg_controllen;    /* Ancillary data length */
+	int msg_flags;            /* Flags on received message */
+} nix_msghdr_t;
+
+/* Control message header */
+typedef struct {
+	size_t cmsg_len;    /* Length including header */
+	int cmsg_level;     /* Originating protocol */
+	int cmsg_type;      /* Protocol-specific type */
+	/* Followed by unsigned char cmsg_data[] */
+} nix_cmsghdr_t;
+
+/* Control message macros */
+#define NIX_CMSG_ALIGN(len) (((len) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define NIX_CMSG_SPACE(len) (NIX_CMSG_ALIGN(sizeof(nix_cmsghdr_t)) + NIX_CMSG_ALIGN(len))
+#define NIX_CMSG_LEN(len)   (NIX_CMSG_ALIGN(sizeof(nix_cmsghdr_t)) + (len))
+
+#define NIX_CMSG_FIRSTHDR(mhdr) \
+	((mhdr)->msg_controllen >= sizeof(nix_cmsghdr_t) ? \
+	 (nix_cmsghdr_t *)(mhdr)->msg_control : (nix_cmsghdr_t *)NULL)
+
+#define NIX_CMSG_DATA(cmsg) \
+	((unsigned char *)((nix_cmsghdr_t *)(cmsg) + 1))
+
+/* Get peer credentials */
+int nix_platform_win32_aflocal_getpeercred(int sockfd, nix_ucred_t *cred);
+
+/* Send message with control data */
+ssize_t nix_platform_win32_aflocal_sendmsg(int sockfd, const nix_msghdr_t *msg, int flags);
+
+/* Receive message with control data */
+ssize_t nix_platform_win32_aflocal_recvmsg(int sockfd, nix_msghdr_t *msg, int flags);
+
+/* Extended getsockopt for SO_PEERCRED */
+int nix_platform_win32_aflocal_getsockopt_ex(int sockfd, int level, int optname,
+											  void *optval, socklen_t *optlen);
+
+/*
  * POSIX Protection Flags (for reference)
  */
 #define NIX_PROT_NONE   0x00
@@ -348,6 +409,42 @@ int nix_platform_win32_aflocal_getsockopt(int sockfd, int level, int optname,
 #endif
 #ifndef SHUT_RDWR
 #define SHUT_RDWR 2
+#endif
+
+/*
+ * Socket options for AF_LOCAL
+ */
+#ifndef SOL_SOCKET
+#define SOL_SOCKET   1
+#endif
+#ifndef SO_PEERCRED
+#define SO_PEERCRED  17
+#endif
+#ifndef SO_TYPE
+#define SO_TYPE      3
+#endif
+#ifndef SO_ERROR
+#define SO_ERROR     4
+#endif
+
+/*
+ * Control message types
+ */
+#ifndef SCM_RIGHTS
+#define SCM_RIGHTS       1
+#endif
+#ifndef SCM_CREDENTIALS
+#define SCM_CREDENTIALS  2
+#endif
+
+/*
+ * Message flags
+ */
+#ifndef MSG_CTRUNC
+#define MSG_CTRUNC  0x0008  /* Control data truncated */
+#endif
+#ifndef MSG_TRUNC
+#define MSG_TRUNC   0x0020  /* Message truncated */
 #endif
 
 #endif /* NIX_HOST_WIN32 */

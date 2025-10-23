@@ -35,6 +35,8 @@ typedef struct af_local_socket {
 	int listening;                 /* Is listening? */
 	int connected;                 /* Is connected? */
 	int backlog;                   /* Listen backlog */
+	DWORD peer_pid;                /* Peer process ID (for credentials) */
+	HANDLE peer_process;           /* Peer process handle (for rights transfer) */
 	struct af_local_socket *next;  /* Linked list */
 } af_local_socket_t;
 
@@ -45,9 +47,9 @@ typedef struct af_local_socket {
 #define AFLOCAL_STATE_CONNECTED   3
 #define AFLOCAL_STATE_CLOSED      4
 
-/* Global socket list */
-static af_local_socket_t *g_aflocal_sockets = NULL;
-static CRITICAL_SECTION g_aflocal_lock;
+/* Global socket list (exposed for advanced features) */
+af_local_socket_t *g_aflocal_sockets = NULL;
+CRITICAL_SECTION g_aflocal_lock;
 static int g_aflocal_initialized = 0;
 static int g_aflocal_next_fd = 10000;  /* Start from high number to avoid conflicts */
 
@@ -94,6 +96,8 @@ aflocal_alloc(int type)
 	sock->listening = 0;
 	sock->connected = 0;
 	sock->backlog = 5;
+	sock->peer_pid = 0;
+	sock->peer_process = NULL;
 	sock->next = g_aflocal_sockets;
 	g_aflocal_sockets = sock;
 	LeaveCriticalSection(&g_aflocal_lock);
@@ -101,7 +105,8 @@ aflocal_alloc(int type)
 	return sock;
 }
 
-static af_local_socket_t *
+/* Exposed for advanced features */
+af_local_socket_t *
 aflocal_find(int sockfd)
 {
 	aflocal_init();
@@ -144,6 +149,9 @@ aflocal_free(int sockfd)
 			}
 			if (sock->server_handle != INVALID_HANDLE_VALUE) {
 				CloseHandle(sock->server_handle);
+			}
+			if (sock->peer_process != NULL) {
+				CloseHandle(sock->peer_process);
 			}
 
 			free(sock);
