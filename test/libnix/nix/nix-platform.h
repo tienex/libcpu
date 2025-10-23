@@ -223,10 +223,26 @@ struct iovec {
     void *iov_base;
     size_t iov_len;
 };
+/* poll structures */
+struct pollfd {
+    int fd;
+    short events;
+    short revents;
+};
+typedef unsigned long nfds_t;
+typedef unsigned int socklen_t;
+#define POLLIN     0x0001
+#define POLLOUT    0x0004
+#define POLLERR    0x0008
+#define POLLHUP    0x0010
+#define POLLNVAL   0x0020
+
 #elif defined(NIX_HOST_UNIX)
 # include <sys/time.h>
 # include <sys/uio.h>
 # include <utime.h>
+# include <poll.h>
+# include <sys/socket.h>
 #else
 struct timeval {
     time_t tv_sec;
@@ -353,6 +369,13 @@ extern "C" {
 int nix_platform_init(void);
 void nix_platform_shutdown(void);
 
+/* Platform version detection (for runtime API selection) */
+#if defined(NIX_HOST_WIN32)
+int nix_platform_win32_version_major(void);  /* Returns Windows version (3, 4, 5, 6, 10) */
+int nix_platform_win32_version_minor(void);
+int nix_platform_win32_has_api(const char *api_name);  /* Check if API is available */
+#endif
+
 /* Platform-specific file operations */
 nix_host_fd_t nix_platform_open(const char *path, int flags, int mode);
 int nix_platform_close(nix_host_fd_t fd);
@@ -439,6 +462,41 @@ int nix_platform_sethostname(const char *name, size_t len);
 int nix_platform_gettimeofday(struct timeval *tv, void *tz);
 int nix_platform_nanosleep(const struct timespec *req, struct timespec *rem);
 unsigned int nix_platform_sleep(unsigned int seconds);
+
+/* Platform-specific signal operations */
+typedef void (*nix_signal_handler_t)(int);
+#define NIX_SIG_DFL  ((nix_signal_handler_t)0)
+#define NIX_SIG_IGN  ((nix_signal_handler_t)1)
+#define NIX_SIG_ERR  ((nix_signal_handler_t)-1)
+
+nix_signal_handler_t nix_platform_signal(int signum, nix_signal_handler_t handler);
+int nix_platform_raise(int signum);
+int nix_platform_kill_signal(nix_host_pid_t pid, int signum);
+
+/* Platform-specific socket operations */
+int nix_platform_socket(int domain, int type, int protocol);
+int nix_platform_socketpair(int domain, int type, int protocol, int sv[2]);
+int nix_platform_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int nix_platform_listen(int sockfd, int backlog);
+int nix_platform_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int nix_platform_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+ssize_t nix_platform_send(int sockfd, const void *buf, size_t len, int flags);
+ssize_t nix_platform_recv(int sockfd, void *buf, size_t len, int flags);
+ssize_t nix_platform_sendto(int sockfd, const void *buf, size_t len, int flags,
+                             const struct sockaddr *dest_addr, socklen_t addrlen);
+ssize_t nix_platform_recvfrom(int sockfd, void *buf, size_t len, int flags,
+                               struct sockaddr *src_addr, socklen_t *addrlen);
+int nix_platform_shutdown_socket(int sockfd, int how);
+int nix_platform_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int nix_platform_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int nix_platform_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+int nix_platform_getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+
+/* Platform-specific event notification */
+int nix_platform_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int nix_platform_ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout, const void *sigmask);
+int nix_platform_pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+                          const struct timespec *timeout, const void *sigmask);
 
 /* Platform-specific error handling */
 int nix_platform_get_errno(void);
