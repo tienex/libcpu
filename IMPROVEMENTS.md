@@ -914,3 +914,456 @@ static_recompile(cpu, &opts);
 ```
 
 ---
+
+## 4. Enhanced Interactive Debugger
+
+### Overview
+
+The enhanced interactive debugger (`idbg_enhanced`) provides advanced debugging capabilities for emulated programs, including breakpoints, watchpoints, memory inspection, symbol tables, and call stack tracking. It's designed as a GDB-like interface for debugging guest code.
+
+### Key Features
+
+1. **Breakpoints**: Execution, read, write, and access breakpoints with hit counts
+2. **Watchpoints**: Memory watchpoints that trigger on value changes
+3. **Symbol Support**: Load and use symbol tables for better debugging
+4. **Call Stack**: Track and display function call hierarchy
+5. **Memory Tools**: Hex dumps, smart disassembly, pattern search, memory compare
+6. **Tracing**: Instruction-level execution tracing
+7. **Script Support**: Execute debugger commands from files
+8. **Statistics**: Track debugger usage and performance
+
+### Data Structures
+
+#### Breakpoint
+```c
+typedef enum {
+    BP_TYPE_EXEC,          /* Execution breakpoint */
+    BP_TYPE_READ,          /* Memory read breakpoint */
+    BP_TYPE_WRITE,         /* Memory write breakpoint */
+    BP_TYPE_ACCESS         /* Memory access breakpoint */
+} breakpoint_type_t;
+
+typedef struct breakpoint {
+    int id;                /* Breakpoint ID */
+    breakpoint_type_t type; /* Type */
+    addr_t address;        /* Address */
+    bool enabled;          /* Enabled flag */
+    bool temporary;        /* Temporary (one-shot) */
+    uint64_t hit_count;    /* Number of times hit */
+    const char *condition; /* Conditional expression */
+    const char *commands;  /* Commands to execute on hit */
+} breakpoint_t;
+```
+
+#### Watchpoint
+```c
+typedef struct watchpoint {
+    int id;                /* Watchpoint ID */
+    addr_t address;        /* Address to watch */
+    size_t size;           /* Size in bytes */
+    bool enabled;          /* Enabled flag */
+    uint64_t old_value;    /* Last known value */
+    uint64_t hit_count;    /* Number of times triggered */
+    const char *expression; /* Expression being watched */
+} watchpoint_t;
+```
+
+#### Enhanced Debugger Context
+```c
+typedef struct idbg_enhanced {
+    cpu_t *cpu;
+
+    /* Breakpoints (256 max) */
+    breakpoint_t breakpoints[MAX_BREAKPOINTS];
+    int num_breakpoints;
+
+    /* Watchpoints (256 max) */
+    watchpoint_t watchpoints[MAX_WATCHPOINTS];
+    int num_watchpoints;
+
+    /* Call stack (1024 frames) */
+    call_frame_t call_stack[MAX_CALL_STACK_DEPTH];
+    int call_stack_depth;
+
+    /* Symbol table */
+    symbol_t *symbols;
+    int num_symbols;
+
+    /* Debug flags */
+    bool trace_enabled;
+    bool verbose;
+
+    /* Statistics */
+    uint64_t step_count;
+    uint64_t instr_count;
+} idbg_enhanced_t;
+```
+
+### API Reference
+
+#### Initialization
+```c
+void idbg_enhanced_init(idbg_enhanced_t *ctx, cpu_t *cpu);
+void idbg_enhanced_free(idbg_enhanced_t *ctx);
+int idbg_enhanced_run(idbg_enhanced_t *ctx, debug_function_t debug_func);
+```
+
+#### Breakpoints
+```c
+int idbg_add_breakpoint(idbg_enhanced_t *ctx, breakpoint_type_t type, addr_t address);
+int idbg_remove_breakpoint(idbg_enhanced_t *ctx, int id);
+int idbg_enable_breakpoint(idbg_enhanced_t *ctx, int id);
+int idbg_disable_breakpoint(idbg_enhanced_t *ctx, int id);
+void idbg_list_breakpoints(idbg_enhanced_t *ctx);
+bool idbg_check_breakpoints(idbg_enhanced_t *ctx, addr_t pc);
+```
+
+#### Watchpoints
+```c
+int idbg_add_watchpoint(idbg_enhanced_t *ctx, addr_t address, size_t size, const char *expr);
+int idbg_remove_watchpoint(idbg_enhanced_t *ctx, int id);
+int idbg_enable_watchpoint(idbg_enhanced_t *ctx, int id);
+int idbg_disable_watchpoint(idbg_enhanced_t *ctx, int id);
+void idbg_list_watchpoints(idbg_enhanced_t *ctx);
+bool idbg_check_watchpoints(idbg_enhanced_t *ctx);
+```
+
+#### Memory Inspection
+```c
+void idbg_hexdump(idbg_enhanced_t *ctx, addr_t address, size_t length);
+void idbg_smart_disasm(idbg_enhanced_t *ctx, addr_t address, int count);
+void idbg_compare_memory(idbg_enhanced_t *ctx, addr_t addr1, addr_t addr2, size_t length);
+void idbg_search_memory(idbg_enhanced_t *ctx, addr_t start, addr_t end,
+                        const uint8_t *pattern, size_t pattern_len);
+```
+
+#### Symbol Table
+```c
+int idbg_load_symbols(idbg_enhanced_t *ctx, const char *filename);
+const char *idbg_lookup_symbol(idbg_enhanced_t *ctx, addr_t address);
+addr_t idbg_lookup_address(idbg_enhanced_t *ctx, const char *symbol);
+void idbg_list_symbols(idbg_enhanced_t *ctx, const char *pattern);
+```
+
+#### Call Stack
+```c
+void idbg_update_call_stack(idbg_enhanced_t *ctx, addr_t pc, addr_t sp);
+void idbg_print_backtrace(idbg_enhanced_t *ctx);
+void idbg_print_frame(idbg_enhanced_t *ctx, int frame_num);
+```
+
+### Usage Examples
+
+#### Basic Debugging Session
+
+```c
+#include "libcpu.h"
+#include "idbg_enhanced.h"
+
+int main() {
+    // Create CPU
+    cpu_t *cpu = cpu_new(CPU_ARCH_ARM, CPU_FLAG_ENDIAN_LITTLE, 0);
+    cpu_set_ram(cpu, program_data);
+
+    // Initialize enhanced debugger
+    idbg_enhanced_t idbg;
+    idbg_enhanced_init(&idbg, cpu);
+
+    // Set breakpoints
+    idbg_add_breakpoint(&idbg, BP_TYPE_EXEC, 0x8000);
+    idbg_add_breakpoint(&idbg, BP_TYPE_EXEC, 0x8100);
+
+    // Set watchpoint
+    idbg_add_watchpoint(&idbg, 0x2000, 4, "status_register");
+
+    // Load symbols
+    idbg_load_symbols(&idbg, "program.sym");
+
+    // Run debugger
+    idbg_enhanced_run(&idbg, NULL);
+
+    // Cleanup
+    idbg_enhanced_free(&idbg);
+    cpu_free(cpu);
+
+    return 0;
+}
+```
+
+#### Programmatic Breakpoint Control
+
+```c
+// Add conditional breakpoints
+int bp_id = idbg_add_breakpoint(&idbg, BP_TYPE_EXEC, 0x9000);
+
+// Temporarily disable
+idbg_disable_breakpoint(&idbg, bp_id);
+
+// Do something...
+
+// Re-enable
+idbg_enable_breakpoint(&idbg, bp_id);
+
+// Remove when done
+idbg_remove_breakpoint(&idbg, bp_id);
+```
+
+#### Memory Analysis
+
+```c
+// Hex dump memory region
+idbg_hexdump(&idbg, 0x8000, 256);
+
+// Smart disassembly (shows symbols)
+idbg_smart_disasm(&idbg, 0x8000, 20);
+
+// Search for pattern
+uint8_t pattern[] = {0x00, 0x48, 0x2D, 0xE9}; // ARM push instruction
+idbg_search_memory(&idbg, 0x8000, 0x10000, pattern, sizeof(pattern));
+
+// Compare two memory regions
+idbg_compare_memory(&idbg, 0x8000, 0x9000, 1024);
+```
+
+#### Using Symbol Files
+
+Symbol file format (ADDRESS TYPE NAME):
+```
+8000 F _start
+8010 F main
+8050 F process_data
+8100 F handle_error
+2000 D status_register
+2004 D input_buffer
+```
+
+Loading and using:
+```c
+// Load symbols
+idbg_load_symbols(&idbg, "program.sym");
+
+// Lookup by address
+const char *func = idbg_lookup_symbol(&idbg, 0x8010);
+printf("Function: %s\n", func);  // Output: main
+
+// Lookup by name
+addr_t addr = idbg_lookup_address(&idbg, "handle_error");
+printf("Address: 0x%llx\n", addr);  // Output: 0x8100
+
+// List all symbols matching pattern
+idbg_list_symbols(&idbg, "handle");  // Shows all symbols containing "handle"
+```
+
+### Interactive Commands
+
+When running `idbg_enhanced_run()`, the following commands are available:
+
+#### Execution Control
+```
+s, step              - Single step one instruction
+c, continue          - Continue execution until breakpoint
+quit, q              - Exit debugger
+```
+
+#### Breakpoint Commands
+```
+break ADDR           - Set breakpoint at address
+b 0x8000             - Short form
+
+delete ID            - Delete breakpoint by ID
+d 1                  - Short form
+
+enable ID            - Enable breakpoint
+disable ID           - Disable breakpoint
+
+info breakpoints     - List all breakpoints
+info b               - Short form
+```
+
+#### Watchpoint Commands
+```
+watch ADDR [SIZE]    - Set watchpoint (default size: 4)
+watch 0x2000 8       - Watch 8 bytes at 0x2000
+
+delete w ID          - Delete watchpoint
+info watchpoints     - List all watchpoints
+info w               - Short form
+```
+
+#### Memory Commands
+```
+dump ADDR LENGTH     - Hex dump memory
+dump 0x8000 256      - Dump 256 bytes
+
+disasm ADDR [COUNT]  - Disassemble instructions
+disasm 0x8000 10     - Disassemble 10 instructions
+
+search START END PAT - Search for byte pattern (future)
+```
+
+#### Register Commands
+```
+info registers       - Show all registers
+info r               - Short form
+
+set $REG = VALUE     - Set register value (future)
+print $REG           - Print register (future)
+```
+
+#### Symbol Commands
+```
+symbol-file FILE     - Load symbol table
+symbol-file prog.sym
+
+info symbols [PAT]   - List symbols (optional pattern filter)
+info symbols handle  - Show symbols containing "handle"
+```
+
+#### Call Stack Commands
+```
+bt                   - Print backtrace
+backtrace            - Full name
+
+frame N              - Select and display stack frame N
+```
+
+#### Tracing & Statistics
+```
+set trace on         - Enable instruction tracing
+set trace off        - Disable tracing
+
+info stats           - Show debugger statistics
+```
+
+#### Script & Logging
+```
+source FILE          - Execute commands from file
+source debug.script
+
+# Future: logging support
+```
+
+### Example Debugging Session
+
+```
+Enhanced Interactive Debugger
+Type 'help' for available commands
+
+PC = 0x8000
+=> <_start>: push {r4-r11, lr}
+
+(idbg) break 0x8010
+Breakpoint 1: exec at 0x8010
+
+(idbg) watch 0x2000 4
+Watchpoint 1: watch 0x2000 (size 4)
+
+(idbg) symbol-file program.sym
+Loaded 25 symbols from program.sym
+
+(idbg) c
+
+Breakpoint 1 hit at 0x8010 (hit count: 1)
+PC = 0x8010
+=> <main>: push {r4, r5, r6, lr}
+
+(idbg) info registers
+Registers:
+  r0       = 0x00000000  r1       = 0x00000001  r2       = 0x00002000  r3       = 0x00000010
+  r4       = 0x00000000  r5       = 0x00000000  r6       = 0x00000000  r7       = 0x00000000
+  ...
+  PC       = 0x8010
+
+(idbg) bt
+Call stack:
+#   PC               SP               Function
+--  ---------------  ---------------  --------
+0   0x8010          0x7ff0            main
+1   0x8000          0x8000            _start
+
+(idbg) dump 0x2000 64
+00002000:  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00002010:  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00002020:  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00002030:  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+
+(idbg) disasm 0x8010 5
+<main>:
+0x00008010:  push {r4, r5, r6, lr}
+0x00008014:  mov r4, r0
+0x00008018:  mov r5, r1
+0x0000801c:  bl 0x8050 <process_data>
+0x00008020:  cmp r0, #0
+
+(idbg) s
+
+Watchpoint 1 triggered at 0x2000
+  Old value: 0x0
+  New value: 0x1
+
+PC = 0x8014
+=> mov r4, r0
+
+(idbg) info stats
+
+Debugger Statistics:
+  Steps executed:       15
+  Instructions:         15
+  Breakpoints set:      1
+  Watchpoints set:      1
+  Symbols loaded:       25
+  Total BP hits:        1
+  Total WP triggers:    1
+
+(idbg) quit
+Debugger exited
+```
+
+### Integration with Existing Code
+
+The enhanced debugger is a separate system from the basic `idbg` debugger. You can use either:
+
+```c
+// Option 1: Basic debugger (original)
+#include "idbg.h"
+idbg(cpu, NULL);
+
+// Option 2: Enhanced debugger (new)
+#include "idbg_enhanced.h"
+idbg_enhanced_t ctx;
+idbg_enhanced_init(&ctx, cpu);
+idbg_enhanced_run(&ctx, NULL);
+idbg_enhanced_free(&ctx);
+```
+
+### Performance Considerations
+
+- **Breakpoints**: O(n) check per instruction when active
+- **Watchpoints**: O(n) memory comparison per instruction
+- **Symbol lookup**: O(n) linear search (consider hash table for large symbol tables)
+- **Overhead**: Minimal when not stepping; significant when tracing enabled
+
+### Limitations
+
+1. **Call stack tracking**: Simplified heuristic, may not work for all architectures
+2. **Conditional breakpoints**: Condition parsing not yet implemented
+3. **Hardware breakpoints**: Software-only implementation
+4. **Memory access breakpoints**: Requires instrumentation
+5. **Symbol file format**: Simple custom format, no DWARF/ELF support
+
+### Future Enhancements
+
+Planned improvements:
+
+1. **Expression evaluator**: Conditional breakpoints with expressions
+2. **Hardware breakpoint simulation**: Architecture-specific support
+3. **Memory access tracing**: Log all reads/writes
+4. **Reverse debugging**: Record/replay execution
+5. **Remote debugging**: GDB protocol support
+6. **DWARF symbols**: Parse standard debug formats
+7. **Instruction history**: Keep last N executed instructions
+8. **Call graph generation**: Visualize function calls
+9. **Code coverage**: Track executed basic blocks
+10. **Performance profiling**: Hotspot analysis
+
+---
