@@ -570,6 +570,453 @@ nix_platform_kill_signal(nix_host_pid_t pid, int signum)
 
 /*
  * ========================================================================
+ * PLATFORM SOCKET OPERATIONS
+ * ========================================================================
+ */
+
+int
+nix_platform_socket(int domain, int type, int protocol)
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Winsock socket() - Direct wrapper for AF_INET/AF_INET6
+     * AF_LOCAL/AF_UNIX will be handled separately via named pipes
+     */
+    SOCKET sock = socket(domain, type, protocol);
+    if (sock == INVALID_SOCKET) {
+        /* Map Winsock error to errno */
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEAFNOSUPPORT:
+            nix_platform_set_errno(EAFNOSUPPORT);
+            break;
+        case WSAEPROTONOSUPPORT:
+            nix_platform_set_errno(EPROTONOSUPPORT);
+            break;
+        case WSAEMFILE:
+            nix_platform_set_errno(EMFILE);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+
+    /*
+     * On Windows, SOCKETs are handles, not file descriptors.
+     * We return them as int for compatibility, but they need special handling.
+     * TODO: Integrate with nix_fd table for proper fd management
+     */
+    return (int)sock;
+
+#else
+    /* Standard POSIX socket() */
+    return socket(domain, type, protocol);
+#endif
+}
+
+int
+nix_platform_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    if (bind((SOCKET)sockfd, addr, (int)addrlen) == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEADDRINUSE:
+            nix_platform_set_errno(EADDRINUSE);
+            break;
+        case WSAEADDRNOTAVAIL:
+            nix_platform_set_errno(EADDRNOTAVAIL);
+            break;
+        case WSAEACCES:
+            nix_platform_set_errno(EACCES);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX bind() */
+    return bind(sockfd, addr, addrlen);
+#endif
+}
+
+int
+nix_platform_listen(int sockfd, int backlog)
+{
+#if defined(NIX_HOST_WIN32)
+    if (listen((SOCKET)sockfd, backlog) == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX listen() */
+    return listen(sockfd, backlog);
+#endif
+}
+
+int
+nix_platform_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int len = addrlen ? (int)*addrlen : 0;
+    SOCKET client = accept((SOCKET)sockfd, addr, addrlen ? &len : NULL);
+
+    if (client == INVALID_SOCKET) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEWOULDBLOCK:
+            nix_platform_set_errno(EWOULDBLOCK);
+            break;
+        case WSAECONNRESET:
+            nix_platform_set_errno(ECONNRESET);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+
+    if (addrlen) {
+        *addrlen = (socklen_t)len;
+    }
+
+    return (int)client;
+
+#else
+    /* Standard POSIX accept() */
+    return accept(sockfd, addr, addrlen);
+#endif
+}
+
+int
+nix_platform_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    if (connect((SOCKET)sockfd, addr, (int)addrlen) == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAECONNREFUSED:
+            nix_platform_set_errno(ECONNREFUSED);
+            break;
+        case WSAENETUNREACH:
+            nix_platform_set_errno(ENETUNREACH);
+            break;
+        case WSAEHOSTUNREACH:
+            nix_platform_set_errno(EHOSTUNREACH);
+            break;
+        case WSAETIMEDOUT:
+            nix_platform_set_errno(ETIMEDOUT);
+            break;
+        case WSAEWOULDBLOCK:
+        case WSAEINPROGRESS:
+            nix_platform_set_errno(EINPROGRESS);
+            break;
+        case WSAEISCONN:
+            nix_platform_set_errno(EISCONN);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX connect() */
+    return connect(sockfd, addr, addrlen);
+#endif
+}
+
+ssize_t
+nix_platform_send(int sockfd, const void *buf, size_t len, int flags)
+{
+#if defined(NIX_HOST_WIN32)
+    int result = send((SOCKET)sockfd, (const char *)buf, (int)len, flags);
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEWOULDBLOCK:
+            nix_platform_set_errno(EWOULDBLOCK);
+            break;
+        case WSAECONNRESET:
+            nix_platform_set_errno(ECONNRESET);
+            break;
+        case WSAENOTCONN:
+            nix_platform_set_errno(ENOTCONN);
+            break;
+        default:
+            nix_platform_set_errno(EIO);
+        }
+        return -1;
+    }
+    return (ssize_t)result;
+
+#else
+    /* Standard POSIX send() */
+    return send(sockfd, buf, len, flags);
+#endif
+}
+
+ssize_t
+nix_platform_recv(int sockfd, void *buf, size_t len, int flags)
+{
+#if defined(NIX_HOST_WIN32)
+    int result = recv((SOCKET)sockfd, (char *)buf, (int)len, flags);
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEWOULDBLOCK:
+            nix_platform_set_errno(EWOULDBLOCK);
+            break;
+        case WSAECONNRESET:
+            nix_platform_set_errno(ECONNRESET);
+            break;
+        case WSAENOTCONN:
+            nix_platform_set_errno(ENOTCONN);
+            break;
+        default:
+            nix_platform_set_errno(EIO);
+        }
+        return -1;
+    }
+    return (ssize_t)result;
+
+#else
+    /* Standard POSIX recv() */
+    return recv(sockfd, buf, len, flags);
+#endif
+}
+
+ssize_t
+nix_platform_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int result = sendto((SOCKET)sockfd, (const char *)buf, (int)len, flags,
+                        dest_addr, (int)addrlen);
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEWOULDBLOCK:
+            nix_platform_set_errno(EWOULDBLOCK);
+            break;
+        case WSAENETUNREACH:
+            nix_platform_set_errno(ENETUNREACH);
+            break;
+        case WSAEHOSTUNREACH:
+            nix_platform_set_errno(EHOSTUNREACH);
+            break;
+        default:
+            nix_platform_set_errno(EIO);
+        }
+        return -1;
+    }
+    return (ssize_t)result;
+
+#else
+    /* Standard POSIX sendto() */
+    return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+#endif
+}
+
+ssize_t
+nix_platform_recvfrom(int sockfd, void *buf, size_t len, int flags,
+                      struct sockaddr *src_addr, socklen_t *addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int fromlen = addrlen ? (int)*addrlen : 0;
+    int result = recvfrom((SOCKET)sockfd, (char *)buf, (int)len, flags,
+                          src_addr, addrlen ? &fromlen : NULL);
+
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAEWOULDBLOCK:
+            nix_platform_set_errno(EWOULDBLOCK);
+            break;
+        case WSAECONNRESET:
+            nix_platform_set_errno(ECONNRESET);
+            break;
+        default:
+            nix_platform_set_errno(EIO);
+        }
+        return -1;
+    }
+
+    if (addrlen) {
+        *addrlen = (socklen_t)fromlen;
+    }
+
+    return (ssize_t)result;
+
+#else
+    /* Standard POSIX recvfrom() */
+    return recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+#endif
+}
+
+int
+nix_platform_shutdown_socket(int sockfd, int how)
+{
+#if defined(NIX_HOST_WIN32)
+    /* Map POSIX shutdown constants to Winsock constants */
+    int win_how;
+    switch (how) {
+    case 0:  /* SHUT_RD */
+        win_how = SD_RECEIVE;
+        break;
+    case 1:  /* SHUT_WR */
+        win_how = SD_SEND;
+        break;
+    case 2:  /* SHUT_RDWR */
+        win_how = SD_BOTH;
+        break;
+    default:
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+
+    if (shutdown((SOCKET)sockfd, win_how) == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAENOTCONN:
+            nix_platform_set_errno(ENOTCONN);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX shutdown() */
+    return shutdown(sockfd, how);
+#endif
+}
+
+int
+nix_platform_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int len = addrlen ? (int)*addrlen : 0;
+    if (getsockname((SOCKET)sockfd, addr, &len) == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+    if (addrlen) {
+        *addrlen = (socklen_t)len;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX getsockname() */
+    return getsockname(sockfd, addr, addrlen);
+#endif
+}
+
+int
+nix_platform_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int len = addrlen ? (int)*addrlen : 0;
+    if (getpeername((SOCKET)sockfd, addr, &len) == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        switch (error) {
+        case WSAENOTCONN:
+            nix_platform_set_errno(ENOTCONN);
+            break;
+        default:
+            nix_platform_set_errno(EINVAL);
+        }
+        return -1;
+    }
+    if (addrlen) {
+        *addrlen = (socklen_t)len;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX getpeername() */
+    return getpeername(sockfd, addr, addrlen);
+#endif
+}
+
+int
+nix_platform_setsockopt(int sockfd, int level, int optname,
+                        const void *optval, socklen_t optlen)
+{
+#if defined(NIX_HOST_WIN32)
+    if (setsockopt((SOCKET)sockfd, level, optname,
+                   (const char *)optval, (int)optlen) == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX setsockopt() */
+    return setsockopt(sockfd, level, optname, optval, optlen);
+#endif
+}
+
+int
+nix_platform_getsockopt(int sockfd, int level, int optname,
+                        void *optval, socklen_t *optlen)
+{
+#if defined(NIX_HOST_WIN32)
+    int len = optlen ? (int)*optlen : 0;
+    if (getsockopt((SOCKET)sockfd, level, optname,
+                   (char *)optval, &len) == SOCKET_ERROR) {
+        nix_platform_set_errno(EINVAL);
+        return -1;
+    }
+    if (optlen) {
+        *optlen = (socklen_t)len;
+    }
+    return 0;
+
+#else
+    /* Standard POSIX getsockopt() */
+    return getsockopt(sockfd, level, optname, optval, optlen);
+#endif
+}
+
+int
+nix_platform_socketpair(int domain, int type, int protocol, int sv[2])
+{
+#if defined(NIX_HOST_WIN32)
+    /*
+     * Windows doesn't have socketpair().
+     * We'll implement it later using:
+     * - Named pipes for AF_UNIX/AF_LOCAL
+     * - Loopback TCP connection for AF_INET (less efficient)
+     *
+     * For now, return ENOSYS (not implemented).
+     */
+    (void)domain;
+    (void)type;
+    (void)protocol;
+    (void)sv;
+
+    NIX_DPRINTF("socketpair: Not yet implemented on Win32");
+    nix_platform_set_errno(ENOSYS);
+    return -1;
+
+#else
+    /* Standard POSIX socketpair() */
+    return socketpair(domain, type, protocol, sv);
+#endif
+}
+
+/*
+ * ========================================================================
  * PLATFORM FILE OPERATIONS
  * ========================================================================
  */
