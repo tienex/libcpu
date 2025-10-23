@@ -13,8 +13,13 @@ ADD_LIBRARY(cpu SHARED
 			optimize.cpp
 			fp.cpp
 			idbg.cpp
+			idbg_enhanced.cpp
 			stat.cpp
 			sha1.cpp
+			cache.cpp
+			jumpcache.cpp
+			mmu.cpp
+			static_recompiler.cpp
 			interface.cpp
 			timings.cpp)
 

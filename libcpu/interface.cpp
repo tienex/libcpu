@@ -27,6 +27,9 @@
 #include "function.h"
 #include "optimize.h"
 #include "stat.h"
+#include "cache.h"
+#include "jumpcache.h"
+#include "mmu.h"
 
 /* architecture descriptors */
 extern arch_func_t arch_func_6502;
@@ -215,6 +218,30 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	cpu->timer_total[TIMER_BE] = 0;
 	cpu->timer_total[TIMER_RUN] = 0;
 
+	/* Initialize jump cache if enabled */
+	if (cpu->flags_codegen & CPU_CODEGEN_JUMPCACHE) {
+		cpu->jmp_cache = new jump_cache_t;
+		jump_cache_init(cpu->jmp_cache);
+		LOG("Jump cache initialized\n");
+	} else {
+		cpu->jmp_cache = NULL;
+	}
+
+	/* Initialize disk cache if enabled */
+	if (cpu->flags_codegen & CPU_CODEGEN_CACHE) {
+		cache_init(cpu);
+		LOG("Disk cache initialized\n");
+	}
+
+	/* Initialize soft MMU if enabled */
+	if (cpu->flags_codegen & CPU_CODEGEN_MMU) {
+		cpu->mmu = new mmu_context_t;
+		mmu_init(cpu->mmu, cpu->info.address_size);
+		LOG("Soft MMU initialized\n");
+	} else {
+		cpu->mmu = NULL;
+	}
+
 	return cpu;
 }
 
@@ -245,6 +272,21 @@ cpu_free(cpu_t *cpu)
 		free(cpu->in_ptr_gpr);
 	if (cpu->ptr_gpr != NULL)
 		free(cpu->ptr_gpr);
+
+	/* Free jump cache */
+	if (cpu->jmp_cache != NULL) {
+		if (cpu->flags_debug & CPU_DEBUG_PROFILE)
+			jump_cache_print_stats(cpu->jmp_cache);
+		delete cpu->jmp_cache;
+	}
+
+	/* Free MMU */
+	if (cpu->mmu != NULL) {
+		if (cpu->flags_debug & CPU_DEBUG_PROFILE)
+			mmu_print_stats(cpu->mmu);
+		mmu_free(cpu->mmu);
+		delete cpu->mmu;
+	}
 
 	delete cpu;
 }
