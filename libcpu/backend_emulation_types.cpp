@@ -261,21 +261,135 @@ void fp64_to_fp80(double x, fp80_t *out)
 
 double fp128_to_fp64(const fp128_t *x)
 {
-	/* Simplified - assumes IEEE 754 quad format */
-	/* This is a placeholder - full implementation needs 128-bit math */
-	uint64_t sign_exp = x->high >> 48;
-	if ((sign_exp & 0x7FFF) == 0x7FFF)
-		return (sign_exp & 0x8000) ? -INFINITY : INFINITY;
+	/* IEEE 754 quad (binary128) format:
+	 * high: [127:64] = sign(1) + exponent(15) + mantissa_high(48)
+	 * low:  [63:0]   = mantissa_low(64)
+	 */
+	uint64_t sign = (x->high >> 63) & 1;
+	uint64_t exp128 = (x->high >> 48) & 0x7FFF;
+	uint64_t mant_high = x->high & 0xFFFFFFFFFFFFULL;
 
-	/* Approximate conversion */
-	return 0.0;  /* TODO: Implement full conversion */
+	/* Handle special cases */
+	if (exp128 == 0x7FFF) {
+		/* Infinity or NaN */
+		if (mant_high == 0 && x->low == 0) {
+			return sign ? -INFINITY : INFINITY;
+		} else {
+			return NAN;  /* Preserve NaN */
+		}
+	}
+
+	if (exp128 == 0 && mant_high == 0 && x->low == 0) {
+		/* Zero */
+		return sign ? -0.0 : 0.0;
+	}
+
+	/* Convert exponent (bias 16383 -> bias 1023) */
+	int64_t exp64;
+	uint64_t mant64;
+
+	if (exp128 == 0) {
+		/* Denormal quad - need to normalize for fp64 or make denormal */
+		/* For simplicity, flush very small denormals to zero */
+		if (exp128 < (16383 - 1023 - 52)) {
+			return sign ? -0.0 : 0.0;
+		}
+		exp64 = 0;  /* Will be denormal in fp64 too */
+		/* Extract top 52 bits from 112-bit mantissa (bits 111-60) */
+		mant64 = (mant_high << 4) | (x->low >> 60);
+	} else {
+		/* Normal number */
+		exp64 = (int64_t)exp128 - 16383 + 1023;
+
+		/* Check for overflow */
+		if (exp64 >= 2047) {
+			return sign ? -INFINITY : INFINITY;
+		}
+
+		/* Check for underflow */
+		if (exp64 <= 0) {
+			/* Would be denormal in fp64 */
+			if (exp64 < -52) {
+				return sign ? -0.0 : 0.0;  /* Too small */
+			}
+			/* Create denormal fp64 */
+			/* Extract top 52 bits from mantissa and add implicit 1 */
+			mant64 = ((mant_high << 4) | (x->low >> 60)) | (1ULL << 52);
+			mant64 >>= (1 - exp64);  /* Shift for denormal */
+			exp64 = 0;
+		} else {
+			/* Normal fp64 */
+			/* Extract top 52 bits from 112-bit mantissa (bits 111-60) */
+			mant64 = (mant_high << 4) | (x->low >> 60);
+		}
+	}
+
+	/* Construct fp64 */
+	uint64_t result = (sign << 63) | ((uint64_t)exp64 << 52) | (mant64 & 0xFFFFFFFFFFFFFULL);
+
+	union { uint64_t i; double d; } u;
+	u.i = result;
+	return u.d;
 }
 
 void fp64_to_fp128(double x, fp128_t *out)
 {
-	/* Placeholder */
-	out->low = 0;
-	out->high = 0;
+	/* Convert fp64 to IEEE 754 quad (binary128) format */
+	union { double d; uint64_t i; } u;
+	u.d = x;
+
+	uint64_t sign = (u.i >> 63) & 1;
+	uint64_t exp64 = (u.i >> 52) & 0x7FF;
+	uint64_t mant64 = u.i & 0xFFFFFFFFFFFFFULL;
+
+	/* Handle special cases */
+	if (exp64 == 0x7FF) {
+		/* Infinity or NaN */
+		out->high = (sign << 63) | (0x7FFFULL << 48);
+		if (mant64 != 0) {
+			/* NaN - preserve mantissa, placing 52 bits into bits 111-60 */
+			out->high |= (mant64 >> 4) & 0xFFFFFFFFFFFFULL;  /* Top 48 bits */
+			out->low = (mant64 & 0xF) << 60;  /* Bottom 4 bits */
+		} else {
+			/* Infinity */
+			out->low = 0;
+		}
+		return;
+	}
+
+	if (exp64 == 0 && mant64 == 0) {
+		/* Zero */
+		out->high = sign << 63;
+		out->low = 0;
+		return;
+	}
+
+	/* Convert exponent (bias 1023 -> bias 16383) */
+	uint64_t exp128;
+	uint64_t mant128_high;
+	uint64_t mant128_low;
+
+	if (exp64 == 0) {
+		/* Denormal fp64 - normalize for fp128 */
+		/* Find leading 1 in mantissa */
+		int shift = __builtin_clzll(mant64) - (64 - 52);
+		mant64 <<= (shift + 1);  /* Remove leading 1 */
+		mant64 &= 0xFFFFFFFFFFFFFULL;  /* Mask to 52 bits */
+		exp128 = 16383 - 1023 - shift;  /* Adjust exponent */
+		/* Place 52 bits into bits 111-60 of 112-bit mantissa */
+		mant128_high = mant64 >> 4;  /* Top 48 bits */
+		mant128_low = (mant64 & 0xF) << 60;  /* Bottom 4 bits */
+	} else {
+		/* Normal fp64 */
+		exp128 = exp64 - 1023 + 16383;
+		/* Place 52 bits into bits 111-60 of 112-bit mantissa */
+		mant128_high = mant64 >> 4;  /* Top 48 bits */
+		mant128_low = (mant64 & 0xF) << 60;  /* Bottom 4 bits, rest padded with zeros */
+	}
+
+	/* Construct fp128 */
+	out->high = (sign << 63) | (exp128 << 48) | mant128_high;
+	out->low = mant128_low;
 }
 
 /***************************************************************************

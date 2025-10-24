@@ -1439,20 +1439,326 @@ IValue* builder_create_sqrt(IBuilder *builder, IValue *val, const char *name)
 	}
 }
 
-/* Stub implementations for other extended operations */
-IValue* builder_create_tan(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_exp(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_log(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_pow(IBuilder *builder, IValue *base, IValue *exp, const char *name) { return NULL; }
-IValue* builder_create_floor(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_ceil(IBuilder *builder, IValue *val, const char *name) { return NULL; }
+/* Extended FP operations */
+IValue* builder_create_tan(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
 
-IValue* builder_create_clz(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_ctz(IBuilder *builder, IValue *val, const char *name) { return NULL; }
-IValue* builder_create_popcnt(IBuilder *builder, IValue *val, const char *name) { return NULL; }
+	IType *type = val->GetType(val);
+	value_type_t kind = type->GetKind(type);
 
-void builder_create_memcpy(IBuilder *builder, IValue *dst, IValue *src, IValue *size) { }
-void builder_create_memset(IBuilder *builder, IValue *dst, IValue *val, IValue *size) { }
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[1] = {f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_tan_f64",
+			(void*)emu_tan_f64, f64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[1] = {f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_tan_f32",
+			(void*)emu_tan_f32, f32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
 
-IValue* builder_create_atomic_cas(IBuilder *builder, IValue *ptr, IValue *expected, IValue *desired, const char *name) { return NULL; }
-IValue* builder_create_atomic_fetch_add(IBuilder *builder, IValue *ptr, IValue *val, const char *name) { return NULL; }
+IValue* builder_create_exp(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	value_type_t kind = type->GetKind(type);
+
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[1] = {f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_exp_f64",
+			(void*)emu_exp_f64, f64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[1] = {f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_exp_f32",
+			(void*)emu_exp_f32, f32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+IValue* builder_create_log(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	value_type_t kind = type->GetKind(type);
+
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[1] = {f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_log_f64",
+			(void*)emu_log_f64, f64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[1] = {f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_log_f32",
+			(void*)emu_log_f32, f32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+IValue* builder_create_pow(IBuilder *builder, IValue *base, IValue *exp, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = base->GetType(base);
+	value_type_t kind = type->GetKind(type);
+
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[2] = {f64, f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_pow_f64",
+			(void*)emu_pow_f64, f64, params, 2);
+		IValue *args[2] = {base, exp};
+		return builder->CreateCall(builder, helper, args, 2, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[2] = {f32, f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_pow_f32",
+			(void*)emu_pow_f32, f32, params, 2);
+		IValue *args[2] = {base, exp};
+		return builder->CreateCall(builder, helper, args, 2, name);
+	}
+}
+
+IValue* builder_create_floor(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	value_type_t kind = type->GetKind(type);
+
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[1] = {f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_floor_f64",
+			(void*)emu_floor_f64, f64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[1] = {f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_floor_f32",
+			(void*)emu_floor_f32, f32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+IValue* builder_create_ceil(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	value_type_t kind = type->GetKind(type);
+
+	if (kind == VALUE_TYPE_DOUBLE) {
+		IType *f64 = eb->module->wrapped_module->GetDoubleType(eb->module->wrapped_module);
+		IType *params[1] = {f64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_ceil_f64",
+			(void*)emu_ceil_f64, f64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *f32 = eb->module->wrapped_module->GetFloatType(eb->module->wrapped_module);
+		IType *params[1] = {f32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_ceil_f32",
+			(void*)emu_ceil_f32, f32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+/* Bit manipulation operations */
+IValue* builder_create_clz(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	uint32_t bits = type->GetBitWidth(type);
+
+	if (bits == 32) {
+		IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+		IType *params[1] = {i32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_clz_i32",
+			(void*)emu_clz_i32, i32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *i64 = eb->module->wrapped_module->GetInt64Type(eb->module->wrapped_module);
+		IType *params[1] = {i64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_clz_i64",
+			(void*)emu_clz_i64, i64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+IValue* builder_create_ctz(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	uint32_t bits = type->GetBitWidth(type);
+
+	if (bits == 32) {
+		IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+		IType *params[1] = {i32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_ctz_i32",
+			(void*)emu_ctz_i32, i32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *i64 = eb->module->wrapped_module->GetInt64Type(eb->module->wrapped_module);
+		IType *params[1] = {i64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_ctz_i64",
+			(void*)emu_ctz_i64, i64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+IValue* builder_create_popcnt(IBuilder *builder, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	IType *type = val->GetType(val);
+	uint32_t bits = type->GetBitWidth(type);
+
+	if (bits == 32) {
+		IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+		IType *params[1] = {i32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_popcnt_i32",
+			(void*)emu_popcnt_i32, i32, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	} else {
+		IType *i64 = eb->module->wrapped_module->GetInt64Type(eb->module->wrapped_module);
+		IType *params[1] = {i64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_popcnt_i64",
+			(void*)emu_popcnt_i64, i64, params, 1);
+		IValue *args[1] = {val};
+		return builder->CreateCall(builder, helper, args, 1, name);
+	}
+}
+
+/* Memory operations */
+void builder_create_memcpy(IBuilder *builder, IValue *dst, IValue *src, IValue *size)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return;
+
+	IType *void_type = eb->module->wrapped_module->GetVoidType(eb->module->wrapped_module);
+	IType *ptr_type = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module,
+		eb->module->wrapped_module->GetInt8Type(eb->module->wrapped_module));
+	IType *size_type = size->GetType(size);  /* Use size's type (i32 or i64) */
+
+	IType *params[3] = {ptr_type, ptr_type, size_type};
+	IFunction *helper = inject_helper_function(eb->module, "__emu_memcpy",
+		(void*)emu_memcpy, void_type, params, 3);
+
+	IValue *args[3] = {dst, src, size};
+	builder->CreateCall(builder, helper, args, 3, "");
+}
+
+void builder_create_memset(IBuilder *builder, IValue *dst, IValue *val, IValue *size)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return;
+
+	IType *void_type = eb->module->wrapped_module->GetVoidType(eb->module->wrapped_module);
+	IType *ptr_type = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module,
+		eb->module->wrapped_module->GetInt8Type(eb->module->wrapped_module));
+	IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+	IType *size_type = size->GetType(size);  /* Use size's type (i32 or i64) */
+
+	IType *params[3] = {ptr_type, i32, size_type};
+	IFunction *helper = inject_helper_function(eb->module, "__emu_memset",
+		(void*)emu_memset, void_type, params, 3);
+
+	IValue *args[3] = {dst, val, size};
+	builder->CreateCall(builder, helper, args, 3, "");
+}
+
+/* Atomic operations */
+IValue* builder_create_atomic_cas(IBuilder *builder, IValue *ptr, IValue *expected, IValue *desired, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	/* Determine the pointee type size */
+	IType *ptr_type = ptr->GetType(ptr);
+	IType *elem_type = ptr_type->GetElementType(ptr_type);
+	uint32_t bits = elem_type->GetBitWidth(elem_type);
+
+	if (bits == 32) {
+		IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+		IType *ptr_i32 = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module, i32);
+		IType *params[3] = {ptr_i32, i32, i32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_cas_i32",
+			(void*)emu_cas_i32, i32, params, 3);
+		IValue *args[3] = {ptr, expected, desired};
+		return builder->CreateCall(builder, helper, args, 3, name);
+	} else {
+		IType *i64 = eb->module->wrapped_module->GetInt64Type(eb->module->wrapped_module);
+		IType *ptr_i64 = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module, i64);
+		IType *params[3] = {ptr_i64, i64, i64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_cas_i64",
+			(void*)emu_cas_i64, i64, params, 3);
+		IValue *args[3] = {ptr, expected, desired};
+		return builder->CreateCall(builder, helper, args, 3, name);
+	}
+}
+
+IValue* builder_create_atomic_fetch_add(IBuilder *builder, IValue *ptr, IValue *val, const char *name)
+{
+	EmulatedBuilder *eb = (EmulatedBuilder*)builder;
+	if (!eb->module) return NULL;
+
+	/* Determine the pointee type size */
+	IType *ptr_type = ptr->GetType(ptr);
+	IType *elem_type = ptr_type->GetElementType(ptr_type);
+	uint32_t bits = elem_type->GetBitWidth(elem_type);
+
+	if (bits == 32) {
+		IType *i32 = eb->module->wrapped_module->GetInt32Type(eb->module->wrapped_module);
+		IType *ptr_i32 = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module, i32);
+		IType *params[2] = {ptr_i32, i32};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_fetch_add_i32",
+			(void*)emu_fetch_add_i32, i32, params, 2);
+		IValue *args[2] = {ptr, val};
+		return builder->CreateCall(builder, helper, args, 2, name);
+	} else {
+		IType *i64 = eb->module->wrapped_module->GetInt64Type(eb->module->wrapped_module);
+		IType *ptr_i64 = eb->module->wrapped_module->GetPointerType(eb->module->wrapped_module, i64);
+		IType *params[2] = {ptr_i64, i64};
+		IFunction *helper = inject_helper_function(eb->module, "__emu_fetch_add_i64",
+			(void*)emu_fetch_add_i64, i64, params, 2);
+		IValue *args[2] = {ptr, val};
+		return builder->CreateCall(builder, helper, args, 2, name);
+	}
+}
