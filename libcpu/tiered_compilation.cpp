@@ -4,6 +4,7 @@
 
 #include "tiered_compilation.h"
 #include "libcpu.h"
+#include "tag.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -500,6 +501,8 @@ void* tier_manager_compile(tier_manager_t *mgr, addr_t address, compilation_tier
 	if (!mgr || !mgr->cpu)
 		return NULL;
 
+	cpu_t *cpu = mgr->cpu;
+
 	/* Get or create backend for this tier */
 	if (!mgr->backends[tier]) {
 		backend_type_t backend_type = tier_get_backend_type(tier);
@@ -524,16 +527,140 @@ void* tier_manager_compile(tier_manager_t *mgr, addr_t address, compilation_tier
 			return NULL;
 	}
 
-	/* For now, we don't have architecture-specific code generation integrated
-	 * This would require cpu->f->tag() to discover code at 'address',
-	 * then translate it using the module/backend.
-	 * Return NULL to indicate compilation is available but code discovery
-	 * needs to be implemented per-architecture */
+	/* Step 1: Discover code at the given address using architecture-specific tagging */
+	if (!cpu->tag) {
+		/* Tag system not initialized - likely in singlestep mode or tags not needed */
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - tag system not initialized\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		return NULL;
+	}
 
-	fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s (backend ready, code discovery not implemented)\n",
+	/* Check if this address is within the code area */
+	if (address < cpu->code_start || address >= cpu->code_end) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - address outside code area [0x%llx-0x%llx)\n",
+		        (unsigned long long)address, tier_get_name(tier),
+		        (unsigned long long)cpu->code_start, (unsigned long long)cpu->code_end);
+		return NULL;
+	}
+
+	/* Check if code at this address has been discovered */
+	tag_t tag = get_tag(cpu, address);
+	if (!(tag & TAG_CODE)) {
+		/* Code not yet discovered - tag it now */
+		tag_start(cpu, address);
+		tag = get_tag(cpu, address);
+
+		if (!(tag & TAG_CODE)) {
+			fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - failed to discover code\n",
+			        (unsigned long long)address, tier_get_name(tier));
+			return NULL;
+		}
+	}
+
+	/* Step 2: Create a function in the module for this address
+	 * Function signature: int func(uint8_t *RAM, void *grf, void *frf, void *debug_fp)
+	 */
+	char func_name[64];
+	snprintf(func_name, sizeof(func_name), "func_0x%llx", (unsigned long long)address);
+
+	IModule *module = mgr->modules[tier];
+
+	/* Check if function already exists */
+	IFunction *existing_func = module->GetFunction(module, func_name);
+	if (existing_func) {
+		/* Already compiled - get the function address */
+		void *func_ptr = module->GetFunctionAddress(module, func_name);
+		existing_func->base.Release(existing_func);
+		if (func_ptr) {
+			fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - using cached compilation\n",
+			        (unsigned long long)address, tier_get_name(tier));
+			return func_ptr;
+		}
+	}
+
+	/* Create function type: int(i8*, i8*, i8*, i8*) */
+	IType *int8_type = module->GetInt8Type(module);
+	IType *ptr_type = module->GetPointerType(module, int8_type);
+	IType *int32_type = module->GetInt32Type(module);
+
+	IType *param_types[4] = {ptr_type, ptr_type, ptr_type, ptr_type};
+	IType *func_type = module->GetFunctionType(module, int32_type, param_types, 4, 0);
+
+	/* Create function */
+	IFunction *function = module->CreateFunction(module, func_name, func_type);
+	if (!function) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - failed to create function\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		return NULL;
+	}
+
+	/* Step 3: Generate function body
+	 * For now, we create a minimal stub that returns JIT_RETURN_FUNCNOTFOUND (1).
+	 * Full implementation requires translating cpu->f.translate_instr() to work with IBuilder.
+	 */
+
+	/* Create entry basic block */
+	IBasicBlock *entry_bb = function->CreateBasicBlock(function, "entry");
+	if (!entry_bb) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - failed to create basic block\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		function->base.Release(function);
+		return NULL;
+	}
+
+	/* Create builder */
+	IBuilder *builder = module->CreateBuilder(module);
+	if (!builder) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - failed to create builder\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		entry_bb->base.Release(entry_bb);
+		function->base.Release(function);
+		return NULL;
+	}
+
+	/* Set insert point to entry block */
+	builder->SetInsertPoint(builder, entry_bb);
+
+	/* TODO: Actual instruction translation would go here
+	 * Current architecture frontends use cpu->f.translate_instr(cpu, pc, bb)
+	 * which is LLVM BasicBlock-specific. To integrate with tiered compilation:
+	 *
+	 * Option A) Translate one basic block at a time using IBuilder
+	 * Option B) Use the emulation backend's unified operation system
+	 * Option C) Create an LLVM->IBuilder compatibility layer
+	 *
+	 * For now, create a stub that returns JIT_RETURN_FUNCNOTFOUND (1)
+	 */
+
+	/* Create return value: JIT_RETURN_FUNCNOTFOUND = 1 */
+	IValue *ret_val = builder->CreateConstInt(builder, int32_type, 1, 0);
+	builder->CreateRet(builder, ret_val);
+
+	/* Clean up builder */
+	builder->base.Release(builder);
+	entry_bb->base.Release(entry_bb);
+	function->base.Release(function);
+
+	/* Step 4: Compile the module */
+	if (module->Compile(module) != 0) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - compilation failed\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		return NULL;
+	}
+
+	/* Step 5: Get function pointer */
+	void *func_ptr = module->GetFunctionAddress(module, func_name);
+	if (!func_ptr) {
+		fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - failed to get function address\n",
+		        (unsigned long long)address, tier_get_name(tier));
+		return NULL;
+	}
+
+	fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s - compiled successfully (stub returns FUNCNOTFOUND)\n",
 	        (unsigned long long)address, tier_get_name(tier));
+	fprintf(stderr, "  NOTE: Function is a stub. Actual instruction translation requires frontend refactoring.\n");
 
-	return NULL;
+	return func_ptr;
 }
 
 int tier_manager_replace_code(tier_manager_t *mgr, addr_t address, compilation_tier_t tier, void *new_code)
