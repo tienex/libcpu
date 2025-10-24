@@ -680,7 +680,8 @@ static int gccjit_query_interface(void *self, const char *iid, void **out)
  * GCCJIT Module Implementation
  ***************************************************************************/
 
-static GCCJITModule* gccjit_module_create_internal(const char *name, uint32_t opt_level)
+/* Export for stub backend */
+extern "C" GCCJITModule* gccjit_module_create_internal(const char *name, uint32_t opt_level)
 {
 	GCCJITModule *mod = new GCCJITModule();
 	mod->refcount = 1;

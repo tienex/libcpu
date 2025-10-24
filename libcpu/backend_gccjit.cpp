@@ -32,7 +32,7 @@ static const char* gccjit_backend_get_name(IBackend *self)
 
 static const char* gccjit_backend_get_version(IBackend *self)
 {
-	return "1.0-stub";
+	return "1.0";
 }
 
 static backend_type_t gccjit_backend_get_type(IBackend *self)
@@ -40,15 +40,17 @@ static backend_type_t gccjit_backend_get_type(IBackend *self)
 	return BACKEND_GCCJIT;
 }
 
+/* Forward declaration from full implementation */
+struct GCCJITModule;
+extern "C" GCCJITModule* gccjit_module_create_internal(const char *name, uint32_t opt_level);
+
 static int gccjit_backend_initialize(IBackend *self)
 {
 	GCCJITBackend *backend = (GCCJITBackend*)self;
 	if (backend->initialized)
 		return 0;
 
-	/* TODO: Initialize GCCJIT backend */
-	fprintf(stderr, "GCCJIT backend: Initialize called (stub implementation)\n");
-
+	/* GCCJIT backend initialization - context creation handled per-module */
 	backend->initialized = 1;
 	return 0;
 }
@@ -61,9 +63,12 @@ static void gccjit_backend_shutdown(IBackend *self)
 
 static IModule* gccjit_backend_create_module(IBackend *self, const char *name)
 {
-	fprintf(stderr, "GCCJIT backend: CreateModule called (not implemented)\n");
-	/* TODO: Implement GCCJIT module creation */
-	return NULL;
+	GCCJITBackend *backend = (GCCJITBackend*)self;
+	if (!backend->initialized)
+		gccjit_backend_initialize(self);
+
+	/* Delegate to full implementation */
+	return (IModule*)gccjit_module_create_internal(name, backend->opt_level);
 }
 
 static void gccjit_backend_set_opt_level(IBackend *self, uint32_t level)

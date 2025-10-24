@@ -497,12 +497,42 @@ int tier_manager_request_recompilation(tier_manager_t *mgr, addr_t address, comp
 
 void* tier_manager_compile(tier_manager_t *mgr, addr_t address, compilation_tier_t tier)
 {
-	/* This is a stub - actual implementation would call cpu_translate_function
-	 * with the appropriate backend */
-	fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s (stub)\n",
+	if (!mgr || !mgr->cpu)
+		return NULL;
+
+	/* Get or create backend for this tier */
+	if (!mgr->backends[tier]) {
+		backend_type_t backend_type = tier_get_backend_type(tier);
+		mgr->backends[tier] = backend_create(backend_type);
+		if (!mgr->backends[tier])
+			return NULL;
+
+		/* Initialize backend */
+		mgr->backends[tier]->Initialize(mgr->backends[tier]);
+
+		/* Set optimization level */
+		uint32_t opt_level = tier_get_opt_level(tier);
+		mgr->backends[tier]->SetOptimizationLevel(mgr->backends[tier], opt_level);
+	}
+
+	/* Get or create module for this tier */
+	if (!mgr->modules[tier]) {
+		char module_name[64];
+		snprintf(module_name, sizeof(module_name), "tier_%s", tier_get_name(tier));
+		mgr->modules[tier] = mgr->backends[tier]->CreateModule(mgr->backends[tier], module_name);
+		if (!mgr->modules[tier])
+			return NULL;
+	}
+
+	/* For now, we don't have architecture-specific code generation integrated
+	 * This would require cpu->f->tag() to discover code at 'address',
+	 * then translate it using the module/backend.
+	 * Return NULL to indicate compilation is available but code discovery
+	 * needs to be implemented per-architecture */
+
+	fprintf(stderr, "tier_manager_compile: addr=0x%llx tier=%s (backend ready, code discovery not implemented)\n",
 	        (unsigned long long)address, tier_get_name(tier));
 
-	/* For now, return NULL to indicate compilation not yet implemented */
 	return NULL;
 }
 

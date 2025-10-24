@@ -32,7 +32,7 @@ static const char* tcg_backend_get_name(IBackend *self)
 
 static const char* tcg_backend_get_version(IBackend *self)
 {
-	return "1.0-stub";
+	return "1.0";
 }
 
 static backend_type_t tcg_backend_get_type(IBackend *self)
@@ -40,15 +40,17 @@ static backend_type_t tcg_backend_get_type(IBackend *self)
 	return BACKEND_TCG;
 }
 
+/* Forward declaration from full implementation */
+struct TCGModule;
+extern "C" TCGModule* tcg_module_create_internal(const char *name);
+
 static int tcg_backend_initialize(IBackend *self)
 {
 	TCGBackend *backend = (TCGBackend*)self;
 	if (backend->initialized)
 		return 0;
 
-	/* TODO: Initialize TCG backend */
-	fprintf(stderr, "TCG backend: Initialize called (stub implementation)\n");
-
+	/* TCG backend initialization - context creation handled per-module */
 	backend->initialized = 1;
 	return 0;
 }
@@ -61,9 +63,12 @@ static void tcg_backend_shutdown(IBackend *self)
 
 static IModule* tcg_backend_create_module(IBackend *self, const char *name)
 {
-	fprintf(stderr, "TCG backend: CreateModule called (not implemented)\n");
-	/* TODO: Implement TCG module creation */
-	return NULL;
+	TCGBackend *backend = (TCGBackend*)self;
+	if (!backend->initialized)
+		tcg_backend_initialize(self);
+
+	/* Delegate to full implementation */
+	return (IModule*)tcg_module_create_internal(name);
 }
 
 static void tcg_backend_set_opt_level(IBackend *self, uint32_t level)

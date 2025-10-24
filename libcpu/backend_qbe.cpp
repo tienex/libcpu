@@ -32,7 +32,7 @@ static const char* qbe_backend_get_name(IBackend *self)
 
 static const char* qbe_backend_get_version(IBackend *self)
 {
-	return "1.0-stub";
+	return "1.0";
 }
 
 static backend_type_t qbe_backend_get_type(IBackend *self)
@@ -40,15 +40,17 @@ static backend_type_t qbe_backend_get_type(IBackend *self)
 	return BACKEND_QBE;
 }
 
+/* Forward declaration from full implementation */
+struct QBEModule;
+extern "C" QBEModule* qbe_module_create(QBEBackend *backend, const char *name);
+
 static int qbe_backend_initialize(IBackend *self)
 {
 	QBEBackend *backend = (QBEBackend*)self;
 	if (backend->initialized)
 		return 0;
 
-	/* TODO: Initialize QBE backend */
-	fprintf(stderr, "QBE backend: Initialize called (stub implementation)\n");
-
+	/* QBE backend initialization - context creation handled per-module */
 	backend->initialized = 1;
 	return 0;
 }
@@ -61,9 +63,12 @@ static void qbe_backend_shutdown(IBackend *self)
 
 static IModule* qbe_backend_create_module(IBackend *self, const char *name)
 {
-	fprintf(stderr, "QBE backend: CreateModule called (not implemented)\n");
-	/* TODO: Implement QBE module creation */
-	return NULL;
+	QBEBackend *backend = (QBEBackend*)self;
+	if (!backend->initialized)
+		qbe_backend_initialize(self);
+
+	/* Delegate to full implementation */
+	return (IModule*)qbe_module_create(backend, name);
 }
 
 static void qbe_backend_set_opt_level(IBackend *self, uint32_t level)

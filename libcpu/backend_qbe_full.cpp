@@ -923,7 +923,8 @@ static void qbe_module_dump(IModule *self)
 	printf("%s", module->ir_stream.str().c_str());
 }
 
-static QBEModule* qbe_module_create(QBEBackend *backend, const std::string &name)
+/* Export for stub backend */
+extern "C" QBEModule* qbe_module_create(QBEBackend *backend, const char *name)
 {
 	QBEModule *module = new QBEModule();
 	module->refcount = 1;

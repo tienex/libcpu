@@ -428,7 +428,8 @@ static int tcg_query_interface(void *self, const char *iid, void **out)
 
 static IModule* tcg_backend_create_module(IBackend *self, const char *name);
 
-static TCGModule* tcg_module_create_internal(const char *name)
+/* Export for stub backend */
+extern "C" TCGModule* tcg_module_create_internal(const char *name)
 {
 	TCGModule *mod = new TCGModule();
 	mod->refcount = 1;
