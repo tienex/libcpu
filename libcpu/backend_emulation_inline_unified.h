@@ -169,6 +169,13 @@ struct IBuilderUnified {
 
 	/* Set code generation strategy for operation */
 	void (*SetStrategy)(IBuilderUnified *self, const char *operation, inline_strategy_t strategy);
+
+	/*************************************************************************
+	 * Internal (do not access directly)
+	 *************************************************************************/
+
+	/* Internal implementation pointer */
+	void *internal_impl;
 };
 
 /***************************************************************************

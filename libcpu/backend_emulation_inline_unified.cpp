@@ -39,6 +39,13 @@ typedef struct {
 	operation_stats_t *op_stats;  /* Array of stats for each operation */
 	uint32_t op_stats_capacity;
 
+	/* Operation counters */
+	uint64_t total_operations;
+	uint64_t inline_operations;
+	uint64_t native_operations;
+	uint64_t fallback_operations;
+	uint64_t instruction_count;
+
 	/* Capabilities */
 	uint64_t capabilities;
 	int vector_width;
@@ -59,6 +66,13 @@ typedef struct {
 	/* Reference counting */
 	uint32_t ref_count;
 } unified_builder_impl_t;
+
+/***************************************************************************
+ * Helper Macros
+ ***************************************************************************/
+
+/* Get implementation from unified builder */
+#define GET_IMPL(self) ((unified_builder_impl_t *)(self)->internal_impl)
 
 /***************************************************************************
  * Forward Declarations
@@ -234,6 +248,13 @@ extern "C" IBuilderUnified* emulation_create_inline_unified_builder(IBuilder *wr
 	impl->last_error = INLINE_EMULATION_ERROR_NONE;
 	impl->error_message[0] = '\0';
 
+	/* Initialize operation counters (will be updated during profiling) */
+	impl->total_operations = 0;
+	impl->inline_operations = 0;
+	impl->native_operations = 0;
+	impl->fallback_operations = 0;
+	impl->instruction_count = 0;
+
 	/* Apply balanced preset by default */
 	impl->config = INLINE_EMULATION_PRESET_BALANCED;
 	impl->constant_folding_enabled = impl->config.enable_constant_folding;
@@ -319,8 +340,8 @@ extern "C" IBuilderUnified* emulation_create_inline_unified_builder(IBuilder *wr
 	unified->EnablePattern = unified_EnablePattern;
 	unified->SetStrategy = unified_SetStrategy;
 
-	/* Store implementation pointer in unused field */
-	/* TODO: Add proper way to store implementation pointer */
+	/* Store implementation pointer */
+	unified->internal_impl = impl;
 
 	return unified;
 }
@@ -356,17 +377,30 @@ extern "C" IBuilderUnified* emulation_create_inline_unified_builder_preset(IBuil
 
 static void unified_StartProfiling(IBuilderUnified *self)
 {
-	/* TODO: Get impl pointer and start profiling */
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->profiling_enabled = 1;
+	impl->profile_start_time = clock();
 	printf("Profiling started\n");
 }
 
 static void unified_StopProfiling(IBuilderUnified *self)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->profiling_enabled = 0;
 	printf("Profiling stopped\n");
 }
 
 static void unified_ResetProfile(IBuilderUnified *self)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->total_operations = 0;
+	impl->inline_operations = 0;
+	impl->native_operations = 0;
+	impl->fallback_operations = 0;
+	impl->instruction_count = 0;
+	if (impl->op_stats) {
+		memset(impl->op_stats, 0, impl->op_stats_capacity * sizeof(operation_stats_t));
+	}
 	printf("Profile reset\n");
 }
 
@@ -403,22 +437,26 @@ static void unified_ExportProfileJSON(IBuilderUnified *self, const char *filenam
 
 static uint64_t unified_GetTotalOperations(IBuilderUnified *self)
 {
-	return 1000;  /* TODO: Implement actual tracking */
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	return impl->total_operations;
 }
 
 static uint64_t unified_GetInlineOperations(IBuilderUnified *self)
 {
-	return 800;  /* TODO: Implement actual tracking */
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	return impl->inline_operations;
 }
 
 static uint64_t unified_GetNativeOperations(IBuilderUnified *self)
 {
-	return 150;  /* TODO: Implement actual tracking */
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	return impl->native_operations;
 }
 
 static uint64_t unified_GetFallbackOperations(IBuilderUnified *self)
 {
-	return 50;  /* TODO: Implement actual tracking */
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	return impl->fallback_operations;
 }
 
 static double unified_GetSpeedup(IBuilderUnified *self)
@@ -449,11 +487,67 @@ extern "C" uint64_t emulation_inline_detect_capabilities(IBackend *backend)
 {
 	uint64_t caps = 0;
 
-	/* TODO: Query backend for actual capabilities
-	 * For now, assume basic capabilities available
+	if (!backend) {
+		/* No backend provided, assume basic capabilities */
+		caps |= INLINE_UNIFIED_CAP_DIVISION;
+		caps |= INLINE_UNIFIED_CAP_REMAINDER;
+		return caps;
+	}
+
+	/* Query backend for actual capabilities through backend interface
+	 * This is a simplified implementation - a real one would query
+	 * the backend's feature flags
 	 */
+
+	/* Most backends support division and remainder */
 	caps |= INLINE_UNIFIED_CAP_DIVISION;
 	caps |= INLINE_UNIFIED_CAP_REMAINDER;
+
+	/* Check backend name/type for specific features
+	 * This is a heuristic approach - ideally the backend would
+	 * provide a capability query interface
+	 */
+	const char *backend_name = backend->GetName ? backend->GetName(backend) : "";
+
+	if (backend_name && strstr(backend_name, "LLVM")) {
+		/* LLVM usually supports everything */
+		caps |= INLINE_UNIFIED_CAP_SQRT;
+		caps |= INLINE_UNIFIED_CAP_FMA;
+		caps |= INLINE_UNIFIED_CAP_MINMAX;
+		caps |= INLINE_UNIFIED_CAP_ABS;
+		caps |= INLINE_UNIFIED_CAP_VECTOR_128;
+		caps |= INLINE_UNIFIED_CAP_ATOMICS;
+	}
+
+	if (backend_name && (strstr(backend_name, "x86") || strstr(backend_name, "X86") ||
+	                     strstr(backend_name, "amd64") || strstr(backend_name, "AMD64"))) {
+		/* x86/x86-64 supports many instructions */
+		caps |= INLINE_UNIFIED_CAP_POPCNT;
+		caps |= INLINE_UNIFIED_CAP_CLZ;
+		caps |= INLINE_UNIFIED_CAP_CTZ;
+		caps |= INLINE_UNIFIED_CAP_BSWAP;
+		caps |= INLINE_UNIFIED_CAP_BMI1;
+		caps |= INLINE_UNIFIED_CAP_BMI2;
+		caps |= INLINE_UNIFIED_CAP_AVX;
+		caps |= INLINE_UNIFIED_CAP_AVX2;
+		caps |= INLINE_UNIFIED_CAP_AESNI;
+		caps |= INLINE_UNIFIED_CAP_SHA;
+		caps |= INLINE_UNIFIED_CAP_CRC32;
+		caps |= INLINE_UNIFIED_CAP_VECTOR_256;
+	}
+
+	if (backend_name && (strstr(backend_name, "ARM") || strstr(backend_name, "arm") ||
+	                     strstr(backend_name, "aarch64") || strstr(backend_name, "AARCH64"))) {
+		/* ARM supports NEON */
+		caps |= INLINE_UNIFIED_CAP_NEON;
+		caps |= INLINE_UNIFIED_CAP_VECTOR_128;
+		caps |= INLINE_UNIFIED_CAP_POPCNT;
+		caps |= INLINE_UNIFIED_CAP_CLZ;
+		caps |= INLINE_UNIFIED_CAP_CTZ;
+		caps |= INLINE_UNIFIED_CAP_BSWAP;
+		caps |= INLINE_UNIFIED_CAP_ABS;
+		caps |= INLINE_UNIFIED_CAP_MINMAX;
+	}
 
 	return caps;
 }
@@ -540,8 +634,8 @@ static int unified_GetVectorWidth(IBuilderUnified *self)
 
 static uint64_t unified_GetCapabilities(IBuilderUnified *self)
 {
-	/* TODO: Get impl pointer and return capabilities */
-	return INLINE_UNIFIED_CAP_DIVISION | INLINE_UNIFIED_CAP_REMAINDER;
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	return impl->capabilities;
 }
 
 /***************************************************************************
@@ -550,36 +644,50 @@ static uint64_t unified_GetCapabilities(IBuilderUnified *self)
 
 static void unified_EnableConstantFolding(IBuilderUnified *self, int enable)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->constant_folding_enabled = enable;
 	printf("Constant folding %s\n", enable ? "enabled" : "disabled");
 }
 
 static void unified_EnableCommonSubexprElim(IBuilderUnified *self, int enable)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->cse_enabled = enable;
 	printf("Common subexpression elimination %s\n", enable ? "enabled" : "disabled");
 }
 
 static void unified_EnableLoopUnrolling(IBuilderUnified *self, int enable)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->loop_unrolling_enabled = enable;
 	printf("Loop unrolling %s\n", enable ? "enabled" : "disabled");
 }
 
 static void unified_EnableVectorization(IBuilderUnified *self, int enable)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->vectorization_enabled = enable;
 	printf("Vectorization %s\n", enable ? "enabled" : "disabled");
 }
 
 static void unified_SetOptimizationLevel(IBuilderUnified *self, uint32_t level)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->config.optimization_level = level;
 	printf("Optimization level set to %u\n", level);
 }
 
 static void unified_SetInlineBudget(IBuilderUnified *self, uint32_t max_instructions)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->config.inline_budget = max_instructions;
 	printf("Inline budget set to %u instructions\n", max_instructions);
 }
 
 static void unified_SetMathAccuracy(IBuilderUnified *self, inline_accuracy_t accuracy)
 {
+	unified_builder_impl_t *impl = GET_IMPL(self);
+	impl->config.math_accuracy = accuracy;
 	const char *acc_name = (accuracy == INLINE_ACCURACY_FAST) ? "fast" :
 	                       (accuracy == INLINE_ACCURACY_STANDARD) ? "standard" : "precise";
 	printf("Math accuracy set to %s\n", acc_name);
@@ -801,8 +909,87 @@ extern "C" void emulation_inline_apply_config(IBuilderUnified *builder, const in
 
 extern "C" inline_emulation_config_t emulation_inline_get_config(IBuilderUnified *builder)
 {
-	/* TODO: Get actual config from impl */
-	return INLINE_EMULATION_PRESET_BALANCED;
+	unified_builder_impl_t *impl = GET_IMPL(builder);
+	return impl->config;
+}
+
+/***************************************************************************
+ * Operation Categorization
+ ***************************************************************************/
+
+typedef struct {
+	const char *name;
+	const char *category;
+	const char *description;
+} operation_info_t;
+
+/* Operation lookup table */
+static const operation_info_t g_operation_table[] = {
+	/* Base Layer Operations */
+	{"CreateAdd", "Arithmetic", "Integer addition"},
+	{"CreateSub", "Arithmetic", "Integer subtraction"},
+	{"CreateMul", "Arithmetic", "Integer multiplication"},
+	{"CreateUDiv", "Arithmetic", "Unsigned division (inline)"},
+	{"CreateSDiv", "Arithmetic", "Signed division (inline)"},
+	{"CreateURem", "Arithmetic", "Unsigned remainder (inline)"},
+	{"CreateSRem", "Arithmetic", "Signed remainder (inline)"},
+	{"CreateAnd", "Bitwise", "Bitwise AND"},
+	{"CreateOr", "Bitwise", "Bitwise OR"},
+	{"CreateXor", "Bitwise", "Bitwise XOR"},
+	{"CreateShl", "Bitwise", "Shift left"},
+	{"CreateLShr", "Bitwise", "Logical shift right"},
+	{"CreateAShr", "Bitwise", "Arithmetic shift right"},
+
+	/* Extended Layer Operations */
+	{"CreateSqrt", "Math", "Square root (Newton-Raphson inline)"},
+	{"CreateSin", "Math", "Sine (Taylor series inline)"},
+	{"CreateCos", "Math", "Cosine (Taylor series inline)"},
+	{"CreateTan", "Math", "Tangent"},
+	{"CreateExp", "Math", "Exponential"},
+	{"CreateLog", "Math", "Natural logarithm"},
+	{"CreatePow", "Math", "Power function"},
+	{"CreateCLZ", "BitManip", "Count leading zeros (inline)"},
+	{"CreateCTZ", "BitManip", "Count trailing zeros (inline)"},
+	{"CreatePOPCNT", "BitManip", "Population count (inline)"},
+	{"CreateBSWAP", "BitManip", "Byte swap"},
+	{"CreateBREV", "BitManip", "Bit reversal"},
+	{"CreateFMA", "Math", "Fused multiply-add"},
+	{"CreateAbs", "Math", "Absolute value"},
+	{"CreateMin", "Math", "Minimum"},
+	{"CreateMax", "Math", "Maximum"},
+
+	/* Comprehensive Layer Operations */
+	{"CreateVecAddI32", "Vector", "Vector add i32"},
+	{"CreateVecSubI32", "Vector", "Vector subtract i32"},
+	{"CreateVecMulI32", "Vector", "Vector multiply i32"},
+	{"CreateVecMinI32", "Vector", "Vector minimum i32"},
+	{"CreateVecMaxI32", "Vector", "Vector maximum i32"},
+	{"CreateAtomicFetchAddI32", "Atomic", "Atomic fetch-and-add"},
+	{"CreateAtomicCAS", "Atomic", "Atomic compare-and-swap"},
+	{"CreateAESEnc", "Crypto", "AES encryption round"},
+	{"CreateAESDec", "Crypto", "AES decryption round"},
+	{"CreateSHA256", "Crypto", "SHA-256 operations"},
+	{"CreateCRC32", "Crypto", "CRC32 checksum"},
+	{"CreatePrefetch", "Memory", "Memory prefetch hint"},
+	{"CreateMemCpy", "Memory", "Memory copy"},
+	{"CreateMemSet", "Memory", "Memory set"},
+	{"CreateStrlen", "String", "String length"},
+	{"CreateStrcmp", "String", "String compare"},
+	{"CreateExp2", "Transcendental", "Base-2 exponential"},
+	{"CreateLog1p", "Transcendental", "log(1+x)"},
+	{"CreateI32ToF32", "TypeConversion", "Integer to float conversion"},
+
+	{NULL, NULL, NULL}  /* Sentinel */
+};
+
+static const operation_info_t* find_operation(const char *name)
+{
+	for (int i = 0; g_operation_table[i].name != NULL; i++) {
+		if (strcmp(g_operation_table[i].name, name) == 0) {
+			return &g_operation_table[i];
+		}
+	}
+	return NULL;
 }
 
 /***************************************************************************
@@ -842,21 +1029,26 @@ extern "C" uint32_t emulation_inline_get_operation_count(void)
 
 extern "C" int emulation_inline_has_operation(const char *operation_name)
 {
-	/* TODO: Implement actual operation lookup */
-	return 1;
+	return find_operation(operation_name) != NULL;
 }
 
 extern "C" const char* emulation_inline_get_operation_category(const char *operation_name)
 {
-	/* TODO: Implement actual category lookup */
-	return "Unknown";
+	const operation_info_t *op = find_operation(operation_name);
+	return op ? op->category : "Unknown";
 }
 
 extern "C" void emulation_inline_print_operation_help(const char *operation_name)
 {
-	printf("Help for operation: %s\n", operation_name);
-	printf("  Category: %s\n", emulation_inline_get_operation_category(operation_name));
-	printf("  Description: TODO\n");
+	const operation_info_t *op = find_operation(operation_name);
+	if (op) {
+		printf("Help for operation: %s\n", operation_name);
+		printf("  Category: %s\n", op->category);
+		printf("  Description: %s\n", op->description);
+	} else {
+		printf("Operation '%s' not found\n", operation_name);
+		printf("Use emulation_inline_print_operation_summary() to see all operations\n");
+	}
 }
 
 extern "C" const char* emulation_inline_capability_name(inline_unified_capability_t cap)
