@@ -329,7 +329,9 @@ arch_adc(cpu_t *cpu, Value *dst, Value *src, Value *v, bool plus_carry, bool plu
 	else
 		c = CONST1(0);
 
-	if (SIZE(v) == 8) {
+	int size = SIZE(v);
+
+	if (size == 8) {
 		/* calculate intermediate result */
 		Value *v1 = ADD(ADD(ZEXT16(LOAD(src)), ZEXT16(v)), ZEXT16(c));
 
@@ -343,10 +345,54 @@ arch_adc(cpu_t *cpu, Value *dst, Value *src, Value *v, bool plus_carry, bool plu
 			STORE(v1, dst);
 
 		return v1;
+	} else if (size == 16) {
+		/* calculate intermediate result - extend to 32 bits */
+		Value *v1 = ADD(ADD(ZEXT32(LOAD(src)), ZEXT32(v)), ZEXT32(c));
+
+		/* get C from bit 16 */
+		STORE(TRUNC1(LSHR(v1, CONST32(16))), cpu->ptr_C);
+
+		/* get result */
+		v1 = TRUNC16(v1);
+
+		if (dst)
+			STORE(v1, dst);
+
+		return v1;
+	} else if (size == 32) {
+		/* calculate intermediate result - extend to 64 bits */
+		Value *v1 = ADD(ADD(ZEXT64(LOAD(src)), ZEXT64(v)), ZEXT64(c));
+
+		/* get C from bit 32 */
+		STORE(TRUNC1(LSHR(v1, CONST64(32))), cpu->ptr_C);
+
+		/* get result */
+		v1 = TRUNC32(v1);
+
+		if (dst)
+			STORE(v1, dst);
+
+		return v1;
+	} else if (size == 64) {
+		/* For 64-bit, we need to use LLVM intrinsic or manual carry detection */
+		/* Use manual method: add and check if result < operand (unsigned overflow) */
+		Value *src_val = LOAD(src);
+		Value *sum1 = ADD(src_val, v);
+		Value *sum2 = ADD(sum1, c);
+
+		/* Carry if sum1 < src_val OR sum2 < sum1 (unsigned comparison) */
+		Value *carry1 = new ICmpInst(*bb, ICmpInst::ICMP_ULT, sum1, src_val, "");
+		Value *carry2 = new ICmpInst(*bb, ICmpInst::ICMP_ULT, sum2, sum1, "");
+		Value *carry = OR(carry1, carry2);
+
+		STORE(carry, cpu->ptr_C);
+
+		if (dst)
+			STORE(sum2, dst);
+
+		return sum2;
 	} else {
-		//XXX TODO use llvm.uadd.with.overflow.*
-		//XXX consider using it for 8 bit also, if possible
-		printf("TODO: %s() can't do anything but 8 bits yet!\n", __func__);
+		printf("ERROR: %s() unsupported bit width %d!\n", __func__, size);
 		exit(1);
 	}
 }
