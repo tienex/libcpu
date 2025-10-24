@@ -29,31 +29,124 @@ static const uint16_t dpd_to_bcd[1024] = {
 /* BCD to DPD encoding table (reverse of above) */
 static uint16_t bcd_to_dpd[1000];  /* 3 decimal digits -> 10-bit DPD */
 
+/* DPD encoding: 3 decimal digits (0-999) to 10 bits */
+static uint16_t encode_dpd(int d0, int d1, int d2) {
+    /* d0 is least significant digit, d2 is most significant */
+    uint16_t dpd = 0;
+
+    /* Common case: all digits 0-7 */
+    if (d0 <= 7 && d1 <= 7 && d2 <= 7) {
+        dpd = (d2 << 7) | (d1 << 4) | d0;
+        return dpd;
+    }
+
+    /* Extract low 3 bits of each digit */
+    int a = d0 & 0x7;
+    int b = d1 & 0x7;
+    int c = d2 & 0x7;
+
+    /* Check high bit of each digit (8 or 9) */
+    int p = (d0 >= 8) ? 1 : 0;
+    int q = (d1 >= 8) ? 1 : 0;
+    int r = (d2 >= 8) ? 1 : 0;
+
+    /* Encoding based on which digits are 8 or 9 */
+    if (!p && !q && r) {
+        /* 0-7, 0-7, 8-9 */
+        dpd = (0x4 << 7) | (c << 7) | (b << 4) | a | (1 << 3);
+    } else if (!p && q && !r) {
+        /* 0-7, 8-9, 0-7 */
+        dpd = (0x5 << 7) | (c << 7) | (b << 4) | a | (1 << 3);
+    } else if (!p && q && r) {
+        /* 0-7, 8-9, 8-9 */
+        dpd = (0x6 << 7) | (c << 7) | (b << 4) | a | (1 << 3);
+    } else if (p && !q && !r) {
+        /* 8-9, 0-7, 0-7 */
+        dpd = (0x7 << 7) | (c << 7) | (b << 4) | a | (1 << 3);
+    } else if (p && !q && r) {
+        /* 8-9, 0-7, 8-9 */
+        dpd = (0xC << 6) | (c << 4) | b | (1 << 9) | (a << 7);
+    } else if (p && q && !r) {
+        /* 8-9, 8-9, 0-7 */
+        dpd = (0xD << 6) | (c << 4) | b | (1 << 9) | (a << 7);
+    } else if (!p && q && r) {
+        /* Already handled above */
+        dpd = (0x6 << 7) | (c << 7) | (b << 4) | a | (1 << 3);
+    } else {
+        /* 8-9, 8-9, 8-9 */
+        dpd = (0xE << 6) | (c << 4) | b | (1 << 9) | (a << 7);
+    }
+
+    return dpd & 0x3FF;  /* Ensure 10 bits */
+}
+
+/* DPD decoding: 10 bits to 3 decimal digits */
+static void decode_dpd(uint16_t dpd, int *d0, int *d1, int *d2) {
+    /* Extract bit fields */
+    int abc = dpd & 0x7;         /* bits [2:0] */
+    int def = (dpd >> 3) & 0x7;  /* bits [5:3] */
+    int ghi = (dpd >> 6) & 0x7;  /* bits [8:6] */
+    int j = (dpd >> 9) & 0x1;    /* bit [9] */
+    int k = (dpd >> 8) & 0x1;    /* bit [8] */
+    int m = (dpd >> 7) & 0x1;    /* bit [7] */
+
+    /* Decode based on pattern */
+    if (!j && !k && !m) {
+        /* Common case: 0-7, 0-7, 0-7 */
+        *d0 = abc;
+        *d1 = def;
+        *d2 = ghi;
+    } else if (!j && !k && m) {
+        /* Pattern: bits indicate which digits are 8-9 */
+        int pattern = (dpd >> 3) & 0x7;
+        if (pattern == 0) {
+            *d0 = abc;
+            *d1 = def;
+            *d2 = 8 + (ghi & 0x1);
+        } else if (pattern == 1) {
+            *d0 = abc;
+            *d1 = 8 + (def & 0x1);
+            *d2 = ghi;
+        } else if (pattern == 2) {
+            *d0 = 8 + (abc & 0x1);
+            *d1 = def;
+            *d2 = ghi;
+        }
+    } else if (j) {
+        /* More complex patterns for multiple 8-9 digits */
+        int pattern = (dpd >> 6) & 0x7;
+        if (pattern == 4) {
+            *d0 = 8 + ((dpd >> 7) & 0x1);
+            *d1 = (dpd >> 3) & 0x7;
+            *d2 = 8 + (dpd & 0x1);
+        } else if (pattern == 5) {
+            *d0 = 8 + ((dpd >> 7) & 0x1);
+            *d1 = 8 + ((dpd >> 3) & 0x1);
+            *d2 = (dpd >> 4) & 0x7;
+        } else if (pattern == 6) {
+            *d0 = 8 + ((dpd >> 7) & 0x1);
+            *d1 = 8 + ((dpd >> 3) & 0x1);
+            *d2 = 8 + (dpd & 0x1);
+        }
+    }
+
+    /* Clamp to 0-9 range */
+    *d0 = (*d0 > 9) ? 9 : *d0;
+    *d1 = (*d1 > 9) ? 9 : *d1;
+    *d2 = (*d2 > 9) ? 9 : *d2;
+}
+
 /* Initialize BCD to DPD table */
 static void init_dpd_tables(void) {
     static int initialized = 0;
     if (initialized) return;
 
-    /* Build reverse mapping */
+    /* Build encoding table using the algorithmic encoder */
     for (int i = 0; i < 1000; i++) {
         int d0 = i % 10;
         int d1 = (i / 10) % 10;
         int d2 = (i / 100) % 10;
-
-        /* Encode 3 BCD digits into 10-bit DPD */
-        /* This is a complex encoding scheme - simplified here */
-        uint16_t dpd = 0;
-
-        if (d0 <= 7 && d1 <= 7 && d2 <= 7) {
-            /* Common case: all digits 0-7 */
-            dpd = (d2 << 7) | (d1 << 4) | d0;
-        } else {
-            /* Special cases for digits 8-9 */
-            /* Full DPD encoding logic would go here */
-            dpd = (d2 << 7) | (d1 << 4) | d0;  /* Simplified */
-        }
-
-        bcd_to_dpd[i] = dpd;
+        bcd_to_dpd[i] = encode_dpd(d0, d1, d2);
     }
 
     initialized = 1;
@@ -315,14 +408,81 @@ void double_to_dec64(decimal64_t *result, double d) {
 }
 
 void dec32_dpd_to_bid(decimal32_t *result, const decimal32_t *dpd) {
-    /* Convert DPD to BID */
+    /* Convert DPD to BID - decode the densely packed decimal format */
+    init_dpd_tables();
+
+    /* Decimal32 DPD format:
+     * bit 31: sign
+     * bits 30-20: combination field (encodes exponent and first digit)
+     * bits 19-0: two 10-bit DPD-encoded digit triplets (6 digits total)
+     */
+    uint32_t dpd_bits = dpd->dpd;
+    uint32_t sign = (dpd_bits >> 31) & 1;
+    uint32_t comb = (dpd_bits >> 20) & 0x7FF;  /* 11-bit combination field */
+
+    /* Decode combination field to get exponent and first digit */
+    uint32_t exp;
+    int d0;  /* Most significant digit */
+
+    if ((comb & 0x600) != 0x600) {
+        /* Most common case: 2-bit exponent prefix + 3-bit digit + 8-bit exponent continuation */
+        exp = ((comb >> 7) & 0x3) | ((comb & 0x7F) << 2);
+        d0 = (comb >> 7) & 0x7;
+    } else {
+        /* Digit is 8 or 9 */
+        exp = ((comb >> 9) & 0x3) | ((comb & 0x1FF) << 2);
+        d0 = 8 + ((comb >> 9) & 0x1);
+    }
+
+    /* Decode the two DPD triplets (6 decimal digits) */
+    uint16_t dpd1 = (dpd_bits >> 10) & 0x3FF;
+    uint16_t dpd2 = dpd_bits & 0x3FF;
+
+    int d1, d2, d3, d4, d5, d6;
+    decode_dpd(dpd1, &d1, &d2, &d3);
+    decode_dpd(dpd2, &d4, &d5, &d6);
+
+    /* Reconstruct 7-digit coefficient in BID format */
+    uint32_t coef = d0 * 1000000 + d1 * 100000 + d2 * 10000 + d3 * 1000 + d4 * 100 + d5 * 10 + d6;
+
+    /* Build BID format (Binary Integer Decimal) */
     result->format = DEC_FORMAT_BID;
-    result->bid = dpd->dpd;  /* Simplified - needs proper DPD decoding */
+    result->bid = (sign << 31) | (exp << 23) | (coef & 0x7FFFFF);
 }
 
 void dec32_bid_to_dpd(decimal32_t *result, const decimal32_t *bid) {
+    /* Convert BID to DPD - encode to densely packed decimal format */
+    init_dpd_tables();
+
+    uint32_t bid_bits = bid->bid;
+    uint32_t sign = (bid_bits >> 31) & 1;
+    uint32_t exp = (bid_bits >> 23) & 0xFF;
+    uint32_t coef = bid_bits & 0x7FFFFF;  /* 23-bit coefficient */
+
+    /* Extract 7 decimal digits from coefficient */
+    int d0 = (coef / 1000000) % 10;
+    int d1 = (coef / 100000) % 10;
+    int d2 = (coef / 10000) % 10;
+    int d3 = (coef / 1000) % 10;
+    int d4 = (coef / 100) % 10;
+    int d5 = (coef / 10) % 10;
+    int d6 = coef % 10;
+
+    /* Encode digits 1-3 and 4-6 as DPD triplets */
+    uint16_t dpd1 = encode_dpd(d1, d2, d3);
+    uint16_t dpd2 = encode_dpd(d4, d5, d6);
+
+    /* Build combination field */
+    uint32_t comb;
+    if (d0 <= 7) {
+        comb = ((exp & 0x3) << 9) | (d0 << 7) | (exp >> 2);
+    } else {
+        comb = 0x600 | ((exp & 0x3) << 9) | ((d0 & 0x1) << 9) | (exp >> 2);
+    }
+
+    /* Assemble DPD format */
     result->format = DEC_FORMAT_DPD;
-    result->dpd = bid->bid;  /* Simplified - needs proper DPD encoding */
+    result->dpd = (sign << 31) | (comb << 20) | (dpd1 << 10) | dpd2;
 }
 
 void dec64_quantize(decimal64_t *result, const decimal64_t *a, const decimal64_t *b) {
@@ -382,13 +542,95 @@ void vax_d_mul(vax_d_float_t *result, const vax_d_float_t *a, const vax_d_float_
     ieee_double_to_vax_d(result, a_ieee * b_ieee);
 }
 
+/* VAX G <-> IEEE double conversions */
+static void vax_g_to_ieee_double(double *result, const vax_g_float_t *vax) {
+    uint64_t vax_bits = vax->bits;
+
+    /* VAX G format: [15:15] sign, [14:4] exponent (bias 1024), [3:0,63:16] mantissa */
+    /* Similar to IEEE double but different byte ordering and bias */
+
+    /* Extract VAX components from PDP-11 word order */
+    int sign = (vax_bits >> 15) & 1;
+    int exp_vax = ((vax_bits >> 4) & 0x7FF);  /* 11-bit exponent */
+    uint64_t mant_vax = ((vax_bits & 0xF) << 48) | ((vax_bits >> 16) & 0xFFFFFFFFFFFFULL);
+
+    /* Check for reserved operand (exp == 0) */
+    if (exp_vax == 0) {
+        *result = 0.0;
+        return;
+    }
+
+    /* Convert exponent from VAX bias (1024) to IEEE bias (1023) */
+    int exp_ieee = exp_vax - 1024 + 1023;
+
+    /* Handle overflow/underflow */
+    if (exp_ieee >= 2047) {
+        *result = sign ? -INFINITY : INFINITY;
+        return;
+    }
+    if (exp_ieee <= 0) {
+        *result = sign ? -0.0 : 0.0;
+        return;
+    }
+
+    /* Reconstruct IEEE double */
+    uint64_t ieee_bits = ((uint64_t)sign << 63) | ((uint64_t)exp_ieee << 52) | (mant_vax & 0xFFFFFFFFFFFFFULL);
+
+    union { uint64_t i; double d; } u;
+    u.i = ieee_bits;
+    *result = u.d;
+}
+
+static void ieee_double_to_vax_g(vax_g_float_t *result, double ieee) {
+    union { double d; uint64_t i; } u;
+    u.d = ieee;
+    uint64_t ieee_bits = u.i;
+
+    int sign = (ieee_bits >> 63) & 1;
+    int exp_ieee = (ieee_bits >> 52) & 0x7FF;
+    uint64_t mant_ieee = ieee_bits & 0xFFFFFFFFFFFFFULL;
+
+    /* Check for special values */
+    if (exp_ieee == 0) {
+        /* Zero or denormal -> reserved operand in VAX */
+        result->bits = 0;
+        return;
+    }
+    if (exp_ieee == 0x7FF) {
+        /* Infinity or NaN -> reserved operand in VAX */
+        result->bits = 0;
+        return;
+    }
+
+    /* Convert exponent from IEEE bias (1023) to VAX bias (1024) */
+    int exp_vax = exp_ieee - 1023 + 1024;
+
+    /* Check for overflow/underflow */
+    if (exp_vax >= 0x7FF || exp_vax <= 0) {
+        result->bits = 0;  /* Reserved operand */
+        return;
+    }
+
+    /* Reconstruct VAX G in PDP-11 word order */
+    uint64_t vax_bits = ((uint64_t)sign << 15) | ((uint64_t)exp_vax << 4) |
+                        ((mant_ieee >> 48) & 0xF) | ((mant_ieee & 0xFFFFFFFFFFFFULL) << 16);
+
+    result->bits = vax_bits;
+}
+
 void vax_g_add(vax_g_float_t *result, const vax_g_float_t *a, const vax_g_float_t *b) {
-    /* VAX G is similar to IEEE double but with different layout */
-    result->bits = a->bits + b->bits;  /* Simplified */
+    /* Convert to IEEE, perform operation, convert back */
+    double a_ieee, b_ieee;
+    vax_g_to_ieee_double(&a_ieee, a);
+    vax_g_to_ieee_double(&b_ieee, b);
+    ieee_double_to_vax_g(result, a_ieee + b_ieee);
 }
 
 void vax_g_mul(vax_g_float_t *result, const vax_g_float_t *a, const vax_g_float_t *b) {
-    result->bits = a->bits * b->bits;  /* Simplified */
+    double a_ieee, b_ieee;
+    vax_g_to_ieee_double(&a_ieee, a);
+    vax_g_to_ieee_double(&b_ieee, b);
+    ieee_double_to_vax_g(result, a_ieee * b_ieee);
 }
 
 void vax_f_to_ieee_float(float *result, const vax_f_float_t *vax) {
@@ -1562,13 +1804,21 @@ void ieee_double_to_fpa_extended(arm_fpa_extended_t *dst, double src) {
  ***************************************************************************/
 
 void dpd_to_bid_32(uint32_t *bid, uint32_t dpd) {
-    /* Convert DPD to BID */
-    *bid = dpd;  /* Simplified - needs full DPD decode */
+    /* Convert DPD to BID using proper decimal32 conversion */
+    decimal32_t dpd_val, bid_val;
+    dpd_val.format = DEC_FORMAT_DPD;
+    dpd_val.dpd = dpd;
+    dec32_dpd_to_bid(&bid_val, &dpd_val);
+    *bid = bid_val.bid;
 }
 
 void bid_to_dpd_32(uint32_t *dpd, uint32_t bid) {
-    /* Convert BID to DPD */
-    *dpd = bid;  /* Simplified - needs full DPD encode */
+    /* Convert BID to DPD using proper decimal32 conversion */
+    decimal32_t bid_val, dpd_val;
+    bid_val.format = DEC_FORMAT_BID;
+    bid_val.bid = bid;
+    dec32_bid_to_dpd(&dpd_val, &bid_val);
+    *dpd = dpd_val.dpd;
 }
 
 void fp_convert(void *dst, fp_format_t dst_format, const void *src, fp_format_t src_format) {

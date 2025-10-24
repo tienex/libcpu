@@ -594,6 +594,50 @@ void cpu_set_background_compilation(struct cpu *cpu, int enable)
 
 void cpu_set_num_compilation_workers(struct cpu *cpu, uint32_t num_workers)
 {
-	/* Would need to restart worker threads - not implemented yet */
-	fprintf(stderr, "cpu_set_num_compilation_workers: not implemented\n");
+	if (!cpu || !cpu->tier_mgr)
+		return;
+
+	tier_manager_t *mgr = cpu->tier_mgr;
+
+	/* Validate input */
+	if (num_workers == 0 || num_workers > 256) {
+		fprintf(stderr, "cpu_set_num_compilation_workers: invalid worker count %u (must be 1-256)\n", num_workers);
+		return;
+	}
+
+	/* If already at target count, nothing to do */
+	if (mgr->num_workers == num_workers)
+		return;
+
+	/* Warn if changing worker count while queue has pending items */
+	if (mgr->queue && mgr->queue->size > 0) {
+		fprintf(stderr, "cpu_set_num_compilation_workers: changing worker count with %u pending compilations\n",
+			mgr->queue->size);
+	}
+
+	/* Shutdown existing worker threads */
+	pthread_mutex_lock(&mgr->queue->lock);
+	mgr->queue->shutdown = 1;
+	pthread_cond_broadcast(&mgr->queue->cond);
+	pthread_mutex_unlock(&mgr->queue->lock);
+
+	/* Wait for all workers to finish */
+	for (uint32_t i = 0; i < mgr->num_workers; i++) {
+		pthread_join(mgr->worker_threads[i], NULL);
+	}
+	free(mgr->worker_threads);
+
+	/* Reset queue shutdown flag */
+	pthread_mutex_lock(&mgr->queue->lock);
+	mgr->queue->shutdown = 0;
+	pthread_mutex_unlock(&mgr->queue->lock);
+
+	/* Create new worker threads with new count */
+	mgr->num_workers = num_workers;
+	mgr->worker_threads = (pthread_t*)calloc(num_workers, sizeof(pthread_t));
+	for (uint32_t i = 0; i < num_workers; i++) {
+		pthread_create(&mgr->worker_threads[i], NULL, compilation_worker_thread, mgr);
+	}
+
+	fprintf(stderr, "cpu_set_num_compilation_workers: restarted with %u workers\n", num_workers);
 }
