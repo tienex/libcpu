@@ -1227,22 +1227,123 @@ void normalize_value(unified_value_t *val) {
 	}
 }
 
-/* BCD placeholder implementations */
+/* BCD arithmetic implementations */
+/* Each nibble (4 bits) represents a decimal digit (0-9) */
+
+static uint8_t bcd_add_nibble(uint8_t a, uint8_t b, uint8_t *carry) {
+	uint8_t sum = a + b + *carry;
+	if (sum > 9) {
+		*carry = 1;
+		sum += 6;  /* BCD correction */
+		return sum & 0xF;
+	}
+	*carry = 0;
+	return sum;
+}
+
+static uint8_t bcd_sub_nibble(uint8_t a, uint8_t b, uint8_t *borrow) {
+	int diff = a - b - *borrow;
+	if (diff < 0) {
+		*borrow = 1;
+		return (diff + 16) & 0xF;  /* BCD borrow correction */
+	}
+	*borrow = 0;
+	return diff;
+}
+
 void op_bcd_add(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	/* BCD addition would be implemented here */
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	uint64_t a_val = uval_get_u64(a);
+	uint64_t b_val = uval_get_u64(b);
+	uint64_t result = 0;
+	uint8_t carry = 0;
+
+	/* Process each nibble from least significant to most significant */
+	for (int i = 0; i < 16; i++) {
+		uint8_t a_nibble = (a_val >> (i * 4)) & 0xF;
+		uint8_t b_nibble = (b_val >> (i * 4)) & 0xF;
+		uint8_t sum = bcd_add_nibble(a_nibble, b_nibble, &carry);
+		result |= ((uint64_t)sum << (i * 4));
+	}
+
+	uval_set_u64(dst, result);
 }
 
 void op_bcd_sub(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	uint64_t a_val = uval_get_u64(a);
+	uint64_t b_val = uval_get_u64(b);
+	uint64_t result = 0;
+	uint8_t borrow = 0;
+
+	/* Process each nibble from least significant to most significant */
+	for (int i = 0; i < 16; i++) {
+		uint8_t a_nibble = (a_val >> (i * 4)) & 0xF;
+		uint8_t b_nibble = (b_val >> (i * 4)) & 0xF;
+		uint8_t diff = bcd_sub_nibble(a_nibble, b_nibble, &borrow);
+		result |= ((uint64_t)diff << (i * 4));
+	}
+
+	uval_set_u64(dst, result);
 }
 
 void op_bcd_mul(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	/* Convert BCD to binary, multiply, convert back */
+	uint64_t a_val = uval_get_u64(a);
+	uint64_t b_val = uval_get_u64(b);
+
+	/* BCD to decimal */
+	uint64_t a_dec = 0, b_dec = 0;
+	for (int i = 0; i < 16; i++) {
+		a_dec = a_dec * 10 + ((a_val >> ((15 - i) * 4)) & 0xF);
+		b_dec = b_dec * 10 + ((b_val >> ((15 - i) * 4)) & 0xF);
+	}
+
+	/* Multiply */
+	uint64_t product = a_dec * b_dec;
+
+	/* Decimal to BCD */
+	uint64_t result = 0;
+	for (int i = 0; i < 16; i++) {
+		result |= ((product % 10) << (i * 4));
+		product /= 10;
+	}
+
+	uval_set_u64(dst, result);
 }
 
 void op_bcd_div(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	uint64_t a_val = uval_get_u64(a);
+	uint64_t b_val = uval_get_u64(b);
+
+	/* BCD to decimal */
+	uint64_t a_dec = 0, b_dec = 0;
+	for (int i = 0; i < 16; i++) {
+		a_dec = a_dec * 10 + ((a_val >> ((15 - i) * 4)) & 0xF);
+		b_dec = b_dec * 10 + ((b_val >> ((15 - i) * 4)) & 0xF);
+	}
+
+	/* Divide (check for zero) */
+	if (b_dec == 0) {
+		uval_set_u64(dst, 0);
+		return;
+	}
+	uint64_t quotient = a_dec / b_dec;
+
+	/* Decimal to BCD */
+	uint64_t result = 0;
+	for (int i = 0; i < 16; i++) {
+		result |= ((quotient % 10) << (i * 4));
+		quotient /= 10;
+	}
+
+	uval_set_u64(dst, result);
 }
 
 /***************************************************************************
@@ -2810,23 +2911,82 @@ void op_dot4(unified_value_t *dst, const unified_value_t *a, const unified_value
 }
 
 void op_matrix_mul(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Matrix multiplication placeholder
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	/* Assumes dst, a, and b are tile/matrix representations */
+	/* For simplicity, treat as 8x8 matrices of int32_t (like Intel AMX) */
+	/* Data layout: row-major in unified_value_t data buffer */
+
+	const int rows_a = 8, cols_a = 8, cols_b = 8;
+	int32_t *result = (int32_t*)dst->data;
+	const int32_t *mat_a = (const int32_t*)a->data;
+	const int32_t *mat_b = (const int32_t*)b->data;
+
+	/* C = A * B (matrix multiplication) */
+	for (int i = 0; i < rows_a; i++) {
+		for (int j = 0; j < cols_b; j++) {
+			int64_t sum = 0;
+			for (int k = 0; k < cols_a; k++) {
+				sum += (int64_t)mat_a[i * cols_a + k] * (int64_t)mat_b[k * cols_b + j];
+			}
+			result[i * cols_b + j] = (int32_t)sum;  /* Truncate to 32-bit */
+		}
+	}
 }
 
 void op_matrix_mul_acc(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Matrix multiply-accumulate placeholder
-	(void)dst; (void)a; (void)b;
+	if (!dst || !a || !b) return;
+
+	/* Matrix multiply-accumulate: dst = dst + (a * b) */
+	const int rows_a = 8, cols_a = 8, cols_b = 8;
+	int32_t *result = (int32_t*)dst->data;
+	const int32_t *mat_a = (const int32_t*)a->data;
+	const int32_t *mat_b = (const int32_t*)b->data;
+
+	/* C = C + (A * B) */
+	for (int i = 0; i < rows_a; i++) {
+		for (int j = 0; j < cols_b; j++) {
+			int64_t sum = result[i * cols_b + j];
+			for (int k = 0; k < cols_a; k++) {
+				sum += (int64_t)mat_a[i * cols_a + k] * (int64_t)mat_b[k * cols_b + j];
+			}
+			result[i * cols_b + j] = (int32_t)sum;  /* Truncate to 32-bit */
+		}
+	}
 }
 
 void op_tile_load(unified_value_t *dst, const void *ptr, size_t stride) {
-	// Tile load placeholder
-	(void)dst; (void)ptr; (void)stride;
+	if (!dst || !ptr) return;
+
+	/* Load tile from memory with given stride */
+	/* Assumes 8x8 tile of int32_t (256 bytes) */
+	const int tile_rows = 8, tile_cols = 8;
+	int32_t *tile = (int32_t*)dst->data;
+	const uint8_t *src = (const uint8_t*)ptr;
+
+	for (int i = 0; i < tile_rows; i++) {
+		const int32_t *row_src = (const int32_t*)(src + i * stride);
+		for (int j = 0; j < tile_cols; j++) {
+			tile[i * tile_cols + j] = row_src[j];
+		}
+	}
 }
 
 void op_tile_store(void *ptr, const unified_value_t *src, size_t stride) {
-	// Tile store placeholder
-	(void)ptr; (void)src; (void)stride;
+	if (!ptr || !src) return;
+
+	/* Store tile to memory with given stride */
+	/* Assumes 8x8 tile of int32_t (256 bytes) */
+	const int tile_rows = 8, tile_cols = 8;
+	const int32_t *tile = (const int32_t*)src->data;
+	uint8_t *dst = (uint8_t*)ptr;
+
+	for (int i = 0; i < tile_rows; i++) {
+		int32_t *row_dst = (int32_t*)(dst + i * stride);
+		for (int j = 0; j < tile_cols; j++) {
+			row_dst[j] = tile[i * tile_cols + j];
+		}
+	}
 }
 
 
@@ -3423,59 +3583,376 @@ void op_crc32(unified_value_t *dst, const unified_value_t *crc, const unified_va
 	uval_set_u64(dst, crc_val);
 }
 
+/* AES S-box (forward) */
+static const uint8_t aes_sbox[256] = {
+	0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+	0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+	0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+	0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+	0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+	0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+	0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+	0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+	0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+	0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+	0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+	0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+	0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+	0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+	0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+	0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+};
+
+/* AES inverse S-box (for decryption) */
+static const uint8_t aes_inv_sbox[256] = {
+	0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
+	0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
+	0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
+	0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
+	0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
+	0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
+	0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+	0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
+	0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
+	0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
+	0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
+	0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
+	0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
+	0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+	0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
+	0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
+};
+
+/* Galois field multiplication by 2 in GF(2^8) */
+static uint8_t gf_mul_2(uint8_t x) {
+	return (x << 1) ^ ((x & 0x80) ? 0x1b : 0);
+}
+
+/* AES ShiftRows transformation */
+static void aes_shift_rows(uint8_t *state) {
+	uint8_t tmp;
+	/* Row 1: shift left by 1 */
+	tmp = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = tmp;
+	/* Row 2: shift left by 2 */
+	tmp = state[2]; state[2] = state[10]; state[10] = tmp;
+	tmp = state[6]; state[6] = state[14]; state[14] = tmp;
+	/* Row 3: shift left by 3 */
+	tmp = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = tmp;
+}
+
+/* AES Inverse ShiftRows */
+static void aes_inv_shift_rows(uint8_t *state) {
+	uint8_t tmp;
+	/* Row 1: shift right by 1 */
+	tmp = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = tmp;
+	/* Row 2: shift right by 2 */
+	tmp = state[2]; state[2] = state[10]; state[10] = tmp;
+	tmp = state[6]; state[6] = state[14]; state[14] = tmp;
+	/* Row 3: shift right by 3 */
+	tmp = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = tmp;
+}
+
+/* AES MixColumns transformation */
+static void aes_mix_columns(uint8_t *state) {
+	for (int i = 0; i < 4; i++) {
+		uint8_t *col = state + i * 4;
+		uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
+		col[0] = gf_mul_2(a0) ^ gf_mul_2(a1) ^ a1 ^ a2 ^ a3;
+		col[1] = a0 ^ gf_mul_2(a1) ^ gf_mul_2(a2) ^ a2 ^ a3;
+		col[2] = a0 ^ a1 ^ gf_mul_2(a2) ^ gf_mul_2(a3) ^ a3;
+		col[3] = gf_mul_2(a0) ^ a0 ^ a1 ^ a2 ^ gf_mul_2(a3);
+	}
+}
+
+/* AES Inverse MixColumns */
+static void aes_inv_mix_columns(uint8_t *state) {
+	for (int i = 0; i < 4; i++) {
+		uint8_t *col = state + i * 4;
+		uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
+		uint8_t t0 = gf_mul_2(gf_mul_2(a0 ^ a2));
+		uint8_t t1 = gf_mul_2(gf_mul_2(a1 ^ a3));
+		col[0] ^= t0; col[1] ^= t1; col[2] ^= t0; col[3] ^= t1;
+	}
+	aes_mix_columns(state);
+}
+
 void op_aes_enc(unified_value_t *dst, const unified_value_t *state, const unified_value_t *key) {
-	(void)dst; (void)state; (void)key;
-	// AES encryption placeholder
+	if (!dst || !state || !key) return;
+
+	uint8_t tmp[16];
+	memcpy(tmp, state->data, 16);
+
+	/* SubBytes */
+	for (int i = 0; i < 16; i++)
+		tmp[i] = aes_sbox[tmp[i]];
+
+	/* ShiftRows */
+	aes_shift_rows(tmp);
+
+	/* MixColumns */
+	aes_mix_columns(tmp);
+
+	/* AddRoundKey */
+	const uint8_t *k = (const uint8_t*)key->data;
+	for (int i = 0; i < 16; i++)
+		tmp[i] ^= k[i];
+
+	memcpy(dst->data, tmp, 16);
 }
 
 void op_aes_enc_last(unified_value_t *dst, const unified_value_t *state, const unified_value_t *key) {
-	(void)dst; (void)state; (void)key;
-	// AES encryption last round placeholder
+	if (!dst || !state || !key) return;
+
+	uint8_t tmp[16];
+	memcpy(tmp, state->data, 16);
+
+	/* SubBytes */
+	for (int i = 0; i < 16; i++)
+		tmp[i] = aes_sbox[tmp[i]];
+
+	/* ShiftRows */
+	aes_shift_rows(tmp);
+
+	/* AddRoundKey (no MixColumns in last round) */
+	const uint8_t *k = (const uint8_t*)key->data;
+	for (int i = 0; i < 16; i++)
+		tmp[i] ^= k[i];
+
+	memcpy(dst->data, tmp, 16);
 }
 
 void op_aes_dec(unified_value_t *dst, const unified_value_t *state, const unified_value_t *key) {
-	(void)dst; (void)state; (void)key;
-	// AES decryption placeholder
+	if (!dst || !state || !key) return;
+
+	uint8_t tmp[16];
+	memcpy(tmp, state->data, 16);
+
+	/* InvShiftRows */
+	aes_inv_shift_rows(tmp);
+
+	/* InvSubBytes */
+	for (int i = 0; i < 16; i++)
+		tmp[i] = aes_inv_sbox[tmp[i]];
+
+	/* AddRoundKey */
+	const uint8_t *k = (const uint8_t*)key->data;
+	for (int i = 0; i < 16; i++)
+		tmp[i] ^= k[i];
+
+	/* InvMixColumns */
+	aes_inv_mix_columns(tmp);
+
+	memcpy(dst->data, tmp, 16);
 }
 
 void op_aes_dec_last(unified_value_t *dst, const unified_value_t *state, const unified_value_t *key) {
-	(void)dst; (void)state; (void)key;
-	// AES decryption last round placeholder
+	if (!dst || !state || !key) return;
+
+	uint8_t tmp[16];
+	memcpy(tmp, state->data, 16);
+
+	/* InvShiftRows */
+	aes_inv_shift_rows(tmp);
+
+	/* InvSubBytes */
+	for (int i = 0; i < 16; i++)
+		tmp[i] = aes_inv_sbox[tmp[i]];
+
+	/* AddRoundKey (no InvMixColumns in last round) */
+	const uint8_t *k = (const uint8_t*)key->data;
+	for (int i = 0; i < 16; i++)
+		tmp[i] ^= k[i];
+
+	memcpy(dst->data, tmp, 16);
 }
 
 void op_aes_keygen(unified_value_t *dst, const unified_value_t *key, uint8_t rcon) {
-	(void)dst; (void)key; (void)rcon;
-	// AES key generation placeholder
+	if (!dst || !key) return;
+
+	/* AES-128 key schedule generation */
+	uint32_t temp[4];
+	const uint32_t *prev_key = (const uint32_t*)key->data;
+	uint32_t *new_key = (uint32_t*)dst->data;
+
+	/* Copy previous round key */
+	for (int i = 0; i < 4; i++)
+		temp[i] = prev_key[i];
+
+	/* Rotate word and apply S-box to last word */
+	uint8_t *w3 = (uint8_t*)&temp[3];
+	uint8_t tmp = w3[0];
+	w3[0] = aes_sbox[w3[1]] ^ rcon;
+	w3[1] = aes_sbox[w3[2]];
+	w3[2] = aes_sbox[w3[3]];
+	w3[3] = aes_sbox[tmp];
+
+	/* Generate new round key */
+	new_key[0] = temp[0] ^ temp[3];
+	new_key[1] = temp[1] ^ new_key[0];
+	new_key[2] = temp[2] ^ new_key[1];
+	new_key[3] = temp[3] ^ new_key[2];
+}
+
+/* SHA1 helper functions */
+static uint32_t sha1_ch(uint32_t x, uint32_t y, uint32_t z) {
+	return (x & y) ^ (~x & z);
+}
+
+static uint32_t sha1_parity(uint32_t x, uint32_t y, uint32_t z) {
+	return x ^ y ^ z;
+}
+
+static uint32_t sha1_maj(uint32_t x, uint32_t y, uint32_t z) {
+	return (x & y) ^ (x & z) ^ (y & z);
+}
+
+static uint32_t rol32(uint32_t x, int n) {
+	return (x << n) | (x >> (32 - n));
 }
 
 void op_sha1_c(unified_value_t *dst, const unified_value_t *abcd, const unified_value_t *e, const unified_value_t *msg) {
-	(void)dst; (void)abcd; (void)e; (void)msg;
-	// SHA1 placeholder
+	if (!dst || !abcd || !e || !msg) return;
+
+	/* SHA1RNDS4: Perform 4 rounds of SHA-1 (choose function) */
+	const uint32_t *state = (const uint32_t*)abcd->data;
+	uint32_t e_val = *(const uint32_t*)e->data;
+	const uint32_t *w = (const uint32_t*)msg->data;
+
+	uint32_t a = state[3], b = state[2], c = state[1], d = state[0];
+	uint32_t e_tmp = e_val;
+
+	/* 4 rounds with Ch function (rounds 0-19) */
+	for (int i = 0; i < 4; i++) {
+		uint32_t f = sha1_ch(b, c, d);
+		uint32_t temp = rol32(a, 5) + f + e_tmp + 0x5A827999 + w[i];
+		e_tmp = d;
+		d = c;
+		c = rol32(b, 30);
+		b = a;
+		a = temp;
+	}
+
+	uint32_t *result = (uint32_t*)dst->data;
+	result[0] = d; result[1] = c; result[2] = b; result[3] = a;
+	/* E value updated separately */
 }
 
 void op_sha1_p(unified_value_t *dst, const unified_value_t *abcd, const unified_value_t *e, const unified_value_t *msg) {
-	(void)dst; (void)abcd; (void)e; (void)msg;
-	// SHA1 placeholder
+	if (!dst || !abcd || !e || !msg) return;
+
+	/* SHA1RNDS4: Perform 4 rounds of SHA-1 (parity function for rounds 40-59) */
+	const uint32_t *state = (const uint32_t*)abcd->data;
+	uint32_t e_val = *(const uint32_t*)e->data;
+	const uint32_t *w = (const uint32_t*)msg->data;
+
+	uint32_t a = state[3], b = state[2], c = state[1], d = state[0];
+	uint32_t e_tmp = e_val;
+
+	/* 4 rounds with Parity function (rounds 40-59) */
+	for (int i = 0; i < 4; i++) {
+		uint32_t f = sha1_parity(b, c, d);
+		uint32_t temp = rol32(a, 5) + f + e_tmp + 0xCA62C1D6 + w[i];
+		e_tmp = d;
+		d = c;
+		c = rol32(b, 30);
+		b = a;
+		a = temp;
+	}
+
+	uint32_t *result = (uint32_t*)dst->data;
+	result[0] = d; result[1] = c; result[2] = b; result[3] = a;
 }
 
 void op_sha1_m(unified_value_t *dst, const unified_value_t *msg0, const unified_value_t *msg1, const unified_value_t *msg2) {
-	(void)dst; (void)msg0; (void)msg1; (void)msg2;
-	// SHA1 placeholder
+	if (!dst || !msg0 || !msg1 || !msg2) return;
+
+	/* SHA1MSG1: Perform first part of message schedule update */
+	const uint32_t *w0 = (const uint32_t*)msg0->data;
+	const uint32_t *w1 = (const uint32_t*)msg1->data;
+	uint32_t *result = (uint32_t*)dst->data;
+
+	/* XOR previous message blocks */
+	result[0] = w0[0] ^ w1[0];
+	result[1] = w0[1] ^ w1[1];
+	result[2] = w0[2] ^ w1[2];
+	result[3] = w0[3] ^ w1[3];
+}
+
+/* SHA256 helper functions */
+static uint32_t sha256_ch(uint32_t x, uint32_t y, uint32_t z) {
+	return (x & y) ^ (~x & z);
+}
+
+static uint32_t sha256_maj(uint32_t x, uint32_t y, uint32_t z) {
+	return (x & y) ^ (x & z) ^ (y & z);
+}
+
+static uint32_t sha256_sigma0(uint32_t x) {
+	return rol32(x, 30) ^ rol32(x, 19) ^ rol32(x, 10);
+}
+
+static uint32_t sha256_sigma1(uint32_t x) {
+	return rol32(x, 26) ^ rol32(x, 21) ^ rol32(x, 7);
+}
+
+static uint32_t sha256_gamma0(uint32_t x) {
+	return rol32(x, 25) ^ rol32(x, 14) ^ (x >> 3);
+}
+
+static uint32_t sha256_gamma1(uint32_t x) {
+	return rol32(x, 15) ^ rol32(x, 13) ^ (x >> 10);
 }
 
 void op_sha256_rnds2(unified_value_t *dst, const unified_value_t *src, const unified_value_t *wk) {
-	(void)dst; (void)src; (void)wk;
-	// SHA256 placeholder
+	if (!dst || !src || !wk) return;
+
+	/* SHA256RNDS2: Perform 2 rounds of SHA-256 */
+	uint32_t *state_a = (uint32_t*)dst->data;   /* A, B, E, F */
+	const uint32_t *state_b = (const uint32_t*)src->data;  /* C, D, G, H */
+	const uint32_t *w_k = (const uint32_t*)wk->data;  /* W+K values */
+
+	/* Extract state */
+	uint32_t a = state_a[3], b = state_a[2], c = state_b[3], d = state_b[2];
+	uint32_t e = state_a[1], f = state_a[0], g = state_b[1], h = state_b[0];
+
+	/* Round 1 */
+	uint32_t t1 = h + sha256_sigma1(e) + sha256_ch(e, f, g) + w_k[0];
+	uint32_t t2 = sha256_sigma0(a) + sha256_maj(a, b, c);
+	h = g; g = f; f = e; e = d + t1;
+	d = c; c = b; b = a; a = t1 + t2;
+
+	/* Round 2 */
+	t1 = h + sha256_sigma1(e) + sha256_ch(e, f, g) + w_k[1];
+	t2 = sha256_sigma0(a) + sha256_maj(a, b, c);
+	h = g; g = f; f = e; e = d + t1;
+	d = c; c = b; b = a; a = t1 + t2;
+
+	/* Store result */
+	state_a[3] = a; state_a[2] = b; state_a[1] = e; state_a[0] = f;
 }
 
 void op_sha256_msg1(unified_value_t *dst, const unified_value_t *src) {
-	(void)dst; (void)src;
-	// SHA256 placeholder
+	if (!dst || !src) return;
+
+	/* SHA256MSG1: Perform first part of message schedule update */
+	uint32_t *w0 = (uint32_t*)dst->data;
+	const uint32_t *w1 = (const uint32_t*)src->data;
+
+	for (int i = 0; i < 4; i++) {
+		w0[i] += sha256_gamma0(w1[i]);
+	}
 }
 
 void op_sha256_msg2(unified_value_t *dst, const unified_value_t *src) {
-	(void)dst; (void)src;
-	// SHA256 placeholder
+	if (!dst || !src) return;
+
+	/* SHA256MSG2: Perform second part of message schedule update */
+	uint32_t *w0 = (uint32_t*)dst->data;
+	const uint32_t *w4 = (const uint32_t*)src->data;
+
+	for (int i = 0; i < 4; i++) {
+		w0[i] += sha256_gamma1(w4[(i + 2) & 3]);
+	}
 }
 
 void op_rand(unified_value_t *dst) {
