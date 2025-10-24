@@ -3312,18 +3312,58 @@ void op_poly(unified_value_t *dst, const unified_value_t *x, const unified_value
  ***************************************************************************/
 
 void op_strcmp(unified_value_t *dst, const unified_value_t *s1, const unified_value_t *s2, uint32_t max_len) {
-	(void)dst; (void)s1; (void)s2; (void)max_len;
-	// Placeholder
+	if (!dst || !s1 || !s2) return;
+
+	const char *str1 = (const char*)s1->data;
+	const char *str2 = (const char*)s2->data;
+
+	/* String comparison with max length */
+	int result = 0;
+	for (uint32_t i = 0; i < max_len; i++) {
+		if (str1[i] != str2[i]) {
+			result = (unsigned char)str1[i] - (unsigned char)str2[i];
+			break;
+		}
+		if (str1[i] == '\0') {
+			break;  /* Both strings ended */
+		}
+	}
+
+	uval_set_i64(dst, result);
 }
 
 void op_strchr(unified_value_t *dst, const unified_value_t *str, const unified_value_t *chr, uint32_t max_len) {
-	(void)dst; (void)str; (void)chr; (void)max_len;
-	// Placeholder
+	if (!dst || !str || !chr) return;
+
+	const char *s = (const char*)str->data;
+	char c = (char)uval_get_u64(chr);
+
+	/* Find first occurrence of character */
+	for (uint32_t i = 0; i < max_len; i++) {
+		if (s[i] == c) {
+			uval_set_u64(dst, i);  /* Return index */
+			return;
+		}
+		if (s[i] == '\0') {
+			break;
+		}
+	}
+
+	uval_set_i64(dst, -1);  /* Not found */
 }
 
 void op_strlen(unified_value_t *dst, const unified_value_t *str, uint32_t max_len) {
-	(void)dst; (void)str; (void)max_len;
-	// Placeholder
+	if (!dst || !str) return;
+
+	const char *s = (const char*)str->data;
+	uint32_t len = 0;
+
+	/* Calculate string length up to max_len */
+	while (len < max_len && s[len] != '\0') {
+		len++;
+	}
+
+	uval_set_u64(dst, len);
 }
 
 void op_block_move(void *dst, const void *src, uint32_t count, uint32_t elem_size) {
@@ -3460,13 +3500,59 @@ void op_masked_add(unified_value_t *dst, const unified_value_t *a, const unified
 }
 
 void op_masked_load(unified_value_t *dst, const void *ptr, const unified_value_t *mask) {
-	(void)dst; (void)ptr; (void)mask;
-	// Placeholder
+	if (!dst || !ptr || !mask) return;
+
+	/* Masked vector load - load elements where mask bit is set */
+	if (dst->kind == VALUE_KIND_VECTOR) {
+		const uint8_t *src = (const uint8_t*)ptr;
+		uint64_t mask_val = uval_get_u64(mask);
+
+		for (uint32_t i = 0; i < dst->vec_config.num_elements; i++) {
+			if (mask_val & (1ULL << i)) {
+				/* Load element i */
+				unified_value_t elem;
+				memcpy(&elem, src + i * dst->vec_config.element_size, dst->vec_config.element_size);
+				uval_set_vec_element(dst, i, &elem);
+			} else {
+				/* Zero element i */
+				unified_value_t zero;
+				memset(&zero, 0, sizeof(zero));
+				uval_set_vec_element(dst, i, &zero);
+			}
+		}
+	} else {
+		/* Scalar masked load - just load if mask is non-zero */
+		if (uval_get_u64(mask)) {
+			memcpy(dst->data, ptr, dst->data_size);
+		} else {
+			memset(dst->data, 0, dst->data_size);
+		}
+	}
 }
 
 void op_masked_store(void *ptr, const unified_value_t *src, const unified_value_t *mask) {
-	(void)ptr; (void)src; (void)mask;
-	// Placeholder
+	if (!ptr || !src || !mask) return;
+
+	/* Masked vector store - store elements where mask bit is set */
+	if (src->kind == VALUE_KIND_VECTOR) {
+		uint8_t *dst = (uint8_t*)ptr;
+		uint64_t mask_val = uval_get_u64(mask);
+
+		for (uint32_t i = 0; i < src->vec_config.num_elements; i++) {
+			if (mask_val & (1ULL << i)) {
+				/* Store element i */
+				unified_value_t elem;
+				uval_get_vec_element(&elem, src, i);
+				memcpy(dst + i * src->vec_config.element_size, &elem, src->vec_config.element_size);
+			}
+			/* Skip elements where mask bit is not set */
+		}
+	} else {
+		/* Scalar masked store - just store if mask is non-zero */
+		if (uval_get_u64(mask)) {
+			memcpy(ptr, src->data, src->data_size);
+		}
+	}
 }
 
 void op_cmpeq_pred(unified_value_t *pred, const unified_value_t *a, const unified_value_t *b) {
@@ -3524,22 +3610,22 @@ void op_das(unified_value_t *dst, const unified_value_t *src) {
 }
 
 void op_packed_decimal_add(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Placeholder for packed decimal add
+	/* Packed decimal is same as BCD - delegate to BCD implementation */
 	op_bcd_add(dst, a, b);
 }
 
 void op_packed_decimal_sub(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Placeholder for packed decimal subtract
+	/* Packed decimal is same as BCD - delegate to BCD implementation */
 	op_bcd_sub(dst, a, b);
 }
 
 void op_packed_decimal_mul(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Placeholder for packed decimal multiply
+	/* Packed decimal is same as BCD - delegate to BCD implementation */
 	op_bcd_mul(dst, a, b);
 }
 
 void op_packed_decimal_div(unified_value_t *dst, const unified_value_t *a, const unified_value_t *b) {
-	// Placeholder for packed decimal divide
+	/* Packed decimal is same as BCD - delegate to BCD implementation */
 	op_bcd_div(dst, a, b);
 }
 
@@ -3547,14 +3633,51 @@ void op_packed_decimal_div(unified_value_t *dst, const unified_value_t *a, const
  * QUEUE/LIST OPERATIONS
  ***************************************************************************/
 
+/* VAX-style queue operations (doubly-linked list) */
+typedef struct queue_entry {
+	struct queue_entry *flink;  /* Forward link */
+	struct queue_entry *blink;  /* Backward link */
+} queue_entry_t;
+
 void op_queue_insert(void *entry, void *predecessor) {
-	(void)entry; (void)predecessor;
-	// Placeholder
+	if (!entry || !predecessor) return;
+
+	queue_entry_t *new_entry = (queue_entry_t*)entry;
+	queue_entry_t *pred = (queue_entry_t*)predecessor;
+
+	/* Insert new_entry after predecessor */
+	new_entry->flink = pred->flink;
+	new_entry->blink = pred;
+
+	if (pred->flink) {
+		pred->flink->blink = new_entry;
+	}
+	pred->flink = new_entry;
 }
 
 void op_queue_remove(void **entry, void *header) {
-	(void)entry; (void)header;
-	// Placeholder
+	if (!entry || !header) return;
+
+	queue_entry_t *head = (queue_entry_t*)header;
+
+	/* Remove first entry from queue */
+	if (head->flink && head->flink != head) {
+		queue_entry_t *removed = head->flink;
+
+		/* Unlink from queue */
+		head->flink = removed->flink;
+		if (removed->flink) {
+			removed->flink->blink = head;
+		}
+
+		/* Clear links */
+		removed->flink = NULL;
+		removed->blink = NULL;
+
+		*entry = removed;
+	} else {
+		*entry = NULL;  /* Queue empty */
+	}
 }
 
 /***************************************************************************
@@ -3998,12 +4121,13 @@ void op_pred_cmp_lt(unified_value_t *p_true, unified_value_t *p_false, const uni
 void op_speculative_load(unified_value_t *dst, const void *ptr, unified_value_t *nat_bit) {
 	if (!dst || !ptr) return;
 
-	// Speculative load - check for valid address
-	// Placeholder implementation
+	/* Speculative load - loads data and sets NaT (Not a Thing) bit */
+	/* In a real implementation, this would check for valid address, TLB faults, etc. */
+	/* For emulation, we assume all loads succeed */
 	memcpy(dst->data, ptr, dst->data_size);
-	
+
 	if (nat_bit) {
-		uval_set_u64(nat_bit, 0);  // 0 = valid
+		uval_set_u64(nat_bit, 0);  /* 0 = valid, 1 = NaT/fault */
 	}
 }
 
@@ -4014,7 +4138,9 @@ void op_speculative_load(unified_value_t *dst, const void *ptr, unified_value_t 
 void op_atomic_add(unified_value_t *dst, void *ptr, const unified_value_t *value) {
 	if (!dst || !ptr || !value) return;
 
-	// Atomic add placeholder
+	/* Atomic fetch-and-add operation */
+	/* Note: In emulation mode, these are not truly atomic */
+	/* A real implementation would use __atomic_fetch_add or similar */
 	uint64_t old_val = *(uint64_t*)ptr;
 	uint64_t new_val = old_val + uval_get_u64(value);
 	*(uint64_t*)ptr = new_val;
