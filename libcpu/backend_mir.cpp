@@ -488,7 +488,7 @@ static IBuilder* mir_module_create_builder(IModule *self)
 	builder->interface.base.AddRef = backend_addref;
 	builder->interface.base.Release = backend_release;
 	builder->interface.base.QueryInterface = backend_query_interface;
-	builder->interface.PositionAtEnd = mir_builder_position_at_end;
+	builder->interface.SetInsertPoint = mir_builder_position_at_end;
 	builder->interface.GetInsertBlock = mir_builder_get_insert_block;
 	builder->interface.CreateAdd = mir_builder_create_add;
 	builder->interface.CreateSub = mir_builder_create_sub;
@@ -564,6 +564,102 @@ static void mir_module_dump(IModule *self)
 }
 
 /***************************************************************************
+ * Module Type Creation Methods
+ ***************************************************************************/
+
+static const char* mir_module_get_name(IModule *self)
+{
+	MIRModule *module = (MIRModule*)self;
+	return module->name.c_str();
+}
+
+static IType* mir_module_get_int8_type(IModule *self)
+{
+	MIRModule *module = (MIRModule*)self;
+	return (IType*)mir_type_create(module, MIR_T_I8, "i8");
+}
+
+static IType* mir_module_get_int16_type(IModule *self)
+{
+	MIRModule *module = (MIRModule*)self;
+	return (IType*)mir_type_create(module, MIR_T_I16, "i16");
+}
+
+static IType* mir_module_get_int32_type(IModule *self)
+{
+	MIRModule *module = (MIRModule*)self;
+	return (IType*)mir_type_create(module, MIR_T_I32, "i32");
+}
+
+static IType* mir_module_get_int64_type(IModule *self)
+{
+	MIRModule *module = (MIRModule*)self;
+	return (IType*)mir_type_create(module, MIR_T_I64, "i64");
+}
+
+static IType* mir_module_get_pointer_type(IModule *self, IType *element_type)
+{
+	MIRModule *module = (MIRModule*)self;
+	return (IType*)mir_type_create(module, MIR_T_P, "ptr");
+}
+
+static IType* mir_module_get_function_type(IModule *self, IType *return_type,
+                                            IType **param_types, uint32_t num_params, int is_vararg)
+{
+	/* MIR doesn't have function types as first-class objects */
+	return return_type;
+}
+
+static IFunction* mir_module_create_function(IModule *self, const char *name, IType *function_type)
+{
+	MIRModule *module = (MIRModule*)self;
+
+	MIRFunction *func = new MIRFunction();
+	func->refcount = 1;
+	func->module = module;
+	func->name = name;
+	func->return_type = (MIRType*)function_type;
+	func->native_ptr = NULL;
+
+	func->interface.base.AddRef = backend_addref;
+	func->interface.base.Release = backend_release;
+	func->interface.base.QueryInterface = backend_query_interface;
+	func->interface.CreateBasicBlock = mir_function_create_basic_block;
+
+	module->functions.push_back(func);
+	return (IFunction*)func;
+}
+
+static IFunction* mir_module_get_function(IModule *self, const char *name)
+{
+	MIRModule *module = (MIRModule*)self;
+	for (auto func : module->functions) {
+		if (func->name == name)
+			return (IFunction*)func;
+	}
+	return NULL;
+}
+
+static IBasicBlock* mir_function_create_basic_block(IFunction *self, const char *name)
+{
+	MIRFunction *func = (MIRFunction*)self;
+
+	MIRBasicBlock *block = new MIRBasicBlock();
+	block->refcount = 1;
+	block->module = func->module;
+	block->function = func;
+	block->label = name ? name : "";
+	block->terminated = false;
+
+	block->interface.base.AddRef = backend_addref;
+	block->interface.base.Release = backend_release;
+	block->interface.base.QueryInterface = backend_query_interface;
+
+	func->basic_blocks.push_back(block);
+	return (IBasicBlock*)block;
+}
+
+/***************************************************************************
  * Backend Implementation
  ***************************************************************************/
 
@@ -610,12 +706,18 @@ static IModule* mir_backend_create_module(IBackend *self, const char *name)
 	module->interface.base.AddRef = backend_addref;
 	module->interface.base.Release = backend_release;
 	module->interface.base.QueryInterface = backend_query_interface;
-	module->interface.AddFunction = mir_module_add_function;
-	module->interface.CreateBasicBlock = mir_module_create_basic_block;
+	module->interface.GetName = mir_module_get_name;
+	module->interface.GetInt8Type = mir_module_get_int8_type;
+	module->interface.GetInt16Type = mir_module_get_int16_type;
+	module->interface.GetInt32Type = mir_module_get_int32_type;
+	module->interface.GetInt64Type = mir_module_get_int64_type;
+	module->interface.GetPointerType = mir_module_get_pointer_type;
+	module->interface.GetFunctionType = mir_module_get_function_type;
+	module->interface.CreateFunction = mir_module_create_function;
+	module->interface.GetFunction = mir_module_get_function;
 	module->interface.CreateBuilder = mir_module_create_builder;
 	module->interface.Compile = mir_module_compile;
 	module->interface.GetFunctionAddress = mir_module_get_function_address;
-	module->interface.GetIR = mir_module_get_ir;
 	module->interface.Dump = mir_module_dump;
 
 	return (IModule*)module;
