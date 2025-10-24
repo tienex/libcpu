@@ -202,6 +202,15 @@ static void emit_sub(DynAsmBuilder *builder, int dest, int src)
 	emit_modrm(builder, 3, src, dest);
 }
 
+/* Emit IMUL instruction: imul dest, src (dest = dest * src) */
+static void emit_imul(DynAsmBuilder *builder, int dest, int src)
+{
+	emit_rex(builder, 1, 0, 0, 0);
+	emit_byte(builder, 0x0F);  /* Two-byte opcode prefix */
+	emit_byte(builder, 0xAF);  /* IMUL r64, r/m64 */
+	emit_modrm(builder, 3, dest, src);
+}
+
 /* Emit MOV instruction: mov dest, src */
 static void emit_mov(DynAsmBuilder *builder, int dest, int src)
 {
@@ -496,11 +505,12 @@ static IValue* dynasm_builder_create_mul(IBuilder *self, IValue *lhs, IValue *rh
 	DynAsmValue *left = (DynAsmValue*)lhs;
 	DynAsmValue *right = (DynAsmValue*)rhs;
 
-	/* MUL is more complex on x86-64, uses RAX implicitly */
-	/* For simplicity, emit a call to a multiply helper */
-	DynAsmValue *result = dynasm_value_create_reg(builder->module, left->type, 0);  /* RAX */
+	/* Create result register (use same as left for two-operand form) */
+	DynAsmValue *result = dynasm_value_create_reg(builder->module, left->type, left->reg_id);
 
-	/* TODO: Emit proper IMUL instruction */
+	/* Emit IMUL instruction: imul left_reg, right_reg (left = left * right) */
+	emit_imul(builder, left->reg_id, right->reg_id);
+
 	return (IValue*)result;
 }
 
