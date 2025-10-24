@@ -118,16 +118,25 @@ typedef struct LibJitBackend {
  * Type Implementation
  ***************************************************************************/
 
-static const char* libjit_type_get_name(IType *self)
+static value_type_t libjit_type_get_kind(IType *self)
 {
 	LibJitType *type = (LibJitType*)self;
-	return type->name.c_str();
+	switch (type->lj_type) {
+	case LJ_I8: return VALUE_TYPE_INT8;
+	case LJ_I16: return VALUE_TYPE_INT16;
+	case LJ_I32: return VALUE_TYPE_INT32;
+	case LJ_I64: return VALUE_TYPE_INT64;
+	case LJ_F32: return VALUE_TYPE_FLOAT;
+	case LJ_F64: return VALUE_TYPE_DOUBLE;
+	case LJ_PTR: return VALUE_TYPE_POINTER;
+	default: return VALUE_TYPE_VOID;
+	}
 }
 
-static uint32_t libjit_type_get_size(IType *self)
+static uint32_t libjit_type_get_bitwidth(IType *self)
 {
 	LibJitType *type = (LibJitType*)self;
-	return type->size;
+	return type->size * 8;
 }
 
 static int libjit_type_is_integer(IType *self)
@@ -136,7 +145,7 @@ static int libjit_type_is_integer(IType *self)
 	return type->is_integer;
 }
 
-static int libjit_type_is_float(IType *self)
+static int libjit_type_is_floating_point(IType *self)
 {
 	LibJitType *type = (LibJitType*)self;
 	return type->is_float;
@@ -154,19 +163,24 @@ static int libjit_type_is_void(IType *self)
 	return type->is_void;
 }
 
+static IType* libjit_type_get_element_type(IType *self)
+{
+	return NULL;
+}
+
 static LibJitType* libjit_type_create(LibJitModule *module, libjit_type_t lj_type, const char *name)
 {
 	LibJitType *type = new LibJitType();
 	type->refcount = 1;
 	type->module = module;
-	type->lj_type = sl_type;
-	type->is_integer = (sl_type <= LJ_I64);
-	type->is_float = (sl_type == LJ_F32 || sl_type == LJ_F64);
-	type->is_pointer = (sl_type == LJ_PTR);
+	type->lj_type = lj_type;
+	type->is_integer = (lj_type <= LJ_I64);
+	type->is_float = (lj_type == LJ_F32 || lj_type == LJ_F64);
+	type->is_pointer = (lj_type == LJ_PTR);
 	type->is_void = false;
 	type->name = name;
 
-	switch (sl_type) {
+	switch (lj_type) {
 	case LJ_I8: type->size = 1; break;
 	case LJ_I16: type->size = 2; break;
 	case LJ_I32: type->size = 4; break;
@@ -179,16 +193,23 @@ static LibJitType* libjit_type_create(LibJitModule *module, libjit_type_t lj_typ
 	type->interface.base.AddRef = backend_addref;
 	type->interface.base.Release = backend_release;
 	type->interface.base.QueryInterface = backend_query_interface;
-	type->interface.GetName = libjit_type_get_name;
-	type->interface.GetSize = libjit_type_get_size;
-	type->interface.IsInteger = libjit_type_is_integer;
-	type->interface.IsFloat = libjit_type_is_float;
-	type->interface.IsPointer = libjit_type_is_pointer;
-	type->interface.IsVoid = libjit_type_is_void;
+	type->interface.GetKind = libjit_type_get_kind;
+	type->interface.GetBitWidth = libjit_type_get_bitwidth;
+	type->interface.IsIntegerTy = libjit_type_is_integer;
+	type->interface.IsFloatingPointTy = libjit_type_is_floating_point;
+	type->interface.IsPointerTy = libjit_type_is_pointer;
+	type->interface.IsVoidTy = libjit_type_is_void;
+	type->interface.GetElementType = libjit_type_get_element_type;
 
 	module->types.push_back(type);
 	return type;
 }
+
+/***************************************************************************
+ * Forward Declarations
+ ***************************************************************************/
+
+static IBasicBlock* libjit_function_create_basic_block(IFunction *self, const char *name);
 
 /***************************************************************************
  * Builder Implementation
@@ -231,6 +252,803 @@ static IValue* libjit_builder_create_ret(IBuilder *self, IValue *val)
 	if (builder->current_block)
 		builder->current_block->terminated = true;
 	return val;
+}
+
+/* Binary operations - simplified stubs */
+static IValue* libjit_builder_create_add(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "add_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_sub(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "sub_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_mul(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "mul_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_and(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "and_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_or(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "or_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_xor(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "xor_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_shl(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "shl_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_lshr(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "lshr_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Additional constant creation methods */
+static IValue* libjit_builder_create_const_int1(IBuilder *self, int val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_I8, "i1");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = val;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_int8(IBuilder *self, uint8_t val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_I8, "i8");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = val;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_int16(IBuilder *self, uint16_t val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_I16, "i16");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = val;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_int32(IBuilder *self, uint32_t val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_I32, "i32");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = val;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_int64(IBuilder *self, uint64_t val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_I64, "i64");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = val;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_float(IBuilder *self, float val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_F32, "f32");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = 0;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+static IValue* libjit_builder_create_const_double(IBuilder *self, double val)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *value = new LibJitValue();
+	value->refcount = 1;
+	value->module = builder->module;
+	value->type = libjit_type_create(builder->module, LJ_F64, "f64");
+	value->name = std::to_string(val);
+	value->is_constant = true;
+	value->const_value = 0;
+	value->reg_id = -1;
+	value->interface.base.AddRef = backend_addref;
+	value->interface.base.Release = backend_release;
+	value->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)value;
+}
+
+/* Additional arithmetic operations */
+static IValue* libjit_builder_create_udiv(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "udiv_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_sdiv(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "sdiv_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_urem(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "urem_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_srem(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "srem_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_neg(IBuilder *self, IValue *val, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)val)->type;
+	result->name = name ? name : "neg_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_not(IBuilder *self, IValue *val, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)val)->type;
+	result->name = name ? name : "not_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_ashr(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "ashr_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Floating point operations */
+static IValue* libjit_builder_create_fadd(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "fadd_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fsub(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "fsub_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fmul(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "fmul_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fdiv(IBuilder *self, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)lhs)->type;
+	result->name = name ? name : "fdiv_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fneg(IBuilder *self, IValue *val, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)val)->type;
+	result->name = name ? name : "fneg_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Comparison operations */
+static IValue* libjit_builder_create_icmp(IBuilder *self, icmp_predicate_t pred, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = libjit_type_create(builder->module, LJ_I8, "i1");
+	result->name = name ? name : "icmp_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fcmp(IBuilder *self, fcmp_predicate_t pred, IValue *lhs, IValue *rhs, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = libjit_type_create(builder->module, LJ_I8, "i1");
+	result->name = name ? name : "fcmp_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Memory operations */
+static IValue* libjit_builder_create_load(IBuilder *self, IType *type, IValue *ptr, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)type;
+	result->name = name ? name : "load_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_store(IBuilder *self, IValue *val, IValue *ptr)
+{
+	return val;
+}
+
+static IValue* libjit_builder_create_gep(IBuilder *self, IType *type, IValue *ptr, IValue **indices, size_t num_indices, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = libjit_type_create(builder->module, LJ_PTR, "ptr");
+	result->name = name ? name : "gep_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_inbounds_gep(IBuilder *self, IType *type, IValue *ptr, IValue **indices, size_t num_indices, const char *name)
+{
+	return libjit_builder_create_gep(self, type, ptr, indices, num_indices, name);
+}
+
+/* Cast operations */
+static IValue* libjit_builder_create_trunc(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "trunc_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_zext(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "zext_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_sext(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "sext_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fptrunc(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "fptrunc_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fpext(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "fpext_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fptoui(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "fptoui_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_fptosi(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "fptosi_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_uitofp(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "uitofp_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_sitofp(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "sitofp_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_ptrtoint(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "ptrtoint_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_inttoptr(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "inttoptr_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+static IValue* libjit_builder_create_bitcast(IBuilder *self, IValue *val, IType *dest_type, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)dest_type;
+	result->name = name ? name : "bitcast_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Control flow operations */
+static IValue* libjit_builder_create_br(IBuilder *self, IBasicBlock *dest)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	if (builder->current_block)
+		builder->current_block->terminated = true;
+	return NULL;
+}
+
+static IValue* libjit_builder_create_condbr(IBuilder *self, IValue *cond, IBasicBlock *true_bb, IBasicBlock *false_bb)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	if (builder->current_block)
+		builder->current_block->terminated = true;
+	return NULL;
+}
+
+static IValue* libjit_builder_create_switch(IBuilder *self, IValue *val, IBasicBlock *default_bb, uint32_t num_cases)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	if (builder->current_block)
+		builder->current_block->terminated = true;
+	return NULL;
+}
+
+static IValue* libjit_builder_create_retvoid(IBuilder *self)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	if (builder->current_block)
+		builder->current_block->terminated = true;
+	return NULL;
+}
+
+/* Call operation */
+static IValue* libjit_builder_create_call(IBuilder *self, IFunction *func, IValue **args, size_t num_args, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitFunction *target = (LibJitFunction*)func;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = target->return_type;
+	result->name = name ? name : "call_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* PHI operation */
+static IValue* libjit_builder_create_phi(IBuilder *self, IType *type, uint32_t num_reserved, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = (LibJitType*)type;
+	result->name = name ? name : "phi_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
+}
+
+/* Select operation */
+static IValue* libjit_builder_create_select(IBuilder *self, IValue *cond, IValue *true_val, IValue *false_val, const char *name)
+{
+	LibJitBuilder *builder = (LibJitBuilder*)self;
+	LibJitValue *result = new LibJitValue();
+	result->refcount = 1;
+	result->module = builder->module;
+	result->type = ((LibJitValue*)true_val)->type;
+	result->name = name ? name : "select_result";
+	result->is_constant = false;
+	result->reg_id = builder->module->next_reg++;
+	result->interface.base.AddRef = backend_addref;
+	result->interface.base.Release = backend_release;
+	result->interface.base.QueryInterface = backend_query_interface;
+	return (IValue*)result;
 }
 
 /***************************************************************************
@@ -343,8 +1161,82 @@ static IBuilder* libjit_module_create_builder(IModule *self)
 	builder->interface.base.QueryInterface = backend_query_interface;
 	builder->interface.SetInsertPoint = libjit_builder_set_insert_point;
 	builder->interface.GetInsertBlock = libjit_builder_get_insert_block;
+
+	/* Constants */
 	builder->interface.CreateConstInt = libjit_builder_create_const_int;
+	builder->interface.CreateConstInt1 = libjit_builder_create_const_int1;
+	builder->interface.CreateConstInt8 = libjit_builder_create_const_int8;
+	builder->interface.CreateConstInt16 = libjit_builder_create_const_int16;
+	builder->interface.CreateConstInt32 = libjit_builder_create_const_int32;
+	builder->interface.CreateConstInt64 = libjit_builder_create_const_int64;
+	builder->interface.CreateConstFloat = libjit_builder_create_const_float;
+	builder->interface.CreateConstDouble = libjit_builder_create_const_double;
+
+	/* Arithmetic operations */
+	builder->interface.CreateAdd = libjit_builder_create_add;
+	builder->interface.CreateSub = libjit_builder_create_sub;
+	builder->interface.CreateMul = libjit_builder_create_mul;
+	builder->interface.CreateUDiv = libjit_builder_create_udiv;
+	builder->interface.CreateSDiv = libjit_builder_create_sdiv;
+	builder->interface.CreateURem = libjit_builder_create_urem;
+	builder->interface.CreateSRem = libjit_builder_create_srem;
+	builder->interface.CreateNeg = libjit_builder_create_neg;
+
+	/* Bitwise operations */
+	builder->interface.CreateAnd = libjit_builder_create_and;
+	builder->interface.CreateOr = libjit_builder_create_or;
+	builder->interface.CreateXor = libjit_builder_create_xor;
+	builder->interface.CreateNot = libjit_builder_create_not;
+	builder->interface.CreateShl = libjit_builder_create_shl;
+	builder->interface.CreateLShr = libjit_builder_create_lshr;
+	builder->interface.CreateAShr = libjit_builder_create_ashr;
+
+	/* Floating point operations */
+	builder->interface.CreateFAdd = libjit_builder_create_fadd;
+	builder->interface.CreateFSub = libjit_builder_create_fsub;
+	builder->interface.CreateFMul = libjit_builder_create_fmul;
+	builder->interface.CreateFDiv = libjit_builder_create_fdiv;
+	builder->interface.CreateFNeg = libjit_builder_create_fneg;
+
+	/* Comparison operations */
+	builder->interface.CreateICmp = libjit_builder_create_icmp;
+	builder->interface.CreateFCmp = libjit_builder_create_fcmp;
+
+	/* Memory operations */
+	builder->interface.CreateLoad = libjit_builder_create_load;
+	builder->interface.CreateStore = libjit_builder_create_store;
+	builder->interface.CreateGEP = libjit_builder_create_gep;
+	builder->interface.CreateInBoundsGEP = libjit_builder_create_inbounds_gep;
+
+	/* Cast operations */
+	builder->interface.CreateTrunc = libjit_builder_create_trunc;
+	builder->interface.CreateZExt = libjit_builder_create_zext;
+	builder->interface.CreateSExt = libjit_builder_create_sext;
+	builder->interface.CreateFPTrunc = libjit_builder_create_fptrunc;
+	builder->interface.CreateFPExt = libjit_builder_create_fpext;
+	builder->interface.CreateFPToUI = libjit_builder_create_fptoui;
+	builder->interface.CreateFPToSI = libjit_builder_create_fptosi;
+	builder->interface.CreateUIToFP = libjit_builder_create_uitofp;
+	builder->interface.CreateSIToFP = libjit_builder_create_sitofp;
+	builder->interface.CreatePtrToInt = libjit_builder_create_ptrtoint;
+	builder->interface.CreateIntToPtr = libjit_builder_create_inttoptr;
+	builder->interface.CreateBitCast = libjit_builder_create_bitcast;
+
+	/* Control flow operations */
+	builder->interface.CreateBr = libjit_builder_create_br;
+	builder->interface.CreateCondBr = libjit_builder_create_condbr;
+	builder->interface.CreateSwitch = libjit_builder_create_switch;
 	builder->interface.CreateRet = libjit_builder_create_ret;
+	builder->interface.CreateRetVoid = libjit_builder_create_retvoid;
+
+	/* Call operation */
+	builder->interface.CreateCall = libjit_builder_create_call;
+
+	/* PHI operation */
+	builder->interface.CreatePHI = libjit_builder_create_phi;
+
+	/* Select operation */
+	builder->interface.CreateSelect = libjit_builder_create_select;
 
 	return (IBuilder*)builder;
 }
@@ -395,12 +1287,12 @@ static const char* libjit_backend_get_name(IBackend *self)
 
 static const char* libjit_backend_get_version(IBackend *self)
 {
-	return "1.0 (GNU LibJIT)";
+	return "1.0 (Stack-Less JIT)";
 }
 
 static backend_type_t libjit_backend_get_type(IBackend *self)
 {
-	return BACKEND_LibJIT;
+	return BACKEND_LIBJIT;
 }
 
 static int libjit_backend_initialize(IBackend *self)
