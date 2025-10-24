@@ -126,11 +126,20 @@ uint32_t backend_release(void *self)
 
 int backend_query_interface(void *self, const char *iid, void **out)
 {
-	/* Simple implementation - just return self for now */
-	if (out == NULL)
+	if (out == NULL || iid == NULL)
 		return -1;
 
-	*out = self;
-	((IUnknown*)self)->AddRef(self);
-	return 0;
+	/* Check for IUnknown interface - all objects support this */
+	if (strcmp(iid, "IUnknown") == 0 || strcmp(iid, "IBackend") == 0 ||
+	    strcmp(iid, "IModule") == 0 || strcmp(iid, "IFunction") == 0 ||
+	    strcmp(iid, "IBasicBlock") == 0 || strcmp(iid, "IBuilder") == 0 ||
+	    strcmp(iid, "IValue") == 0 || strcmp(iid, "IType") == 0) {
+		*out = self;
+		((IUnknown*)self)->AddRef(self);
+		return 0;
+	}
+
+	/* Interface not supported */
+	*out = NULL;
+	return -1;
 }

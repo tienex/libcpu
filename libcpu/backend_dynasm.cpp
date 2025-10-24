@@ -115,6 +115,12 @@ typedef struct DynAsmFunction {
 	size_t code_size;
 } DynAsmFunction;
 
+/* Jump fixup entry */
+typedef struct {
+	size_t jump_offset;           /* Offset of the jump instruction's displacement */
+	DynAsmBasicBlock *dest_block; /* Destination basic block */
+} jump_fixup_t;
+
 typedef struct DynAsmBuilder {
 	IBuilder interface;
 	uint32_t refcount;
@@ -122,6 +128,7 @@ typedef struct DynAsmBuilder {
 	DynAsmFunction *current_function;
 	DynAsmBasicBlock *current_block;
 	std::vector<uint8_t> code_buffer;  /* Temporary code buffer */
+	std::vector<jump_fixup_t> jump_fixups;  /* Jump fixups to apply later */
 } DynAsmBuilder;
 
 /***************************************************************************
@@ -534,10 +541,20 @@ static void dynasm_builder_create_ret(IBuilder *self, IValue *value)
 static void dynasm_builder_create_br(IBuilder *self, IBasicBlock *dest)
 {
 	DynAsmBuilder *builder = (DynAsmBuilder*)self;
+	DynAsmBasicBlock *dest_block = (DynAsmBasicBlock*)dest;
+
 	/* Emit unconditional jump */
-	/* JMP rel32 - placeholder for now */
-	emit_byte(builder, 0xE9);  /* JMP rel32 */
-	emit_bytes(builder, (const uint8_t[]){0, 0, 0, 0}, 4);  /* Placeholder offset */
+	emit_byte(builder, 0xE9);  /* JMP rel32 opcode */
+
+	/* Record fixup location (current offset + 1 for the displacement) */
+	jump_fixup_t fixup;
+	fixup.jump_offset = builder->code_buffer.size();
+	fixup.dest_block = dest_block;
+	builder->jump_fixups.push_back(fixup);
+
+	/* Emit placeholder displacement (will be patched during compilation) */
+	emit_bytes(builder, (const uint8_t[]){0, 0, 0, 0}, 4);
+
 	builder->current_block->terminated = true;
 }
 

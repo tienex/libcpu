@@ -36,7 +36,8 @@ backend_type_t tier_get_backend_type(compilation_tier_t tier)
 {
 	switch (tier) {
 	case TIER_INTERPRETER:
-		return BACKEND_LLVM; /* Fallback to LLVM for now */
+		/* Use TCG for interpreter tier - it has the fastest compilation time */
+		return BACKEND_TCG;
 	case TIER_TCG:
 		return BACKEND_TCG;
 	case TIER_QBE:
@@ -389,9 +390,62 @@ function_profile_t* tier_manager_get_profile(tier_manager_t *mgr, addr_t address
 		}
 	}
 
+	/* Table full - resize it */
+	uint32_t old_capacity = mgr->profile_capacity;
+	uint32_t new_capacity = old_capacity * 2;
+	function_profile_t **old_profiles = mgr->profiles;
+
+	/* Allocate new table */
+	function_profile_t **new_profiles = (function_profile_t**)calloc(new_capacity, sizeof(function_profile_t*));
+	if (!new_profiles) {
+		pthread_rwlock_unlock(&mgr->profile_lock);
+		fprintf(stderr, "tier_manager_get_profile: failed to resize profile table\n");
+		return NULL;
+	}
+
+	/* Rehash all existing profiles */
+	for (uint32_t i = 0; i < old_capacity; i++) {
+		if (old_profiles[i]) {
+			function_profile_t *profile = old_profiles[i];
+			uint32_t new_hash = (uint32_t)(profile->address % new_capacity);
+
+			/* Linear probing in new table */
+			for (uint32_t j = 0; j < new_capacity; j++) {
+				uint32_t new_idx = (new_hash + j) % new_capacity;
+				if (!new_profiles[new_idx]) {
+					new_profiles[new_idx] = profile;
+					break;
+				}
+			}
+		}
+	}
+
+	/* Switch to new table */
+	mgr->profiles = new_profiles;
+	mgr->profile_capacity = new_capacity;
+	free(old_profiles);
+
+	/* Now insert the new profile */
+	uint32_t new_hash = (uint32_t)(address % new_capacity);
+	for (uint32_t i = 0; i < new_capacity; i++) {
+		uint32_t idx = (new_hash + i) % new_capacity;
+		if (!mgr->profiles[idx]) {
+			function_profile_t *profile = (function_profile_t*)calloc(1, sizeof(function_profile_t));
+			profile->address = address;
+			profile->current_tier = TIER_INTERPRETER;
+			profile->target_tier = TIER_INTERPRETER;
+			pthread_mutex_init(&profile->lock, NULL);
+			mgr->profiles[idx] = profile;
+			mgr->profile_count++;
+			pthread_rwlock_unlock(&mgr->profile_lock);
+			return profile;
+		}
+	}
+
 	pthread_rwlock_unlock(&mgr->profile_lock);
 
-	/* Table full - should resize, but for now return NULL */
+	/* Should never reach here after resize */
+	fprintf(stderr, "tier_manager_get_profile: failed to insert after resize\n");
 	return NULL;
 }
 
