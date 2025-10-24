@@ -499,7 +499,7 @@ static IBuilder* cranelift_module_create_builder(IModule *self)
 	builder->interface.base.AddRef = backend_addref;
 	builder->interface.base.Release = backend_release;
 	builder->interface.base.QueryInterface = backend_query_interface;
-	builder->interface.PositionAtEnd = cranelift_builder_position_at_end;
+	builder->interface.SetInsertPoint = cranelift_builder_position_at_end;
 	builder->interface.GetInsertBlock = cranelift_builder_get_insert_block;
 	builder->interface.CreateAdd = cranelift_builder_create_add;
 	builder->interface.CreateSub = cranelift_builder_create_sub;
@@ -574,6 +574,102 @@ static void cranelift_module_dump(IModule *self)
 }
 
 /***************************************************************************
+ * Module Type Creation Methods
+ ***************************************************************************/
+
+static const char* cranelift_module_get_name(IModule *self)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return module->name.c_str();
+}
+
+static IType* cranelift_module_get_int8_type(IModule *self)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return (IType*)cranelift_type_create(module, CL_I8, "i8");
+}
+
+static IType* cranelift_module_get_int16_type(IModule *self)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return (IType*)cranelift_type_create(module, CL_I16, "i16");
+}
+
+static IType* cranelift_module_get_int32_type(IModule *self)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return (IType*)cranelift_type_create(module, CL_I32, "i32");
+}
+
+static IType* cranelift_module_get_int64_type(IModule *self)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return (IType*)cranelift_type_create(module, CL_I64, "i64");
+}
+
+static IType* cranelift_module_get_pointer_type(IModule *self, IType *element_type)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	return (IType*)cranelift_type_create(module, CL_PTR, "ptr");
+}
+
+static IType* cranelift_module_get_function_type(IModule *self, IType *return_type,
+                                                  IType **param_types, uint32_t num_params, int is_vararg)
+{
+	/* Cranelift handles function types differently */
+	return return_type;
+}
+
+static IFunction* cranelift_module_create_function(IModule *self, const char *name, IType *function_type)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+
+	CraneliftFunction *func = new CraneliftFunction();
+	func->refcount = 1;
+	func->module = module;
+	func->name = name;
+	func->return_type = (CraneliftType*)function_type;
+	func->native_ptr = NULL;
+
+	func->interface.base.AddRef = backend_addref;
+	func->interface.base.Release = backend_release;
+	func->interface.base.QueryInterface = backend_query_interface;
+	func->interface.CreateBasicBlock = cranelift_function_create_basic_block;
+
+	module->functions.push_back(func);
+	return (IFunction*)func;
+}
+
+static IFunction* cranelift_module_get_function(IModule *self, const char *name)
+{
+	CraneliftModule *module = (CraneliftModule*)self;
+	for (auto func : module->functions) {
+		if (func->name == name)
+			return (IFunction*)func;
+	}
+	return NULL;
+}
+
+static IBasicBlock* cranelift_function_create_basic_block(IFunction *self, const char *name)
+{
+	CraneliftFunction *func = (CraneliftFunction*)self;
+
+	CraneliftBasicBlock *block = new CraneliftBasicBlock();
+	block->refcount = 1;
+	block->module = func->module;
+	block->function = func;
+	block->label = name ? name : "";
+	block->terminated = false;
+
+	block->interface.base.AddRef = backend_addref;
+	block->interface.base.Release = backend_release;
+	block->interface.base.QueryInterface = backend_query_interface;
+
+	func->basic_blocks.push_back(block);
+	return (IBasicBlock*)block;
+}
+
+/***************************************************************************
  * Backend Implementation
  ***************************************************************************/
 
@@ -620,12 +716,18 @@ static IModule* cranelift_backend_create_module(IBackend *self, const char *name
 	module->interface.base.AddRef = backend_addref;
 	module->interface.base.Release = backend_release;
 	module->interface.base.QueryInterface = backend_query_interface;
-	module->interface.AddFunction = cranelift_module_add_function;
-	module->interface.CreateBasicBlock = cranelift_module_create_basic_block;
+	module->interface.GetName = cranelift_module_get_name;
+	module->interface.GetInt8Type = cranelift_module_get_int8_type;
+	module->interface.GetInt16Type = cranelift_module_get_int16_type;
+	module->interface.GetInt32Type = cranelift_module_get_int32_type;
+	module->interface.GetInt64Type = cranelift_module_get_int64_type;
+	module->interface.GetPointerType = cranelift_module_get_pointer_type;
+	module->interface.GetFunctionType = cranelift_module_get_function_type;
+	module->interface.CreateFunction = cranelift_module_create_function;
+	module->interface.GetFunction = cranelift_module_get_function;
 	module->interface.CreateBuilder = cranelift_module_create_builder;
 	module->interface.Compile = cranelift_module_compile;
 	module->interface.GetFunctionAddress = cranelift_module_get_function_address;
-	module->interface.GetIR = cranelift_module_get_ir;
 	module->interface.Dump = cranelift_module_dump;
 
 	return (IModule*)module;
