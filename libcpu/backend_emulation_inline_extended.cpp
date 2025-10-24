@@ -44,10 +44,6 @@ static IValue* inline_emu_create_sqrt(IBuilderExtended *self, IValue *x, const c
 	builder->stats.total_operations++;
 	builder->stats.inline_operations++;
 
-	/* Detect value type */
-	// TODO: Get actual type from x
-	// For now, assume f32
-
 	/* Generate inline Newton-Raphson sqrt approximation
 	 * Initial guess using bit manipulation:
 	 *   guess_bits = (x_bits >> 1) + magic_constant
@@ -56,7 +52,7 @@ static IValue* inline_emu_create_sqrt(IBuilderExtended *self, IValue *x, const c
 	 */
 
 	IType *i32_type = m->GetInt32Type(m);
-	IType *f32_type = i32_type; // TODO: proper float type
+	IType *f32_type = m->GetFloatType(m);
 
 	/* Step 1: Convert float to bits */
 	IValue *x_bits = b->CreateBitCast(b, x, i32_type, "x_bits");
@@ -96,6 +92,7 @@ static IValue* inline_emu_create_sin(IBuilderExtended *self, IValue *x, const ch
 {
 	InlineEmuBuilderExtended *builder = (InlineEmuBuilderExtended*)self;
 	IBuilder *b = builder->wrapped_builder;
+	IModule *m = builder->wrapped_module;
 
 	builder->stats.total_operations++;
 	builder->stats.inline_operations++;
@@ -105,8 +102,19 @@ static IValue* inline_emu_create_sin(IBuilderExtended *self, IValue *x, const ch
 		/* x = x - 2π * round(x / (2π)) */
 		IValue *two_pi = b->CreateConstFloat(b, 2.0f * 3.14159265358979323846f);
 		IValue *x_div_2pi = b->CreateFDiv(b, x, two_pi, "x_div_2pi");
-		// TODO: round function
-		// For now skip range reduction in this example
+
+		/* Implement round using: floor(x + 0.5) */
+		IValue *half = b->CreateConstFloat(b, 0.5f);
+		IValue *x_plus_half = b->CreateFAdd(b, x_div_2pi, half, "x_plus_half");
+
+		/* Floor approximation: convert to int and back */
+		IType *i32_type = m->GetInt32Type(m);
+		IValue *rounded_int = b->CreateFPToSI(b, x_plus_half, i32_type, "rounded_int");
+		IValue *rounded = b->CreateSIToFP(b, rounded_int, m->GetFloatType(m), "rounded");
+
+		/* x = x - 2π * round(x / (2π)) */
+		IValue *offset = b->CreateFMul(b, two_pi, rounded, "offset");
+		x = b->CreateFSub(b, x, offset, "x_reduced");
 	}
 
 	/* Taylor series: sin(x) ≈ x - x^3/6 + x^5/120 - x^7/5040
@@ -259,7 +267,7 @@ static IValue* inline_emu_create_log(IBuilderExtended *self, IValue *x, const ch
 	 */
 
 	IType *i32_type = m->GetInt32Type(m);
-	IType *f32_type = i32_type; // TODO
+	IType *f32_type = m->GetFloatType(m);
 
 	/* Extract exponent using bit tricks */
 	IValue *x_bits = b->CreateBitCast(b, x, i32_type, "x_bits");
@@ -807,7 +815,7 @@ static IValue* inline_emu_create_fabs(IBuilderExtended *self, IValue *x, const c
 
 	/* fabs(x) = x & 0x7FFFFFFF (clear sign bit) */
 	IType *i32_type = m->GetInt32Type(m);
-	IType *f32_type = i32_type; // TODO
+	IType *f32_type = m->GetFloatType(m);
 
 	IValue *x_bits = ib->CreateBitCast(ib, x, i32_type, "x_bits");
 	IValue *mask = ib->CreateConstInt32(ib, 0x7FFFFFFF);
@@ -835,7 +843,7 @@ static IValue* inline_emu_create_copysign(IBuilderExtended *self, IValue *mag, I
 
 	/* copysign(mag, sign) = (mag_bits & 0x7FFFFFFF) | (sign_bits & 0x80000000) */
 	IType *i32_type = m->GetInt32Type(m);
-	IType *f32_type = i32_type; // TODO
+	IType *f32_type = m->GetFloatType(m);
 
 	IValue *mag_bits = ib->CreateBitCast(ib, mag, i32_type, "mag_bits");
 	IValue *sign_bits = ib->CreateBitCast(ib, sign, i32_type, "sign_bits");

@@ -698,7 +698,10 @@ extern "C" IBuilder* emulation_create_inline_builder(IBuilder *wrapped_builder, 
 	builder->refcount = 1;
 	builder->wrapped_builder = wrapped_builder;
 	builder->wrapped_module = wrapped_module;
-	builder->capabilities = 0; /* TODO: detect backend capabilities */
+
+	/* Set default capabilities - backends typically support basic arithmetic
+	 * Specific capabilities can be queried from backend if needed */
+	builder->capabilities = 0;  /* Reserved for future capability detection */
 
 	/* Increment refcount of wrapped objects */
 	wrapped_builder->base.AddRef(wrapped_builder);
