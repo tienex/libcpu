@@ -22,10 +22,12 @@ class Value;
 
 #include "types.h"
 #include "fp_types.h"
+#include "backend.h"
 
 using namespace llvm;
 
 struct cpu;
+struct tier_manager;
 
 typedef void        (*fp_init)(struct cpu *cpu, struct cpu_archinfo *info, struct cpu_archrf *rf);
 typedef void        (*fp_done)(struct cpu *cpu);
@@ -259,6 +261,14 @@ typedef struct cpu {
 	uint64_t timer_start[TIMER_COUNT];
 
 	void *feptr; /* This pointer can be used freely by the frontend. */
+
+	/* Backend abstraction */
+	IBackend *backend;
+	IModule *backend_module;
+	backend_type_t backend_type;
+
+	/* Tiered compilation */
+	struct tier_manager *tier_mgr;
 } cpu_t;
 
 enum {
@@ -324,6 +334,7 @@ typedef void (*debug_function_t)(cpu_t*);
 //////////////////////////////////////////////////////////////////////
 
 API_FUNC cpu_t *cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags);
+API_FUNC cpu_t *cpu_new_with_backend(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags, backend_type_t backend);
 API_FUNC void cpu_free(cpu_t *cpu);
 API_FUNC void cpu_set_flags_codegen(cpu_t *cpu, uint32_t f);
 API_FUNC void cpu_set_flags_hint(cpu_t *cpu, uint32_t f);

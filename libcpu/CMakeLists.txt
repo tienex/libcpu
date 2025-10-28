@@ -16,7 +16,27 @@ ADD_LIBRARY(cpu SHARED
 			stat.cpp
 			sha1.cpp
 			interface.cpp
-			timings.cpp)
+			timings.cpp
+			backend_impl.cpp
+			backend_llvm.cpp
+			llvm_versions.cpp
+			backend_qbe_full.cpp
+			backend_gccjit_full.cpp
+			backend_tcg_full.cpp
+			tcg_impl.cpp
+			backend_asmjit_full.cpp
+			backend_dynasm.cpp
+			backend_sljit.cpp
+			backend_nanojit.cpp
+			backend_mir.cpp
+			backend_cranelift.cpp
+			backend_libjit.cpp
+			backend_nj.cpp
+			backend_emulation.cpp
+			backend_emulation_types.cpp
+			backend_emulation_exotic.cpp
+			backend_emulation_ops.cpp
+			tiered_compilation.cpp)
 
 ADD_DEFINITIONS(-DLIBCPU_BUILD_CORE)
 
