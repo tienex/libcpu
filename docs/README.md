@@ -70,10 +70,17 @@ proposals as **[BUILD]/[PROPOSED]** versus what **[EXISTS]** today.
 ## Status of the codebase (as of writing)
 
 - libcpu builds against **LLVM 8**, JIT-only; the userspace test harnesses run.
-- **UPCL** parses and runs semantic analysis but does not yet drive codegen
-  (`upcl/main.cpp` stops after sema); `upcl/cg/` generators exist; the subproject
-  is disabled in the root build. UPCL needs only flex/bison + a C++ compiler — no
-  LLVM — so it is the most readily buildable starting point.
+- **UPCL** builds (after a one-line fix in `sema/register_file_builder.cpp`) and
+  **already generates** libcpu frontend files from a `.def`: `<arch>_arch.{h,cpp}`
+  (register layout, init, and a `translate_instr`), `_regfile.h` (the packed
+  `reg_<arch>_t` struct), `_opc.h`, `_tcond.cpp`, and a `_tag_stub.cpp`. Remaining
+  gaps: it is disabled in the root build (not wired/regenerated); instruction
+  **encoding/decode** is unspecified in the `.def`s, so `tag` generation is a stub
+  (this is what the decoder DSL, docs 8–10, addresses); and the generated code is
+  unverified against the engine (compile-testing it needs LLVM). UPCL itself needs
+  only flex/bison + a C++ compiler — no LLVM — so it is the most readily buildable
+  starting point. The grammar currently reports many shift/reduce + reduce/reduce
+  conflicts (the instruction grammar is ambiguous/partial).
 
 These documents are design intent, not implemented features. Treat line/file
 references as navigation aids that may drift.
