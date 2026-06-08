@@ -26,23 +26,28 @@ proposals as **[BUILD]/[PROPOSED]** versus what **[EXISTS]** today.
    (interpreter, JITs, WASM), HotSpot-style tiered execution, and on-disk
    caching. The `ICpuEmitter` seam here is the keystone the UPCL "dynamic" path
    depends on.
+6. **[dynamic-modules.md](dynamic-modules.md)** — Packaging frontends and backends
+   as independently-loadable shared libraries (`.so`/`.dll`/`.dylib`) over the COM
+   model, so any guest pairs with any codegen target for either AOT or JIT — an
+   any-to-any plugin matrix. Covers the module ABI, discovery/registry, and the
+   cross-boundary stability rules. Builds on doc 5.
 
 ### Track 2 — UPCL (the CPU-description language)
 
-6. **[upcl-reference-manual.md](upcl-reference-manual.md)** — The programmer's
+7. **[upcl-reference-manual.md](upcl-reference-manual.md)** — The programmer's
    reference for UPCL, derived from the real grammar/lexer/IR/examples. Part I is
    the language; Part II is a cookbook (SPARC/IA-64/AM29K/MMIX/APX register files,
    condition codes, NaT, ARM predication, MIPS delay slots, PPC XER, M88K compare
    compression, real-vs-virtual memory, SMM, VM, SIMD/matrix, PSX1 MDEC, one's
    complement). *Start the UPCL track here.*
-7. **[upcl-cpu-fpu-simd.md](upcl-cpu-fpu-simd.md)** — Making UPCL generate
+8. **[upcl-cpu-fpu-simd.md](upcl-cpu-fpu-simd.md)** — Making UPCL generate
    complete frontends (Mode A) and using it *dynamically* (Mode B) to implement
    IEEE FPU and SIMD with shared lowerings across backends.
-8. **[upcl-instruction-decoders.md](upcl-instruction-decoders.md)** — A
+9. **[upcl-instruction-decoders.md](upcl-instruction-decoders.md)** — A
    CPU-agnostic instruction-decoder sub-language spanning MMIX → x86/VAX: fetch
    models, bit-field match, opcode tables, decode-time state + continuation
    (the agnostic basis for "prefixes"), and recursive operand decoders.
-9. **[upcl-complex-cpu-ia64.md](upcl-complex-cpu-ia64.md)** — The capstone:
+10. **[upcl-complex-cpu-ia64.md](upcl-complex-cpu-ia64.md)** — The capstone:
    describing IA-64/EPIC (bundles, predication, register stacking/rotation, NaT,
    speculation/ALAT, extended FP) — the stress test that exercises every
    capability above.
@@ -50,14 +55,17 @@ proposals as **[BUILD]/[PROPOSED]** versus what **[EXISTS]** today.
 ## Dependency notes
 
 - The **`ICpuEmitter`** abstraction (doc 5, §3) is the single prerequisite that
-  unblocks multiple backends, the interpreter, WASM, and UPCL's dynamic lowering
-  (docs 7–9).
+  unblocks multiple backends, the interpreter, WASM, UPCL's dynamic lowering
+  (docs 8–10), and loadable frontend/backend modules (doc 6).
 - **Context-keyed translation caching** appears in three places — system-mode
   ASIDs (doc 4 §8), the on-disk cache (doc 5 §6), and IA-64 CFM/RRB specialization
-  (doc 9 §5) — and is the same mechanism each time.
+  (doc 10 §5) — and is the same mechanism each time.
 - The **PC-dispatch switch** that doc 2 wants to remove for native speed is the
   same structure that makes a **WASM** backend feasible (doc 5 §8) — the abstract
   emitter lets each backend choose.
+- **AOT vs JIT is not a code path but a backend capability** (doc 6 §6): the same
+  emitted IR yields a native object or callable code depending only on which
+  backend module is loaded.
 
 ## Status of the codebase (as of writing)
 
