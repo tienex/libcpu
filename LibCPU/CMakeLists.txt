@@ -73,6 +73,12 @@ libcpu_add_backend(perl_backend perl
 libcpu_add_backend(lua_backend lua
   SOURCES backends/lua/LuaBackend.cpp backends/lua/LuaModule.cpp
   INCLUDES backends/lua)
+libcpu_add_backend(swift_backend swift
+  SOURCES backends/swift/SwiftBackend.cpp backends/swift/SwiftModule.cpp
+  INCLUDES backends/swift)
+libcpu_add_backend(tcl_backend tcl
+  SOURCES backends/tcl/TclBackend.cpp backends/tcl/TclModule.cpp
+  INCLUDES backends/tcl)
 
 # WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
 libcpu_add_backend(wasm_backend wasm
