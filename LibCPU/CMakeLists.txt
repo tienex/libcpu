@@ -52,6 +52,14 @@ libcpu_add_backend(js_backend js
   SOURCES backends/js/JsBackend.cpp backends/js/JsModule.cpp
   INCLUDES backends/js)
 
+libcpu_add_backend(java_backend java
+  SOURCES backends/java/JavaBackend.cpp backends/java/JavaModule.cpp
+  INCLUDES backends/java)
+
+libcpu_add_backend(dotnet_backend dotnet
+  SOURCES backends/dotnet/DotnetBackend.cpp backends/dotnet/DotnetModule.cpp
+  INCLUDES backends/dotnet)
+
 # ---- external-toolchain backends (one bundle per discovered version) ----
 include(LibCPUBackendsLLVM)
 include(LibCPUBackendsGccJit)
