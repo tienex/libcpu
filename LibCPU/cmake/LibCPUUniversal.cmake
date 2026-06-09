@@ -8,10 +8,13 @@ if(APPLE)
   # arm64e is deliberately omitted: it is reserved for platform binaries and
   # third-party arm64e modules will not link/load.
   foreach(_arch arm64 x86_64 i386 ppc64 ppc)
+    # Probe compile AND link: a 32-bit arch may still compile to an object on a
+    # modern SDK yet fail to link (no runtime libs), so only a successful link
+    # qualifies the arch.
     execute_process(
-      COMMAND ${CMAKE_CXX_COMPILER} -arch ${_arch} -x c++ -c
+      COMMAND ${CMAKE_CXX_COMPILER} -arch ${_arch} -shared -x c++
               ${CMAKE_CURRENT_SOURCE_DIR}/cmake/archprobe.cpp
-              -o ${CMAKE_BINARY_DIR}/.archprobe_${_arch}.o
+              -o ${CMAKE_BINARY_DIR}/.archprobe_${_arch}.dylib
       RESULT_VARIABLE _rc ERROR_QUIET OUTPUT_QUIET)
     if(_rc EQUAL 0)
       list(APPEND LIBCPU_UNIVERSAL_ARCHS ${_arch})
