@@ -60,6 +60,25 @@ libcpu_add_backend(dotnet_backend dotnet
   SOURCES backends/dotnet/DotnetBackend.cpp backends/dotnet/DotnetModule.cpp
   INCLUDES backends/dotnet)
 
+# ---- GNU Lightning backend (in-process register JIT) ----
+find_path(LIGHTNING_INC lightning.h
+  PATHS /opt/homebrew/opt/lightning/include /opt/homebrew/include /usr/local/include /opt/local/include)
+find_library(LIGHTNING_LIB lightning
+  PATHS /opt/homebrew/opt/lightning/lib /opt/homebrew/lib /usr/local/lib /opt/local/lib)
+if(LIGHTNING_INC AND LIGHTNING_LIB)
+  libcpu_lib_arches(_ln_archs "${LIGHTNING_LIB}")
+  if(NOT _ln_archs STREQUAL "")
+    get_filename_component(_ln_dir "${LIGHTNING_LIB}" DIRECTORY)
+    message(STATUS "LibCPU: GNU Lightning [${_ln_archs}] -> lightning.backend")
+    libcpu_add_backend(lightning_backend lightning
+      ARCHS "${_ln_archs}"
+      SOURCES backends/lightning/LightningBackend.cpp backends/lightning/LightningModule.cpp
+      INCLUDES backends/lightning ${LIGHTNING_INC}
+      LIBS "${LIGHTNING_LIB}"
+      RPATH "${_ln_dir}")
+  endif()
+endif()
+
 # ---- external-toolchain backends (one bundle per discovered version) ----
 include(LibCPUBackendsLLVM)
 include(LibCPUBackendsGccJit)
