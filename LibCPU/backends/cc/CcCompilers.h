@@ -35,14 +35,15 @@ typedef enum _CC_FAMILY {
 //
 // Description of one discovered compiler (POD; fixed buffers for a stable C ABI).
 //
+// Strings are non-owning (CF Get rule): valid for the backend's lifetime.
 typedef struct _CC_COMPILER_INFO {
-    CHAR8     Path[1024];      // absolute path of the executable
-    CHAR8     Name[128];       // basename
-    CHAR8     Version[160];    // first --version line, if obtainable
-    CHAR8     Target[128];     // -dumpmachine triple, if obtainable (e.g. x86_64-w64-mingw32)
-    CC_FAMILY Family;
-    BOOLEAN   UsableForHost;   // can it build a loadable module for THIS process?
-    BOOLEAN   ViaWine;         // a Windows .exe to be invoked through wine (Unix hosts)
+    CHAR8 CONST *Path;         // absolute path of the executable
+    CHAR8 CONST *Name;         // basename
+    CHAR8 CONST *Version;      // first --version line, if obtainable ("" if none)
+    CHAR8 CONST *Target;       // -dumpmachine triple, if obtainable ("" if none)
+    CC_FAMILY    Family;
+    BOOLEAN      UsableForHost; // can it build a loadable module for THIS process?
+    BOOLEAN      ViaWine;       // a Windows .exe to be invoked through wine (Unix hosts)
 } CC_COMPILER_INFO;
 
 /**

@@ -48,6 +48,10 @@ libcpu_add_backend(qbe_backend qbe
   SOURCES backends/qbe/QbeBackend.cpp backends/qbe/QbeModule.cpp
   INCLUDES backends/qbe)
 
+libcpu_add_backend(js_backend js
+  SOURCES backends/js/JsBackend.cpp backends/js/JsModule.cpp
+  INCLUDES backends/js)
+
 # ---- external-toolchain backends (one bundle per discovered version) ----
 include(LibCPUBackendsLLVM)
 include(LibCPUBackendsGccJit)
@@ -65,3 +69,6 @@ endif()
 # ---- compiler-discovery test (lists what the cc backend found) ----
 add_executable(cclist test/cclist.cpp backends/cc/CcBackend.cpp)
 target_include_directories(cclist PRIVATE backends/cc)
+
+add_executable(jslist test/jslist.cpp backends/js/JsBackend.cpp)
+target_include_directories(jslist PRIVATE backends/js)

@@ -135,16 +135,16 @@ RunCapture (std::string CONST &Cmd)
     return Out;
 }
 
-static VOID
-CopyStr (CHAR8 *pDst, UINTN Cap, std::string CONST &Src)
-{
-    UINTN N = Src.size () < (Cap - 1) ? Src.size () : (Cap - 1);
-    std::memcpy (pDst, Src.data (), N);
-    pDst[N] = '\0';
-}
+// Internal record owning the strings that public CC_COMPILER_INFO points into.
+struct CcRec {
+    std::string Path, Name, Version, Target;
+    CC_FAMILY   Family = CcFamilyUnknown;
+    bool        UsableForHost = false;
+    bool        ViaWine = false;
+};
 
 static VOID
-DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
+DiscoverCompilers (std::vector<CcRec> &Out)
 {
     std::vector<std::string> Dirs;
     CHAR8 CONST *pPath = std::getenv ("PATH");
@@ -200,31 +200,28 @@ DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
             bool CanRun  = !IsExe || WineAvail;
             std::string Inv = ViaWine ? ("wine \"" + Full + "\"") : ("\"" + Full + "\"");
 
-            CC_COMPILER_INFO Info{};
-            CopyStr (Info.Path, sizeof (Info.Path), Full);
-            CopyStr (Info.Name, sizeof (Info.Name), Name);
-            Info.Family = Fam;
-            Info.UsableForHost = FALSE;
-            Info.ViaWine = ViaWine ? TRUE : FALSE;
+            CcRec Rec;
+            Rec.Path = Full;
+            Rec.Name = Name;
+            Rec.Family = Fam;
+            Rec.ViaWine = ViaWine;
 
             if (Fam == CcFamilyClang || Fam == CcFamilyGcc ||
                 Fam == CcFamilyIntel || Fam == CcFamilyGeneric) {
                 if (CanRun) {
-                    std::string Ver = RunCapture (Inv + " --version 2>/dev/null");
-                    CopyStr (Info.Version, sizeof (Info.Version), Ver);
+                    Rec.Version = RunCapture (Inv + " --version 2>/dev/null");
                     std::string Tgt = RunCapture (Inv + " -dumpmachine 2>/dev/null");
                     if (Tgt.find (' ') != std::string::npos || Tgt.find ('/') != std::string::npos) {
                         Tgt.clear ();
                     }
-                    CopyStr (Info.Target, sizeof (Info.Target), Tgt);
-                    Info.UsableForHost = (!ViaWine && !Tgt.empty () && Tgt == HostTarget) ? TRUE : FALSE;
+                    Rec.Target = Tgt;
+                    Rec.UsableForHost = (!ViaWine && !Tgt.empty () && Tgt == HostTarget);
                 }
             } else {
                 // Compilers without -dumpmachine (EBC, Watcom, MSVC, Borland, ...).
-                std::string Tgt = InferTarget (Fam, Name);
-                CopyStr (Info.Target, sizeof (Info.Target), Tgt);
+                Rec.Target = InferTarget (Fam, Name);
             }
-            Out.push_back (Info);
+            Out.push_back (std::move (Rec));
         }
         closedir (pD);
     }
@@ -584,7 +581,14 @@ public:
     UINT32 STDMETHODCALLTYPE GetCompilerCount () override { return (UINT32) m_Compilers.size (); }
     HRESULT STDMETHODCALLTYPE GetCompilerInfo (UINT32 Index, CC_COMPILER_INFO *pInfo) override {
         if (Index >= m_Compilers.size () || pInfo == nullptr) return E_INVALIDARG;
-        *pInfo = m_Compilers[Index];
+        CcRec CONST &R = m_Compilers[Index];   // non-owning pointers, valid for backend lifetime
+        pInfo->Path          = R.Path.c_str ();
+        pInfo->Name          = R.Name.c_str ();
+        pInfo->Version       = R.Version.c_str ();
+        pInfo->Target        = R.Target.c_str ();
+        pInfo->Family        = R.Family;
+        pInfo->UsableForHost = R.UsableForHost ? TRUE : FALSE;
+        pInfo->ViaWine       = R.ViaWine ? TRUE : FALSE;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SelectCompiler (UINT32 Index) override {
@@ -596,7 +600,7 @@ public:
 
 private:
     std::atomic<INT32>            m_Ref;
-    std::vector<CC_COMPILER_INFO> m_Compilers;
+    std::vector<CcRec>            m_Compilers;
     UINT32                        m_Selected = ~0u;
 };
 
