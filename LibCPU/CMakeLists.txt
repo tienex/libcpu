@@ -70,6 +70,9 @@ libcpu_add_backend(ruby_backend ruby
 libcpu_add_backend(perl_backend perl
   SOURCES backends/perl/PerlBackend.cpp backends/perl/PerlModule.cpp
   INCLUDES backends/perl)
+libcpu_add_backend(lua_backend lua
+  SOURCES backends/lua/LuaBackend.cpp backends/lua/LuaModule.cpp
+  INCLUDES backends/lua)
 
 # WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
 libcpu_add_backend(wasm_backend wasm
