@@ -2,9 +2,12 @@
 
 set(LIBCPU_UNIVERSAL_ARCHS "")
 if(APPLE)
-  # arm64e is excluded: it is reserved for platform binaries; third-party arm64e
-  # modules will not link/load. Target only arm64 and x86_64.
-  foreach(_arch arm64 x86_64)
+  # Every architecture macOS / Mac OS X has ever run on; the probe keeps only
+  # those the current toolchain/SDK actually accepts (so a modern Apple Silicon
+  # toolchain yields arm64;x86_64, an Intel one i386;x86_64, a PowerPC one ppc...).
+  # arm64e is deliberately omitted: it is reserved for platform binaries and
+  # third-party arm64e modules will not link/load.
+  foreach(_arch arm64 x86_64 i386 ppc64 ppc)
     execute_process(
       COMMAND ${CMAKE_CXX_COMPILER} -arch ${_arch} -x c++ -c
               ${CMAKE_CURRENT_SOURCE_DIR}/cmake/archprobe.cpp

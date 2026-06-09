@@ -228,10 +228,18 @@ public:
         // Target the architecture THIS slice is running as, so a universal
         // cc.backend compiles for the right arch (macOS: -arch; else: host default).
 #if defined(__APPLE__)
+        // Every architecture macOS / Mac OS X has run on. Each universal slice
+        // bakes in its own arch macro, so the right -arch is chosen at runtime.
 #  if defined(__aarch64__)
         static CONST CHAR8 *kTargetFlag = "-arch arm64 ";
 #  elif defined(__x86_64__)
         static CONST CHAR8 *kTargetFlag = "-arch x86_64 ";
+#  elif defined(__i386__)
+        static CONST CHAR8 *kTargetFlag = "-arch i386 ";
+#  elif defined(__ppc64__)
+        static CONST CHAR8 *kTargetFlag = "-arch ppc64 ";
+#  elif defined(__ppc__) || defined(__powerpc__)
+        static CONST CHAR8 *kTargetFlag = "-arch ppc ";
 #  else
         static CONST CHAR8 *kTargetFlag = "";
 #  endif
