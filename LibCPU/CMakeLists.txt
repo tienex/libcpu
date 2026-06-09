@@ -100,6 +100,20 @@ if(LIGHTNING_INC AND LIGHTNING_LIB)
   endif()
 endif()
 
+# ---- AsmJit backend (in-process a64 JIT; vendored, arm64 only) ----
+file(GLOB _aj_src CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/core/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/arm/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/support/*.cpp)
+if(_aj_src AND "arm64" IN_LIST LIBCPU_UNIVERSAL_ARCHS)
+  message(STATUS "LibCPU: AsmJit [arm64] -> asmjit.backend")
+  libcpu_add_backend(asmjit_backend asmjit
+    ARCHS "arm64"
+    SOURCES backends/asmjit/AsmjitBackend.cpp backends/asmjit/AsmjitModule.cpp ${_aj_src}
+    INCLUDES backends/asmjit third_party/asmjit
+    DEFINES ASMJIT_STATIC ASMJIT_NO_X86)
+endif()
+
 # ---- external-toolchain backends (one bundle per discovered version) ----
 include(LibCPUBackendsLLVM)
 include(LibCPUBackendsGccJit)
