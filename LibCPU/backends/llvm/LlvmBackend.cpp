@@ -95,7 +95,11 @@ public:
         m_Mod     = std::make_unique<Module> ("libcpu.jit", *m_Ctx);
         m_Builder = std::make_unique<IRBuilder<>> (*m_Ctx);
 
-        Type     *pPtrTy = PointerType::getUnqual (*m_Ctx);
+#if LLVM_VERSION_MAJOR >= 15
+        Type     *pPtrTy = PointerType::getUnqual (*m_Ctx);   // opaque pointers
+#else
+        Type     *pPtrTy = Type::getInt8PtrTy (*m_Ctx);       // typed pointers (i8*)
+#endif
         Type     *pI32Ty = Type::getInt32Ty (*m_Ctx);
         Type     *Args[] = { pPtrTy, pPtrTy, pPtrTy };
         FunctionType *pFnTy = FunctionType::get (pI32Ty, Args, false);
@@ -119,7 +123,7 @@ public:
         return Wrap (ConstantInt::get (IntTy (Bits), Value), ppValue);
     }
     HRESULT STDMETHODCALLTYPE GetRegister (UINT32 Index, UINT32 Bits, ICpuValue **ppValue) override {
-        llvm::Value *pPtr = RegPtr (Index);
+        llvm::Value *pPtr = ElemPtr (RegPtr (Index), IntTy (64));
         llvm::Value *pV64 = m_Builder->CreateLoad (IntTy (64), pPtr);
         return Wrap (m_Builder->CreateZExtOrTrunc (pV64, IntTy (Bits)), ppValue);
     }
@@ -127,15 +131,15 @@ public:
         llvm::Value *pV = ValOf (pValue);
         llvm::Value *pV64 = Sext ? m_Builder->CreateSExtOrTrunc (pV, IntTy (64))
                                  : m_Builder->CreateZExtOrTrunc (pV, IntTy (64));
-        m_Builder->CreateStore (pV64, RegPtr (Index));
+        m_Builder->CreateStore (pV64, ElemPtr (RegPtr (Index), IntTy (64)));
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppValue) override {
-        return Wrap (m_Builder->CreateLoad (IntTy (Bits), MemPtr (ValOf (pAddr))), ppValue);
+        return Wrap (m_Builder->CreateLoad (IntTy (Bits), ElemPtr (MemPtr (ValOf (pAddr)), IntTy (Bits))), ppValue);
     }
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
         llvm::Value *pV = m_Builder->CreateZExtOrTrunc (ValOf (pValue), IntTy (Bits));
-        m_Builder->CreateStore (pV, MemPtr (ValOf (pAddr)));
+        m_Builder->CreateStore (pV, ElemPtr (MemPtr (ValOf (pAddr)), IntTy (Bits)));
         return S_OK;
     }
 
@@ -201,18 +205,18 @@ public:
 
     // ---- flags ------------------------------------------------------------
     HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG Flag, ICpuValue **ppValue) override {
-        llvm::Value *pByte = m_Builder->CreateLoad (IntTy (8), FlagPtr (Flag));
+        llvm::Value *pByte = m_Builder->CreateLoad (IntTy (8), ElemPtr (FlagPtr (Flag), IntTy (8)));
         return Wrap (m_Builder->CreateTrunc (pByte, IntTy (1)), ppValue);
     }
     HRESULT STDMETHODCALLTYPE SetFlag (CPU_FLAG Flag, ICpuValue *pValue) override {
         llvm::Value *pByte = m_Builder->CreateZExtOrTrunc (ValOf (pValue), IntTy (8));
-        m_Builder->CreateStore (pByte, FlagPtr (Flag));
+        m_Builder->CreateStore (pByte, ElemPtr (FlagPtr (Flag), IntTy (8)));
         return S_OK;
     }
 
     // ---- control flow -----------------------------------------------------
     HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override {
-        m_Builder->CreateStore (ConstantInt::get (IntTy (64), Pc), StatePtr (CPU_STATE_PC_OFFSET));
+        m_Builder->CreateStore (ConstantInt::get (IntTy (64), Pc), ElemPtr (StatePtr (CPU_STATE_PC_OFFSET), IntTy (64)));
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *pName, ICpuBlock **ppBlock) override {
@@ -264,13 +268,27 @@ public:
             consumeError (SymOrErr.takeError ());
             return nullptr;
         }
-        JittedFn Fn = SymOrErr->toPtr<JittedFn> ();
+#if LLVM_VERSION_MAJOR >= 15
+        JittedFn Fn = SymOrErr->toPtr<JittedFn> ();              // ExecutorAddr
+#else
+        JittedFn Fn = reinterpret_cast<JittedFn> (static_cast<uintptr_t> (SymOrErr->getAddress ()));  // JITEvaluatedSymbol
+#endif
         return new LlvmCode (std::move (Jit), Fn);
     }
 
 private:
     IntegerType *IntTy (UINT32 Bits) { return IntegerType::get (*m_Ctx, Bits); }
 
+    // With opaque pointers (LLVM 15+) a raw i8* is loadable/storable at any type;
+    // with typed pointers (<=14) it must be bitcast to the element pointer type.
+    llvm::Value *ElemPtr (llvm::Value *pI8Ptr, Type *pElemTy) {
+#if LLVM_VERSION_MAJOR >= 15
+        (void) pElemTy;
+        return pI8Ptr;
+#else
+        return m_Builder->CreateBitCast (pI8Ptr, PointerType::getUnqual (pElemTy));
+#endif
+    }
     llvm::Value *StatePtr (UINT32 Offset) {
         return m_Builder->CreateGEP (IntTy (8), m_pGRF,
                                      ConstantInt::get (IntTy (64), Offset));
