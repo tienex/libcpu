@@ -185,10 +185,13 @@ public:
         default:     Cond = SLJIT_EQUAL;             break;
         }
         if (Signed) { SignExtend (SLJIT_R0, Bits); SignExtend (SLJIT_R1, Bits); }
-        // EQUAL/NOT_EQUAL are condition 0/1 -> SLJIT_SET(cond) would be a no-op;
-        // the zero flag (SLJIT_SET_Z) is what backs them.
+        // EQUAL/NOT_EQUAL are condition 0/1 -> backed by the zero flag (SLJIT_SET_Z).
+        // SLJIT condition codes come in pairs (LESS/GREATER_EQUAL, ...) that share
+        // one flag; SLJIT_SET must be given the EVEN (canonical) member of the pair
+        // (the low bit is the pair discriminator, outside VARIABLE_FLAG_MASK), while
+        // sljit_emit_op_flags reads the specific (possibly odd) condition.
         sljit_s32 SetFlags = (Cond == SLJIT_EQUAL || Cond == SLJIT_NOT_EQUAL)
-                                 ? SLJIT_SET_Z : SLJIT_SET (Cond);
+                                 ? SLJIT_SET_Z : SLJIT_SET (Cond & ~1);
         sljit_emit_op2u (m_C, SLJIT_SUB | SetFlags, SLJIT_R0, 0, SLJIT_R1, 0);
         sljit_emit_op_flags (m_C, SLJIT_MOV, SLJIT_R0, 0, Cond);
         UINT32 S = NewSlot ();

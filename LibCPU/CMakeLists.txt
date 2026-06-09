@@ -128,6 +128,14 @@ if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
 
+# ---- second frontend (CHIP-8) through any backend bundle ----
+add_executable(loadchip8 test/loadchip8.cpp frontends/chip8/Chip8.cpp)
+target_include_directories(loadchip8 PRIVATE frontends/chip8 test)
+target_link_libraries(loadchip8 PRIVATE LibCPU)
+if(APPLE)
+  target_link_libraries(loadchip8 PRIVATE "-framework CoreFoundation")
+endif()
+
 # ---- compiler-discovery test (lists what the cc backend found) ----
 add_executable(cclist test/cclist.cpp backends/cc/CcBackend.cpp)
 target_include_directories(cclist PRIVATE backends/cc)
