@@ -10,6 +10,7 @@
 
 #include <dlfcn.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,8 +20,6 @@
 
 namespace LibCPU {
 namespace {
-
-static std::atomic<UINT64> g_Counter{0};
 
 class CcValue final : public LcComObject<ICpuValue> {
 public:
@@ -49,12 +48,14 @@ typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 //
 class CcCode final : public LcComObject<ICpuCode> {
 public:
-    CcCode (void *pHandle, JittedFn Fn, std::string SrcPath, std::string LibPath)
-        : m_pHandle (pHandle), m_Fn (Fn), m_SrcPath (std::move (SrcPath)), m_LibPath (std::move (LibPath)) {}
+    CcCode (void *pHandle, JittedFn Fn, std::string Dir, std::string SrcPath, std::string LibPath)
+        : m_pHandle (pHandle), m_Fn (Fn), m_Dir (std::move (Dir)),
+          m_SrcPath (std::move (SrcPath)), m_LibPath (std::move (LibPath)) {}
     ~CcCode () override {
         if (m_pHandle) dlclose (m_pHandle);
         if (!m_SrcPath.empty ()) unlink (m_SrcPath.c_str ());
         if (!m_LibPath.empty ()) unlink (m_LibPath.c_str ());
+        if (!m_Dir.empty ())     rmdir (m_Dir.c_str ());
     }
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuCode, ppvObject);
@@ -65,7 +66,7 @@ public:
 private:
     void       *m_pHandle;
     JittedFn    m_Fn;
-    std::string m_SrcPath, m_LibPath;
+    std::string m_Dir, m_SrcPath, m_LibPath;
 };
 
 class CcEmitter final : public LcComObject<ICpuEmitter> {
@@ -191,13 +192,25 @@ public:
     HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
 
     ICpuCode *Build () {
-        UINT64 Serial = g_Counter++;
-        char SrcPath[128], LibPath[128];
-        std::snprintf (SrcPath, sizeof (SrcPath), "/tmp/libcpu_cc_%d_%llu.c", (int) getpid (), (unsigned long long) Serial);
-        std::snprintf (LibPath, sizeof (LibPath), "/tmp/libcpu_cc_%d_%llu.dylib", (int) getpid (), (unsigned long long) Serial);
+        // Create a private, owner-only (0700), randomly-named directory so an
+        // attacker cannot pre-create symlinks for the source/lib we then compile
+        // and dlopen(). The source is opened O_EXCL|O_NOFOLLOW for good measure.
+        char DirTmpl[] = "/tmp/libcpu_cc_XXXXXX";
+        if (mkdtemp (DirTmpl) == nullptr) {
+            return nullptr;
+        }
+        std::string Dir     = DirTmpl;
+        std::string SrcPath = Dir + "/insn.c";
+        std::string LibPath = Dir + "/insn.dylib";
 
-        FILE *pF = std::fopen (SrcPath, "w");
+        int Fd = open (SrcPath.c_str (), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+        if (Fd < 0) {
+            rmdir (Dir.c_str ());
+            return nullptr;
+        }
+        FILE *pF = fdopen (Fd, "w");
         if (!pF) {
+            close (Fd); unlink (SrcPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
         std::fprintf (pF,
@@ -210,26 +223,27 @@ public:
             "}\n",
             m_TempDecls.empty () ? "t_unused" : m_TempDecls.c_str (),
             m_Body.c_str ());
-        std::fclose (pF);
+        std::fclose (pF);   // closes Fd
 
         char Cmd[512];
-        std::snprintf (Cmd, sizeof (Cmd), "clang -shared -O2 -fPIC -o %s %s 2>/dev/null", LibPath, SrcPath);
+        std::snprintf (Cmd, sizeof (Cmd), "clang -shared -O2 -fPIC -o '%s' '%s' 2>/dev/null",
+                       LibPath.c_str (), SrcPath.c_str ());
         if (std::system (Cmd) != 0) {
-            unlink (SrcPath);
+            unlink (SrcPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
 
-        void *pHandle = dlopen (LibPath, RTLD_NOW | RTLD_LOCAL);
+        void *pHandle = dlopen (LibPath.c_str (), RTLD_NOW | RTLD_LOCAL);
         if (!pHandle) {
-            unlink (SrcPath); unlink (LibPath);
+            unlink (SrcPath.c_str ()); unlink (LibPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
         JittedFn Fn = (JittedFn) dlsym (pHandle, "insn");
         if (!Fn) {
-            dlclose (pHandle); unlink (SrcPath); unlink (LibPath);
+            dlclose (pHandle); unlink (SrcPath.c_str ()); unlink (LibPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
-        return new CcCode (pHandle, Fn, SrcPath, LibPath);
+        return new CcCode (pHandle, Fn, Dir, SrcPath, LibPath);
     }
 
 private:
