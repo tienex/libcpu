@@ -28,6 +28,7 @@ typedef enum _CC_FAMILY {
     CcFamilyMetrowerks,   // mwcc, mwccppc, mwcceppc
     CcFamilyDigitalMars,  // dmc
     CcFamilyIbmXl,        // xlc, xlC, xlc++
+    CcFamilyEfiByteCode,  // iec (Intel EFI Byte Code compiler; target "ebc")
     CcFamilyGeneric       // cc, CC, c++ (host-default front ends)
 } CC_FAMILY;
 
@@ -41,6 +42,7 @@ typedef struct _CC_COMPILER_INFO {
     CHAR8     Target[128];     // -dumpmachine triple, if obtainable (e.g. x86_64-w64-mingw32)
     CC_FAMILY Family;
     BOOLEAN   UsableForHost;   // can it build a loadable module for THIS process?
+    BOOLEAN   ViaWine;         // a Windows .exe to be invoked through wine (Unix hosts)
 } CC_COMPILER_INFO;
 
 /**

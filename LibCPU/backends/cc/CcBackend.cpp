@@ -45,10 +45,16 @@ EndsWithStem (std::string CONST &Name, CHAR8 CONST *pStem)
 static CC_FAMILY
 CategorizeCompiler (std::string CONST &Name)
 {
-    // Strip a trailing -<version> (digits and dots) so gcc-15, clang-15,
-    // x86_64-w64-mingw32-gcc-15.2.0 reduce to their driver stem; gcc-ar / gcc-nm
-    // (non-numeric suffix) are NOT stripped and therefore won't match below.
     std::string B = Name;
+    // Strip a trailing .exe (Windows compilers, possibly run via wine).
+    if (B.size () >= 4) {
+        std::string Ext = B.substr (B.size () - 4);
+        for (char &C : Ext) C = (char) std::tolower ((unsigned char) C);
+        if (Ext == ".exe") B.resize (B.size () - 4);
+    }
+    // Strip a trailing -<version> (digits/dots) so gcc-15, clang-15,
+    // x86_64-w64-mingw32-gcc-15.2.0 reduce to their driver stem; gcc-ar / gcc-nm
+    // (non-numeric suffix) are NOT stripped and won't match below.
     UINTN Dash = B.rfind ('-');
     if (Dash != std::string::npos && Dash + 1 < B.size () && std::isdigit ((unsigned char) B[Dash + 1])) {
         bool NumDot = true;
@@ -57,12 +63,13 @@ CategorizeCompiler (std::string CONST &Name)
         }
         if (NumDot) B = B.substr (0, Dash);
     }
-    auto Eq = [&] (CHAR8 CONST *S) { return Name == S; };
+    auto Eq = [&] (CHAR8 CONST *S) { return B == S; };
 
     if (EndsWithStem (B, "clang") || EndsWithStem (B, "clang++") || EndsWithStem (B, "clang-cl"))
         return CcFamilyClang;
     if (EndsWithStem (B, "gcc") || EndsWithStem (B, "g++"))
         return CcFamilyGcc;
+    if (Eq ("iec"))                                 return CcFamilyEfiByteCode;
     if (Eq ("xlc") || Eq ("xlC") || Eq ("xlc++"))   return CcFamilyIbmXl;
     if (Eq ("wcc") || Eq ("wcc386") || Eq ("wpp") || Eq ("wpp386") || Eq ("wcl") ||
         Eq ("wcl386") || Eq ("wclppc") || Eq ("wclaxp") || Eq ("wclmps") || Eq ("owcc"))
@@ -70,13 +77,43 @@ CategorizeCompiler (std::string CONST &Name)
     if (Eq ("cl") || Eq ("cl386") || Eq ("clarm") || Eq ("clsh") || Eq ("clmips") || Eq ("clppc"))
         return CcFamilyMsvc;
     if (Eq ("bcc") || Eq ("bcc32") || Eq ("bcc64"))  return CcFamilyBorland;
-    if (Eq ("icc") || Eq ("icx") || Eq ("icl") || Eq ("iec") || Eq ("icpc") || Eq ("icpx"))
+    if (Eq ("icc") || Eq ("icx") || Eq ("icl") || Eq ("icpc") || Eq ("icpx"))
         return CcFamilyIntel;
     if (Eq ("mwcc") || Eq ("mwccppc") || Eq ("mwcceppc") || Eq ("mwld"))
         return CcFamilyMetrowerks;
     if (Eq ("dmc"))                                 return CcFamilyDigitalMars;
     if (Eq ("cc") || Eq ("CC") || Eq ("c++"))       return CcFamilyGeneric;
     return CcFamilyUnknown;
+}
+
+// Target for compilers that do not support -dumpmachine, inferred from family/name.
+static std::string
+InferTarget (CC_FAMILY Family, std::string CONST &Name)
+{
+    std::string N = Name;
+    for (char &C : N) C = (char) std::tolower ((unsigned char) C);
+    switch (Family) {
+    case CcFamilyEfiByteCode: return "ebc";
+    case CcFamilyWatcom:
+        if (N.find ("386") != std::string::npos) return "i386-pc-watcom";
+        if (N.find ("ppc") != std::string::npos) return "powerpc-pc-watcom";
+        if (N.find ("axp") != std::string::npos) return "alpha-pc-watcom";
+        if (N.find ("mps") != std::string::npos) return "mips-pc-watcom";
+        return "i86-pc-watcom";
+    case CcFamilyMsvc:
+        if (N.find ("386")    != std::string::npos) return "i386-pc-windows";
+        if (N.find ("clarm")  != std::string::npos) return "arm-pc-windows";
+        if (N.find ("clmips") != std::string::npos) return "mips-pc-windows";
+        if (N.find ("clppc")  != std::string::npos) return "powerpc-pc-windows";
+        if (N.find ("clsh")   != std::string::npos) return "sh-pc-windows";
+        return "x86-pc-windows";
+    case CcFamilyBorland:
+        if (N.find ("64") != std::string::npos) return "x86_64-pc-windows";
+        if (N.find ("32") != std::string::npos) return "i386-pc-windows";
+        return "i86-pc-windows";
+    default:
+        return "";
+    }
 }
 
 static std::string
@@ -129,6 +166,8 @@ DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
     // Determine this host's compiler target once, up front.
     std::string HostTarget = RunCapture ("cc -dumpmachine 2>/dev/null");
     if (HostTarget.empty ()) HostTarget = RunCapture ("clang -dumpmachine 2>/dev/null");
+    // Is wine available to run Windows .exe compilers on this Unix host?
+    bool WineAvail = !RunCapture ("command -v wine 2>/dev/null").empty ();
 
     std::vector<std::string> Seen;
     for (std::string CONST &Dir : Dirs) {
@@ -139,8 +178,15 @@ DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
             std::string Name = pE->d_name;
             CC_FAMILY Fam = CategorizeCompiler (Name);
             if (Fam == CcFamilyUnknown) continue;
+            bool IsExe = false;
+            if (Name.size () >= 4) {
+                std::string Ext = Name.substr (Name.size () - 4);
+                for (char &C : Ext) C = (char) std::tolower ((unsigned char) C);
+                IsExe = (Ext == ".exe");
+            }
             std::string Full = Dir + "/" + Name;
-            if (access (Full.c_str (), X_OK) != 0) continue;
+            // .exe binaries need not be executable (they run under wine): require readable.
+            if (access (Full.c_str (), IsExe ? R_OK : X_OK) != 0) continue;
             struct stat St;
             if (stat (Full.c_str (), &St) != 0 || !S_ISREG (St.st_mode)) continue;
             char Real[1024];
@@ -150,22 +196,33 @@ DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
             if (Dup) continue;
             Seen.push_back (Key);
 
+            bool ViaWine = IsExe && WineAvail;       // Unix host -> run Windows .exe via wine
+            bool CanRun  = !IsExe || WineAvail;
+            std::string Inv = ViaWine ? ("wine \"" + Full + "\"") : ("\"" + Full + "\"");
+
             CC_COMPILER_INFO Info{};
             CopyStr (Info.Path, sizeof (Info.Path), Full);
             CopyStr (Info.Name, sizeof (Info.Name), Name);
             Info.Family = Fam;
             Info.UsableForHost = FALSE;
+            Info.ViaWine = ViaWine ? TRUE : FALSE;
+
             if (Fam == CcFamilyClang || Fam == CcFamilyGcc ||
                 Fam == CcFamilyIntel || Fam == CcFamilyGeneric) {
-                std::string Ver = RunCapture ("\"" + Full + "\" --version 2>/dev/null");
-                CopyStr (Info.Version, sizeof (Info.Version), Ver);
-                std::string Tgt = RunCapture ("\"" + Full + "\" -dumpmachine 2>/dev/null");
-                // -dumpmachine on a non-compiler can print junk; a real triple has no spaces/slashes.
-                if (Tgt.find (' ') != std::string::npos || Tgt.find ('/') != std::string::npos) {
-                    Tgt.clear ();
+                if (CanRun) {
+                    std::string Ver = RunCapture (Inv + " --version 2>/dev/null");
+                    CopyStr (Info.Version, sizeof (Info.Version), Ver);
+                    std::string Tgt = RunCapture (Inv + " -dumpmachine 2>/dev/null");
+                    if (Tgt.find (' ') != std::string::npos || Tgt.find ('/') != std::string::npos) {
+                        Tgt.clear ();
+                    }
+                    CopyStr (Info.Target, sizeof (Info.Target), Tgt);
+                    Info.UsableForHost = (!ViaWine && !Tgt.empty () && Tgt == HostTarget) ? TRUE : FALSE;
                 }
+            } else {
+                // Compilers without -dumpmachine (EBC, Watcom, MSVC, Borland, ...).
+                std::string Tgt = InferTarget (Fam, Name);
                 CopyStr (Info.Target, sizeof (Info.Target), Tgt);
-                Info.UsableForHost = (!Tgt.empty () && Tgt == HostTarget) ? TRUE : FALSE;
             }
             Out.push_back (Info);
         }
