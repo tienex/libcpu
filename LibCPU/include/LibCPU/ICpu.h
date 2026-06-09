@@ -189,6 +189,10 @@ DECLARE_INTERFACE_ (ICpuArchitecture, IUnknown)
     STDMETHOD_ (UINT32, Release)(THIS) PURE;
 
     STDMETHOD (GetInfo)(THIS_ OUT CPU_ARCH_INFO *pInfo) PURE;
+    //
+    // Provide the guest code bytes the frontend decodes at translate time.
+    //
+    STDMETHOD (SetCodeMemory)(THIS_ IN UINT8 CONST *pBase, UINT64 Size) PURE;
     STDMETHOD (TagInstr)(THIS_ CPU_ADDR Pc, OUT UINT32 *pTag, OUT CPU_ADDR *pNewPc, OUT CPU_ADDR *pNextPc) PURE;
     STDMETHOD (Disassemble)(THIS_ CPU_ADDR Pc, OUT CHAR8 *pLine, UINT32 MaxLine) PURE;
     STDMETHOD (TranslateInstr)(THIS_ CPU_ADDR Pc, IN ICpuEmitter *pEmitter) PURE;

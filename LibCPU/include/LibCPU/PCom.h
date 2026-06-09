@@ -109,6 +109,31 @@ private:
     std::atomic<INT32> m_RefCount;
 };
 
+/**
+  ComPtr -- a minimal owning smart pointer for COM interfaces. Adopts a
+  reference (does not AddRef on construction from a raw pointer) and Releases on
+  destruction. `&ptr` yields a T** out-parameter slot (the pointer must be null).
+**/
+template <class T>
+class ComPtr {
+public:
+    ComPtr () = default;
+    ComPtr (T *pRaw) : m_p (pRaw) {}                  // adopt
+    ~ComPtr () { if (m_p != nullptr) m_p->Release (); }
+
+    ComPtr (ComPtr CONST &) = delete;
+    ComPtr &operator= (ComPtr CONST &) = delete;
+    ComPtr (ComPtr &&Other) noexcept : m_p (Other.m_p) { Other.m_p = nullptr; }
+
+    T *operator-> () CONST { return m_p; }
+    operator T * () CONST { return m_p; }
+    T *Get () CONST { return m_p; }
+    T **operator& () { return &m_p; }                 // out-param slot (expects null)
+
+private:
+    T *m_p = nullptr;
+};
+
 } // namespace LibCPU
 
 #endif // LIBCPU_PCOM_H
