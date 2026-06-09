@@ -64,6 +64,13 @@ libcpu_add_backend(python_backend python
   SOURCES backends/python/PythonBackend.cpp backends/python/PythonModule.cpp
   INCLUDES backends/python)
 
+libcpu_add_backend(ruby_backend ruby
+  SOURCES backends/ruby/RubyBackend.cpp backends/ruby/RubyModule.cpp
+  INCLUDES backends/ruby)
+libcpu_add_backend(perl_backend perl
+  SOURCES backends/perl/PerlBackend.cpp backends/perl/PerlModule.cpp
+  INCLUDES backends/perl)
+
 # WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
 libcpu_add_backend(wasm_backend wasm
   SOURCES backends/wasm/WasmBackend.cpp backends/wasm/WasmModule.cpp
