@@ -60,6 +60,10 @@ libcpu_add_backend(dotnet_backend dotnet
   SOURCES backends/dotnet/DotnetBackend.cpp backends/dotnet/DotnetModule.cpp
   INCLUDES backends/dotnet)
 
+libcpu_add_backend(python_backend python
+  SOURCES backends/python/PythonBackend.cpp backends/python/PythonModule.cpp
+  INCLUDES backends/python)
+
 # WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
 libcpu_add_backend(wasm_backend wasm
   SOURCES backends/wasm/WasmBackend.cpp backends/wasm/WasmModule.cpp
