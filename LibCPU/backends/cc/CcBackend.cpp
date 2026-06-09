@@ -225,9 +225,22 @@ public:
             m_Body.c_str ());
         std::fclose (pF);   // closes Fd
 
+        // Target the architecture THIS slice is running as, so a universal
+        // cc.backend compiles for the right arch (macOS: -arch; else: host default).
+#if defined(__APPLE__)
+#  if defined(__aarch64__)
+        static CONST CHAR8 *kTargetFlag = "-arch arm64 ";
+#  elif defined(__x86_64__)
+        static CONST CHAR8 *kTargetFlag = "-arch x86_64 ";
+#  else
+        static CONST CHAR8 *kTargetFlag = "";
+#  endif
+#else
+        static CONST CHAR8 *kTargetFlag = "";
+#endif
         char Cmd[512];
-        std::snprintf (Cmd, sizeof (Cmd), "clang -shared -O2 -fPIC -o '%s' '%s' 2>/dev/null",
-                       LibPath.c_str (), SrcPath.c_str ());
+        std::snprintf (Cmd, sizeof (Cmd), "clang %s-shared -O2 -fPIC -o '%s' '%s' 2>/dev/null",
+                       kTargetFlag, LibPath.c_str (), SrcPath.c_str ());
         if (std::system (Cmd) != 0) {
             unlink (SrcPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
