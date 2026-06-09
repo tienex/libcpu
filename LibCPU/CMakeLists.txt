@@ -69,6 +69,14 @@ libcpu_add_backend(wasm_backend wasm
     third_party/wasm3/m3_info.c
   INCLUDES backends/wasm third_party/wasm3)
 
+# In-process JavaScriptCore backend (Apple framework; no-copy typed arrays).
+if(APPLE)
+  libcpu_add_backend(jscore_backend jscore
+    SOURCES backends/jscore/JscoreBackend.cpp backends/jscore/JscoreModule.cpp
+    INCLUDES backends/jscore
+    LIBS "-framework JavaScriptCore")
+endif()
+
 # ---- GNU Lightning backend (in-process register JIT) ----
 find_path(LIGHTNING_INC lightning.h
   PATHS /opt/homebrew/opt/lightning/include /opt/homebrew/include /usr/local/include /opt/local/include)
