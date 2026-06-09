@@ -13,20 +13,15 @@
 #define LIBCPU_INTERP_H
 
 #include "LibCPU/ICpu.h"
+#include "LibCPU/CpuState.h"
 
 namespace LibCPU {
 
 //
-// Register-file storage the interpreter executes against. A frontend addresses
-// registers by index (0..) and flags by the generic CPU_FLAG enum; this struct
-// is the concrete storage those indices and flags map onto. (Passed as pGRF to
-// ICpuCode::Execute.)
+// The interpreter executes against the shared CPU_STATE layout (CpuState.h);
+// INTERP_STATE is kept as an alias for existing callers.
 //
-typedef struct _INTERP_STATE {
-    UINT64 Reg[32];
-    UINT8  Flag[8];
-    UINT64 Pc;
-} INTERP_STATE;
+typedef CPU_STATE INTERP_STATE;
 
 //
 // Create the interpreter backend. Returned reference is owned (Release when done).
