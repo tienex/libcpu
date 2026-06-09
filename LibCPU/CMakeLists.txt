@@ -60,6 +60,15 @@ libcpu_add_backend(dotnet_backend dotnet
   SOURCES backends/dotnet/DotnetBackend.cpp backends/dotnet/DotnetModule.cpp
   INCLUDES backends/dotnet)
 
+# WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
+libcpu_add_backend(wasm_backend wasm
+  SOURCES backends/wasm/WasmBackend.cpp backends/wasm/WasmModule.cpp
+    third_party/wasm3/m3_core.c third_party/wasm3/m3_env.c third_party/wasm3/m3_compile.c
+    third_party/wasm3/m3_exec.c third_party/wasm3/m3_function.c third_party/wasm3/m3_bind.c
+    third_party/wasm3/m3_code.c third_party/wasm3/m3_module.c third_party/wasm3/m3_parse.c
+    third_party/wasm3/m3_info.c
+  INCLUDES backends/wasm third_party/wasm3)
+
 # ---- GNU Lightning backend (in-process register JIT) ----
 find_path(LIGHTNING_INC lightning.h
   PATHS /opt/homebrew/opt/lightning/include /opt/homebrew/include /usr/local/include /opt/local/include)
