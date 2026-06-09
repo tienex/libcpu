@@ -44,6 +44,10 @@ libcpu_add_backend(cc_backend cc
   SOURCES backends/cc/CcBackend.cpp backends/cc/CcModule.cpp
   INCLUDES backends/cc)
 
+libcpu_add_backend(qbe_backend qbe
+  SOURCES backends/qbe/QbeBackend.cpp backends/qbe/QbeModule.cpp
+  INCLUDES backends/qbe)
+
 # ---- external-toolchain backends (one bundle per discovered version) ----
 include(LibCPUBackendsLLVM)
 include(LibCPUBackendsGccJit)
