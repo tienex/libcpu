@@ -6,20 +6,172 @@
   it to a shared object with the system C compiler, and dlopen()s the result.
 **/
 #include "CcBackend.h"
+#include "CcCompilers.h"
 #include "LibCPU/CpuState.h"
 
 #include <dlfcn.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstdarg>
+#include <cctype>
 #include <string>
+#include <vector>
 #include <atomic>
 
 namespace LibCPU {
 namespace {
+
+// ---------------------------------------------------------------------------
+// Compiler discovery: scan PATH + common roots, categorize by family.
+// ---------------------------------------------------------------------------
+// True if Name ends with the compiler-driver stem at a boundary (whole word, or
+// preceded by '-' as in a target triple). This rejects toolchain tools like
+// gcc-ar, gccmakedep, clang-format, clangd, cgcc, msg++, etc.
+static bool
+EndsWithStem (std::string CONST &Name, CHAR8 CONST *pStem)
+{
+    UINTN N = std::strlen (pStem);
+    if (Name.size () < N || Name.compare (Name.size () - N, N, pStem) != 0) {
+        return false;
+    }
+    return (Name.size () == N) || (Name[Name.size () - N - 1] == '-');
+}
+
+static CC_FAMILY
+CategorizeCompiler (std::string CONST &Name)
+{
+    // Strip a trailing -<version> (digits and dots) so gcc-15, clang-15,
+    // x86_64-w64-mingw32-gcc-15.2.0 reduce to their driver stem; gcc-ar / gcc-nm
+    // (non-numeric suffix) are NOT stripped and therefore won't match below.
+    std::string B = Name;
+    UINTN Dash = B.rfind ('-');
+    if (Dash != std::string::npos && Dash + 1 < B.size () && std::isdigit ((unsigned char) B[Dash + 1])) {
+        bool NumDot = true;
+        for (UINTN I = Dash + 1; I < B.size (); I++) {
+            if (!std::isdigit ((unsigned char) B[I]) && B[I] != '.') { NumDot = false; break; }
+        }
+        if (NumDot) B = B.substr (0, Dash);
+    }
+    auto Eq = [&] (CHAR8 CONST *S) { return Name == S; };
+
+    if (EndsWithStem (B, "clang") || EndsWithStem (B, "clang++") || EndsWithStem (B, "clang-cl"))
+        return CcFamilyClang;
+    if (EndsWithStem (B, "gcc") || EndsWithStem (B, "g++"))
+        return CcFamilyGcc;
+    if (Eq ("xlc") || Eq ("xlC") || Eq ("xlc++"))   return CcFamilyIbmXl;
+    if (Eq ("wcc") || Eq ("wcc386") || Eq ("wpp") || Eq ("wpp386") || Eq ("wcl") ||
+        Eq ("wcl386") || Eq ("wclppc") || Eq ("wclaxp") || Eq ("wclmps") || Eq ("owcc"))
+        return CcFamilyWatcom;
+    if (Eq ("cl") || Eq ("cl386") || Eq ("clarm") || Eq ("clsh") || Eq ("clmips") || Eq ("clppc"))
+        return CcFamilyMsvc;
+    if (Eq ("bcc") || Eq ("bcc32") || Eq ("bcc64"))  return CcFamilyBorland;
+    if (Eq ("icc") || Eq ("icx") || Eq ("icl") || Eq ("iec") || Eq ("icpc") || Eq ("icpx"))
+        return CcFamilyIntel;
+    if (Eq ("mwcc") || Eq ("mwccppc") || Eq ("mwcceppc") || Eq ("mwld"))
+        return CcFamilyMetrowerks;
+    if (Eq ("dmc"))                                 return CcFamilyDigitalMars;
+    if (Eq ("cc") || Eq ("CC") || Eq ("c++"))       return CcFamilyGeneric;
+    return CcFamilyUnknown;
+}
+
+static std::string
+RunCapture (std::string CONST &Cmd)
+{
+    std::string Out;
+    FILE *pP = popen (Cmd.c_str (), "r");
+    if (pP == nullptr) {
+        return Out;
+    }
+    char Buf[256];
+    if (std::fgets (Buf, sizeof (Buf), pP) != nullptr) {
+        Out = Buf;
+    }
+    pclose (pP);
+    while (!Out.empty () && (Out.back () == '\n' || Out.back () == '\r')) {
+        Out.pop_back ();
+    }
+    return Out;
+}
+
+static VOID
+CopyStr (CHAR8 *pDst, UINTN Cap, std::string CONST &Src)
+{
+    UINTN N = Src.size () < (Cap - 1) ? Src.size () : (Cap - 1);
+    std::memcpy (pDst, Src.data (), N);
+    pDst[N] = '\0';
+}
+
+static VOID
+DiscoverCompilers (std::vector<CC_COMPILER_INFO> &Out)
+{
+    std::vector<std::string> Dirs;
+    CHAR8 CONST *pPath = std::getenv ("PATH");
+    if (pPath != nullptr) {
+        std::string P = pPath, Cur;
+        for (char C : P) {
+            if (C == ':') { if (!Cur.empty ()) Dirs.push_back (Cur); Cur.clear (); }
+            else Cur += C;
+        }
+        if (!Cur.empty ()) Dirs.push_back (Cur);
+    }
+    CHAR8 CONST *Extra[] = {
+        "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin",
+        "/opt/homebrew/opt/llvm/bin", "/opt/watcom/binl64", "/opt/watcom/binl",
+        "/usr/lib/watcom/binl64", nullptr
+    };
+    for (UINTN I = 0; Extra[I] != nullptr; I++) Dirs.push_back (Extra[I]);
+
+    // Determine this host's compiler target once, up front.
+    std::string HostTarget = RunCapture ("cc -dumpmachine 2>/dev/null");
+    if (HostTarget.empty ()) HostTarget = RunCapture ("clang -dumpmachine 2>/dev/null");
+
+    std::vector<std::string> Seen;
+    for (std::string CONST &Dir : Dirs) {
+        DIR *pD = opendir (Dir.c_str ());
+        if (pD == nullptr) continue;
+        struct dirent *pE;
+        while ((pE = readdir (pD)) != nullptr) {
+            std::string Name = pE->d_name;
+            CC_FAMILY Fam = CategorizeCompiler (Name);
+            if (Fam == CcFamilyUnknown) continue;
+            std::string Full = Dir + "/" + Name;
+            if (access (Full.c_str (), X_OK) != 0) continue;
+            struct stat St;
+            if (stat (Full.c_str (), &St) != 0 || !S_ISREG (St.st_mode)) continue;
+            char Real[1024];
+            std::string Key = realpath (Full.c_str (), Real) ? std::string (Real) : Full;
+            bool Dup = false;
+            for (std::string CONST &S : Seen) if (S == Key) { Dup = true; break; }
+            if (Dup) continue;
+            Seen.push_back (Key);
+
+            CC_COMPILER_INFO Info{};
+            CopyStr (Info.Path, sizeof (Info.Path), Full);
+            CopyStr (Info.Name, sizeof (Info.Name), Name);
+            Info.Family = Fam;
+            Info.UsableForHost = FALSE;
+            if (Fam == CcFamilyClang || Fam == CcFamilyGcc ||
+                Fam == CcFamilyIntel || Fam == CcFamilyGeneric) {
+                std::string Ver = RunCapture ("\"" + Full + "\" --version 2>/dev/null");
+                CopyStr (Info.Version, sizeof (Info.Version), Ver);
+                std::string Tgt = RunCapture ("\"" + Full + "\" -dumpmachine 2>/dev/null");
+                // -dumpmachine on a non-compiler can print junk; a real triple has no spaces/slashes.
+                if (Tgt.find (' ') != std::string::npos || Tgt.find ('/') != std::string::npos) {
+                    Tgt.clear ();
+                }
+                CopyStr (Info.Target, sizeof (Info.Target), Tgt);
+                Info.UsableForHost = (!Tgt.empty () && Tgt == HostTarget) ? TRUE : FALSE;
+            }
+            Out.push_back (Info);
+        }
+        closedir (pD);
+    }
+}
 
 class CcValue final : public LcComObject<ICpuValue> {
 public:
@@ -191,6 +343,11 @@ public:
     HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
 
+    void SetCompiler (std::string Path, CC_FAMILY Family) {
+        m_CompilerPath = std::move (Path);
+        m_CompFamily   = Family;
+    }
+
     ICpuCode *Build () {
         // Create a private, owner-only (0700), randomly-named directory so an
         // attacker cannot pre-create symlinks for the source/lib we then compile
@@ -246,10 +403,11 @@ public:
 #else
         static CONST CHAR8 *kTargetFlag = "";
 #endif
-        char Cmd[512];
-        std::snprintf (Cmd, sizeof (Cmd), "clang %s-shared -O2 -fPIC -o '%s' '%s' 2>/dev/null",
-                       kTargetFlag, LibPath.c_str (), SrcPath.c_str ());
-        if (std::system (Cmd) != 0) {
+        // -arch applies to clang only; gcc/others use their own default target.
+        CONST CHAR8 *pArchFlag = (m_CompFamily == CcFamilyClang) ? kTargetFlag : "";
+        std::string Cmd = "\"" + m_CompilerPath + "\" " + pArchFlag +
+                          "-shared -O2 -fPIC -o '" + LibPath + "' '" + SrcPath + "' 2>/dev/null";
+        if (std::system (Cmd.c_str ()) != 0) {
             unlink (SrcPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
@@ -301,17 +459,62 @@ private:
 
     std::string m_Body;
     std::string m_TempDecls;
+    std::string m_CompilerPath = "clang";
+    CC_FAMILY   m_CompFamily   = CcFamilyClang;
     UINT32      m_NextTemp = 0;
 };
 
-class CcBackend final : public LcComObject<ICpuBackend> {
+//
+// The cc backend exposes both ICpuBackend and the ICpuCcCompilers query/select
+// interface, so IUnknown is implemented manually (one set of methods overrides
+// both interfaces' IUnknown).
+//
+class CcBackend final : public ICpuBackend, public ICpuCcCompilers {
 public:
-    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
+    CcBackend () : m_Ref (1) {
+        DiscoverCompilers (m_Compilers);
+        // Default selection: first host-usable clang, else first host-usable, else 0.
+        for (UINT32 I = 0; I < (UINT32) m_Compilers.size (); I++) {
+            if (m_Compilers[I].Family == CcFamilyClang && m_Compilers[I].UsableForHost) { m_Selected = I; break; }
+        }
+        if (m_Selected == ~0u) {
+            for (UINT32 I = 0; I < (UINT32) m_Compilers.size (); I++) {
+                if (m_Compilers[I].UsableForHost) { m_Selected = I; break; }
+            }
+        }
+        if (m_Selected == ~0u) m_Selected = 0;
     }
+    virtual ~CcBackend () = default;
+
+    // ---- IUnknown (shared by both interface vtables) ----
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) return E_POINTER;
+        if (LcIsEqualGUID (&riid, &IID_IUnknown) || LcIsEqualGUID (&riid, &IID_ICpuBackend)) {
+            *ppvObject = static_cast<ICpuBackend *> (this);
+        } else if (LcIsEqualGUID (&riid, &IID_ICpuCcCompilers)) {
+            *ppvObject = static_cast<ICpuCcCompilers *> (this);
+        } else {
+            *ppvObject = nullptr;
+            return E_NOINTERFACE;
+        }
+        AddRef ();
+        return S_OK;
+    }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return (UINT32) ++m_Ref; }
+    UINT32 STDMETHODCALLTYPE Release () override {
+        UINT32 C = (UINT32) --m_Ref;
+        if (C == 0) delete this;
+        return C;
+    }
+
+    // ---- ICpuBackend ----
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "cc"; }
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture *, ICpuEmitter **ppEmitter) override {
-        *ppEmitter = new CcEmitter ();
+        CcEmitter *pE = new CcEmitter ();
+        if (m_Selected < m_Compilers.size ()) {
+            pE->SetCompiler (m_Compilers[m_Selected].Path, m_Compilers[m_Selected].Family);
+        }
+        *ppEmitter = pE;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
@@ -319,6 +522,25 @@ public:
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
     }
+
+    // ---- ICpuCcCompilers ----
+    UINT32 STDMETHODCALLTYPE GetCompilerCount () override { return (UINT32) m_Compilers.size (); }
+    HRESULT STDMETHODCALLTYPE GetCompilerInfo (UINT32 Index, CC_COMPILER_INFO *pInfo) override {
+        if (Index >= m_Compilers.size () || pInfo == nullptr) return E_INVALIDARG;
+        *pInfo = m_Compilers[Index];
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SelectCompiler (UINT32 Index) override {
+        if (Index >= m_Compilers.size ()) return E_INVALIDARG;
+        m_Selected = Index;
+        return S_OK;
+    }
+    UINT32 STDMETHODCALLTYPE GetSelectedCompiler () override { return m_Selected; }
+
+private:
+    std::atomic<INT32>            m_Ref;
+    std::vector<CC_COMPILER_INFO> m_Compilers;
+    UINT32                        m_Selected = ~0u;
 };
 
 } // anonymous namespace

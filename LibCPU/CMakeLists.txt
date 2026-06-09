@@ -57,3 +57,7 @@ target_link_libraries(load6502 PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
+
+# ---- compiler-discovery test (lists what the cc backend found) ----
+add_executable(cclist test/cclist.cpp backends/cc/CcBackend.cpp)
+target_include_directories(cclist PRIVATE backends/cc)
