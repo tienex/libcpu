@@ -239,13 +239,17 @@ public:
 
 class CcBlock final : public LcComObject<ICpuBlock> {
 public:
+    explicit CcBlock (UINT32 Label) : m_Label (Label) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    UINT32      m_Label;   // emitted as the C label "L<Label>:"
+    std::string m_Buf;     // the block's statements
 };
 
-static UINT32 IdOf   (ICpuValue *pV) { return static_cast<CcValue *> (pV)->m_Id; }
-static UINT32 BitsOf (ICpuValue *pV) { return static_cast<CcValue *> (pV)->m_Bits; }
+static UINT32 IdOf     (ICpuValue *pV) { return static_cast<CcValue *> (pV)->m_Id; }
+static UINT32 BitsOf   (ICpuValue *pV) { return static_cast<CcValue *> (pV)->m_Bits; }
+static UINT32 BlkLabel (ICpuBlock *pB) { return static_cast<CcBlock *> (pB)->m_Label; }
 
 typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
@@ -275,11 +279,23 @@ private:
     std::string m_Dir, m_SrcPath, m_LibPath;
 };
 
-class CcEmitter final : public LcComObject<ICpuEmitter> {
+class CcEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
+    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
+    // refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) {
+            return E_POINTER;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     // ---- values -----------------------------------------------------------
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
@@ -303,6 +319,12 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
         Line ("*(%s*)((char*)RAM + t%u) = (%s)t%u;", CType (Bits), IdOf (pAddr), CType (Bits), IdOf (pValue));
+        // Self-modifying-code write-barrier: mark the written page dirty if the
+        // address falls in the watched code region. Inert when CodeStart==CodeEnd.
+        Line ("if ((uint64_t)t%u >= *(uint64_t*)((char*)GRF+%u) && (uint64_t)t%u < *(uint64_t*)((char*)GRF+%u)) "
+              "((uint8_t*)((char*)GRF+%u))[((uint64_t)t%u>>8)&255] = 1;",
+              IdOf (pAddr), CPU_STATE_CODESTART_OFFSET, IdOf (pAddr), CPU_STATE_CODEEND_OFFSET,
+              CPU_STATE_CODEDIRTY_OFFSET, IdOf (pAddr));
         return S_OK;
     }
 
@@ -391,11 +413,34 @@ public:
         Line ("*(uint64_t*)((char*)GRF+%u) = 0x%llxULL;", CPU_STATE_PC_OFFSET, (unsigned long long) Pc);
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override { *ppBlock = new CcBlock (); return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    // ---- control flow: blocks are C labels, edges are goto -----------------
+    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
+        CcBlock *pB = new CcBlock ((UINT32) m_Blocks.size ());
+        m_Blocks.push_back (pB);   // raw, kept in creation order for Build (not owned)
+        *ppBlock = pB;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        m_pCur = &static_cast<CcBlock *> (pBlock)->m_Buf;
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        Line ("goto L%u;", BlkLabel (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        Line ("if (t%u) goto L%u; else goto L%u;", IdOf (pCond), BlkLabel (pTrue), BlkLabel (pFalse));
+        return S_OK;
+    }
+
+    // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        Line ("if (((uint8_t*)((char*)GRF+%u))[%u]) { *(uint64_t*)((char*)GRF+%u) = 0x%llxULL; return %d; }",
+              CPU_STATE_CODEDIRTY_OFFSET, (UINT32) ((Pc >> 8) & 255),
+              CPU_STATE_TRAPPC_OFFSET, (unsigned long long) Pc, (int) ExecSmc);
+        return S_OK;
+    }
 
     void SetCompiler (std::string Path, CC_FAMILY Family) {
         m_CompilerPath = std::move (Path);
@@ -424,16 +469,23 @@ public:
             close (Fd); unlink (SrcPath.c_str ()); rmdir (Dir.c_str ());
             return nullptr;
         }
+        // All temps are declared up front (before any label) so the goto-based CFG
+        // never jumps over a declaration. The entry block runs first; CFG blocks
+        // follow as "L<n>:" labels wired by goto / conditional goto; a final
+        // "return 0" terminates any block that falls through (including the empty
+        // exit block the AOT driver adds).
         std::fprintf (pF,
             "#include <stdint.h>\n"
             "int insn(void* RAM, void* GRF, void* FRF) {\n"
-            "  uint64_t %s = 0;\n"   // declare all temps to keep emission simple
-            "%s"
+            "  uint64_t %s = 0;\n"
             "  (void)FRF;\n"
-            "  return 0;\n"
-            "}\n",
+            "%s",
             m_TempDecls.empty () ? "t_unused" : m_TempDecls.c_str (),
             m_Body.c_str ());
+        for (CcBlock *pB : m_Blocks) {
+            std::fprintf (pF, "L%u: ;\n%s", pB->m_Label, pB->m_Buf.c_str ());
+        }
+        std::fprintf (pF, "  return 0;\n}\n");
         std::fclose (pF);   // closes Fd
 
         // Target the architecture THIS slice is running as, so a universal
@@ -493,9 +545,9 @@ private:
         va_start (Args, pFmt);
         std::vsnprintf (Buf, sizeof (Buf), pFmt, Args);
         va_end (Args);
-        m_Body += "  ";
-        m_Body += Buf;
-        m_Body += "\n";
+        *m_pCur += "  ";       // append to the current block (entry by default)
+        *m_pCur += Buf;
+        *m_pCur += "\n";
     }
     static CONST CHAR8 *CType (UINT32 Bits) {
         switch (Bits) {
@@ -511,11 +563,13 @@ private:
         return S_OK;
     }
 
-    std::string m_Body;
-    std::string m_TempDecls;
-    std::string m_CompilerPath = "clang";
-    CC_FAMILY   m_CompFamily   = CcFamilyClang;
-    UINT32      m_NextTemp = 0;
+    std::string            m_Body;             // entry block (runs first; falls into the CFG)
+    std::string           *m_pCur = &m_Body;   // current emission target
+    std::vector<CcBlock *> m_Blocks;           // CFG blocks in creation order (not owned)
+    std::string            m_TempDecls;
+    std::string            m_CompilerPath = "clang";
+    CC_FAMILY              m_CompFamily   = CcFamilyClang;
+    UINT32                 m_NextTemp = 0;
 };
 
 //
