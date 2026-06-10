@@ -101,13 +101,16 @@ public:
 
 class ClrBlock final : public LcComObject<ICpuBlock> {
 public:
+    explicit ClrBlock (UINT32 Id) : m_Id (Id) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    UINT32 m_Id;
 };
 
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<ClrValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<ClrValue *> (pValue)->m_Bits; }
+static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<ClrBlock *> (pBlock)->m_Id; }
 
 class ClrCode final : public LcComObject<ICpuCode> {
 public:
@@ -129,11 +132,20 @@ private:
     intptr_t m_Handle;
 };
 
-class ClrEmitter final : public LcComObject<ICpuEmitter> {
+class ClrEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
+    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
+    // refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
@@ -200,6 +212,7 @@ public:
             ByteValue (IdOf (pValue), 8 * k);
             B (0x9c);                    // stelem.i1
         }
+        EmitStoreBarrier (IdOf (pAddr));
         return S_OK;
     }
 
@@ -344,20 +357,68 @@ public:
         return S_OK;
     }
 
+    // ---- control flow: blocks are byte offsets, edges are br/brtrue --------
+    // CIL branch operands are 4-byte and relative to the NEXT instruction; emitted
+    // as placeholders and patched in Build once block offsets are known.
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
-        *ppBlock = new ClrBlock ();
+        *ppBlock = new ClrBlock ((UINT32) m_BlockStart.size ());
+        m_BlockStart.push_back (0xFFFFFFFFu);   // unset until SetInsertBlock (exit block stays unset)
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        m_BlockStart[BlkId (pBlock)] = (UINT32) m_Code.size ();
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        EmitBr (BlkId (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        LdLoc (IdOf (pCond));        // i8 cond (brtrue treats any nonzero as true)
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0x3a);                    // brtrue <true>
+        m_Fixups.push_back ({ P, BlkId (pTrue) });
+        B4 (0);
+        EmitBr (BlkId (pFalse));     // else br false
+        return S_OK;
+    }
+
+    // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        LdArg (1);
+        PushI4 ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + ((Pc >> 8) & 255)));
+        B (0x91);                    // ldelem.u1 (this block's dirty-page byte)
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0x39);                    // brfalse <skip>  (clean -> run the block)
+        B4 (0);
+        for (UINT32 k = 0; k < 8; k++) {           // dirty: record TrapPc = Pc ...
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_TRAPPC_OFFSET + k));
+            PushI4 ((INT32) ((Pc >> (8 * k)) & 0xff));
+            B (0x9c);                // stelem.i1
+        }
+        B (0x2a);                    // ... and ret
+        UINT32 Off = (UINT32) m_Code.size () - (P + 5);   // relative to instr after the brfalse
+        m_Code[P + 1] = (UINT8) Off;        m_Code[P + 2] = (UINT8) (Off >> 8);
+        m_Code[P + 3] = (UINT8) (Off >> 16); m_Code[P + 4] = (UINT8) (Off >> 24);
+        return S_OK;
+    }
 
     ICpuCode *Build () {
         if (!InitClr ()) {
             return nullptr;
         }
+        // Final ret: terminates the entry/last block on fall-through and is the
+        // landing pad for any block with no recorded start (the AOT exit block).
+        UINT32 RetPos = (UINT32) m_Code.size ();
         B (0x2a);                        // ret
+        for (auto CONST &Fx : m_Fixups) {
+            INT32 Target = (m_BlockStart[Fx.second] != 0xFFFFFFFFu) ? (INT32) m_BlockStart[Fx.second] : (INT32) RetPos;
+            INT32 Off    = Target - (INT32) (Fx.first + 5);   // CIL: relative to instr after the branch
+            m_Code[Fx.first + 1] = (UINT8) Off;        m_Code[Fx.first + 2] = (UINT8) (Off >> 8);
+            m_Code[Fx.first + 3] = (UINT8) (Off >> 16); m_Code[Fx.first + 4] = (UINT8) (Off >> 24);
+        }
 
         // Local-variable signature: LOCAL_SIG, count, then count * ELEMENT_TYPE_I8.
         std::vector<UINT8> Sig;
@@ -368,7 +429,7 @@ public:
         }
 
         intptr_t Handle = g_Compile (m_Code.data (), (int) m_Code.size (),
-                                     Sig.data (), (int) Sig.size (), 16);
+                                     Sig.data (), (int) Sig.size (), 64);
         if (Handle == 0) {
             return nullptr;
         }
@@ -384,6 +445,33 @@ private:
 
     void LdLoc (UINT32 Id) { B (0x11); B ((UINT8) Id); }     // ldloc.s
     void StLoc (UINT32 Id) { B (0x13); B ((UINT8) Id); }     // stloc.s
+
+    void B4 (UINT32 V) { B ((UINT8) V); B ((UINT8) (V >> 8)); B ((UINT8) (V >> 16)); B ((UINT8) (V >> 24)); }
+    void EmitBr (UINT32 BlockId) {
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0x38);                                            // br
+        m_Fixups.push_back ({ P, BlockId });
+        B4 (0);
+    }
+    void PushAddrI4 (UINT32 AddrId) { LdLoc (AddrId); B (0x69); }   // ldloc; conv.i4
+    void PushBound16 (UINT32 Off) {                                // low 16 bits of CodeStart/CodeEnd
+        LdArg (1); PushI4 ((INT32) Off);       B (0x91);            // grf[Off]   (ldelem.u1, unsigned)
+        LdArg (1); PushI4 ((INT32) (Off + 1)); B (0x91);            // grf[Off+1]
+        PushI4 (8); B (0x62); B (0x60);                             // shl ; or
+    }
+    // SMC write-barrier: grf[CodeDirty + ((a>>8)&255)] |= (CodeStart<=a<CodeEnd).
+    // Branchless; inert when CodeStart==CodeEnd. Addresses/bounds are <= 16 bits.
+    void EmitStoreBarrier (UINT32 AddrId) {
+        LdArg (1);                                                  // array
+        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (8); B (0x64); PushI4 (255); B (0x5f); B (0x58);  // index
+        LdArg (1);
+        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (8); B (0x64); PushI4 (255); B (0x5f); B (0x58); B (0x91);  // current = grf[index]
+        PushAddrI4 (AddrId); PushBound16 (CPU_STATE_CODESTART_OFFSET); B (0x59); PushI4 (31); B (0x64); PushI4 (1); B (0x61);  // (a>=cs)
+        PushAddrI4 (AddrId); PushBound16 (CPU_STATE_CODEEND_OFFSET);   B (0x59); PushI4 (31); B (0x64);                        // (a<ce)
+        B (0x5f);                                                   // and -> indirty
+        B (0x60);                                                   // or  -> current|indirty
+        B (0x9c);                                                   // stelem.i1
+    }
 
     void PushI4 (INT32 V) {
         if (V >= 0 && V <= 8) {
@@ -436,8 +524,10 @@ private:
         return S_OK;
     }
 
-    std::vector<UINT8> m_Code;
-    UINT32             m_Next = 0;
+    std::vector<UINT8>                     m_Code;
+    UINT32                                 m_Next = 0;
+    std::vector<UINT32>                    m_BlockStart;   // block id -> code offset (0xFFFFFFFF = unset)
+    std::vector<std::pair<UINT32, UINT32>> m_Fixups;       // (branch opcode pos, target block id)
 };
 
 class ClrBackend final : public LcComObject<ICpuBackend> {
