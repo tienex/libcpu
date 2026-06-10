@@ -33,7 +33,13 @@ static CHAR8 CONST *kTemplate =
     "def gR(i,b):\n v=0\n for k in range(b//8):v|=ST[i*8+k]<<(8*k)\n return v\n"
     "def pR(i,v,b):\n for k in range(8):ST[i*8+k]=((v>>(8*k))&0xff) if k<b//8 else 0\n"
     "def rM(a,b):\n v=0\n for k in range(b//8):v|=RAM[a+k]<<(8*k)\n return v\n"
-    "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n"
+    // CPU_STATE SMC fields (offsets match CpuState.h): CodeStart 272, CodeEnd 280,
+    // TrapPc 288, CodeDirty[] 296. cS/cE read the watched region; sT records the
+    // trap PC; wM's last line is the per-page write-barrier (inert when cS()==cE()).
+    "def cS():return int.from_bytes(ST[272:280],'little')\n"
+    "def cE():return int.from_bytes(ST[280:288],'little')\n"
+    "def sT(p):\n for k in range(8):ST[288+k]=(p>>(8*k))&0xff\n"
+    "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>8)&255)]=1\n"
     "def gF(f):return ST[256+f]&1\n"
     "def sF(f,v):ST[256+f]=v&1\n"
     "def sP(p):\n for k in range(8):ST[264+k]=(p>>(8*k))&0xff\n"
@@ -68,10 +74,15 @@ public:
 
 class PyBlock final : public LcComObject<ICpuBlock> {
 public:
+    explicit PyBlock (UINT32 Index) : m_Index (Index) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    UINT32      m_Index;   // dispatch key: the "if _pc == <Index>:" arm
+    std::string m_Buf;     // the block's Python statements (no indent)
 };
+
+static UINT32 BlkIndex (ICpuBlock *pB) { return static_cast<PyBlock *> (pB)->m_Index; }
 
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<PyValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<PyValue *> (pValue)->m_Bits; }
@@ -124,11 +135,23 @@ private:
     PyObject *m_Code;
 };
 
-class PyEmitter final : public LcComObject<ICpuEmitter> {
+class PyEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
+    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
+    // refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) {
+            return E_POINTER;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 D = Fresh ();
@@ -218,11 +241,35 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override { Line ("sP(%llu)", (unsigned long long) Pc); return S_OK; }
-    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override { *ppBlock = new PyBlock (); return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    // ---- control flow: a structured PC-dispatch (Python has no goto) -------
+    // Each block is an "if _pc == <index>:" arm of a "while True:" loop; an edge
+    // sets _pc to the target's index and the loop re-dispatches.
+    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
+        PyBlock *pB = new PyBlock ((UINT32) m_Blocks.size ());
+        m_Blocks.push_back (pB);   // raw, kept in order for Build (not owned)
+        *ppBlock = pB;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        m_pCur = &static_cast<PyBlock *> (pBlock)->m_Buf;
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        Line ("_pc=%u", BlkIndex (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        Line ("_pc=(%u) if t%u else (%u)", BlkIndex (pTrue), IdOf (pCond), BlkIndex (pFalse));
+        return S_OK;
+    }
+
+    // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        // CodeDirty[Pc>>8] is ST[296 + page]; on a hit, record TrapPc and stop.
+        Line ("if ST[%u]:sT(%llu);break", (UINT32) (296 + ((Pc >> 8) & 255)), (unsigned long long) Pc);
+        return S_OK;
+    }
 
     ICpuCode *Build () {
         if (!InitPython ()) {
@@ -230,7 +277,7 @@ public:
         }
         std::string Full = kTemplate;
         Subst (Full, "%S%", std::to_string (sizeof (CPU_STATE)));
-        Subst (Full, "%B%", m_Body);
+        Subst (Full, "%B%", BuildBody ());
 
         PyObject *Code = Py_CompileString (Full.c_str (), "<insn>", Py_file_input);
         if (Code == nullptr) {
@@ -249,8 +296,37 @@ private:
         va_start (Args, pFmt);
         std::vsnprintf (Buf, sizeof (Buf), pFmt, Args);
         va_end (Args);
-        m_Body += Buf;
-        m_Body += "\n";                  // top-level statement, no indent
+        *m_pCur += Buf;                  // append to the current block (entry by default)
+        *m_pCur += "\n";
+    }
+
+    // Straight-line (JIT) -> the entry body as-is. CFG -> a "while True:" PC-dispatch
+    // over the blocks, each re-indented under its "if _pc == <index>:" arm.
+    std::string BuildBody () {
+        if (m_Blocks.empty ()) {
+            return m_Body;
+        }
+        std::string Out = m_Body;        // the entry's "_pc=<entry>" set by Branch
+        Out += "while True:\n";
+        for (size_t i = 0; i < m_Blocks.size (); i++) {
+            Out += (i == 0) ? " if _pc==" : " elif _pc==";
+            Out += std::to_string (i) + ":\n";
+            std::string CONST &Buf = m_Blocks[i]->m_Buf;
+            if (Buf.empty ()) {
+                Out += "  break\n";      // e.g. the AOT driver's empty exit block
+                continue;
+            }
+            for (size_t p = 0; p < Buf.size (); ) {       // re-indent each line by 2 spaces
+                size_t Nl = Buf.find ('\n', p);
+                if (Nl == std::string::npos) { Nl = Buf.size (); }
+                Out += "  ";
+                Out.append (Buf, p, Nl - p);
+                Out += "\n";
+                p = Nl + 1;
+            }
+        }
+        Out += " else:\n  break\n";
+        return Out;
     }
 
     static VOID Subst (std::string &S, CHAR8 CONST *Key, std::string CONST &Val) {
@@ -265,8 +341,10 @@ private:
         return S_OK;
     }
 
-    std::string m_Body;
-    UINT32      m_Next = 0;
+    std::string            m_Body;             // entry block (init); straight-line body for JIT
+    std::string           *m_pCur = &m_Body;   // current emission target
+    std::vector<PyBlock *> m_Blocks;           // CFG blocks in creation order (not owned)
+    UINT32                 m_Next = 0;
 };
 
 class CPythonBackend final : public LcComObject<ICpuBackend> {
