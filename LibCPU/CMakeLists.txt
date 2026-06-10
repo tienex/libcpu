@@ -152,6 +152,18 @@ if(LIBCPU_NETHOST_DIRS AND LIBCPU_DOTNET)
   endif()
 endif()
 
+# In-process CPython backend (Py_CompileString + PyEval_EvalCode; no subprocess).
+find_package(Python3 COMPONENTS Development QUIET)
+if(Python3_Development_FOUND)
+  # libpython is single-arch, so pin this bundle to the host arch.
+  libcpu_add_backend(cpython_backend cpython
+    ARCHS ${CMAKE_HOST_SYSTEM_PROCESSOR}
+    SOURCES backends/cpython/CPythonBackend.cpp backends/cpython/CPythonModule.cpp
+    INCLUDES backends/cpython ${Python3_INCLUDE_DIRS}
+    LIBS ${Python3_LIBRARIES}
+    RPATH ${Python3_LIBRARY_DIRS})
+endif()
+
 # In-process JavaScriptCore backend (Apple framework; no-copy typed arrays).
 if(APPLE)
   libcpu_add_backend(jscore_backend jscore
