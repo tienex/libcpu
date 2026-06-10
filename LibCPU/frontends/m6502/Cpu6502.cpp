@@ -57,9 +57,9 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
-        // Every opcode in this slice is two bytes. BNE is a relative conditional
-        // branch; everything else continues linearly.
-        *pNextPc = Pc + 2;
+        // Most opcodes in this slice are two bytes; STA abs (0x8D) is three. BNE is
+        // a relative conditional branch; everything else continues linearly.
+        *pNextPc = Pc + ((m_pCode[Pc] == 0x8D) ? 3 : 2);
         if (m_pCode[Pc] == 0xD0) {   // BNE rel
             *pTag   = TagConditional | TagBranch;
             *pNewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);   // signed displacement
@@ -78,6 +78,7 @@ public:
         case 0xA9: std::snprintf (pLine, MaxLine, "lda #$%02x", Op1); return S_OK;
         case 0xA5: std::snprintf (pLine, MaxLine, "lda $%02x", Op1);  return S_OK;
         case 0x85: std::snprintf (pLine, MaxLine, "sta $%02x", Op1);  return S_OK;
+        case 0x8D: std::snprintf (pLine, MaxLine, "sta $%04x", (unsigned) (Op1 | (m_pCode[Pc + 2] << 8))); return S_OK;
         case 0xE6: std::snprintf (pLine, MaxLine, "inc $%02x", Op1);  return S_OK;
         case 0x69: std::snprintf (pLine, MaxLine, "adc #$%02x", Op1); return S_OK;
         case 0xD0: std::snprintf (pLine, MaxLine, "bne $%04x", (unsigned) (Pc + 2 + (INT8) Op1)); return S_OK;
@@ -106,6 +107,12 @@ public:
         case 0x85: {   // STA $zp
             ComPtr<ICpuValue> Acc;  pE->GetRegister (Reg6502A, 8, &Acc);
             ComPtr<ICpuValue> Addr; pE->ConstInt (16, Op1, &Addr);
+            pE->Store (Acc, Addr, 8);
+            break;
+        }
+        case 0x8D: {   // STA $abs (3-byte: opcode, lo, hi)
+            ComPtr<ICpuValue> Acc;  pE->GetRegister (Reg6502A, 8, &Acc);
+            ComPtr<ICpuValue> Addr; pE->ConstInt (16, Op1 | (m_pCode[Pc + 2] << 8), &Addr);
             pE->Store (Acc, Addr, 8);
             break;
         }

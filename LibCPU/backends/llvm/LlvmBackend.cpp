@@ -258,7 +258,11 @@ public:
     // block was translated, record the block PC in TrapPc and return ExecSmc so
     // the host can re-translate from here; otherwise fall through into the block.
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
-        llvm::Value *pDirty = m_Builder->CreateLoad (IntTy (8), ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET), IntTy (8)));
+        // Only this block's own page is consulted -- a write to any other page does
+        // not trap here. The page is a compile-time constant, so the guard is a
+        // single load + compare of CodeDirty[Pc >> PAGE_SHIFT].
+        UINT32 Page = (UINT32) ((Pc >> CPU_SMC_PAGE_SHIFT) & (CPU_SMC_PAGE_COUNT - 1));
+        llvm::Value *pDirty = m_Builder->CreateLoad (IntTy (8), ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET + Page), IntTy (8)));
         llvm::Value *pSet   = m_Builder->CreateICmpNE (pDirty, ConstantInt::get (IntTy (8), 0));
 
         BasicBlock *pTrap = BasicBlock::Create (*m_Ctx, "smc_trap", m_pFn);
@@ -343,18 +347,23 @@ private:
         llvm::Value *pIdx = m_Builder->CreateZExtOrTrunc (pAddr, IntTy (64));
         return m_Builder->CreateGEP (IntTy (8), m_pRAM, pIdx);
     }
-    // Write-barrier for self-modifying code: CodeDirty |= (CodeStart <= addr < CodeEnd).
-    // Inert when CodeStart == CodeEnd (the default), so non-SMC runs are unaffected.
+    // Write-barrier for self-modifying code: if the write lands in the watched code
+    // region, mark its page dirty -- CodeDirty[addr >> PAGE_SHIFT] = 1. Inert when
+    // CodeStart == CodeEnd (the default), so non-SMC runs are unaffected. The page
+    // index is forced to 0 when out of region so the indexed store stays in bounds.
     void EmitStoreBarrier (llvm::Value *pAddr) {
         llvm::Value *pA  = m_Builder->CreateZExtOrTrunc (pAddr, IntTy (64));
         llvm::Value *pCs = m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODESTART_OFFSET), IntTy (64)));
         llvm::Value *pCe = m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODEEND_OFFSET), IntTy (64)));
         llvm::Value *pIn = m_Builder->CreateAnd (m_Builder->CreateICmpUGE (pA, pCs),
                                                  m_Builder->CreateICmpULT (pA, pCe));
-        llvm::Value *pDp = ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET), IntTy (8));
-        llvm::Value *pNew = m_Builder->CreateSelect (pIn, ConstantInt::get (IntTy (8), 1),
-                                                     m_Builder->CreateLoad (IntTy (8), pDp));
-        m_Builder->CreateStore (pNew, pDp);
+        llvm::Value *pPage = m_Builder->CreateLShr (pA, ConstantInt::get (IntTy (64), CPU_SMC_PAGE_SHIFT));
+        llvm::Value *pIdx  = m_Builder->CreateSelect (pIn, pPage, ConstantInt::get (IntTy (64), 0));
+        llvm::Value *pOff  = m_Builder->CreateAdd (ConstantInt::get (IntTy (64), CPU_STATE_CODEDIRTY_OFFSET), pIdx);
+        llvm::Value *pPtr  = ElemPtr (m_Builder->CreateGEP (IntTy (8), m_pGRF, pOff), IntTy (8));
+        llvm::Value *pNew  = m_Builder->CreateSelect (pIn, ConstantInt::get (IntTy (8), 1),
+                                                      m_Builder->CreateLoad (IntTy (8), pPtr));
+        m_Builder->CreateStore (pNew, pPtr);
     }
     HRESULT Wrap (llvm::Value *pV, ICpuValue **ppValue) {
         *ppValue = new LlvmValue (pV);

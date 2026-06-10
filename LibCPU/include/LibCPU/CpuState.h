@@ -27,11 +27,17 @@ typedef struct _CPU_STATE {
     // the host can re-translate from there. CodeStart == CodeEnd keeps it inert
     // (no write is ever "in code"), so non-SMC runs are unaffected.
     //
-    UINT64 CodeStart; // watched code region, low bound (inclusive)
-    UINT64 CodeEnd;   // watched code region, high bound (exclusive)
-    UINT64 TrapPc;    // block PC where a guard fired, else CPU_SMC_NO_TRAP
-    UINT8  CodeDirty; // set by the store write-barrier
+    UINT64 CodeStart;       // watched code region, low bound (inclusive)
+    UINT64 CodeEnd;         // watched code region, high bound (exclusive)
+    UINT64 TrapPc;          // block PC where a guard fired, else CPU_SMC_NO_TRAP
+    UINT8  CodeDirty[256];  // per-page dirty bitmap: CodeDirty[addr >> 8] (256-byte pages)
 } CPU_STATE;
+
+// Self-modifying-code page granularity: one bitmap byte per 256-byte page covers
+// the whole 16-bit address space (256 pages). A write dirties only its own page, so
+// only blocks in that page are re-translated.
+#define CPU_SMC_PAGE_SHIFT  ((UINT32) 8)
+#define CPU_SMC_PAGE_COUNT  ((UINT32) 256)
 
 //
 // Byte offsets of the fields within CPU_STATE (used by codegen backends that

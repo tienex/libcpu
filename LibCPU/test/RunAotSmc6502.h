@@ -65,8 +65,8 @@ AotSmcRun (ICpuBackend *pBackend, BOOLEAN HandleSmc, int *pTranslations)
         }
         Translations++;
 
-        State.TrapPc    = CPU_SMC_NO_TRAP;
-        State.CodeDirty = 0;   // re-translation already reflects writes so far
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        std::memset (State.CodeDirty, 0, sizeof (State.CodeDirty));   // re-translation reflects writes so far
         Code->Execute (Ram, &State, nullptr);
 
         if (!HandleSmc || State.TrapPc == CPU_SMC_NO_TRAP) {
@@ -80,22 +80,75 @@ AotSmcRun (ICpuBackend *pBackend, BOOLEAN HandleSmc, int *pTranslations)
     return Ram[0x10];
 }
 
+//
+// Per-page demonstration: a store lands in the watched code region but in a
+// DIFFERENT 256-byte page than the one executing (page 1, never run), so per-page
+// tracking must NOT re-translate -- a single coarse flag would have. Returns
+// M[$10] and the translation count (1 with per-page; 2 with a coarse flag).
+//
+static inline UINT8
+AotSmcCrossPageRun (ICpuBackend *pBackend, int *pTranslations)
+{
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    UINT8 const Program[] = {
+        0xA9, 0x42,             // LDA #$42
+        0x8D, 0x00, 0x01,       // STA $0100   -- writes page 1 (in code region, never executed)
+        0xA9, 0x07,             // LDA #$07
+        0x85, 0x10              // STA $10     -- M[$10] = 7
+    };
+    UINT32 ProgLen = (UINT32) sizeof (Program);
+    std::memcpy (Ram, Program, ProgLen);
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    ICpuArchitecture *pArch = Create6502 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+    State.CodeStart = 0;
+    State.CodeEnd   = 0x200;    // watch pages 0 and 1
+
+    CPU_ADDR Resume       = 0;
+    int      Translations = 0;
+    for (int Iter = 0; Iter < 64; Iter++) {
+        ComPtr<ICpuCode> Code;
+        UINT32 Count = 0;
+        if (FAILED (GenerateAotCfg (pArch, pBackend, Resume, (CPU_ADDR) ProgLen, &Code, &Count)) || Code == nullptr) {
+            pArch->Release ();
+            *pTranslations = Translations;
+            return 0xFF;
+        }
+        Translations++;
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        std::memset (State.CodeDirty, 0, sizeof (State.CodeDirty));
+        Code->Execute (Ram, &State, nullptr);
+        if (State.TrapPc == CPU_SMC_NO_TRAP) {
+            break;
+        }
+        Resume = State.TrapPc;
+    }
+    pArch->Release ();
+    *pTranslations = Translations;
+    return Ram[0x10];
+}
+
 static inline int
 RunAotSmc6502Program (ICpuBackend *pBackend)
 {
     std::printf ("backend = '%s'  (self-modifying code: store overwrites a later ADC operand)\n",
                  pBackend->GetName ());
 
-    int NoSmcN = 0, SmcN = 0;
+    int NoSmcN = 0, SmcN = 0, CrossN = 0;
     UINT8 NoSmc = AotSmcRun (pBackend, FALSE, &NoSmcN);
     UINT8 Smc   = AotSmcRun (pBackend, TRUE,  &SmcN);
+    UINT8 Cross = AotSmcCrossPageRun (pBackend, &CrossN);
 
     std::printf ("  without SMC handling: M[$10]=$%02x  (ADC used the STALE operand $03 -> 1+$03=$04)\n", NoSmc);
     std::printf ("  with SMC handling:    M[$10]=$%02x  (%d translations; ADC saw the NEW operand $EE -> 1+$EE=$EF)\n", Smc, SmcN);
+    std::printf ("  per-page (write to unexecuted page 1): M[$10]=$%02x in %d translation(s)  (a coarse flag would force 2)\n", Cross, CrossN);
 
-    bool Ok = (NoSmc == 0x04) && (Smc == 0xEF);
-    std::printf ("RESULT: %s  (bug reproduced: $%02x==$04; SMC fix: $%02x==$EF)\n",
-                 Ok ? "PASS" : "FAIL", NoSmc, Smc);
+    bool Ok = (NoSmc == 0x04) && (Smc == 0xEF) && (Cross == 0x07) && (CrossN == 1);
+    std::printf ("RESULT: %s  (bug $%02x==$04; SMC fix $%02x==$EF; per-page %d==1 translation)\n",
+                 Ok ? "PASS" : "FAIL", NoSmc, Smc, CrossN);
     return Ok ? 0 : 1;
 }
 
