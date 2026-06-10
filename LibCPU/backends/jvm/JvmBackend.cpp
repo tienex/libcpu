@@ -477,9 +477,12 @@ public:
 
     // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        UINT32 Page = (UINT32) ((Pc >> 8) & 255);
         ALoad (1);
-        PushInt ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + ((Pc >> 8) & 255)));
-        B (0x33);                    // baload (this block's dirty-page byte)
+        PushInt ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + (Page >> 3)));
+        B (0x33);                    // baload (this block's bitmap byte)
+        PushInt ((INT32) (1u << (Page & 7)));
+        B (0x7e);                    // iand (test this page's bit)
         UINT32 P = (UINT32) m_Code.size ();
         B (0x99);                    // ifeq <skip>  (clean -> run the block)
         B2 (0);
@@ -566,14 +569,16 @@ private:
     void EmitStoreBarrier (UINT32 AddrId) {
         ALoad (1);                                                                   // grf
         PushInt ((INT32) CPU_STATE_CODEDIRTY_OFFSET);
-        PushAddrInt (AddrId); PushInt (8); B (0x7a); PushInt (255); B (0x7e);         // (a>>8)&255
+        PushAddrInt (AddrId); PushInt (11); B (0x7a); PushInt (31); B (0x7e);         // (a>>11)&31 = bitmap byte
         B (0x60);                                                                    // iadd -> index
         B (0x5c);                                                                    // dup2 (grf,index)
         B (0x33);                                                                    // baload -> current
         PushAddrInt (AddrId); PushBound16 (CPU_STATE_CODESTART_OFFSET); B (0x64); PushInt (31); B (0x7c); PushInt (1); B (0x82);  // (a>=cs)
         PushAddrInt (AddrId); PushBound16 (CPU_STATE_CODEEND_OFFSET);   B (0x64); PushInt (31); B (0x7c);                          // (a<ce)
-        B (0x7e);                                                                    // iand -> indirty
-        B (0x80);                                                                    // ior  -> current|indirty
+        B (0x7e);                                                                    // iand -> indirty (0/1)
+        PushAddrInt (AddrId); PushInt (8); B (0x7a); PushInt (7); B (0x7e);           // bit = (a>>8)&7
+        B (0x78);                                                                    // ishl -> indirty<<bit
+        B (0x80);                                                                    // ior  -> current | (indirty<<bit)
         B (0x54);                                                                    // bastore
     }
 

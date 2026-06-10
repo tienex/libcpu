@@ -322,9 +322,9 @@ public:
         // Self-modifying-code write-barrier: mark the written page dirty if the
         // address falls in the watched code region. Inert when CodeStart==CodeEnd.
         Line ("if ((uint64_t)t%u >= *(uint64_t*)((char*)GRF+%u) && (uint64_t)t%u < *(uint64_t*)((char*)GRF+%u)) "
-              "((uint8_t*)((char*)GRF+%u))[((uint64_t)t%u>>8)&255] = 1;",
+              "((uint8_t*)((char*)GRF+%u))[((uint64_t)t%u>>11)&31] |= (1u<<(((uint64_t)t%u>>8)&7));",
               IdOf (pAddr), CPU_STATE_CODESTART_OFFSET, IdOf (pAddr), CPU_STATE_CODEEND_OFFSET,
-              CPU_STATE_CODEDIRTY_OFFSET, IdOf (pAddr));
+              CPU_STATE_CODEDIRTY_OFFSET, IdOf (pAddr), IdOf (pAddr));
         return S_OK;
     }
 
@@ -436,8 +436,9 @@ public:
 
     // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
-        Line ("if (((uint8_t*)((char*)GRF+%u))[%u]) { *(uint64_t*)((char*)GRF+%u) = 0x%llxULL; return %d; }",
-              CPU_STATE_CODEDIRTY_OFFSET, (UINT32) ((Pc >> 8) & 255),
+        UINT32 Page = (UINT32) ((Pc >> 8) & 255);
+        Line ("if (((uint8_t*)((char*)GRF+%u))[%u] & %u) { *(uint64_t*)((char*)GRF+%u) = 0x%llxULL; return %d; }",
+              CPU_STATE_CODEDIRTY_OFFSET, Page >> 3, (1u << (Page & 7)),
               CPU_STATE_TRAPPC_OFFSET, (unsigned long long) Pc, (int) ExecSmc);
         return S_OK;
     }

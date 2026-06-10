@@ -39,7 +39,7 @@ static CHAR8 CONST *kTemplate =
     "def cS():return int.from_bytes(ST[272:280],'little')\n"
     "def cE():return int.from_bytes(ST[280:288],'little')\n"
     "def sT(p):\n for k in range(8):ST[288+k]=(p>>(8*k))&0xff\n"
-    "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>8)&255)]=1\n"
+    "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>11)&31)]|=1<<((a>>8)&7)\n"
     "def gF(f):return ST[256+f]&1\n"
     "def sF(f,v):ST[256+f]=v&1\n"
     "def sP(p):\n for k in range(8):ST[264+k]=(p>>(8*k))&0xff\n"
@@ -266,8 +266,10 @@ public:
 
     // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
-        // CodeDirty[Pc>>8] is ST[296 + page]; on a hit, record TrapPc and stop.
-        Line ("if ST[%u]:sT(%llu);break", (UINT32) (296 + ((Pc >> 8) & 255)), (unsigned long long) Pc);
+        // This page's dirty bit: bit (page&7) of ST[296 + (page>>3)]. On a hit,
+        // record TrapPc and stop.
+        UINT32 Page = (UINT32) ((Pc >> 8) & 255);
+        Line ("if ST[%u]&%u:sT(%llu);break", (UINT32) (296 + (Page >> 3)), (1u << (Page & 7)), (unsigned long long) Pc);
         return S_OK;
     }
 

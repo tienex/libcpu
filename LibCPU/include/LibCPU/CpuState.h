@@ -30,14 +30,16 @@ typedef struct _CPU_STATE {
     UINT64 CodeStart;       // watched code region, low bound (inclusive)
     UINT64 CodeEnd;         // watched code region, high bound (exclusive)
     UINT64 TrapPc;          // block PC where a guard fired, else CPU_SMC_NO_TRAP
-    UINT8  CodeDirty[256];  // per-page dirty bitmap: CodeDirty[addr >> 8] (256-byte pages)
+    UINT8  CodeDirty[32];   // per-page dirty bitmap, ONE BIT per page: for page p,
+                            // bit (p & 7) of CodeDirty[p >> 3]; p = addr >> 8
 } CPU_STATE;
 
-// Self-modifying-code page granularity: one bitmap byte per 256-byte page covers
-// the whole 16-bit address space (256 pages). A write dirties only its own page, so
-// only blocks in that page are re-translated.
+// Self-modifying-code page granularity: 256-byte pages over the 16-bit address
+// space (256 pages), tracked as a bit-per-page bitmap (256 bits = 32 bytes). A
+// write dirties only its own page's bit, so only blocks in that page re-translate.
 #define CPU_SMC_PAGE_SHIFT  ((UINT32) 8)
 #define CPU_SMC_PAGE_COUNT  ((UINT32) 256)
+#define CPU_SMC_DIRTY_BYTES ((UINT32) 32)
 
 //
 // Byte offsets of the fields within CPU_STATE (used by codegen backends that

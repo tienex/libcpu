@@ -262,8 +262,10 @@ public:
         // not trap here. The page is a compile-time constant, so the guard is a
         // single load + compare of CodeDirty[Pc >> PAGE_SHIFT].
         UINT32 Page = (UINT32) ((Pc >> CPU_SMC_PAGE_SHIFT) & (CPU_SMC_PAGE_COUNT - 1));
-        llvm::Value *pDirty = m_Builder->CreateLoad (IntTy (8), ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET + Page), IntTy (8)));
-        llvm::Value *pSet   = m_Builder->CreateICmpNE (pDirty, ConstantInt::get (IntTy (8), 0));
+        UINT8  Mask = (UINT8) (1u << (Page & 7));   // this page's bit, a compile-time constant
+        llvm::Value *pDirty = m_Builder->CreateLoad (IntTy (8), ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET + (Page >> 3)), IntTy (8)));
+        llvm::Value *pSet   = m_Builder->CreateICmpNE (m_Builder->CreateAnd (pDirty, ConstantInt::get (IntTy (8), Mask)),
+                                                       ConstantInt::get (IntTy (8), 0));
 
         BasicBlock *pTrap = BasicBlock::Create (*m_Ctx, "smc_trap", m_pFn);
         BasicBlock *pCont = BasicBlock::Create (*m_Ctx, "smc_cont", m_pFn);
@@ -357,12 +359,17 @@ private:
         llvm::Value *pCe = m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODEEND_OFFSET), IntTy (64)));
         llvm::Value *pIn = m_Builder->CreateAnd (m_Builder->CreateICmpUGE (pA, pCs),
                                                  m_Builder->CreateICmpULT (pA, pCe));
-        llvm::Value *pPage = m_Builder->CreateLShr (pA, ConstantInt::get (IntTy (64), CPU_SMC_PAGE_SHIFT));
-        llvm::Value *pIdx  = m_Builder->CreateSelect (pIn, pPage, ConstantInt::get (IntTy (64), 0));
+        // page = addr>>8; bitmap byte = page>>3 (=addr>>11), bit = page&7.
+        llvm::Value *pByte = m_Builder->CreateAnd (m_Builder->CreateLShr (pA, ConstantInt::get (IntTy (64), CPU_SMC_PAGE_SHIFT + 3)),
+                                                   ConstantInt::get (IntTy (64), CPU_SMC_DIRTY_BYTES - 1));
+        llvm::Value *pIdx  = m_Builder->CreateSelect (pIn, pByte, ConstantInt::get (IntTy (64), 0));
         llvm::Value *pOff  = m_Builder->CreateAdd (ConstantInt::get (IntTy (64), CPU_STATE_CODEDIRTY_OFFSET), pIdx);
         llvm::Value *pPtr  = ElemPtr (m_Builder->CreateGEP (IntTy (8), m_pGRF, pOff), IntTy (8));
-        llvm::Value *pNew  = m_Builder->CreateSelect (pIn, ConstantInt::get (IntTy (8), 1),
-                                                      m_Builder->CreateLoad (IntTy (8), pPtr));
+        llvm::Value *pBit  = m_Builder->CreateAnd (m_Builder->CreateLShr (pA, ConstantInt::get (IntTy (64), CPU_SMC_PAGE_SHIFT)),
+                                                   ConstantInt::get (IntTy (64), 7));
+        llvm::Value *pMask = m_Builder->CreateTrunc (m_Builder->CreateShl (ConstantInt::get (IntTy (64), 1), pBit), IntTy (8));
+        llvm::Value *pSet  = m_Builder->CreateSelect (pIn, pMask, ConstantInt::get (IntTy (8), 0));
+        llvm::Value *pNew  = m_Builder->CreateOr (m_Builder->CreateLoad (IntTy (8), pPtr), pSet);
         m_Builder->CreateStore (pNew, pPtr);
     }
     HRESULT Wrap (llvm::Value *pV, ICpuValue **ppValue) {

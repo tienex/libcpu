@@ -386,9 +386,12 @@ public:
 
     // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        UINT32 Page = (UINT32) ((Pc >> 8) & 255);
         LdArg (1);
-        PushI4 ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + ((Pc >> 8) & 255)));
-        B (0x91);                    // ldelem.u1 (this block's dirty-page byte)
+        PushI4 ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + (Page >> 3)));
+        B (0x91);                    // ldelem.u1 (this block's bitmap byte)
+        PushI4 ((INT32) (1u << (Page & 7)));
+        B (0x5f);                    // and (test this page's bit)
         UINT32 P = (UINT32) m_Code.size ();
         B (0x39);                    // brfalse <skip>  (clean -> run the block)
         B4 (0);
@@ -463,13 +466,15 @@ private:
     // Branchless; inert when CodeStart==CodeEnd. Addresses/bounds are <= 16 bits.
     void EmitStoreBarrier (UINT32 AddrId) {
         LdArg (1);                                                  // array
-        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (8); B (0x64); PushI4 (255); B (0x5f); B (0x58);  // index
+        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (11); B (0x64); PushI4 (31); B (0x5f); B (0x58);  // index = CD + (a>>11)&31
         LdArg (1);
-        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (8); B (0x64); PushI4 (255); B (0x5f); B (0x58); B (0x91);  // current = grf[index]
+        PushI4 ((INT32) CPU_STATE_CODEDIRTY_OFFSET); PushAddrI4 (AddrId); PushI4 (11); B (0x64); PushI4 (31); B (0x5f); B (0x58); B (0x91);  // current = grf[index]
         PushAddrI4 (AddrId); PushBound16 (CPU_STATE_CODESTART_OFFSET); B (0x59); PushI4 (31); B (0x64); PushI4 (1); B (0x61);  // (a>=cs)
         PushAddrI4 (AddrId); PushBound16 (CPU_STATE_CODEEND_OFFSET);   B (0x59); PushI4 (31); B (0x64);                        // (a<ce)
-        B (0x5f);                                                   // and -> indirty
-        B (0x60);                                                   // or  -> current|indirty
+        B (0x5f);                                                   // and -> indirty (0/1)
+        PushAddrI4 (AddrId); PushI4 (8); B (0x64); PushI4 (7); B (0x5f);   // bit = (a>>8)&7
+        B (0x62);                                                   // shl -> indirty<<bit
+        B (0x60);                                                   // or  -> current | (indirty<<bit)
         B (0x9c);                                                   // stelem.i1
     }
 
