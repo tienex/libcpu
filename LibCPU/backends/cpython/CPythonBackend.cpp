@@ -39,6 +39,8 @@ static CHAR8 CONST *kTemplate =
     "def cS():return int.from_bytes(ST[272:280],'little')\n"
     "def cE():return int.from_bytes(ST[280:288],'little')\n"
     "def sT(p):\n for k in range(8):ST[288+k]=(p>>(8*k))&0xff\n"
+    "def sD(p):\n for k in range(8):ST[328+k]=(p>>(8*k))&0xff\n"   // dispatch scratch (DispPc)
+    "def gD():return int.from_bytes(ST[328:336],'little')\n"
     "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>11)&31)]|=1<<((a>>8)&7)\n"
     "def gF(f):return ST[256+f]&1\n"
     "def sF(f,v):ST[256+f]=v&1\n"
@@ -276,6 +278,15 @@ public:
         Line ("sT(t%u)", IdOf (pTargetPc));   // record runtime target in TrapPc
         Line ("break");                       // leave the dispatch; host resumes at TrapPc
         return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        Line ("sD(t%u)", IdOf (pTargetPc));   // record runtime target in DispPc scratch
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        UINT32 D = Fresh ();
+        Line ("t%u=gD()", D);
+        return Make (D, 64, ppValue);
     }
 
     ICpuCode *Build () {

@@ -162,11 +162,14 @@ RunAotV20Program (ICpuBackend *pBackend)
     std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
     std::printf ("  array sum via [BX]       -> [0x200] = %d (exp 100)\n", Arr);
     std::printf ("  PUSH/POP + MOV [m],BX    -> [0x200] = 0x%04x (exp 0x1234)\n", Stk);
-    std::printf ("  CALL sub / RET (indirect)-> [0x200] = %d (exp 8, %d translations)\n", Cal, Trans);
+    std::printf ("  CALL sub / RET (indirect)-> [0x200] = %d (exp 8, %d translation%s; in-artifact dispatch)\n",
+                 Cal, Trans, Trans == 1 ? "" : "s");
 
-    bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8;
-    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d)\n",
-                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal);
+    // With the in-artifact dispatcher, RET resolves inside the compiled code: one
+    // translation, no host re-entry (it took 2 before the dispatch table).
+    bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8 && Trans == 1;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans);
     return Ok ? 0 : 1;
 }
 

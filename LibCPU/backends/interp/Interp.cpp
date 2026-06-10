@@ -18,7 +18,9 @@ typedef enum _INTERP_OP {
     OpBranch,       // Imm = target block id
     OpCondBranch,   // A = cond temp, Imm = true block id, B = false block id
     OpCodeGuard,    // Imm = block PC: trap if this page's dirty bit is set
-    OpIndirect      // A = target temp: set TrapPc = target and return (resume there)
+    OpIndirect,     // A = target temp: set TrapPc = target and return (resume there)
+    OpSetDisp,      // A = target temp: DispPc = target (in-artifact dispatch scratch)
+    OpGetDisp       // Dest = DispPc
 } INTERP_OP;
 
 //
@@ -181,6 +183,12 @@ public:
             case OpIndirect:                          // indirect branch: resume at the target
                 pState->TrapPc = Temp[In.A];
                 return ExecSmc;
+            case OpSetDisp:                           // stash the dispatch target
+                pState->DispPc = Temp[In.A];
+                break;
+            case OpGetDisp:                           // read it back for the dispatcher's compares
+                Temp[In.Dest] = pState->DispPc;
+                break;
             }
             Ip++;
         }
@@ -340,6 +348,13 @@ public:
     HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
         Record (OpIndirect, 0, 0, 0, TempOf (pTargetPc), 0, 0, 0);
         return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        Record (OpSetDisp, 0, 0, 0, TempOf (pTargetPc), 0, 0, 0);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        return Produce (64, OpGetDisp, 0, 0, 0, 0, 64, 0, ppValue);
     }
 
     ICpuCode *Build () {

@@ -97,6 +97,7 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     //
     std::set<CPU_ADDR>    Pcs;
     std::vector<CPU_ADDR> Work;
+    bool                  HasIndirect = false;   // any block ends in an indirect transfer?
     Work.push_back (Entry);
     while (!Work.empty ()) {
         CPU_ADDR Pc = Work.back ();
@@ -113,6 +114,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         CPU_ADDR NextPc;
         if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
             continue;
+        }
+        if (Tag & TagReturn) {
+            HasIndirect = true;        // needs the dispatcher
         }
         if (Tag & (TagContinue | TagConditional | TagCall)) {
             Work.push_back (NextPc);   // CALL returns to NextPc, so it is reachable too
@@ -145,6 +149,21 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         return (It != Blocks.end ()) ? It->second : pExit;
     };
 
+    // Indirect-branch dispatcher (built only when needed and the backend supports the
+    // dispatch scratch): a chain of compare-blocks that reads the runtime target from
+    // DispPc and routes to the matching instruction block; an unknown target falls to
+    // IndirectBranch (host re-translate). N+1 blocks for N instruction blocks.
+    std::vector<ICpuBlock *> Disp;
+    ICpuBlock *pDispatch = pExit;
+    if (HasIndirect && pSmc != nullptr) {
+        for (UINT32 Idx = 0; Idx <= (UINT32) Blocks.size (); Idx++) {
+            ICpuBlock *pB = nullptr;
+            Emitter->CreateBlock ("disp", &pB);
+            Disp.push_back (pB);
+        }
+        pDispatch = Disp[0];
+    }
+
     //
     // 3. The emitter starts in its own "entry" block: jump from there to the
     //    program entry, then fill and terminate each instruction block. If the
@@ -176,8 +195,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
 
         if (Tag & TagReturn) {
-            // An indirect transfer (e.g. RET): TranslateInstr emitted IndirectBranch,
-            // which is itself the terminator. Nothing more to add.
+            // An indirect transfer (e.g. RET): TranslateInstr stashed the runtime
+            // target via SetDispatchTarget; route through the in-artifact dispatcher.
+            Emitter->Branch (pDispatch);
         } else if (Tag & TagConditional) {
             ComPtr<ICpuValue> Cond;
             if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
@@ -192,6 +212,26 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         }
     }
 
+    //
+    // 4. Fill the dispatcher chain: disp[k] compares the runtime target (DispPc)
+    //    against the k-th block's address and routes to it, else to disp[k+1]; the
+    //    final block falls back to a host re-translate for an unknown target.
+    //
+    if (HasIndirect && pSmc != nullptr) {
+        UINT32 K = 0;
+        for (auto CONST &Pair : Blocks) {
+            Emitter->SetInsertBlock (Disp[K]);
+            ComPtr<ICpuValue> Pc;   pSmc->GetDispatchTarget (&Pc);
+            ComPtr<ICpuValue> Addr; Emitter->ConstInt (64, (UINT64) Pair.first, &Addr);
+            ComPtr<ICpuValue> Cond; Emitter->Compare (CmpEq, Pc, Addr, &Cond);
+            Emitter->CondBranch (Cond, Pair.second, Disp[K + 1]);
+            K++;
+        }
+        Emitter->SetInsertBlock (Disp[K]);
+        ComPtr<ICpuValue> Pc; pSmc->GetDispatchTarget (&Pc);
+        pSmc->IndirectBranch (Pc);   // unknown target: write TrapPc, return -> host resumes
+    }
+
     if (pInstrCount != nullptr) {
         *pInstrCount = Count;
     }
@@ -200,6 +240,11 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     for (auto CONST &Pair : Blocks) {
         if (Pair.second != nullptr) {
             Pair.second->Release ();
+        }
+    }
+    for (ICpuBlock *pB : Disp) {
+        if (pB != nullptr) {
+            pB->Release ();
         }
     }
     if (pExit != nullptr) {

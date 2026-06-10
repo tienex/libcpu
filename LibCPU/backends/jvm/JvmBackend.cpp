@@ -516,6 +516,38 @@ public:
         B (0xb1);                        // return (void)
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        for (UINT32 k = 0; k < 8; k++) {     // write the target's 8 bytes into DispPc
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_DISPPC_OFFSET + k));
+            LLoad (IdOf (pTargetPc));
+            PushInt ((INT32) (8 * k));
+            B (0x7d);                    // lushr
+            PushLong (255);
+            B (0x7f);                    // land
+            B (0x88);                    // l2i
+            B (0x54);                    // bastore
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        UINT32 Dest = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {     // assemble DispPc's 8 bytes into a long
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_DISPPC_OFFSET + k));
+            B (0x33);                    // baload
+            PushInt (255);
+            B (0x7e);                    // iand
+            B (0x85);                    // i2l
+            if (k > 0) {
+                PushInt ((INT32) (8 * k));
+                B (0x79);                // lshl
+                B (0x81);                // lor
+            }
+        }
+        LStore (Dest);
+        return Make (Dest, 64, ppValue);
+    }
 
     ICpuCode *Build () {
         JNIEnv *Env = GetEnv ();

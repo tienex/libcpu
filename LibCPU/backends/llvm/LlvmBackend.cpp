@@ -289,6 +289,16 @@ public:
         return S_OK;
     }
 
+    // In-artifact dispatch scratch: write/read CPU_STATE.DispPc (64-bit).
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        llvm::Value *pPc = m_Builder->CreateZExtOrTrunc (ValOf (pTargetPc), IntTy (64));
+        m_Builder->CreateStore (pPc, ElemPtr (StatePtr (CPU_STATE_DISPPC_OFFSET), IntTy (64)));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        return Wrap (m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_DISPPC_OFFSET), IntTy (64))), ppValue);
+    }
+
     //
     // Finalize: terminate the entry block and JIT-compile. Returns the code object.
     //

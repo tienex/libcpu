@@ -422,6 +422,33 @@ public:
         B (0x2a);                                                 // ret
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        for (UINT32 k = 0; k < 8; k++) {                          // target's 8 bytes -> DispPc
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_DISPPC_OFFSET + k));
+            LdLoc (IdOf (pTargetPc));
+            if (k != 0) { PushI4 ((INT32) (8 * k)); B (0x64); }   // shr.un
+            PushI8 (255); B (0x5f); B (0x69);                     // and ; conv.i4
+            B (0x9c);                                             // stelem.i1
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        UINT32 Dest = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {                          // DispPc's 8 bytes -> int64
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_DISPPC_OFFSET + k));
+            B (0x91);                    // ldelem.u1
+            B (0x6a);                    // conv.i8
+            if (k > 0) {
+                PushI4 ((INT32) (8 * k));
+                B (0x62);                // shl
+                B (0x60);                // or
+            }
+        }
+        StLoc (Dest);
+        return Make (Dest, 64, ppValue);
+    }
 
     ICpuCode *Build () {
         if (!InitClr ()) {

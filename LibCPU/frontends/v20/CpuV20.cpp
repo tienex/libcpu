@@ -304,9 +304,9 @@ public:
             ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
-            ICpuSmcEmitter *pFlow = nullptr;                       // indirect-branch capability (optional)
+            ICpuSmcEmitter *pFlow = nullptr;                       // indirect-dispatch capability (optional)
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
-                pFlow->IndirectBranch (T);
+                pFlow->SetDispatchTarget (T);   // driver routes the TagReturn block to the dispatcher
                 pFlow->Release ();
             }
             break;

@@ -251,9 +251,16 @@ DECLARE_INTERFACE_ (ICpuSmcEmitter, IUnknown)
 
     // Indirect (computed) branch: store the runtime target in CPU_STATE.TrapPc and
     // terminate the block, so the host resume loop continues translation/execution
-    // at that address. Used for transfers whose target is unknown at translate time
-    // (RET, indirect JMP/CALL). Reuses the same TrapPc + resume path as the SMC guard.
+    // at that address. Used as the dispatcher's fallback when an indirect target is
+    // not a known block. Reuses the same TrapPc + resume path as the SMC guard.
     STDMETHOD (IndirectBranch)(THIS_ IN ICpuValue *pTargetPc) PURE;
+
+    // In-artifact dispatch: an indirect branch stores its runtime target into the
+    // CPU_STATE.DispPc scratch (SetDispatchTarget) and branches to the artifact's
+    // dispatcher, which reads it back (GetDispatchTarget -- a 64-bit value) and routes
+    // to the matching block, resolving the transfer with no host round-trip.
+    STDMETHOD (SetDispatchTarget)(THIS_ IN ICpuValue *pTargetPc) PURE;
+    STDMETHOD (GetDispatchTarget)(THIS_ OUT ICpuValue **ppValue) PURE;
 };
 
 //

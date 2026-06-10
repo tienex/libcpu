@@ -447,6 +447,15 @@ public:
         Line ("return %d;", (int) ExecSmc);
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        Line ("*(uint64_t*)((char*)GRF+%u) = t%u;", CPU_STATE_DISPPC_OFFSET, IdOf (pTargetPc));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        UINT32 D = Decl ();
+        Line ("t%u = *(uint64_t*)((char*)GRF+%u);", D, CPU_STATE_DISPPC_OFFSET);
+        return Make (D, 64, ppValue);
+    }
 
     void SetCompiler (std::string Path, CC_FAMILY Family) {
         m_CompilerPath = std::move (Path);
@@ -490,6 +499,13 @@ public:
             m_Body.c_str ());
         for (CcBlock *pB : m_Blocks) {
             std::fprintf (pF, "L%u: ;\n%s", pB->m_Label, pB->m_Buf.c_str ());
+            // A bodyless block is the AOT exit (the driver terminates every other
+            // reachable block). With blocks emitted sequentially, it must return
+            // rather than fall through into whatever block follows (e.g. the
+            // indirect-dispatch chain, which the driver appends after the exit).
+            if (pB->m_Buf.empty ()) {
+                std::fprintf (pF, "  return 0;\n");
+            }
         }
         std::fprintf (pF, "  return 0;\n}\n");
         std::fclose (pF);   // closes Fd
