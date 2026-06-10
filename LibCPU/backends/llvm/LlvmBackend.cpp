@@ -280,6 +280,15 @@ public:
         return S_OK;
     }
 
+    // Indirect branch: store the runtime target into TrapPc and return; the host
+    // resume loop re-enters at that address (same path as the SMC guard).
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        llvm::Value *pPc = m_Builder->CreateZExtOrTrunc (ValOf (pTargetPc), IntTy (64));
+        m_Builder->CreateStore (pPc, ElemPtr (StatePtr (CPU_STATE_TRAPPC_OFFSET), IntTy (64)));
+        m_Builder->CreateRet (ConstantInt::get (IntTy (32), (UINT32) ExecSmc));
+        return S_OK;
+    }
+
     //
     // Finalize: terminate the entry block and JIT-compile. Returns the code object.
     //

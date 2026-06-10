@@ -17,7 +17,8 @@ typedef enum _INTERP_OP {
     OpGetFlag, OpSetFlag, OpSetPC,
     OpBranch,       // Imm = target block id
     OpCondBranch,   // A = cond temp, Imm = true block id, B = false block id
-    OpCodeGuard     // Imm = block PC: trap if this page's dirty bit is set
+    OpCodeGuard,    // Imm = block PC: trap if this page's dirty bit is set
+    OpIndirect      // A = target temp: set TrapPc = target and return (resume there)
 } INTERP_OP;
 
 //
@@ -177,6 +178,9 @@ public:
                 }
                 break;
             }
+            case OpIndirect:                          // indirect branch: resume at the target
+                pState->TrapPc = Temp[In.A];
+                return ExecSmc;
             }
             Ip++;
         }
@@ -331,6 +335,10 @@ public:
     // ---- self-modifying-code guard (ICpuSmcEmitter); the barrier lives in Execute
     HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
         Record (OpCodeGuard, 0, 0, 0, 0, 0, 0, Pc);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        Record (OpIndirect, 0, 0, 0, TempOf (pTargetPc), 0, 0, 0);
         return S_OK;
     }
 

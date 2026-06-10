@@ -52,6 +52,49 @@ AotV20Run (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen,
     return (int) (Ram[0x200] | (Ram[0x201] << 8));
 }
 
+//
+// Run a program that uses indirect control flow (RET): RET stores its runtime
+// target in CPU_STATE.TrapPc and stops; the host re-translates from there and
+// resumes -- the same resume loop the SMC support uses. Returns the word at 0x200.
+//
+static inline int
+AotV20CallRet (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, int *pTranslations)
+{
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, pProg, ProgLen);
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    CPU_ADDR Resume = 0;
+    int Trans = 0;
+    for (int Iter = 0; Iter < 64; Iter++) {   // watchdog against runaway indirection
+        ComPtr<ICpuCode> Code;
+        UINT32 Count = 0;
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        HRESULT hr = GenerateAotCfg (pArch, pBackend, Resume, (CPU_ADDR) ProgLen, &Code, &Count);
+        if (FAILED (hr) || Code == nullptr) {
+            pArch->Release ();
+            return -1;
+        }
+        Trans++;
+        Code->Execute (Ram, &State, nullptr);
+        if (State.TrapPc == CPU_SMC_NO_TRAP) {
+            break;                            // ran to completion
+        }
+        Resume = (CPU_ADDR) State.TrapPc;     // RET / indirect transfer: resume at the target
+    }
+    pArch->Release ();
+    if (pTranslations != nullptr) {
+        *pTranslations = Trans;
+    }
+    return (int) (Ram[0x200] | (Ram[0x201] << 8));
+}
+
 static inline int
 RunAotV20Program (ICpuBackend *pBackend)
 {
@@ -95,19 +138,35 @@ RunAotV20Program (ICpuBackend *pBackend)
         0x89, 0x1E, 0x00, 0x02  // MOV [0x200], BX  (ModR/M 1E = mod00 reg=BX rm=[disp16])
     };
 
+    // CALL a subroutine and RET back. RET's target is the runtime stack value, so
+    // it is an indirect branch resolved by the host resume loop.
+    //   JMP main ; sub: ADD AX,5 ; RET ; main: MOV AX,3 ; MOV SP ; CALL sub ; MOV [0x200],AX
+    UINT8 const Call[] = {
+        0xE9, 0x04, 0x00,         // 0: JMP main (0x7)
+        0x05, 0x05, 0x00,         // 3: sub: ADD AX, 5
+        0xC3,                     // 6:      RET
+        0xB8, 0x03, 0x00,         // 7: main: MOV AX, 3
+        0xBC, 0x00, 0x10,         // A:       MOV SP, 0x1000
+        0xE8, 0xF3, 0xFF,         // D:       CALL sub (rel16 = -13 -> 0x3)
+        0xA3, 0x00, 0x02          // 10:      MOV [0x200], AX   (return point; AX = 3+5 = 8)
+    };
+
     int Sum   = AotV20Run (pBackend, Loop,  (UINT32) sizeof (Loop),  nullptr, 0, 0);
     int Bit   = AotV20Run (pBackend, Bits,  (UINT32) sizeof (Bits),  nullptr, 0, 0);
     int Arr   = AotV20Run (pBackend, Array, (UINT32) sizeof (Array), ArrayData, (UINT32) sizeof (ArrayData), 0x300);
     int Stk   = AotV20Run (pBackend, Stack, (UINT32) sizeof (Stack), nullptr, 0, 0);
+    int Trans = 0;
+    int Cal   = AotV20CallRet (pBackend, Call, (UINT32) sizeof (Call), &Trans);
 
     std::printf ("  loop 5+4+3+2+1            -> [0x200] = %d (exp 15)\n", Sum);
     std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
     std::printf ("  array sum via [BX]       -> [0x200] = %d (exp 100)\n", Arr);
     std::printf ("  PUSH/POP + MOV [m],BX    -> [0x200] = 0x%04x (exp 0x1234)\n", Stk);
+    std::printf ("  CALL sub / RET (indirect)-> [0x200] = %d (exp 8, %d translations)\n", Cal, Trans);
 
-    bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234;
-    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x)\n",
-                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk);
+    bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal);
     return Ok ? 0 : 1;
 }
 

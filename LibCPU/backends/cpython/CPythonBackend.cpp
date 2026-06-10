@@ -272,6 +272,11 @@ public:
         Line ("if ST[%u]&%u:sT(%llu);break", (UINT32) (296 + (Page >> 3)), (1u << (Page & 7)), (unsigned long long) Pc);
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        Line ("sT(t%u)", IdOf (pTargetPc));   // record runtime target in TrapPc
+        Line ("break");                       // leave the dispatch; host resumes at TrapPc
+        return S_OK;
+    }
 
     ICpuCode *Build () {
         if (!InitPython ()) {

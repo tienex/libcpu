@@ -499,6 +499,24 @@ public:
         return S_OK;
     }
 
+    // Indirect branch: store the runtime target's 8 bytes into TrapPc and return;
+    // the host resume loop re-enters at that address.
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        for (UINT32 k = 0; k < 8; k++) {
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_TRAPPC_OFFSET + k));
+            LLoad (IdOf (pTargetPc));
+            PushInt ((INT32) (8 * k));
+            B (0x7d);                    // lushr
+            PushLong (255);
+            B (0x7f);                    // land
+            B (0x88);                    // l2i
+            B (0x54);                    // bastore
+        }
+        B (0xb1);                        // return (void)
+        return S_OK;
+    }
+
     ICpuCode *Build () {
         JNIEnv *Env = GetEnv ();
         if (Env == nullptr) {

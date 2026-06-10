@@ -408,6 +408,21 @@ public:
         return S_OK;
     }
 
+    // Indirect branch: store the runtime target's 8 bytes into TrapPc and ret; the
+    // host resume loop re-enters at that address.
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        for (UINT32 k = 0; k < 8; k++) {
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_TRAPPC_OFFSET + k));
+            LdLoc (IdOf (pTargetPc));
+            if (k != 0) { PushI4 ((INT32) (8 * k)); B (0x64); }   // shr.un
+            PushI8 (255); B (0x5f); B (0x69);                     // and ; conv.i4
+            B (0x9c);                                             // stelem.i1
+        }
+        B (0x2a);                                                 // ret
+        return S_OK;
+    }
+
     ICpuCode *Build () {
         if (!InitClr ()) {
             return nullptr;

@@ -248,6 +248,12 @@ DECLARE_INTERFACE_ (ICpuSmcEmitter, IUnknown)
     STDMETHOD_ (UINT32, Release)(THIS) PURE;
 
     STDMETHOD (EmitCodeGuard)(THIS_ CPU_ADDR Pc) PURE;
+
+    // Indirect (computed) branch: store the runtime target in CPU_STATE.TrapPc and
+    // terminate the block, so the host resume loop continues translation/execution
+    // at that address. Used for transfers whose target is unknown at translate time
+    // (RET, indirect JMP/CALL). Reuses the same TrapPc + resume path as the SMC guard.
+    STDMETHOD (IndirectBranch)(THIS_ IN ICpuValue *pTargetPc) PURE;
 };
 
 //

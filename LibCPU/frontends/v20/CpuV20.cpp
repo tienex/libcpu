@@ -131,6 +131,10 @@ public:
             Len = 2; Tag = TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE9) {                                 // JMP rel16
             Len = 3; Tag = TagBranch; NewPc = (CPU_ADDR) (Pc + 3 + (INT16) Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xE8) {                                 // CALL rel16
+            Len = 3; Tag = TagCall; NewPc = (CPU_ADDR) (Pc + 3 + (INT16) Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xC3) {                                 // RET (indirect: target popped at run time)
+            Len = 1; Tag = TagReturn;
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
@@ -283,6 +287,28 @@ public:
             ComPtr<ICpuValue> One; pE->ConstInt (16, 1, &One);
             ComPtr<ICpuValue> Res; pE->BinaryOp (BinSub, C, One, &Res);
             pE->PutRegister (RegV20CX, Res, 16, FALSE);
+            break;
+        }
+        case 0xE8: {                                               // CALL rel16: push return addr
+            ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + 3), &Ret);   // address after CALL
+            pE->Store (Ret, NewSP, 16);
+            break;                                                 // driver branches to the callee (TagCall)
+        }
+        case 0xC3: {                                               // RET: pop target, indirect branch to it
+            ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> T;     pE->Load (SP, 16, &T);
+            ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            ICpuSmcEmitter *pFlow = nullptr;                       // indirect-branch capability (optional)
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                pFlow->IndirectBranch (T);
+                pFlow->Release ();
+            }
             break;
         }
         case 0x0F: {                                               // NEC SET1/CLR1/NOT1/TEST1 r/m16,imm8

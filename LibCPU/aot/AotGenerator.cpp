@@ -114,8 +114,8 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
             continue;
         }
-        if (Tag & (TagContinue | TagConditional)) {
-            Work.push_back (NextPc);
+        if (Tag & (TagContinue | TagConditional | TagCall)) {
+            Work.push_back (NextPc);   // CALL returns to NextPc, so it is reachable too
         }
         if (Tag & (TagBranch | TagConditional | TagCall)) {
             Work.push_back (NewPc);
@@ -175,7 +175,10 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         CPU_ADDR NextPc;
         pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
 
-        if (Tag & TagConditional) {
+        if (Tag & TagReturn) {
+            // An indirect transfer (e.g. RET): TranslateInstr emitted IndirectBranch,
+            // which is itself the terminator. Nothing more to add.
+        } else if (Tag & TagConditional) {
             ComPtr<ICpuValue> Cond;
             if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
                 Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
@@ -183,9 +186,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                 Emitter->Branch (Target (NextPc));   // no condition available: fall through
             }
         } else if (Tag & (TagBranch | TagCall)) {
-            Emitter->Branch (Target (NewPc));
+            Emitter->Branch (Target (NewPc));         // CALL: branch to the callee
         } else {
-            Emitter->Branch (Target (NextPc));        // TagContinue / TagReturn / end
+            Emitter->Branch (Target (NextPc));        // TagContinue / end
         }
     }
 

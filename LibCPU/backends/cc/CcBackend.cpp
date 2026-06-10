@@ -442,6 +442,11 @@ public:
               CPU_STATE_TRAPPC_OFFSET, (unsigned long long) Pc, (int) ExecSmc);
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        Line ("*(uint64_t*)((char*)GRF+%u) = t%u;", CPU_STATE_TRAPPC_OFFSET, IdOf (pTargetPc));
+        Line ("return %d;", (int) ExecSmc);
+        return S_OK;
+    }
 
     void SetCompiler (std::string Path, CC_FAMILY Family) {
         m_CompilerPath = std::move (Path);
