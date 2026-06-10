@@ -137,13 +137,16 @@ public:
 
 class JvmBlock final : public LcComObject<ICpuBlock> {
 public:
+    explicit JvmBlock (UINT32 Id) : m_Id (Id) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    UINT32 m_Id;
 };
 
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<JvmValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<JvmValue *> (pValue)->m_Bits; }
+static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<JvmBlock *> (pBlock)->m_Id; }
 
 class JvmCode final : public LcComObject<ICpuCode> {
 public:
@@ -189,11 +192,23 @@ private:
     jmethodID m_Method;
 };
 
-class JvmEmitter final : public LcComObject<ICpuEmitter> {
+class JvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
+    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
+    // refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) {
+            return E_POINTER;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
@@ -264,6 +279,7 @@ public:
             StoreByteValue (IdOf (pValue), 8 * k);
             B (0x54);                    // bastore
         }
+        EmitStoreBarrier (IdOf (pAddr));
         return S_OK;
     }
 
@@ -430,21 +446,71 @@ public:
         return S_OK;
     }
 
+    // ---- control flow: blocks are byte offsets, edges are goto/ifne -------
+    // Code is emitted into one stream; each block's start offset is recorded when
+    // SetInsertBlock is called; branch operands are 2-byte placeholders patched in
+    // Build once every block's offset is known.
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
-        *ppBlock = new JvmBlock ();
+        *ppBlock = new JvmBlock ((UINT32) m_BlockStart.size ());
+        m_BlockStart.push_back (0xFFFFFFFFu);   // unset until SetInsertBlock (the exit block stays unset)
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        m_BlockStart[BlkId (pBlock)] = (UINT32) m_Code.size ();
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        EmitGoto (BlkId (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        LLoad (IdOf (pCond));
+        B (0x88);                    // l2i -> int 0/1
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0x9a);                    // ifne <true>
+        m_Fixups.push_back ({ P, BlkId (pTrue) });
+        B2 (0);
+        EmitGoto (BlkId (pFalse));   // else fall to false
+        return S_OK;
+    }
+
+    // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        ALoad (1);
+        PushInt ((INT32) (CPU_STATE_CODEDIRTY_OFFSET + ((Pc >> 8) & 255)));
+        B (0x33);                    // baload (this block's dirty-page byte)
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0x99);                    // ifeq <skip>  (clean -> run the block)
+        B2 (0);
+        for (UINT32 k = 0; k < 8; k++) {           // dirty: record TrapPc = Pc ...
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_TRAPPC_OFFSET + k));
+            PushInt ((INT32) ((Pc >> (8 * k)) & 0xff));
+            B (0x54);                // bastore
+        }
+        B (0xb1);                    // ... and return (void)
+        UINT32 Off = (UINT32) m_Code.size () - P;  // intra-block forward branch: patch now
+        m_Code[P + 1] = (UINT8) (Off >> 8);
+        m_Code[P + 2] = (UINT8) Off;
+        return S_OK;
+    }
 
     ICpuCode *Build () {
         JNIEnv *Env = GetEnv ();
         if (Env == nullptr) {
             return nullptr;
         }
+        // Final "return": terminates the entry/last block on fall-through and is the
+        // landing pad for any block with no recorded start (the AOT exit block).
+        UINT32 RetPos = (UINT32) m_Code.size ();
         B (0xb1);                        // return
+        for (auto CONST &Fx : m_Fixups) {
+            INT32 Target = (m_BlockStart[Fx.second] != 0xFFFFFFFFu) ? (INT32) m_BlockStart[Fx.second] : (INT32) RetPos;
+            INT32 Off    = Target - (INT32) Fx.first;   // relative to the branch opcode
+            m_Code[Fx.first + 1] = (UINT8) ((Off >> 8) & 0xff);
+            m_Code[Fx.first + 2] = (UINT8) (Off & 0xff);
+        }
 
         static UINT32 s_Counter = 0;
         std::string ClassName = "Insn" + std::to_string (s_Counter++);
@@ -480,6 +546,36 @@ private:
     void ALoad  (UINT8 N)   { B ((UINT8) (0x2a + N)); }       // aload_0 / aload_1
     void LLoad  (UINT32 Id) { B (0x16); B (Slot (Id)); }      // lload <slot>
     void LStore (UINT32 Id) { B (0x37); B (Slot (Id)); }      // lstore <slot>
+
+    void EmitGoto (UINT32 BlockId) {
+        UINT32 P = (UINT32) m_Code.size ();
+        B (0xa7);                                            // goto
+        m_Fixups.push_back ({ P, BlockId });
+        B2 (0);
+    }
+    // The guest address (a long local) as a 32-bit int.
+    void PushAddrInt (UINT32 AddrId) { LLoad (AddrId); B (0x88); }   // lload; l2i
+    // The low 16 bits of a CPU_STATE bound (CodeStart/CodeEnd) as an int.
+    void PushBound16 (UINT32 Off) {
+        ALoad (1); PushInt ((INT32) Off);       B (0x33); PushInt (255); B (0x7e);   // grf[Off] & 255
+        ALoad (1); PushInt ((INT32) (Off + 1)); B (0x33); PushInt (255); B (0x7e);   // grf[Off+1] & 255
+        PushInt (8); B (0x78); B (0x80);                                             // <<8 ; or
+    }
+    // SMC write-barrier: grf[CodeDirty + ((a>>8)&255)] |= (CodeStart<=a<CodeEnd).
+    // Branchless; inert when CodeStart==CodeEnd. Addresses/bounds are <= 16 bits.
+    void EmitStoreBarrier (UINT32 AddrId) {
+        ALoad (1);                                                                   // grf
+        PushInt ((INT32) CPU_STATE_CODEDIRTY_OFFSET);
+        PushAddrInt (AddrId); PushInt (8); B (0x7a); PushInt (255); B (0x7e);         // (a>>8)&255
+        B (0x60);                                                                    // iadd -> index
+        B (0x5c);                                                                    // dup2 (grf,index)
+        B (0x33);                                                                    // baload -> current
+        PushAddrInt (AddrId); PushBound16 (CPU_STATE_CODESTART_OFFSET); B (0x64); PushInt (31); B (0x7c); PushInt (1); B (0x82);  // (a>=cs)
+        PushAddrInt (AddrId); PushBound16 (CPU_STATE_CODEEND_OFFSET);   B (0x64); PushInt (31); B (0x7c);                          // (a<ce)
+        B (0x7e);                                                                    // iand -> indirty
+        B (0x80);                                                                    // ior  -> current|indirty
+        B (0x54);                                                                    // bastore
+    }
 
     void PushInt (INT32 V) {
         if (V >= -1 && V <= 5) {
@@ -540,7 +636,8 @@ private:
 
         U4 (0xCAFEBABE);
         U2 (0);                          // minor
-        U2 (52);                         // major (Java 8)
+        U2 (49);                         // major (Java 5): old inference verifier, so
+                                         // branches need no StackMapTable attribute
         m_Pool.Serialise (Out, ClassName);
 
         U2 (0x0021);                     // ACC_PUBLIC | ACC_SUPER
@@ -571,9 +668,11 @@ private:
         return S_OK;
     }
 
-    std::vector<UINT8> m_Code;
-    ConstantPool       m_Pool;
-    UINT32             m_Next = 0;
+    std::vector<UINT8>                       m_Code;
+    ConstantPool                             m_Pool;
+    UINT32                                   m_Next = 0;
+    std::vector<UINT32>                      m_BlockStart;   // block id -> code offset (0xFFFFFFFF = unset)
+    std::vector<std::pair<UINT32, UINT32>>   m_Fixups;       // (offset-field opcode pos, target block id)
 };
 
 class JvmBackend final : public LcComObject<ICpuBackend> {
