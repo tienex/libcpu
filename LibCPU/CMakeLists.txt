@@ -91,6 +91,9 @@ libcpu_add_backend(ksh_backend ksh
 libcpu_add_backend(pwsh_backend pwsh
   SOURCES backends/pwsh/PwshBackend.cpp backends/pwsh/PwshModule.cpp
   INCLUDES backends/pwsh)
+libcpu_add_backend(tcsh_backend tcsh
+  SOURCES backends/tcsh/TcshBackend.cpp backends/tcsh/TcshModule.cpp
+  INCLUDES backends/tcsh)
 
 # WebAssembly backend: emit a WASM module, run in-process on the vendored wasm3.
 libcpu_add_backend(wasm_backend wasm
