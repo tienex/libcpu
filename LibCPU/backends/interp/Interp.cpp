@@ -14,7 +14,10 @@ namespace {
 typedef enum _INTERP_OP {
     OpConstInt, OpGetReg, OpPutReg, OpLoad, OpStore,
     OpBinary, OpUnary, OpCompare, OpCast, OpSelect,
-    OpGetFlag, OpSetFlag, OpSetPC
+    OpGetFlag, OpSetFlag, OpSetPC,
+    OpBranch,       // Imm = target block id
+    OpCondBranch,   // A = cond temp, Imm = true block id, B = false block id
+    OpCodeGuard     // Imm = block PC: trap if this page's dirty bit is set
 } INTERP_OP;
 
 //
@@ -85,21 +88,24 @@ public:
 
 class InterpBlock final : public LcComObject<ICpuBlock> {
 public:
+    explicit InterpBlock (UINT32 Id) : m_Id (Id) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    UINT32 m_Id;
 };
 
 static UINT32 TempOf (ICpuValue *pValue) { return static_cast<InterpValue *> (pValue)->m_TempId; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<InterpValue *> (pValue)->m_Bits; }
+static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<InterpBlock *> (pBlock)->m_Id; }
 
 //
 // The runnable code object: interprets the recorded IR.
 //
 class InterpCode final : public LcComObject<ICpuCode> {
 public:
-    InterpCode (std::vector<INTERP_INSN> Insns, UINT32 TempCount)
-        : m_Insns (std::move (Insns)), m_TempCount (TempCount) {}
+    InterpCode (std::vector<INTERP_INSN> Insns, UINT32 TempCount, std::vector<UINT32> BlockStart)
+        : m_Insns (std::move (Insns)), m_TempCount (TempCount), m_BlockStart (std::move (BlockStart)) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuCode, ppvObject);
@@ -110,7 +116,8 @@ public:
         INTERP_STATE *pState = (INTERP_STATE *) pGRF;
         std::vector<UINT64> Temp (m_TempCount, 0);
 
-        for (INTERP_INSN CONST &In : m_Insns) {
+        for (UINT32 Ip = 0; Ip < m_Insns.size (); ) {
+            INTERP_INSN CONST &In = m_Insns[Ip];
             switch ((INTERP_OP) In.Op) {
             case OpConstInt:
                 Temp[In.Dest] = MaskBits (In.Imm, In.Bits);
@@ -128,6 +135,9 @@ public:
                 break;
             case OpStore:
                 RamWrite (pRam, Temp[In.B], Temp[In.A], In.Bits);
+                if (Temp[In.B] >= pState->CodeStart && Temp[In.B] < pState->CodeEnd) {   // SMC write-barrier
+                    pState->CodeDirty[(Temp[In.B] >> 11) & 31] |= (UINT8) (1u << ((Temp[In.B] >> 8) & 7));
+                }
                 break;
             case OpBinary:
                 Temp[In.Dest] = ApplyBinary ((CPU_BINOP) In.Aux, Temp[In.A], Temp[In.B], In.Bits);
@@ -153,7 +163,22 @@ public:
             case OpSetPC:
                 pState->Pc = In.Imm;
                 break;
+            case OpBranch:
+                Ip = m_BlockStart[In.Imm];
+                continue;
+            case OpCondBranch:
+                Ip = m_BlockStart[(Temp[In.A] & 1) ? (UINT32) In.Imm : In.B];
+                continue;
+            case OpCodeGuard: {
+                UINT32 Page = (UINT32) ((In.Imm >> 8) & 255);
+                if (pState->CodeDirty[Page >> 3] & (1u << (Page & 7))) {   // this page modified?
+                    pState->TrapPc = In.Imm;
+                    return ExecSmc;
+                }
+                break;
             }
+            }
+            Ip++;
         }
         return ExecOk;
     }
@@ -216,16 +241,26 @@ private:
 
     std::vector<INTERP_INSN> m_Insns;
     UINT32                   m_TempCount;
+    std::vector<UINT32>      m_BlockStart;   // block id -> index into m_Insns
 };
 
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public LcComObject<ICpuEmitter> {
+class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
+    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
+    // refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         return Produce (Bits, OpConstInt, 0, 0, 0, 0, Bits, Value, ppValue);
@@ -273,17 +308,42 @@ public:
         return S_OK;
     }
 
-    // Control flow is not exercised by the straight-line slice yet.
+    // ---- control flow: blocks are index ranges, edges set the instruction ptr
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
-        *ppBlock = new InterpBlock ();
+        *ppBlock = new InterpBlock ((UINT32) m_BlockStart.size ());
+        m_BlockStart.push_back (0xFFFFFFFFu);   // unset until SetInsertBlock (exit block stays unset)
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        m_BlockStart[BlkId (pBlock)] = (UINT32) m_Insns.size ();
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        Record (OpBranch, 0, 0, 0, 0, 0, 0, BlkId (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        Record (OpCondBranch, 0, 0, 0, TempOf (pCond), BlkId (pFalse), 0, BlkId (pTrue));
+        return S_OK;
+    }
 
-    ICpuCode *Build () { return new InterpCode (m_Insns, m_NextTemp); }
+    // ---- self-modifying-code guard (ICpuSmcEmitter); the barrier lives in Execute
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        Record (OpCodeGuard, 0, 0, 0, 0, 0, 0, Pc);
+        return S_OK;
+    }
+
+    ICpuCode *Build () {
+        // Resolve any block never given a body (the AOT exit block) to "past the
+        // end", so branching to it ends execution.
+        for (UINT32 &Start : m_BlockStart) {
+            if (Start == 0xFFFFFFFFu) {
+                Start = (UINT32) m_Insns.size ();
+            }
+        }
+        return new InterpCode (m_Insns, m_NextTemp, m_BlockStart);
+    }
 
 private:
     VOID Record (INTERP_OP Op, UINT8 Aux, UINT32 Bits, UINT32 Dest, UINT32 A, UINT32 B, UINT32 C, UINT64 Imm) {
@@ -301,6 +361,7 @@ private:
 
     std::vector<INTERP_INSN> m_Insns;
     UINT32                   m_NextTemp = 0;
+    std::vector<UINT32>      m_BlockStart;   // block id -> index into m_Insns
 };
 
 //
