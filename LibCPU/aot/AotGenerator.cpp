@@ -101,7 +101,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     while (!Work.empty ()) {
         CPU_ADDR Pc = Work.back ();
         Work.pop_back ();
-        if (Pc < Entry || Pc >= End || Pcs.count (Pc) != 0) {
+        // Bound only by End, NOT by Entry: a backward branch (loop) reaches PCs
+        // below the entry/resume point, and those blocks must be in the CFG too.
+        if (Pc >= End || Pcs.count (Pc) != 0) {
             continue;
         }
         Pcs.insert (Pc);
