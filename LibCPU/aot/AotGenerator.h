@@ -32,6 +32,18 @@ HRESULT GenerateAot (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                      CPU_ADDR Entry, CPU_ADDR End,
                      OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
 
+//
+// Like GenerateAot, but builds a real control-flow graph: it discovers every
+// reachable instruction address (following TagInstr's branch/fall-through edges),
+// gives each its own ICpuBlock, and wires them with Branch / CondBranch (the latter
+// driven by TranslateCond). The backend's optimizer then sees the whole CFG. This
+// requires a backend that implements the ICpuEmitter block ops (e.g. LLVM); on a
+// backend that stubs them it returns the stub's error.
+//
+HRESULT GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                        CPU_ADDR Entry, CPU_ADDR End,
+                        OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
+
 } // namespace LibCPU
 
 #endif // LIBCPU_AOTGENERATOR_H

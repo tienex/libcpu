@@ -244,7 +244,17 @@ public:
     // Finalize: terminate the entry block and JIT-compile. Returns the code object.
     //
     ICpuCode *Build () {
-        m_Builder->CreateRet (ConstantInt::get (IntTy (32), 0));
+        // Terminate every block left open with "return 0". In the straight-line
+        // (JIT / one-instruction) case that is just the entry block; in a CFG built
+        // by the AOT driver it is the shared exit block (and any block that falls
+        // off the end of the program). Blocks the driver wired with Branch/CondBranch
+        // already have terminators and are skipped.
+        for (BasicBlock &BB : *m_pFn) {
+            if (BB.getTerminator () == nullptr) {
+                m_Builder->SetInsertPoint (&BB);
+                m_Builder->CreateRet (ConstantInt::get (IntTy (32), 0));
+            }
+        }
         if (verifyFunction (*m_pFn, &errs ())) {
             return nullptr;
         }

@@ -57,10 +57,16 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
-        // Every opcode in this slice is two bytes and continues linearly.
-        *pTag    = TagContinue;
-        *pNewPc  = (CPU_ADDR) -1;
+        // Every opcode in this slice is two bytes. BNE is a relative conditional
+        // branch; everything else continues linearly.
         *pNextPc = Pc + 2;
+        if (m_pCode[Pc] == 0xD0) {   // BNE rel
+            *pTag   = TagConditional | TagBranch;
+            *pNewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);   // signed displacement
+        } else {
+            *pTag   = TagContinue;
+            *pNewPc = (CPU_ADDR) -1;
+        }
         return S_OK;
     }
 
@@ -74,6 +80,7 @@ public:
         case 0x85: std::snprintf (pLine, MaxLine, "sta $%02x", Op1);  return S_OK;
         case 0xE6: std::snprintf (pLine, MaxLine, "inc $%02x", Op1);  return S_OK;
         case 0x69: std::snprintf (pLine, MaxLine, "adc #$%02x", Op1); return S_OK;
+        case 0xD0: std::snprintf (pLine, MaxLine, "bne $%04x", (unsigned) (Pc + 2 + (INT8) Op1)); return S_OK;
         default:   pMnem = "???"; std::snprintf (pLine, MaxLine, "%s ($%02x)", pMnem, Opcode); return S_OK;
         }
     }
@@ -149,9 +156,15 @@ public:
         return S_OK;
     }
 
-    HRESULT STDMETHODCALLTYPE TranslateCond (CPU_ADDR /*Pc*/, ICpuEmitter * /*pE*/, ICpuValue **ppCond) override {
+    HRESULT STDMETHODCALLTYPE TranslateCond (CPU_ADDR Pc, ICpuEmitter *pE, ICpuValue **ppCond) override {
         *ppCond = nullptr;
-        return E_NOTIMPL;   // no conditional branches in this slice
+        if (m_pCode[Pc] != 0xD0) {   // only BNE is a branch in this slice
+            return E_NOTIMPL;
+        }
+        // BNE is taken when the Zero flag is clear, i.e. the condition is (Z == 0).
+        ComPtr<ICpuValue> Z;
+        pE->GetFlag (FlagZero, &Z);
+        return pE->UnaryOp (UnNot, Z, ppCond);   // ownership transferred to caller
     }
 
 private:
