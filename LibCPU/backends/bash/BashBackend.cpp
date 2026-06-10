@@ -1,11 +1,12 @@
 /** @file
-  Perl textual-emit backend. See PerlBackend.h.
+  Bash textual-emit backend. See BashBackend.h.
 
-  Each ICpuValue is a Perl scalar ($tN) masked to its width. The marshalled state
-  file is read into the array @d (RAM bytes then CPU_STATE bytes); the emitted body
-  mutates it and it is written back.
+  Each ICpuValue is a bash integer variable (tN) masked to its width; arithmetic
+  uses $(( ... )). The marshalled state file is read into the integer array `d`
+  (RAM bytes then CPU_STATE bytes) with od, and written back with printf once the
+  emitted body has run.
 **/
-#include "PerlBackend.h"
+#include "BashBackend.h"
 #include "LibCPU/CpuState.h"
 
 #include <unistd.h>
@@ -22,21 +23,24 @@ namespace {
 static CONST UINT32 RAM_SIZE = 0x10000;   // assumed guest RAM (6502 / CHIP-8)
 
 //
-// Fixed harness: read the state file into @d, define register/memory/flag
-// accessors, run the emitted body (%B%), then write @d back.
+// Fixed harness: read the state file into the byte array `d`, define the register
+// /memory/flag accessors, then (after the emitted body) write `d` back. %B% is
+// replaced by the emitted instruction body. Reader functions echo a value;
+// mutator functions update the global array `d` in place.
 //
 static CHAR8 CONST *kTemplate =
-    "open(F,'<',$ARGV[0]);binmode(F);local $/;my $s=<F>;close(F);my @d=unpack('C*',$s);\n"
-    "sub gR{my($i,$b)=@_;my $v=0;for my $k (0..$b/8-1){$v|=$d[65536+$i*8+$k]<<(8*$k);}$v}\n"
-    "sub pR{my($i,$v,$b)=@_;for my $k (0..7){$d[65536+$i*8+$k]=($k<$b/8)?(($v>>(8*$k))&0xff):0;}}\n"
-    "sub rM{my($a,$b)=@_;my $v=0;for my $k (0..$b/8-1){$v|=$d[$a+$k]<<(8*$k);}$v}\n"
-    "sub wM{my($a,$v,$b)=@_;for my $k (0..$b/8-1){$d[$a+$k]=($v>>(8*$k))&0xff;}}\n"
-    "sub gF{my($f)=@_;$d[65536+256+$f]&1}\n"
-    "sub sF{my($f,$v)=@_;$d[65536+256+$f]=$v&1;}\n"
-    "sub sP{my($p)=@_;for my $k (0..7){$d[65536+264+$k]=($p>>(8*$k))&0xff;}}\n"
-    "sub sx{my($v,$s)=@_;($v&(1<<($s-1)))?($v-(1<<$s)):$v}\n"
+    "d=($(od -An -v -tu1 \"$1\"))\n"
+    "gR(){ local i=$1 b=$2 v=0 k; for((k=0;k<b/8;k++)); do v=$(( v | (d[65536+i*8+k] << (8*k)) )); done; echo $v; }\n"
+    "pR(){ local i=$1 v=$2 b=$3 k; for((k=0;k<8;k++)); do if((k<b/8)); then d[65536+i*8+k]=$(( (v>>(8*k))&0xff )); else d[65536+i*8+k]=0; fi; done; }\n"
+    "rM(){ local a=$1 b=$2 v=0 k; for((k=0;k<b/8;k++)); do v=$(( v | (d[a+k] << (8*k)) )); done; echo $v; }\n"
+    "wM(){ local a=$1 v=$2 b=$3 k; for((k=0;k<b/8;k++)); do d[a+k]=$(( (v>>(8*k))&0xff )); done; }\n"
+    "gF(){ echo $(( d[65536+256+$1] & 1 )); }\n"
+    "sF(){ d[65536+256+$1]=$(( $2 & 1 )); }\n"
+    "sP(){ local p=$1 k; for((k=0;k<8;k++)); do d[65536+264+k]=$(( (p>>(8*k))&0xff )); done; }\n"
+    "sx(){ local v=$1 s=$2; if(( v & (1<<(s-1)) )); then echo $(( v-(1<<s) )); else echo $v; fi; }\n"
     "%B%"
-    "open(F,'>',$ARGV[0]);binmode(F);print F pack('C*',@d);close(F);\n";
+    "printf -v e \"\\\\%03o\" \"${d[@]}\"\n"
+    "printf \"%b\" \"$e\" > \"$1\"\n";
 
 static UINT64
 Mask (UINT64 Value, UINT32 Bits)
@@ -44,9 +48,9 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class PerlValue final : public LcComObject<ICpuValue> {
+class BashValue final : public LcComObject<ICpuValue> {
 public:
-    PerlValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
+    BashValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuValue, ppvObject);
     }
@@ -54,23 +58,23 @@ public:
     UINT32 m_Bits;
 };
 
-class PerlBlock final : public LcComObject<ICpuBlock> {
+class BashBlock final : public LcComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
 };
 
-static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<PerlValue *> (pValue)->m_Id; }
-static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<PerlValue *> (pValue)->m_Bits; }
+static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<BashValue *> (pValue)->m_Id; }
+static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<BashValue *> (pValue)->m_Bits; }
 
-class PerlCode final : public LcComObject<ICpuCode> {
+class BashCode final : public LcComObject<ICpuCode> {
 public:
-    PerlCode (std::string Dir) : m_Dir (std::move (Dir)) {}
+    BashCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
-    ~PerlCode () override {
+    ~BashCode () override {
         if (!m_Dir.empty ()) {
-            unlink ((m_Dir + "/insn.pl").c_str ());
+            unlink ((m_Dir + "/insn.sh").c_str ());
             unlink ((m_Dir + "/state.bin").c_str ());
             rmdir (m_Dir.c_str ());
         }
@@ -91,7 +95,7 @@ public:
         std::fwrite (pGRF, 1, sizeof (CPU_STATE), pFile);
         std::fclose (pFile);
 
-        std::string Cmd = "perl '" + m_Dir + "/insn.pl' '" + State + "' 2>/dev/null";
+        std::string Cmd = "bash '" + m_Dir + "/insn.sh' '" + State + "' 2>/dev/null";
         if (std::system (Cmd.c_str ()) != 0) {
             return ExecTrap;
         }
@@ -113,7 +117,7 @@ private:
     std::string m_Dir;
 };
 
-class PerlEmitter final : public LcComObject<ICpuEmitter> {
+class BashEmitter final : public LcComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -121,36 +125,34 @@ public:
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
-        Line ("my $t%u=%llu;", Dest, (unsigned long long) Mask (Value, Bits));
+        Line ("t%u=%llu", Dest, (unsigned long long) Mask (Value, Bits));
         return Make (Dest, Bits, ppValue);
     }
 
     HRESULT STDMETHODCALLTYPE GetRegister (UINT32 Index, UINT32 Bits, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
-        Line ("my $t%u=gR(%u,%u);", Dest, Index, Bits);
+        Line ("t%u=$(gR %u %u)", Dest, Index, Bits);
         return Make (Dest, Bits, ppValue);
     }
 
     HRESULT STDMETHODCALLTYPE PutRegister (UINT32 Index, ICpuValue *pValue, UINT32 Bits, BOOLEAN /*Sext*/) override {
-        Line ("pR(%u,$t%u,%u);", Index, IdOf (pValue), Bits ? Bits : BitsOf (pValue));
+        Line ("pR %u $t%u %u", Index, IdOf (pValue), Bits ? Bits : BitsOf (pValue));
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
-        Line ("my $t%u=rM($t%u,%u);", Dest, IdOf (pAddr), Bits);
+        Line ("t%u=$(rM $t%u %u)", Dest, IdOf (pAddr), Bits);
         return Make (Dest, Bits, ppValue);
     }
 
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
-        Line ("wM($t%u,$t%u,%u);", IdOf (pAddr), IdOf (pValue), Bits);
+        Line ("wM $t%u $t%u %u", IdOf (pAddr), IdOf (pValue), Bits);
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP Op, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
         UINT32 Bits = BitsOf (pA);
-        UINT32 Dest = Fresh ();
-        unsigned long long FullMask = (unsigned long long) Mask (~0ull, Bits);
         CONST CHAR8 *pOp;
         switch (Op) {
         case BinAdd:  pOp = "+";  break;
@@ -162,14 +164,13 @@ public:
         case BinShl:  pOp = "<<"; break;
         case BinLShr: pOp = ">>"; break;
         case BinAShr: pOp = ">>"; break;
+        case BinUDiv: pOp = "/";  break;
         case BinURem: pOp = "%";  break;
-        case BinUDiv:
-            // Perl '/' is floating point; force integer truncation toward zero.
-            Line ("my $t%u=int($t%u/$t%u)&%llu;", Dest, IdOf (pA), IdOf (pB), FullMask);
-            return Make (Dest, Bits, ppValue);
         default:      pOp = "+";  break;
         }
-        Line ("my $t%u=($t%u%s$t%u)&%llu;", Dest, IdOf (pA), pOp, IdOf (pB), FullMask);
+        UINT32 Dest = Fresh ();
+        Line ("t%u=$(( (t%u %s t%u) & %llu ))", Dest, IdOf (pA), pOp, IdOf (pB),
+              (unsigned long long) Mask (~0ull, Bits));
         return Make (Dest, Bits, ppValue);
     }
 
@@ -179,13 +180,13 @@ public:
         unsigned long long FullMask = (unsigned long long) Mask (~0ull, Bits);
         switch (Op) {
         case UnNeg:
-            Line ("my $t%u=(-$t%u)&%llu;", Dest, IdOf (pA), FullMask);
+            Line ("t%u=$(( (-t%u) & %llu ))", Dest, IdOf (pA), FullMask);
             return Make (Dest, Bits, ppValue);
         case UnCom:
-            Line ("my $t%u=(~$t%u)&%llu;", Dest, IdOf (pA), FullMask);
+            Line ("t%u=$(( (~t%u) & %llu ))", Dest, IdOf (pA), FullMask);
             return Make (Dest, Bits, ppValue);
         case UnNot:
-            Line ("my $t%u=($t%u==0)?1:0;", Dest, IdOf (pA));
+            Line ("t%u=$(( t%u == 0 ))", Dest, IdOf (pA));
             return Make (Dest, 1, ppValue);
         }
         return E_INVALIDARG;
@@ -203,7 +204,7 @@ public:
         default:     pOp = "==";  break;
         }
         UINT32 Dest = Fresh ();
-        Line ("my $t%u=($t%u%s$t%u)?1:0;", Dest, IdOf (pA), pOp, IdOf (pB));
+        Line ("t%u=$(( t%u %s t%u ))", Dest, IdOf (pA), pOp, IdOf (pB));
         return Make (Dest, 1, ppValue);
     }
 
@@ -213,13 +214,13 @@ public:
         unsigned long long FullMask = (unsigned long long) Mask (~0ull, Bits);
         switch (Op) {
         case CastTrunc:
-            Line ("my $t%u=$t%u&%llu;", Dest, IdOf (pA), FullMask);
+            Line ("t%u=$(( t%u & %llu ))", Dest, IdOf (pA), FullMask);
             break;
         case CastZExt:
-            Line ("my $t%u=$t%u;", Dest, IdOf (pA));
+            Line ("t%u=$t%u", Dest, IdOf (pA));
             break;
         case CastSExt:
-            Line ("my $t%u=sx($t%u,%u)&%llu;", Dest, IdOf (pA), SrcBits, FullMask);
+            Line ("t%u=$(( $(sx $t%u %u) & %llu ))", Dest, IdOf (pA), SrcBits, FullMask);
             break;
         }
         return Make (Dest, Bits, ppValue);
@@ -232,22 +233,22 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG Flag, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
-        Line ("my $t%u=gF(%u);", Dest, (UINT32) Flag);
+        Line ("t%u=$(gF %u)", Dest, (UINT32) Flag);
         return Make (Dest, 1, ppValue);
     }
 
     HRESULT STDMETHODCALLTYPE SetFlag (CPU_FLAG Flag, ICpuValue *pValue) override {
-        Line ("sF(%u,$t%u);", (UINT32) Flag, IdOf (pValue));
+        Line ("sF %u $t%u", (UINT32) Flag, IdOf (pValue));
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override {
-        Line ("sP(%llu);", (unsigned long long) Pc);
+        Line ("sP %llu", (unsigned long long) Pc);
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
-        *ppBlock = new PerlBlock ();
+        *ppBlock = new BashBlock ();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
@@ -256,12 +257,12 @@ public:
     HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
 
     ICpuCode *Build () {
-        char DirTemplate[] = "/tmp/libcpu_pl_XXXXXX";
+        char DirTemplate[] = "/tmp/libcpu_bash_XXXXXX";
         if (mkdtemp (DirTemplate) == nullptr) {
             return nullptr;
         }
         std::string Dir = DirTemplate;
-        std::string Source = Dir + "/insn.pl";
+        std::string Source = Dir + "/insn.sh";
 
         std::string Full = kTemplate;
         Subst (Full, "%B%", m_Body);
@@ -280,7 +281,7 @@ public:
         }
         std::fwrite (Full.data (), 1, Full.size (), pFile);
         std::fclose (pFile);
-        return new PerlCode (Dir);
+        return new BashCode (Dir);
     }
 
 private:
@@ -304,7 +305,7 @@ private:
     }
 
     HRESULT Make (UINT32 Id, UINT32 Bits, ICpuValue **ppValue) {
-        *ppValue = new PerlValue (Id, Bits);
+        *ppValue = new BashValue (Id, Bits);
         return S_OK;
     }
 
@@ -312,20 +313,20 @@ private:
     UINT32      m_Next = 0;
 };
 
-class PerlBackend final : public LcComObject<ICpuBackend> {
+class BashBackend final : public LcComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
-    CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "perl"; }
+    CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "bash"; }
 
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture *, ICpuEmitter **ppEmitter) override {
-        *ppEmitter = new PerlEmitter ();
+        *ppEmitter = new BashEmitter ();
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
-        ICpuCode *pCode = static_cast<PerlEmitter *> (pEmitter)->Build ();
+        ICpuCode *pCode = static_cast<BashEmitter *> (pEmitter)->Build ();
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
     }
@@ -334,9 +335,9 @@ public:
 } // anonymous namespace
 
 ICpuBackend *
-CreatePerlBackend (VOID)
+CreateBashBackend (VOID)
 {
-    return new PerlBackend ();
+    return new BashBackend ();
 }
 
 } // namespace LibCPU
