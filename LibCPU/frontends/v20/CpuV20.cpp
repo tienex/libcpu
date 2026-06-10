@@ -123,8 +123,9 @@ public:
         } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
             Len = 1;
         } else if (Op == 0x01 || Op == 0x03 || Op == 0x29 || Op == 0x2B ||
-                   Op == 0x39 || Op == 0x3B || Op == 0x89 || Op == 0x8B) {
-            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // <alu> with ModR/M (+disp)
+                   Op == 0x39 || Op == 0x3B || Op == 0x89 || Op == 0x8B ||
+                   Op == 0x8E || Op == 0x8C) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // <alu>/MOV sreg with ModR/M (+disp)
         } else if (Op == 0x05 || Op == 0x2D || Op == 0x3D || Op == 0xA1 || Op == 0xA3) {
             Len = 3;                                             // acc,imm16 / MOV AX,[addr16]
         } else if (Op == 0xEB) {                                 // JMP rel8
@@ -214,20 +215,22 @@ public:
         }
 
         // PUSH/POP reg16 (implicit [SP]).
-        if (Op >= 0x50 && Op <= 0x57) {                            // PUSH reg16
+        if (Op >= 0x50 && Op <= 0x57) {                            // PUSH reg16 (SS:SP)
             UINT32 Reg = Op - 0x50;
             ComPtr<ICpuValue> SP;  pE->GetRegister (RegV20SP, 16, &SP);
             ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
             ComPtr<ICpuValue> V;   pE->GetRegister (Reg, 16, &V);
-            pE->Store (V, NewSP, 16);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
+            pE->Store (V, Lin, 16);
             return S_OK;
         }
-        if (Op >= 0x58 && Op <= 0x5F) {                            // POP reg16
+        if (Op >= 0x58 && Op <= 0x5F) {                            // POP reg16 (SS:SP)
             UINT32 Reg = Op - 0x58;
             ComPtr<ICpuValue> SP;  pE->GetRegister (RegV20SP, 16, &SP);
-            ComPtr<ICpuValue> V;   pE->Load (SP, 16, &V);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, SP, &Lin);
+            ComPtr<ICpuValue> V;   pE->Load (Lin, 16, &V);
             pE->PutRegister (Reg, V, 16, FALSE);
             ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
@@ -270,16 +273,30 @@ public:
             if (Op == 0x05) { EmitAddFlags (pE, A, B, Res); } else { EmitSubFlags (pE, A, B, Res); }
             break;
         }
-        case 0xA1: {                                               // MOV AX, [addr16]
-            ComPtr<ICpuValue> Ad; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            ComPtr<ICpuValue> V;  pE->Load (Ad, 16, &V);
+        case 0xA1: {                                               // MOV AX, [addr16] (DS-relative)
+            ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> V;   pE->Load (Lin, 16, &V);
             pE->PutRegister (RegV20AX, V, 16, FALSE);
             break;
         }
-        case 0xA3: {                                               // MOV [addr16], AX
-            ComPtr<ICpuValue> V;  pE->GetRegister (RegV20AX, 16, &V);
-            ComPtr<ICpuValue> Ad; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            pE->Store (V, Ad, 16);
+        case 0xA3: {                                               // MOV [addr16], AX (DS-relative)
+            ComPtr<ICpuValue> V;   pE->GetRegister (RegV20AX, 16, &V);
+            ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            pE->Store (V, Lin, 16);
+            break;
+        }
+        case 0x8E: case 0x8C: {                                    // MOV sreg,r/m16 / MOV r/m16,sreg
+            UINT8  M    = m_pCode[Pc + 1];
+            UINT32 Sreg = RegV20ES + ((M >> 3) & 3);               // sreg field: ES,CS,SS,DS
+            if (Op == 0x8E) {                                      // load segment register
+                ComPtr<ICpuValue> S; EmitRmRead (pE, M, Pc + 1, &S);
+                pE->PutRegister (Sreg, S, 16, FALSE);
+            } else {                                               // store segment register
+                ComPtr<ICpuValue> S; pE->GetRegister (Sreg, 16, &S);
+                EmitRmWrite (pE, M, Pc + 1, S);
+            }
             break;
         }
         case 0xE2: {                                               // LOOP: CX-- (no flags)
@@ -289,18 +306,20 @@ public:
             pE->PutRegister (RegV20CX, Res, 16, FALSE);
             break;
         }
-        case 0xE8: {                                               // CALL rel16: push return addr
+        case 0xE8: {                                               // CALL rel16: push return addr (SS:SP)
             ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
             ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
             ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + 3), &Ret);   // address after CALL
-            pE->Store (Ret, NewSP, 16);
+            ComPtr<ICpuValue> Lin;   EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
+            pE->Store (Ret, Lin, 16);
             break;                                                 // driver branches to the callee (TagCall)
         }
-        case 0xC3: {                                               // RET: pop target, indirect branch to it
+        case 0xC3: {                                               // RET: pop target (SS:SP), indirect branch
             ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
-            ComPtr<ICpuValue> T;     pE->Load (SP, 16, &T);
+            ComPtr<ICpuValue> Lin;   EmitSegLinear (pE, RegV20SS, SP, &Lin);
+            ComPtr<ICpuValue> T;     pE->Load (Lin, 16, &T);
             ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
@@ -436,20 +455,34 @@ private:
     }
 
     // Read / write the r/m operand: a register (mod=11) or memory at the EA.
+    // Form the 20-bit linear address SegReg * 16 + (offset & 0xFFFF), as a 32-bit
+    // value. With the segment register 0 this is just the offset (unsegmented).
+    VOID EmitSegLinear (ICpuEmitter *pE, UINT32 SegReg, ICpuValue *pOffset, ICpuValue **ppLinear) {
+        ComPtr<ICpuValue> Seg;   pE->GetRegister (SegReg, 16, &Seg);
+        ComPtr<ICpuValue> Seg32; pE->Cast (CastZExt, Seg, 32, &Seg32);
+        ComPtr<ICpuValue> Four;  pE->ConstInt (32, 4, &Four);
+        ComPtr<ICpuValue> Base;  pE->BinaryOp (BinShl, Seg32, Four, &Base);     // seg << 4
+        ComPtr<ICpuValue> Off32; pE->Cast (CastZExt, pOffset, 32, &Off32);
+        pE->BinaryOp (BinAdd, Base, Off32, ppLinear);                          // + offset
+    }
+
+    // Read / write the r/m operand: a register (mod=11) or DS-relative memory at the EA.
     VOID EmitRmRead (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue **ppValue) {
         if ((M >> 6) == 3) {
             pE->GetRegister ((UINT32) (M & 7), 16, ppValue);
         } else {
-            ComPtr<ICpuValue> EA; EmitEA (pE, M, ModRMPc + 1, &EA);
-            pE->Load (EA, 16, ppValue);
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            pE->Load (Lin, 16, ppValue);
         }
     }
     VOID EmitRmWrite (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue *pValue) {
         if ((M >> 6) == 3) {
             pE->PutRegister ((UINT32) (M & 7), pValue, 16, FALSE);
         } else {
-            ComPtr<ICpuValue> EA; EmitEA (pE, M, ModRMPc + 1, &EA);
-            pE->Store (pValue, EA, 16);
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            pE->Store (pValue, Lin, 16);
         }
     }
 

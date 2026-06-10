@@ -27,7 +27,12 @@ namespace LibCPU {
 //
 enum {
     RegV20AX = 0, RegV20CX = 1, RegV20DX = 2, RegV20BX = 3,
-    RegV20SP = 4, RegV20BP = 5, RegV20SI = 6, RegV20DI = 7
+    RegV20SP = 4, RegV20BP = 5, RegV20SI = 6, RegV20DI = 7,
+
+    // Segment registers, in 8086 sreg-encoding order (ES,CS,SS,DS) at indices 8..11.
+    // A memory access forms its 20-bit linear address as segment * 16 + offset; with
+    // a segment register left at 0 the access is unsegmented (offset == linear).
+    RegV20ES = 8, RegV20CS = 9, RegV20SS = 10, RegV20DS = 11
 };
 
 //
