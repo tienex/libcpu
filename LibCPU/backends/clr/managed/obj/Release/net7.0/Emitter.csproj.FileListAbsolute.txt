@@ -1,0 +1,14 @@
+/tmp/lc-build/clr/Emitter.deps.json
+/tmp/lc-build/clr/Emitter.runtimeconfig.json
+/tmp/lc-build/clr/Emitter.dll
+/tmp/lc-build/clr/Emitter.pdb
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.GeneratedMSBuildEditorConfig.editorconfig
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.AssemblyInfoInputs.cache
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.AssemblyInfo.cs
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.csproj.CoreCompileInputs.cache
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.sourcelink.json
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.dll
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/refint/Emitter.dll
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.pdb
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/Emitter.genruntimeconfig.cache
+/Volumes/FuryCode/LocalCode/libcpu/LibCPU/backends/clr/managed/obj/Release/net7.0/ref/Emitter.dll

@@ -123,6 +123,35 @@ if(JNI_FOUND)
     RPATH ${LIBCPU_JVM_LIBDIR})
 endif()
 
+# In-process CLR (.NET) backend: CoreCLR is embedded via nethost/hostfxr and the
+# hand-emitted CIL is JIT'd through Reflection.Emit (no csc per instruction). A
+# one-time managed helper (Emitter.dll) is built with the dotnet SDK.
+file(GLOB LIBCPU_NETHOST_DIRS
+  "/usr/local/share/dotnet/packs/Microsoft.NETCore.App.Host.osx-${CMAKE_HOST_SYSTEM_PROCESSOR}/*/runtimes/osx-${CMAKE_HOST_SYSTEM_PROCESSOR}/native")
+find_program(LIBCPU_DOTNET dotnet)
+if(LIBCPU_NETHOST_DIRS AND LIBCPU_DOTNET)
+  list(SORT LIBCPU_NETHOST_DIRS)
+  list(GET LIBCPU_NETHOST_DIRS -1 LIBCPU_NETHOST_DIR)   # newest host pack
+  if(EXISTS "${LIBCPU_NETHOST_DIR}/libnethost.dylib")
+    set(LIBCPU_CLR_OUT ${CMAKE_BINARY_DIR}/clr)
+    add_custom_command(OUTPUT ${LIBCPU_CLR_OUT}/Emitter.dll
+      COMMAND ${LIBCPU_DOTNET} build ${CMAKE_CURRENT_SOURCE_DIR}/backends/clr/managed/Emitter.csproj
+              -c Release -o ${LIBCPU_CLR_OUT}
+      DEPENDS backends/clr/managed/Emitter.cs backends/clr/managed/Emitter.csproj
+      COMMENT "Building managed Emitter.dll (one-time Reflection.Emit helper)"
+      VERBATIM)
+    add_custom_target(clr_emitter DEPENDS ${LIBCPU_CLR_OUT}/Emitter.dll)
+    libcpu_add_backend(clr_backend clr
+      ARCHS ${CMAKE_HOST_SYSTEM_PROCESSOR}
+      SOURCES backends/clr/ClrBackend.cpp backends/clr/ClrModule.cpp
+      INCLUDES backends/clr ${LIBCPU_NETHOST_DIR}
+      LIBS ${LIBCPU_NETHOST_DIR}/libnethost.dylib
+      DEFINES LIBCPU_CLR_DIR="${LIBCPU_CLR_OUT}"
+      RPATH ${LIBCPU_NETHOST_DIR})
+    add_dependencies(clr_backend clr_emitter)
+  endif()
+endif()
+
 # In-process JavaScriptCore backend (Apple framework; no-copy typed arrays).
 if(APPLE)
   libcpu_add_backend(jscore_backend jscore
