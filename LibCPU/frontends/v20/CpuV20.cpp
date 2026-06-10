@@ -120,8 +120,11 @@ public:
             Len = 3;
         } else if (Op >= 0x40 && Op <= 0x4F) {                   // INC/DEC reg16
             Len = 1;
-        } else if (Op == 0x01 || Op == 0x29 || Op == 0x39 || Op == 0x89 || Op == 0x8B) {
-            Len = 2;                                             // <alu> r/m16,r16 (ModR/M)
+        } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
+            Len = 1;
+        } else if (Op == 0x01 || Op == 0x03 || Op == 0x29 || Op == 0x2B ||
+                   Op == 0x39 || Op == 0x3B || Op == 0x89 || Op == 0x8B) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // <alu> with ModR/M (+disp)
         } else if (Op == 0x05 || Op == 0x2D || Op == 0x3D || Op == 0xA1 || Op == 0xA3) {
             Len = 3;                                             // acc,imm16 / MOV AX,[addr16]
         } else if (Op == 0xEB) {                                 // JMP rel8
@@ -206,28 +209,50 @@ public:
             return S_OK;
         }
 
+        // PUSH/POP reg16 (implicit [SP]).
+        if (Op >= 0x50 && Op <= 0x57) {                            // PUSH reg16
+            UINT32 Reg = Op - 0x50;
+            ComPtr<ICpuValue> SP;  pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            ComPtr<ICpuValue> V;   pE->GetRegister (Reg, 16, &V);
+            pE->Store (V, NewSP, 16);
+            return S_OK;
+        }
+        if (Op >= 0x58 && Op <= 0x5F) {                            // POP reg16
+            UINT32 Reg = Op - 0x58;
+            ComPtr<ICpuValue> SP;  pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> V;   pE->Load (SP, 16, &V);
+            pE->PutRegister (Reg, V, 16, FALSE);
+            ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            return S_OK;
+        }
+
         switch (Op) {
-        case 0x01: case 0x29: case 0x39: case 0x89: case 0x8B: {   // <alu> r/m16,r16 (mod=11)
-            UINT8 M   = m_pCode[Pc + 1];
-            UINT32 Rm = M & 7, Reg = (M >> 3) & 7;
-            if (Op == 0x8B) {                                      // MOV r16, r/m16
-                ComPtr<ICpuValue> S; pE->GetRegister (Rm, 16, &S);
-                pE->PutRegister (Reg, S, 16, FALSE);
-                break;
+        case 0x01: case 0x03: case 0x29: case 0x2B:                // <alu>/MOV with ModR/M
+        case 0x39: case 0x3B: case 0x89: case 0x8B: {
+            UINT8  M       = m_pCode[Pc + 1];
+            UINT32 Reg     = (M >> 3) & 7;
+            bool   RegDest = (Op & 2) != 0;                        // direction bit
+            ComPtr<ICpuValue> RegV; pE->GetRegister (Reg, 16, &RegV);
+            ComPtr<ICpuValue> RmV;  EmitRmRead (pE, M, Pc + 1, &RmV);
+
+            if (Op == 0x89) { EmitRmWrite (pE, M, Pc + 1, RegV); break; }   // MOV r/m, r
+            if (Op == 0x8B) { pE->PutRegister (Reg, RmV, 16, FALSE); break; } // MOV r, r/m
+
+            ICpuValue *pDst = RegDest ? (ICpuValue *) RegV : (ICpuValue *) RmV;
+            ICpuValue *pSrc = RegDest ? (ICpuValue *) RmV : (ICpuValue *) RegV;
+            CPU_BINOP  BOp  = (Op == 0x01 || Op == 0x03) ? BinAdd : BinSub;
+            bool       IsCmp = (Op == 0x39 || Op == 0x3B);
+            ComPtr<ICpuValue> Res; pE->BinaryOp (BOp, pDst, pSrc, &Res);
+            if (!IsCmp) {
+                if (RegDest) { pE->PutRegister (Reg, Res, 16, FALSE); }
+                else         { EmitRmWrite (pE, M, Pc + 1, Res); }
             }
-            if (Op == 0x89) {                                      // MOV r/m16, r16
-                ComPtr<ICpuValue> S; pE->GetRegister (Reg, 16, &S);
-                pE->PutRegister (Rm, S, 16, FALSE);
-                break;
-            }
-            ComPtr<ICpuValue> D; pE->GetRegister (Rm, 16, &D);
-            ComPtr<ICpuValue> S; pE->GetRegister (Reg, 16, &S);
-            ComPtr<ICpuValue> Res;
-            pE->BinaryOp (Op == 0x01 ? BinAdd : BinSub, D, S, &Res);
-            if (Op != 0x39) {                                      // CMP discards the result
-                pE->PutRegister (Rm, Res, 16, FALSE);
-            }
-            if (Op == 0x01) { EmitAddFlags (pE, D, S, Res); } else { EmitSubFlags (pE, D, S, Res); }
+            if (BOp == BinAdd) { EmitAddFlags (pE, pDst, pSrc, Res); } else { EmitSubFlags (pE, pDst, pSrc, Res); }
             break;
         }
         case 0x05: case 0x2D: case 0x3D: {                         // <alu> AX, imm16
@@ -346,6 +371,62 @@ public:
     }
 
 private:
+    // Bytes occupied by a ModR/M byte + its displacement.
+    static UINT32 RmLen (UINT8 M) {
+        UINT8 Mod = (UINT8) (M >> 6), Rm = (UINT8) (M & 7);
+        if (Mod == 3) { return 1; }                  // register-direct: ModR/M only
+        if (Mod == 0) { return (Rm == 6) ? 3 : 1; }  // [disp16] carries 2 bytes
+        if (Mod == 1) { return 2; }                  // disp8
+        return 3;                                    // mod==2: disp16
+    }
+
+    // Emit the 16-bit effective address for a memory ModR/M (mod != 3). DispPc points
+    // at the displacement bytes (one past the ModR/M byte). Standard 8086 modes:
+    //   rm 0..7 = [BX+SI] [BX+DI] [BP+SI] [BP+DI] [SI] [DI] [BP or disp16] [BX]
+    VOID EmitEA (ICpuEmitter *pE, UINT8 M, CPU_ADDR DispPc, ICpuValue **ppEA) {
+        UINT8 Mod = (UINT8) (M >> 6), Rm = (UINT8) (M & 7);
+        if (Mod == 0 && Rm == 6) {
+            pE->ConstInt (16, Imm16At (m_pCode, DispPc), ppEA);   // [disp16]
+            return;
+        }
+        static CONST INT8 kBase[8][2] = {
+            { RegV20BX, RegV20SI }, { RegV20BX, RegV20DI }, { RegV20BP, RegV20SI }, { RegV20BP, RegV20DI },
+            { RegV20SI, -1 },       { RegV20DI, -1 },       { RegV20BP, -1 },       { RegV20BX, -1 }
+        };
+        ICpuValue *pAcc = nullptr;
+        pE->GetRegister ((UINT32) kBase[Rm][0], 16, &pAcc);
+        if (kBase[Rm][1] >= 0) {
+            ComPtr<ICpuValue> Idx; pE->GetRegister ((UINT32) kBase[Rm][1], 16, &Idx);
+            ICpuValue *pSum = nullptr; pE->BinaryOp (BinAdd, pAcc, Idx, &pSum);
+            pAcc->Release (); pAcc = pSum;
+        }
+        if (Mod == 1 || Mod == 2) {
+            UINT16 Disp = (Mod == 1) ? (UINT16) (INT16) (INT8) m_pCode[DispPc] : Imm16At (m_pCode, DispPc);
+            ComPtr<ICpuValue> D; pE->ConstInt (16, Disp, &D);
+            ICpuValue *pSum = nullptr; pE->BinaryOp (BinAdd, pAcc, D, &pSum);
+            pAcc->Release (); pAcc = pSum;
+        }
+        *ppEA = pAcc;   // ownership to caller
+    }
+
+    // Read / write the r/m operand: a register (mod=11) or memory at the EA.
+    VOID EmitRmRead (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue **ppValue) {
+        if ((M >> 6) == 3) {
+            pE->GetRegister ((UINT32) (M & 7), 16, ppValue);
+        } else {
+            ComPtr<ICpuValue> EA; EmitEA (pE, M, ModRMPc + 1, &EA);
+            pE->Load (EA, 16, ppValue);
+        }
+    }
+    VOID EmitRmWrite (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue *pValue) {
+        if ((M >> 6) == 3) {
+            pE->PutRegister ((UINT32) (M & 7), pValue, 16, FALSE);
+        } else {
+            ComPtr<ICpuValue> EA; EmitEA (pE, M, ModRMPc + 1, &EA);
+            pE->Store (pValue, EA, 16);
+        }
+    }
+
     // INC/DEC overflow: OF is set when the operand was at the signed limit (INC out
     // of 0x7FFF, DEC out of 0x8000). CF is left untouched (per 8086 INC/DEC).
     static VOID EmitIncDecOverflow (ICpuEmitter *pE, ICpuValue *pA, UINT16 Limit) {

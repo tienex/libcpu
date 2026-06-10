@@ -1,14 +1,11 @@
 /** @file
   V20/V30 test runner. Translates whole programs through GenerateAotCfg (the CFG
-  path) and runs them once. Two scenarios:
+  path) and runs them once, checking the 16-bit result word at 0x200. Scenarios:
 
-  (1) A real LOOP (backward conditional branch) summing 5+4+3+2+1:
-        MOV CX,5 ; MOV AX,0 ; loop: ADD AX,CX ; DEC CX ; JNZ loop ; MOV [0x200],AX
-      -> word @ 0x200 == 15.
-
-  (2) The NEC-only bit instructions:
-        MOV AX,0 ; SET1 AX,5 ; SET1 AX,0 ; NOT1 AX,5 ; MOV [0x200],AX
-      -> AX = 0x20 | 0x01, then bit 5 toggled off -> 0x01; word @ 0x200 == 1.
+  (1) LOOP (backward branch) summing 5+4+3+2+1                        -> 15
+  (2) NEC bit instructions SET1/SET1/NOT1                             -> 1
+  (3) memory-operand ModR/M: sum a 4-word array via ADD AX,[BX]       -> 100
+  (4) PUSH/POP round-trip + MOV [disp16],reg (memory ModR/M store)    -> 0x1234
 **/
 #ifndef LIBCPU_RUNAOTV20_H
 #define LIBCPU_RUNAOTV20_H
@@ -22,12 +19,20 @@
 
 namespace LibCPU {
 
+//
+// Run a program (optionally seeding Data at DataAddr first) and return the 16-bit
+// word stored at 0x200, or -1 on failure.
+//
 static inline int
-AotV20Word (ICpuBackend *pBackend, UINT8 CONST *pProgram, UINT32 ProgLen, int *pOk)
+AotV20Run (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen,
+           UINT8 CONST *pData, UINT32 DataLen, UINT16 DataAddr)
 {
     static UINT8 Ram[65536];
     std::memset (Ram, 0, sizeof (Ram));
-    std::memcpy (Ram, pProgram, ProgLen);
+    std::memcpy (Ram, pProg, ProgLen);
+    if (pData != nullptr) {
+        std::memcpy (Ram + DataAddr, pData, DataLen);
+    }
 
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
@@ -39,21 +44,18 @@ AotV20Word (ICpuBackend *pBackend, UINT8 CONST *pProgram, UINT32 ProgLen, int *p
     UINT32 Count = 0;
     HRESULT hr = GenerateAotCfg (pArch, pBackend, 0, (CPU_ADDR) ProgLen, &Code, &Count);
     if (FAILED (hr) || Code == nullptr) {
-        std::printf ("  AOT-CFG generation failed (hr=0x%lx)\n", (unsigned long) hr);
         pArch->Release ();
-        *pOk = 0;
         return -1;
     }
     Code->Execute (Ram, &State, nullptr);
     pArch->Release ();
-    *pOk = 1;
-    return (int) (Ram[0x200] | (Ram[0x201] << 8));   // result word at 0x200
+    return (int) (Ram[0x200] | (Ram[0x201] << 8));
 }
 
 static inline int
 RunAotV20Program (ICpuBackend *pBackend)
 {
-    std::printf ("backend = '%s'  (NEC V20/V30: loop + bit instructions, via CFG)\n", pBackend->GetName ());
+    std::printf ("backend = '%s'  (NEC V20/V30: loop, bit ops, memory ModR/M, stack)\n", pBackend->GetName ());
 
     UINT8 const Loop[] = {
         0xB9, 0x05, 0x00,   // MOV CX, 5
@@ -70,16 +72,42 @@ RunAotV20Program (ICpuBackend *pBackend)
         0x0F, 0x1F, 0xC0, 0x05,   // NOT1 AX, 5   -> 0x01
         0xA3, 0x00, 0x02          // MOV [0x200], AX
     };
+    // Sum an array of four words at 0x300 through the [BX] memory operand.
+    UINT8 const Array[] = {
+        0xBB, 0x00, 0x03,   // MOV BX, 0x300   (array base)
+        0xB9, 0x04, 0x00,   // MOV CX, 4
+        0xB8, 0x00, 0x00,   // MOV AX, 0
+        0x03, 0x07,         // loop: ADD AX, [BX]   (ModR/M 07 = mod00 reg=AX rm=[BX])
+        0x43,               //       INC BX
+        0x43,               //       INC BX         (BX += 2)
+        0x49,               //       DEC CX
+        0x75, 0xF9,         //       JNZ loop
+        0xA3, 0x00, 0x02    // MOV [0x200], AX
+    };
+    UINT8 const ArrayData[] = { 0x0A, 0x00, 0x14, 0x00, 0x1E, 0x00, 0x28, 0x00 };  // 10,20,30,40 -> 100
+    // PUSH/POP round-trip; store BX via MOV [disp16],BX (memory ModR/M store).
+    UINT8 const Stack[] = {
+        0xBC, 0x00, 0x10,   // MOV SP, 0x1000
+        0xB8, 0x34, 0x12,   // MOV AX, 0x1234
+        0x50,               // PUSH AX
+        0xB8, 0x00, 0x00,   // MOV AX, 0
+        0x5B,               // POP BX           (BX = 0x1234)
+        0x89, 0x1E, 0x00, 0x02  // MOV [0x200], BX  (ModR/M 1E = mod00 reg=BX rm=[disp16])
+    };
 
-    int Ok1 = 0, Ok2 = 0;
-    int SumW = AotV20Word (pBackend, Loop, (UINT32) sizeof (Loop), &Ok1);
-    int BitW = AotV20Word (pBackend, Bits, (UINT32) sizeof (Bits), &Ok2);
+    int Sum   = AotV20Run (pBackend, Loop,  (UINT32) sizeof (Loop),  nullptr, 0, 0);
+    int Bit   = AotV20Run (pBackend, Bits,  (UINT32) sizeof (Bits),  nullptr, 0, 0);
+    int Arr   = AotV20Run (pBackend, Array, (UINT32) sizeof (Array), ArrayData, (UINT32) sizeof (ArrayData), 0x300);
+    int Stk   = AotV20Run (pBackend, Stack, (UINT32) sizeof (Stack), nullptr, 0, 0);
 
-    std::printf ("  loop sum 5+4+3+2+1 -> [0x200] = %d (exp 15)\n", SumW);
-    std::printf ("  SET1/SET1/NOT1 bit ops -> [0x200] = %d (exp 1)\n", BitW);
+    std::printf ("  loop 5+4+3+2+1            -> [0x200] = %d (exp 15)\n", Sum);
+    std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
+    std::printf ("  array sum via [BX]       -> [0x200] = %d (exp 100)\n", Arr);
+    std::printf ("  PUSH/POP + MOV [m],BX    -> [0x200] = 0x%04x (exp 0x1234)\n", Stk);
 
-    bool Ok = Ok1 && Ok2 && SumW == 15 && BitW == 1;
-    std::printf ("RESULT: %s  (loop %d==15, bits %d==1)\n", Ok ? "PASS" : "FAIL", SumW, BitW);
+    bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk);
     return Ok ? 0 : 1;
 }
 
