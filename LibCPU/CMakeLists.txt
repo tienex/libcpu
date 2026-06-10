@@ -110,6 +110,19 @@ libcpu_add_backend(wasm_backend wasm
     third_party/wasm3/m3_info.c
   INCLUDES backends/wasm third_party/wasm3)
 
+# In-process JVM backend (JNI DefineClass of hand-emitted bytecode; no javac).
+find_package(JNI QUIET)
+if(JNI_FOUND)
+  get_filename_component(LIBCPU_JVM_LIBDIR "${JAVA_JVM_LIBRARY}" DIRECTORY)
+  # libjvm.dylib is single-arch (the host JDK's arch), so this bundle is too.
+  libcpu_add_backend(jvm_backend jvm
+    ARCHS ${CMAKE_HOST_SYSTEM_PROCESSOR}
+    SOURCES backends/jvm/JvmBackend.cpp backends/jvm/JvmModule.cpp
+    INCLUDES backends/jvm ${JNI_INCLUDE_DIRS}
+    LIBS ${JNI_LIBRARIES}
+    RPATH ${LIBCPU_JVM_LIBDIR})
+endif()
+
 # In-process JavaScriptCore backend (Apple framework; no-copy typed arrays).
 if(APPLE)
   libcpu_add_backend(jscore_backend jscore
