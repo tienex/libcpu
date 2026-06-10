@@ -78,7 +78,8 @@ typedef enum _CPU_EXEC_STATUS {
     ExecOk,
     ExecFuncNotFound,
     ExecSingleStep,
-    ExecTrap
+    ExecTrap,
+    ExecSmc            // a self-modifying-code guard fired; re-translate from TrapPc
 } CPU_EXEC_STATUS;
 
 //
@@ -228,6 +229,27 @@ DECLARE_INTERFACE_ (ICpuBackend, IUnknown)
     STDMETHOD (Compile)(THIS_ IN ICpuEmitter *pEmitter, OUT ICpuCode **ppCode) PURE;
 };
 
+/**
+  ICpuSmcEmitter -- optional emitter capability for self-modifying code.
+
+  An emitter that can guard against self-modifying code exposes this through
+  QueryInterface (IID_ICpuSmcEmitter). The AOT driver, when building a CFG, calls
+  EmitCodeGuard at each block's entry; the backend emits a check that -- when the
+  watched code region (CPU_STATE.CodeStart/CodeEnd) has been written since the
+  block was translated -- records this block's address in CPU_STATE.TrapPc and
+  returns ExecSmc, so the host can re-translate from there. Backends that do not
+  implement it simply do not return it from QueryInterface, and the AOT path then
+  runs without SMC protection (correct only for non-self-modifying programs).
+**/
+DECLARE_INTERFACE_ (ICpuSmcEmitter, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (EmitCodeGuard)(THIS_ CPU_ADDR Pc) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -244,6 +266,8 @@ inline constexpr IID IID_ICpuCode =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05 } };
 inline constexpr IID IID_ICpuBackend =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } };
+inline constexpr IID IID_ICpuSmcEmitter =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } };
 
 } // namespace LibCPU
 

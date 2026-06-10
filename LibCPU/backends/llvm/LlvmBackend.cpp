@@ -88,7 +88,7 @@ private:
 //
 // The builder: emits LLVM IR for one translation unit (one function "insn").
 //
-class LlvmEmitter final : public LcComObject<ICpuEmitter> {
+class LlvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
     LlvmEmitter () {
         m_Ctx     = std::make_unique<LLVMContext> ();
@@ -114,9 +114,21 @@ public:
         m_pFRF   = &*It++; m_pFRF->setName ("FRF");
     }
 
+    // This object exposes two interfaces (ICpuEmitter + ICpuSmcEmitter), so it
+    // resolves QueryInterface itself and forwards refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
+        if (ppvObject == nullptr) {
+            return E_POINTER;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+            *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);   // IUnknown + ICpuEmitter
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
 
     // ---- values -----------------------------------------------------------
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
@@ -140,6 +152,7 @@ public:
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
         llvm::Value *pV = m_Builder->CreateZExtOrTrunc (ValOf (pValue), IntTy (Bits));
         m_Builder->CreateStore (pV, ElemPtr (MemPtr (ValOf (pAddr)), IntTy (Bits)));
+        EmitStoreBarrier (ValOf (pAddr));
         return S_OK;
     }
 
@@ -240,6 +253,27 @@ public:
         return S_OK;
     }
 
+    // ---- self-modifying-code guard (ICpuSmcEmitter) -----------------------
+    // At a block's entry: if the watched code region has been written since this
+    // block was translated, record the block PC in TrapPc and return ExecSmc so
+    // the host can re-translate from here; otherwise fall through into the block.
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        llvm::Value *pDirty = m_Builder->CreateLoad (IntTy (8), ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET), IntTy (8)));
+        llvm::Value *pSet   = m_Builder->CreateICmpNE (pDirty, ConstantInt::get (IntTy (8), 0));
+
+        BasicBlock *pTrap = BasicBlock::Create (*m_Ctx, "smc_trap", m_pFn);
+        BasicBlock *pCont = BasicBlock::Create (*m_Ctx, "smc_cont", m_pFn);
+        m_Builder->CreateCondBr (pSet, pTrap, pCont);
+
+        m_Builder->SetInsertPoint (pTrap);
+        m_Builder->CreateStore (ConstantInt::get (IntTy (64), Pc),
+                                ElemPtr (StatePtr (CPU_STATE_TRAPPC_OFFSET), IntTy (64)));
+        m_Builder->CreateRet (ConstantInt::get (IntTy (32), (UINT32) ExecSmc));
+
+        m_Builder->SetInsertPoint (pCont);   // the instruction is emitted here
+        return S_OK;
+    }
+
     //
     // Finalize: terminate the entry block and JIT-compile. Returns the code object.
     //
@@ -308,6 +342,19 @@ private:
     llvm::Value *MemPtr (llvm::Value *pAddr) {
         llvm::Value *pIdx = m_Builder->CreateZExtOrTrunc (pAddr, IntTy (64));
         return m_Builder->CreateGEP (IntTy (8), m_pRAM, pIdx);
+    }
+    // Write-barrier for self-modifying code: CodeDirty |= (CodeStart <= addr < CodeEnd).
+    // Inert when CodeStart == CodeEnd (the default), so non-SMC runs are unaffected.
+    void EmitStoreBarrier (llvm::Value *pAddr) {
+        llvm::Value *pA  = m_Builder->CreateZExtOrTrunc (pAddr, IntTy (64));
+        llvm::Value *pCs = m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODESTART_OFFSET), IntTy (64)));
+        llvm::Value *pCe = m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODEEND_OFFSET), IntTy (64)));
+        llvm::Value *pIn = m_Builder->CreateAnd (m_Builder->CreateICmpUGE (pA, pCs),
+                                                 m_Builder->CreateICmpULT (pA, pCe));
+        llvm::Value *pDp = ElemPtr (StatePtr (CPU_STATE_CODEDIRTY_OFFSET), IntTy (8));
+        llvm::Value *pNew = m_Builder->CreateSelect (pIn, ConstantInt::get (IntTy (8), 1),
+                                                     m_Builder->CreateLoad (IntTy (8), pDp));
+        m_Builder->CreateStore (pNew, pDp);
     }
     HRESULT Wrap (llvm::Value *pV, ICpuValue **ppValue) {
         *ppValue = new LlvmValue (pV);

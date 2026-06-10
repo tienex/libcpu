@@ -84,6 +84,13 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         return FAILED (hr) ? hr : E_FAIL;
     }
 
+    // Optional self-modifying-code support: if the emitter exposes it, a guard is
+    // planted at each block entry (inert unless the host arms CPU_STATE.Code*).
+    ICpuSmcEmitter *pSmc = nullptr;
+    if (FAILED (Emitter->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc))) {
+        pSmc = nullptr;
+    }
+
     //
     // 1. Discover every reachable instruction address by following the edges
     //    TagInstr reports: fall-through (NextPc) and branch target (NewPc).
@@ -138,13 +145,26 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 
     //
     // 3. The emitter starts in its own "entry" block: jump from there to the
-    //    program entry, then fill and terminate each instruction block.
+    //    program entry, then fill and terminate each instruction block. If the
+    //    backend does not implement Branch (it stubs the block ops), bail cleanly
+    //    rather than emit wrong linear code.
     //
-    Emitter->Branch (Target (Entry));
+    HRESULT BrHr = Emitter->Branch (Target (Entry));
+    if (FAILED (BrHr)) {
+        for (auto CONST &Pair : Blocks) {
+            if (Pair.second != nullptr) { Pair.second->Release (); }
+        }
+        if (pExit != nullptr) { pExit->Release (); }
+        if (pSmc != nullptr)  { pSmc->Release (); }
+        return BrHr;   // e.g. E_NOTIMPL: this backend has no control-flow support
+    }
 
     UINT32 Count = 0;
     for (CPU_ADDR Pc : Pcs) {
         Emitter->SetInsertBlock (Blocks[Pc]);
+        if (pSmc != nullptr) {
+            pSmc->EmitCodeGuard (Pc);   // trap here if code was modified since translation
+        }
         pArch->TranslateInstr (Pc, Emitter);
         Count++;
 
@@ -179,6 +199,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
     if (pExit != nullptr) {
         pExit->Release ();
+    }
+    if (pSmc != nullptr) {
+        pSmc->Release ();
     }
     return hr;
 }
