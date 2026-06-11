@@ -37,7 +37,12 @@ enum {
 
 //
 // Create the V20/V30 frontend. Returned reference is owned (Release when done).
+// CodeSeg is the code segment (CS): instructions are fetched from CS * 16 + IP, so
+// the AOT driver's program counter is the 16-bit IP offset within that segment.
+// CodeSeg 0 (the no-argument form) is flat addressing. The host should also set the
+// guest CS register (Reg[RegV20CS]) to the same value so MOV-from-CS reads it back.
 //
+ICpuArchitecture *CreateV20 (UINT16 CodeSeg);
 ICpuArchitecture *CreateV20 (VOID);
 
 } // namespace LibCPU

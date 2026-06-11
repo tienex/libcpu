@@ -128,6 +128,41 @@ AotV20Seg (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, UINT32 Lin
     return (int) (Ram[LinAddr] | (Ram[LinAddr + 1] << 8));
 }
 
+//
+// Code segmentation: the program is loaded at linear Cs*16 and the frontend is told
+// CS = Cs, so instructions fetch from Cs*16 + IP while the driver works in IP space.
+// CALL/RET therefore push/pop IP offsets, not linear addresses. Returns the word at
+// 0x200 (the CALL/RET result); *pCsVal gets the word at 0x202 (the value MOV-from-CS
+// read back, which must equal Cs).
+//
+static inline int
+AotV20Cs (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, UINT16 Cs, int *pCsVal)
+{
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram + ((UINT32) Cs << 4), pProg, ProgLen);   // load code at Cs*16
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    State.Reg[RegV20CS] = Cs;                                 // guest CS register
+
+    ICpuArchitecture *pArch = CreateV20 (Cs);
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    ComPtr<ICpuCode> Code;
+    UINT32 Count = 0;
+    HRESULT hr = GenerateAotCfg (pArch, pBackend, 0, (CPU_ADDR) ProgLen, &Code, &Count);
+    if (FAILED (hr) || Code == nullptr) {
+        pArch->Release ();
+        return -1;
+    }
+    State.TrapPc = CPU_SMC_NO_TRAP;
+    Code->Execute (Ram, &State, nullptr);
+    pArch->Release ();
+    *pCsVal = (int) (Ram[0x202] | (Ram[0x203] << 8));
+    return (int) (Ram[0x200] | (Ram[0x201] << 8));
+}
+
 static inline int
 RunAotV20Program (ICpuBackend *pBackend)
 {
@@ -184,6 +219,21 @@ RunAotV20Program (ICpuBackend *pBackend)
         0xA3, 0x00, 0x02          // 10:      MOV [0x200], AX   (return point; AX = 3+5 = 8)
     };
 
+    // Code segmentation: same CALL/RET subroutine, but assembled to run at CS=0x40
+    // (linear 0x400). CALL pushes IP 0x10 (not 0x410); RET returns there. Then
+    // MOV AX,CS reads the CS register (0x40).
+    UINT8 const Cs[] = {
+        0xE9, 0x04, 0x00,   // 0:  JMP main (IP 0x7)
+        0x05, 0x05, 0x00,   // 3:  sub: ADD AX, 5
+        0xC3,               // 6:       RET
+        0xB8, 0x03, 0x00,   // 7:  main: MOV AX, 3
+        0xBC, 0x00, 0x10,   // A:        MOV SP, 0x1000
+        0xE8, 0xF3, 0xFF,   // D:        CALL sub (IP 0x3)
+        0xA3, 0x00, 0x02,   // 10:       MOV [0x200], AX   (= 8)
+        0x8C, 0xC8,         // 13:       MOV AX, CS        (= 0x40)
+        0xA3, 0x02, 0x02    // 15:       MOV [0x202], AX
+    };
+
     // Segmentation: set DS = 0x0100, then MOV [0x0010],AX lands at linear
     // 0x0100*16 + 0x10 = 0x1010 -- not at offset 0x10.
     UINT8 const Seg[] = {
@@ -201,6 +251,8 @@ RunAotV20Program (ICpuBackend *pBackend)
     int Cal   = AotV20CallRet (pBackend, Call, (UINT32) sizeof (Call), &Trans);
     int Unseg = -1;
     int Seg16 = AotV20Seg (pBackend, Seg, (UINT32) sizeof (Seg), 0x1010, &Unseg);
+    int CsVal = -1;
+    int CsRet = AotV20Cs (pBackend, Cs, (UINT32) sizeof (Cs), 0x0040, &CsVal);
 
     std::printf ("  loop 5+4+3+2+1            -> [0x200] = %d (exp 15)\n", Sum);
     std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
@@ -210,13 +262,15 @@ RunAotV20Program (ICpuBackend *pBackend)
                  Cal, Trans, Trans == 1 ? "" : "s");
     std::printf ("  DS=0x0100; MOV [0x10],AX  -> [linear 0x1010] = 0x%04x (exp 0x1234), [0x10] = %d (exp 0)\n",
                  Seg16, Unseg);
+    std::printf ("  CS=0x0040 CALL/RET + MOV AX,CS -> [0x200] = %d (exp 8), CS read = 0x%04x (exp 0x0040)\n",
+                 CsRet, CsVal);
 
     // With the in-artifact dispatcher, RET resolves inside the compiled code: one
     // translation, no host re-entry (it took 2 before the dispatch table).
     bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8 && Trans == 1
-              && Seg16 == 0x1234 && Unseg == 0;
-    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x)\n",
-                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16);
+              && Seg16 == 0x1234 && Unseg == 0 && CsRet == 8 && CsVal == 0x0040;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x, cs %d/0x%04x)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16, CsRet, CsVal);
     return Ok ? 0 : 1;
 }
 

@@ -87,6 +87,8 @@ EmitSubFlags (ICpuEmitter *pE, ICpuValue *pA, ICpuValue *pB, ICpuValue *pRes)
 
 class CpuV20 final : public LcComObject<ICpuArchitecture> {
 public:
+    explicit CpuV20 (UINT16 CodeSeg) : m_CodeSeg (CodeSeg) {}
+
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);
     }
@@ -105,7 +107,10 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE SetCodeMemory (UINT8 CONST *pBase, UINT64 Size) override {
-        m_pCode    = pBase;
+        // Instructions are fetched from CS * 16 + IP. The AOT driver works in IP
+        // space, so we bias the decode pointer by the code segment base once here;
+        // every decode (m_pCode[Pc]) then reads the right linear byte.
+        m_pCode    = pBase + ((UINT64) m_CodeSeg << 4);
         m_CodeSize = Size;
         return S_OK;
     }
@@ -501,14 +506,21 @@ private:
 
     UINT8 CONST *m_pCode    = nullptr;
     UINT64       m_CodeSize = 0;
+    UINT16       m_CodeSeg  = 0;   // CS: code is fetched from m_CodeSeg * 16 + IP
 };
 
 } // anonymous namespace
 
 ICpuArchitecture *
+CreateV20 (UINT16 CodeSeg)
+{
+    return new CpuV20 (CodeSeg);
+}
+
+ICpuArchitecture *
 CreateV20 (VOID)
 {
-    return new CpuV20 ();
+    return new CpuV20 (0);
 }
 
 } // namespace LibCPU
