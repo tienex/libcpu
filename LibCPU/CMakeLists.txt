@@ -250,6 +250,11 @@ target_link_libraries(tiered6502 PRIVATE LibCPU Threads::Threads)
 add_executable(dossys test/dossys.cpp aot/AotGenerator.cpp core/KnowledgeLibrary.cpp frontends/v20/CpuV20.cpp)
 target_include_directories(dossys PRIVATE frontends/v20 test aot core)
 target_link_libraries(dossys PRIVATE LibCPU)
+
+# Single-step debugger (line editor + gdb-like commands + dual disassembly).
+add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
+target_include_directories(lcdbg PRIVATE frontends/v20 frontends/m6502 test core)
+target_link_libraries(lcdbg PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -303,6 +308,17 @@ if(TARGET interp_backend)
     COMMAND dossys "$<TARGET_BUNDLE_DIR:interp_backend>" "${CMAKE_CURRENT_SOURCE_DIR}/test/dos21.xml")
   set_tests_properties(knowledge.dos PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   list(APPEND LIBCPU_CHECK_DEPS dossys)
+
+  # The single-step debugger, driven by a piped command script (batch mode). The
+  # script runs the demo to completion and dumps the result word; the regex asserts
+  # the debugger actually stepped the program correctly (loop result at $0200).
+  add_test(NAME debugger.v20 COMMAND sh -c
+    "printf 'continue\\nexamine 0x200 2\\nquit\\n' | '$<TARGET_FILE:lcdbg>' '$<TARGET_BUNDLE_DIR:interp_backend>' --arch v20")
+  set_tests_properties(debugger.v20 PROPERTIES PASS_REGULAR_EXPRESSION "0200: 12 00")
+  add_test(NAME debugger.m6502 COMMAND sh -c
+    "printf 'continue\\nexamine 0x200 2\\nquit\\n' | '$<TARGET_FILE:lcdbg>' '$<TARGET_BUNDLE_DIR:interp_backend>' --arch 6502")
+  set_tests_properties(debugger.m6502 PROPERTIES PASS_REGULAR_EXPRESSION "0200: 0f 00")
+  list(APPEND LIBCPU_CHECK_DEPS lcdbg)
 endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and

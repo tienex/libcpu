@@ -304,6 +304,25 @@ DECLARE_INTERFACE_ (ICpuSyscallEmitter, IUnknown)
     STDMETHOD (EmitSyscall)(THIS_ UINT32 Vector, IN ICpuValue *pReturnPc) PURE;
 };
 
+/**
+  ICpuCodeListing -- optional ICpuCode capability: a human-readable disassembly of
+  the TRANSLATED artifact (what the backend actually produced -- the interpreter's
+  op list, a backend's IR, etc.), distinct from the guest disassembly the frontend
+  gives. A debugger uses it to show "real" guest code beside its translation.
+  Discovered via QueryInterface (IID_ICpuCodeListing) on an ICpuCode.
+**/
+DECLARE_INTERFACE_ (ICpuCodeListing, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Write a newline-separated listing of the translated unit into pBuf (NUL-
+    // terminated, truncated to BufSize). *pNeeded, if non-null, receives the full
+    // length (excluding the NUL) so the caller can resize and retry.
+    STDMETHOD (GetListing)(THIS_ OUT CHAR8 *pBuf, UINT32 BufSize, OUT UINT32 *pNeeded) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -326,6 +345,8 @@ inline constexpr IID IID_ICpuProfileEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } };
 inline constexpr IID IID_ICpuSyscallEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
+inline constexpr IID IID_ICpuCodeListing =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A } };
 
 } // namespace LibCPU
 

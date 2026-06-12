@@ -4,6 +4,8 @@
 #include "Interp.h"
 #include <vector>
 #include <cstring>
+#include <cstdio>
+#include <string>
 
 namespace LibCPU {
 namespace {
@@ -107,14 +109,23 @@ static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<InterpBlock *> (pB
 //
 // The runnable code object: interprets the recorded IR.
 //
-class InterpCode final : public LcComObject<ICpuCode> {
+class InterpCode final : public LcComObject<ICpuCode>, public ICpuCodeListing {
 public:
     InterpCode (std::vector<INTERP_INSN> Insns, UINT32 TempCount, std::vector<UINT32> BlockStart)
         : m_Insns (std::move (Insns)), m_TempCount (TempCount), m_BlockStart (std::move (BlockStart)) {}
 
+    // ICpuCode + the optional ICpuCodeListing (translated-code disassembly).
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuCodeListing)) {
+            *ppvObject = static_cast<ICpuCodeListing *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuCode, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuCode>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuCode>::Release (); }
+    HRESULT STDMETHODCALLTYPE GetListing (CHAR8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override;
 
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID * /*pFRF*/) override {
         UINT8        *pRam   = (UINT8 *) pRAM;
@@ -266,6 +277,69 @@ private:
     UINT32                   m_TempCount;
     std::vector<UINT32>      m_BlockStart;   // block id -> index into m_Insns
 };
+
+//
+// Render one op as a readable line (the "translated code" a debugger shows).
+//
+static std::string
+FormatInterpInsn (INTERP_INSN CONST &In)
+{
+    static CHAR8 CONST *const Bin[] = { "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
+                                        "and", "or", "xor", "shl", "lshr", "ashr", "rol", "ror" };
+    static CHAR8 CONST *const Un[]  = { "neg", "com", "not" };
+    static CHAR8 CONST *const Cmp[] = { "eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge" };
+    static CHAR8 CONST *const Cst[] = { "trunc", "zext", "sext" };
+    char Buf[160];
+    switch ((INTERP_OP) In.Op) {
+    case OpConstInt:   std::snprintf (Buf, sizeof (Buf), "t%u = const 0x%llx        ; %u-bit", In.Dest, (unsigned long long) In.Imm, In.Bits); break;
+    case OpGetReg:     std::snprintf (Buf, sizeof (Buf), "t%u = reg[%llu]            ; %u-bit", In.Dest, (unsigned long long) In.Imm, In.Bits); break;
+    case OpPutReg:     std::snprintf (Buf, sizeof (Buf), "reg[%llu] = t%u", (unsigned long long) In.Imm, In.A); break;
+    case OpLoad:       std::snprintf (Buf, sizeof (Buf), "t%u = load.%u [t%u]", In.Dest, In.Bits, In.A); break;
+    case OpStore:      std::snprintf (Buf, sizeof (Buf), "store.%u [t%u] = t%u", In.Bits, In.B, In.A); break;
+    case OpBinary:     std::snprintf (Buf, sizeof (Buf), "t%u = %s t%u, t%u", In.Dest, In.Aux < 15 ? Bin[In.Aux] : "?", In.A, In.B); break;
+    case OpUnary:      std::snprintf (Buf, sizeof (Buf), "t%u = %s t%u", In.Dest, In.Aux < 3 ? Un[In.Aux] : "?", In.A); break;
+    case OpCompare:    std::snprintf (Buf, sizeof (Buf), "t%u = cmp.%s t%u, t%u", In.Dest, In.Aux < 10 ? Cmp[In.Aux] : "?", In.A, In.B); break;
+    case OpCast:       std::snprintf (Buf, sizeof (Buf), "t%u = %s t%u           ; %u->%u", In.Dest, In.Aux < 3 ? Cst[In.Aux] : "?", In.A, In.C, In.Bits); break;
+    case OpSelect:     std::snprintf (Buf, sizeof (Buf), "t%u = sel t%u ? t%u : t%u", In.Dest, In.A, In.B, In.C); break;
+    case OpGetFlag:    std::snprintf (Buf, sizeof (Buf), "t%u = flag[%llu]", In.Dest, (unsigned long long) In.Imm); break;
+    case OpSetFlag:    std::snprintf (Buf, sizeof (Buf), "flag[%llu] = t%u", (unsigned long long) In.Imm, In.A); break;
+    case OpSetPC:      std::snprintf (Buf, sizeof (Buf), "pc = 0x%llx", (unsigned long long) In.Imm); break;
+    case OpBranch:     std::snprintf (Buf, sizeof (Buf), "branch L%llu", (unsigned long long) In.Imm); break;
+    case OpCondBranch: std::snprintf (Buf, sizeof (Buf), "condbranch t%u ? L%llu : L%u", In.A, (unsigned long long) In.Imm, In.B); break;
+    case OpCodeGuard:  std::snprintf (Buf, sizeof (Buf), "codeguard 0x%llx", (unsigned long long) In.Imm); break;
+    case OpIndirect:   std::snprintf (Buf, sizeof (Buf), "indirect t%u            ; trap -> resume at target", In.A); break;
+    case OpSetDisp:    std::snprintf (Buf, sizeof (Buf), "setdisp t%u", In.A); break;
+    case OpGetDisp:    std::snprintf (Buf, sizeof (Buf), "t%u = getdisp", In.Dest); break;
+    case OpEdgeCount:  std::snprintf (Buf, sizeof (Buf), "edgecount[%llu]++", (unsigned long long) In.Imm); break;
+    case OpSyscall:    std::snprintf (Buf, sizeof (Buf), "syscall 0x%llx -> t%u    ; trap -> host dispatch", (unsigned long long) In.Imm, In.A); break;
+    default:           std::snprintf (Buf, sizeof (Buf), "op%u", In.Op); break;
+    }
+    return std::string (Buf);
+}
+
+HRESULT STDMETHODCALLTYPE
+InterpCode::GetListing (CHAR8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
+{
+    // Reverse the block-start map so we can label where each block begins.
+    std::string Out;
+    for (UINT32 Ip = 0; Ip < m_Insns.size (); Ip++) {
+        for (UINT32 B = 0; B < m_BlockStart.size (); B++) {
+            if (m_BlockStart[B] == Ip) {
+                Out += "L" + std::to_string (B) + ":\n";
+            }
+        }
+        Out += "    " + FormatInterpInsn (m_Insns[Ip]) + "\n";
+    }
+    if (pNeeded != nullptr) {
+        *pNeeded = (UINT32) Out.size ();
+    }
+    if (pBuf != nullptr && BufSize > 0) {
+        UINT32 Copy = (UINT32) Out.size () < (BufSize - 1) ? (UINT32) Out.size () : (BufSize - 1);
+        std::memcpy (pBuf, Out.data (), Copy);
+        pBuf[Copy] = '\0';
+    }
+    return S_OK;
+}
 
 //
 // The builder: records ops, hands back opaque value handles.
