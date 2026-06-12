@@ -1,0 +1,43 @@
+// A UPCL description of a slice of the NEC V20 (8086): decoding, disassembly, and
+// semantics in one place. Checked by `lcx upcl check`.
+//
+//   * Bit layouts are declared ONCE in the `formats` block.
+//   * Each instruction's encoding + disassembly are ATTRIBUTES; the body is its
+//     semantics. `=` means assignment (in the body) or a named binding (inside an
+//     attribute) -- never ambiguous.
+//   * An instruction may inherit from a super-instruction with `: <super>`.
+
+arch "v20" {
+
+    name "NEC V20 (UPCL subset)";
+    endian little;
+    word_size    16;
+    address_size 16;
+
+    registers { ax, cx, dx, bx, sp, bp, si, di, es, cs, ss, ds }
+
+    // Bit layouts, declared once and shared by every instruction that references them.
+    formats {
+        ri16  [ op:5, reg:3, imm:16 ];      // 5-bit opcode, 3-bit reg, 16-bit immediate
+        modrm [ op:8, mod:2, reg:3, rm:3 ]; // 8-bit opcode + a ModR/M byte
+        rel16 [ op:8, disp:16 ];            // 8-bit opcode + 16-bit displacement
+    }
+
+    // MOV r16, imm16  (opcode 10111rrr -> 0xB8..0xBF).
+    [format(ri16 :: op=0b10111), disasm("mov %reg, 0x%imm")]
+    insn mov_r16_imm {
+        reg[reg] = imm;
+    }
+
+    // ADD r16, r16  (the ModR/M selects the two registers).
+    [format(modrm :: op=0x01), disasm("add %rm, %reg")]
+    insn add_r16_r16 {
+        reg[rm] = reg[rm] + reg[reg];
+    }
+
+    // JMP rel16.
+    [format(rel16 :: op=0xE9), disasm("jmp %disp")]
+    insn jmp_rel16 {
+        pc = pc + 3 + disp;
+    }
+}

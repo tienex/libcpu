@@ -272,11 +272,35 @@ target_include_directories(nativedemo PRIVATE frontends/v20 test core)
 target_link_libraries(nativedemo PRIVATE LibCPU)
 
 # lcx -- the unified machine driver tying every subsystem together.
+# UPCL -- the CPU-description language. A DYNAMIC sub-framework of LibCPU (clang-style
+# diagnostics, a hand-written recursive-descent parser); embeddable, and linked
+# dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
+# and links the LibCPU framework at run time.
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp)
+set_target_properties(upcl PROPERTIES
+  OUTPUT_NAME UPCL
+  FRAMEWORK TRUE
+  FRAMEWORK_VERSION A
+  MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
+  VERSION 1.0.0 SOVERSION 1
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h")
+target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
+if(APPLE)
+  # Nest UPCL.framework inside LibCPU.framework as a sub-framework.
+  add_dependencies(upcl LibCPU)
+  add_custom_command(TARGET upcl POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:LibCPU>/Frameworks"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "$<TARGET_BUNDLE_DIR:upcl>" "$<TARGET_FILE_DIR:LibCPU>/Frameworks/UPCL.framework"
+    COMMENT "Embedding UPCL.framework as a sub-framework of LibCPU.framework")
+endif()
+
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
-  core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
+  core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp
+  frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
 target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core)
-target_link_libraries(lcx PRIVATE LibCPU)
+target_link_libraries(lcx PRIVATE LibCPU upcl)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -375,6 +399,13 @@ if(TARGET interp_backend)
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
   set_tests_properties(lcx.aot PROPERTIES PASS_REGULAR_EXPRESSION "0x0012")
 endif()
+
+# UPCL -- the CPU-description language. A valid description checks clean; a broken one
+# produces clang-style diagnostics and a non-zero exit (WILL_FAIL).
+add_test(NAME upcl.check COMMAND lcx upcl check "${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
+set_tests_properties(upcl.check PROPERTIES PASS_REGULAR_EXPRESSION "3 instruction")
+add_test(NAME upcl.diagnostics COMMAND lcx upcl check "${CMAKE_CURRENT_SOURCE_DIR}/test/broken.upcl")
+set_tests_properties(upcl.diagnostics PROPERTIES WILL_FAIL TRUE)
 
 # `make check` (or `cmake --build build --target check`): build the drivers and
 # all present CFG backends, then run the matrix with per-failure output.

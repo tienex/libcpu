@@ -1,0 +1,19 @@
+// A deliberately broken UPCL file, to show off the clang-style diagnostics.
+
+arch "broken" {
+
+    name "Broken example";
+    endian sideways;            // error: expected 'little' or 'big'
+    word_size 16                // error: missing ';'
+
+    registers { a, b, c }
+
+    formats {
+        ri [ op:8, imm ];       // error: expected ':' between a field name and its width
+    }
+
+    [format(ri :: op=0x90), disasm(42)]    // error: disasm wants a string, not 42
+    insn oops {
+        reg[a] = ;              // error: expected an expression
+    }
+}

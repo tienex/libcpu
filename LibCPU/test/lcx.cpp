@@ -24,6 +24,7 @@
 #include "../core/KnowledgeLibrary.h"
 #include "../core/System.h"
 #include "../core/NativeAot.h"
+#include "../upcl/Parser.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "LibCPU/PCom.h"
@@ -333,6 +334,59 @@ CmdAot (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
 }
 
 static int
+CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
+{
+    CHAR8 CONST *pVerb = Positional (argc, argv, 0);
+    CHAR8 CONST *pFile = Positional (argc, argv, 1);
+    if (pVerb == nullptr || pFile == nullptr || std::strcmp (pVerb, "check") != 0) {
+        std::printf ("usage: lcx upcl check <file.upcl>\n");
+        return 2;
+    }
+    Upcl::SourceManager Sm;
+    std::string Err;
+    Upcl::FILE_ID Fid = Sm.LoadFile (pFile, &Err);
+    if (Fid == Upcl::InvalidFile) {
+        std::printf ("lcx upcl: %s\n", Err.c_str ());
+        return 2;
+    }
+    Upcl::DiagnosticEngine Diag (&Sm, stderr);
+    Upcl::Parser Parser (&Sm, Fid, &Diag);
+    Upcl::Module *pMod = Parser.ParseModule ();
+
+    if (Diag.HadError ()) {
+        std::printf ("%u error(s); '%s' is not valid UPCL.\n", Diag.ErrorCount (), pFile);
+        delete pMod;
+        return 1;
+    }
+    // Success: summarise what was parsed.
+    std::printf ("%s: ok -- %zu architecture(s)\n", pFile, pMod->Archs.size ());
+    for (Upcl::Arch *pArch : pMod->Archs) {
+        std::printf ("  arch \"%s\" (%s): %s-endian, word=%u addr=%u, %zu register(s), %zu format(s), %zu instruction(s)\n",
+                     pArch->Name.c_str (), pArch->FullName.c_str (), pArch->Little ? "little" : "big",
+                     pArch->WordSize, pArch->AddressSize, pArch->Registers.size (),
+                     pArch->Formats.size (), pArch->Insns.size ());
+        for (Upcl::Format *pFmt : pArch->Formats) {
+            std::printf ("    format %-8s ", pFmt->Name.c_str ());
+            for (Upcl::FormatField CONST &Ff : pFmt->Fields) {
+                std::printf ("%s:%u ", Ff.Name.c_str (), Ff.Width);
+            }
+            std::printf (" (%u bits)\n", pFmt->TotalBits ());
+        }
+        for (Upcl::Insn *pInsn : pArch->Insns) {
+            std::printf ("    insn %-14s format %-8s ", pInsn->Name.c_str (), pInsn->Format.c_str ());
+            for (Upcl::Field *pB : pInsn->Bindings) {
+                std::printf ("%s=0x%llx ", pB->Name.c_str (),
+                             (unsigned long long) (pB->Value && pB->Value->Kind == Upcl::ExprInt ? pB->Value->Int : 0));
+            }
+            if (!pInsn->Super.empty ()) { std::printf (": %s ", pInsn->Super.c_str ()); }
+            std::printf (" disasm \"%s\"  %zu stmt(s)\n", pInsn->Disasm.c_str (), pInsn->Semantics.size ());
+        }
+    }
+    delete pMod;
+    return 0;
+}
+
+static int
 CmdSystem (int argc, char **argv, CHAR8 CONST *pArgv0)
 {
     ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
@@ -398,6 +452,7 @@ CmdHelp ()
         "  lcx debug  <image> [--arch ...]\n"
         "  lcx system <image> [--arch v20]            8086 device bus + timer interrupt\n"
         "  lcx know   <library.xml> [--arch v20]      in-line syscalls -> host calls\n"
+        "  lcx upcl   check <file.upcl>                check a UPCL CPU description\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
@@ -420,6 +475,7 @@ main (int argc, char **argv)
     if (Cmd == "disasm")       { return CmdDisasm (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "debug")        { return CmdDebug (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "system")       { return CmdSystem (SubArgc, SubArgv, argv[0]); }
+    if (Cmd == "upcl")         { return CmdUpcl (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "know")         { return CmdKnowledge (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "cache")        { return CmdCache (SubArgc, SubArgv); }
     if (Cmd == "version")      { std::printf ("lcx (LibCPU) -- unified machine driver\n"); return 0; }
