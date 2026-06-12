@@ -441,9 +441,20 @@ RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Loop);
     UINT32 const Runs = 200;
 
-    // (a) TRUE counts: instrumented profile.
+    // (a) TRUE counts: instrumented profile. The instrumentation is emitted through
+    // ICpuProfileEmitter, which only the in-process 'interp' backend implements; on
+    // any other backend GenerateAotCfgProfiling returns E_NOTIMPL. That is a backend
+    // capability gap, not a failure -- report it as SKIP so a cross-backend sweep
+    // stays clean instead of flagging a feature the target was never meant to have.
     LcPerfTrace TrueTrace;
-    LcCollectEdgeProfile (pArch, pCheap, Entry, End, Ram, &State, Runs, TrueTrace);
+    HRESULT HrProf = LcCollectEdgeProfile (pArch, pCheap, Entry, End, Ram, &State, Runs, TrueTrace);
+    if (HrProf == E_NOTIMPL) {
+        std::printf ("  backend '%s' has no ICpuProfileEmitter -- edge instrumentation N/A\n",
+                     pCheap->GetName ());
+        std::printf ("RESULT: SKIP  (true per-edge counters need a profile-capable backend; only 'interp' qualifies)\n");
+        pArch->Release ();
+        return 0;
+    }
     UINT64 TrueEdge = TrueTrace.EdgeCount () > 0 ? TrueTrace.Edge (0).Count : 0;
 
     // (b) PROPAGATED counts: the JIT engine attributes the region count to the edge.
