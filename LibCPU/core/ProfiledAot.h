@@ -1,0 +1,59 @@
+/** @file
+  Profile-guided AOT builder (LibCPU core).
+
+  The AOT counterpart of LcTieredEngine. Where the JIT engine decides tiers AT RUN
+  TIME (count, then background-recompile), this decides them AHEAD OF TIME from a
+  persisted performance trace: Build() walks the trace and compiles each region once
+  at the tier its recorded hotness justifies (hot -> optimizing backend, cold ->
+  cheap backend). Run() is then pure execution -- no counting, no recompiling, no
+  background threads -- so a hot region is already native on its very first run.
+
+  Workflow: a profiling run emits a trace (LcTieredEngine::ExportTrace or any
+  counting pass) -> LcPerfTrace::Save -> a later run LcPerfTrace::Load -> Build ->
+  Run. The expensive optimizing compiles happen once, up front, reused thereafter.
+
+  Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
+**/
+
+#ifndef LIBCPU_PROFILEDAOT_H
+#define LIBCPU_PROFILEDAOT_H
+
+#include "LibCPU/ICpu.h"
+#include "TieredEngine.h"   // CPU_TIER
+#include "PerfTrace.h"
+#include <map>
+#include <vector>
+
+namespace LibCPU {
+
+class LcProfiledAot {
+public:
+    LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold);
+    ~LcProfiledAot ();
+
+    LcProfiledAot (LcProfiledAot CONST &)            = delete;
+    LcProfiledAot &operator= (LcProfiledAot CONST &) = delete;
+
+    // Compile every region in the trace at the tier its recorded count justifies.
+    HRESULT Build (LcPerfTrace CONST &Trace);
+
+    // Execute a region that Build() compiled. Pure execution -- no profiling.
+    CPU_EXEC_STATUS Run (CPU_ADDR Entry, VOID *pRAM, VOID *pGRF, VOID *pFRF);
+
+    UINT32 TierOf      (CPU_ADDR Entry) CONST;
+    UINT32 RegionCount () CONST;
+
+private:
+    struct Built { ICpuCode *pCode; UINT32 Tier; };
+
+    UINT32 PickTier (UINT64 Count) CONST;   // tier the recorded count warrants
+
+    ICpuArchitecture        *m_pArch;       // borrowed
+    std::vector<CPU_TIER>     m_Tiers;
+    UINT64                    m_HotThreshold;
+    std::map<CPU_ADDR, Built> m_Built;
+};
+
+} // namespace LibCPU
+
+#endif // LIBCPU_PROFILEDAOT_H

@@ -237,7 +237,7 @@ target_include_directories(aotv20 PRIVATE frontends/v20 test aot)
 target_link_libraries(aotv20 PRIVATE LibCPU)
 
 find_package(Threads REQUIRED)
-add_executable(tiered test/tiered.cpp aot/AotGenerator.cpp core/TieredEngine.cpp frontends/v20/CpuV20.cpp)
+add_executable(tiered test/tiered.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/v20/CpuV20.cpp)
 target_include_directories(tiered PRIVATE frontends/v20 test aot core)
 target_link_libraries(tiered PRIVATE LibCPU Threads::Threads)
 if(APPLE)

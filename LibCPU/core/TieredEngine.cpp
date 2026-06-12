@@ -2,6 +2,7 @@
   Adaptive tiered execution engine implementation. See TieredEngine.h.
 **/
 #include "TieredEngine.h"
+#include "PerfTrace.h"
 #include "../aot/AotGenerator.h"
 
 namespace LibCPU {
@@ -138,6 +139,15 @@ LcTieredEngine::UpgradesOf (CPU_ADDR Entry)
     std::lock_guard<std::mutex> Lk (m_Mutex);
     auto It = m_Slots.find (Entry);
     return (It != m_Slots.end ()) ? It->second.Upgrades : 0;
+}
+
+VOID
+LcTieredEngine::ExportTrace (LcPerfTrace &Trace)
+{
+    std::lock_guard<std::mutex> Lk (m_Mutex);
+    for (auto CONST &Pair : m_Slots) {
+        Trace.Record (Pair.first, Pair.second.End, Pair.second.Count);
+    }
 }
 
 } // namespace LibCPU

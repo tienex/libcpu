@@ -1,4 +1,4 @@
-/** @file  Adaptive tiered engine demo: load two backend bundles (cheap, optimizing). */
+/** @file  Tiered execution demos: JIT (online adaptive) and AOT (profile-guided). */
 #include "RunTiered.h"
 #include "LibCPU/Loader.h"
 #include <cstdio>
@@ -11,8 +11,11 @@ int main (int argc, char **argv) {
     ICpuBackend *pT0 = LoadBackendBundle (argv[1]);
     ICpuBackend *pT1 = LoadBackendBundle (argv[2]);
     if (!pT0 || !pT1) { std::printf ("failed to load bundles\n"); return 2; }
-    int Result = RunTieredDemo (pT0, pT1);
+
+    int Jit = RunTieredDemo (pT0, pT1);
+    int Aot = RunProfiledAotDemo (pT0, pT1, "/tmp/libcpu-v20.trace");
+
     pT1->Release ();
     pT0->Release ();
-    return Result;
+    return (Jit == 0 && Aot == 0) ? 0 : 1;
 }

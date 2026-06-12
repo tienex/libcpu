@@ -28,6 +28,8 @@
 
 namespace LibCPU {
 
+class LcPerfTrace;   // PerfTrace.h
+
 //
 // One compilation tier: a backend and a human-readable label. Tiers are ordered
 // cheapest-to-best; the engine starts at tier 0 and promotes hot regions upward.
@@ -58,6 +60,10 @@ public:
     UINT32 TierOf     (CPU_ADDR Entry);
     UINT64 CountOf    (CPU_ADDR Entry);
     UINT32 UpgradesOf (CPU_ADDR Entry);
+
+    // Emit the collected per-region counts as a performance trace, which can be
+    // persisted and re-used to drive profile-guided AOT (see PerfTrace / ProfiledAot).
+    VOID ExportTrace (LcPerfTrace &Trace);
 
 private:
     struct Slot {
