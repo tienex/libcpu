@@ -153,6 +153,10 @@ public:
             Len = 1; Tag = TagReturn;
         } else if (Op == 0xEA) {                                 // JMP ptr16:16 (far: CS:IP reload -> host)
             Len = 5; Tag = TagTrap;
+        } else if (Op == 0x9A) {                                 // CALL ptr16:16 (far: push CS:IP, reload -> host)
+            Len = 5; Tag = TagTrap;
+        } else if (Op == 0xCB) {                                 // RETF (far return: pop CS:IP at run time -> host)
+            Len = 1; Tag = TagTrap;
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
@@ -187,6 +191,10 @@ public:
             std::snprintf (pLine, MaxLine, "add %s,%s", RegName (M & 7), RegName ((M >> 3) & 7));
         } else if (Op == 0xA3) {
             std::snprintf (pLine, MaxLine, "mov [0x%04x],ax", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0x9A) {
+            std::snprintf (pLine, MaxLine, "call 0x%04x:0x%04x", Imm16At (m_pCode, Pc + 3), Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xCB) {
+            std::snprintf (pLine, MaxLine, "retf");
         } else if (Op == 0x0F) {
             CHAR8 CONST *pMnem = "?1";
             switch (m_pCode[Pc + 1]) {
@@ -357,6 +365,58 @@ public:
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
                 ComPtr<ICpuValue> Ip; pE->ConstInt (16, NewIp, &Ip);
                 pFlow->IndirectBranch (Ip);   // TrapPc = NewIp; host resumes there (in NewCs)
+                pFlow->Release ();
+            }
+            break;
+        }
+        case 0x9A: {                                               // CALL ptr16:16 (far)
+            // Push the return CS:IP (8086 order: CS first, then IP), reload CS:IP, and
+            // trap to the host, which re-translates the callee's segment. A matching
+            // RETF pops CS:IP and traps back.
+            UINT16 NewIp = Imm16At (m_pCode, Pc + 1);
+            UINT16 NewCs = Imm16At (m_pCode, Pc + 3);
+            ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+            // push CS: SP -= 2; [SS:SP] = CS
+            ComPtr<ICpuValue> Sp1;   pE->BinaryOp (BinSub, SP, Two, &Sp1);
+            ComPtr<ICpuValue> CurCs; pE->GetRegister (RegV20CS, 16, &CurCs);
+            ComPtr<ICpuValue> LinCs; EmitSegLinear (pE, RegV20SS, Sp1, &LinCs);
+            pE->Store (CurCs, LinCs, 16);
+            // push IP: SP -= 2; [SS:SP] = return offset (after the 5-byte CALL)
+            ComPtr<ICpuValue> Sp2;   pE->BinaryOp (BinSub, Sp1, Two, &Sp2);
+            pE->PutRegister (RegV20SP, Sp2, 16, FALSE);
+            ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + 5), &Ret);
+            ComPtr<ICpuValue> LinIp; EmitSegLinear (pE, RegV20SS, Sp2, &LinIp);
+            pE->Store (Ret, LinIp, 16);
+            // reload CS and trap to the host at NewIp (in NewCs)
+            ComPtr<ICpuValue> Cs;    pE->ConstInt (16, NewCs, &Cs);
+            pE->PutRegister (RegV20CS, Cs, 16, FALSE);
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                ComPtr<ICpuValue> Ip; pE->ConstInt (16, NewIp, &Ip);
+                pFlow->IndirectBranch (Ip);
+                pFlow->Release ();
+            }
+            break;
+        }
+        case 0xCB: {                                               // RETF (far return)
+            // Pop IP then CS (8086 order), set guest CS = popped CS, and trap to the
+            // host at the popped IP -- the return crosses segments, so the in-artifact
+            // dispatcher (single CS) cannot route it; the host reconfigures CS.
+            ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> LinIp; EmitSegLinear (pE, RegV20SS, SP, &LinIp);
+            ComPtr<ICpuValue> Ip;    pE->Load (LinIp, 16, &Ip);    // IP = [SS:SP]
+            ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> Sp1;   pE->BinaryOp (BinAdd, SP, Two, &Sp1);
+            ComPtr<ICpuValue> LinCs; EmitSegLinear (pE, RegV20SS, Sp1, &LinCs);
+            ComPtr<ICpuValue> Cs;    pE->Load (LinCs, 16, &Cs);    // CS = [SS:SP+2]
+            ComPtr<ICpuValue> Four;  pE->ConstInt (16, 4, &Four);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Four, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);          // SP += 4
+            pE->PutRegister (RegV20CS, Cs, 16, FALSE);             // guest CS = popped CS
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                pFlow->IndirectBranch (Ip);   // TrapPc = popped IP; host resumes there (in popped CS)
                 pFlow->Release ();
             }
             break;

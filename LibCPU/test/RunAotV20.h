@@ -211,6 +211,63 @@ AotV20Far (ICpuBackend *pBackend)
     return (int) (Ram[0x200] | (Ram[0x201] << 8));
 }
 
+//
+// Far CALL / RETF (inter-segment call + return). Segment A @ CS=0x40 sets up the
+// stack, far-CALLs 0x50:0, then stores AX and halts. Segment B @ CS=0x50 loads AX
+// and RETFs. The far CALL pushes the return CS:IP and traps to the host; RETF pops
+// them and traps back, so the host walks A -> B -> (back into) A across three
+// artifacts, reconfiguring CS each time. Returns [0x200] (= 0x1234 set in B).
+//
+static inline int
+AotV20FarCall (ICpuBackend *pBackend)
+{
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    UINT8 const SegA[] = {
+        0xBC, 0x00, 0x10,               // MOV SP, 0x1000          (SS defaults to 0)
+        0x9A, 0x00, 0x00, 0x50, 0x00,   // CALL 0x50:0x0000        (far; return IP = 8)
+        0xA3, 0x00, 0x02,               // MOV [0x200], AX
+        0xEA, 0xFF, 0xFF, 0xFF, 0xFF    // JMP 0xFFFF:0xFFFF       (halt sentinel)
+    };
+    UINT8 const SegB[] = {
+        0xB8, 0x34, 0x12,               // MOV AX, 0x1234
+        0xCB                            // RETF                    (pop CS:IP -> back to A)
+    };
+    std::memcpy (Ram + 0x400, SegA, sizeof (SegA));   // CS 0x40 -> linear 0x400
+    std::memcpy (Ram + 0x500, SegB, sizeof (SegB));   // CS 0x50 -> linear 0x500
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    State.Reg[RegV20CS] = 0x40;
+
+    ICpuArchitecture *pArch = CreateV20 (0x40);
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    CPU_ADDR ResumeIp = 0;
+    UINT16   Cs       = 0x40;
+    for (int Iter = 0; Iter < 16; Iter++) {
+        SetV20CodeSegment (pArch, Cs);
+        ComPtr<ICpuCode> Code;
+        UINT32 Count = 0;
+        if (FAILED (GenerateAotCfg (pArch, pBackend, ResumeIp, 0x100, &Code, &Count)) || Code == nullptr) {
+            pArch->Release ();
+            return -1;
+        }
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        Code->Execute (Ram, &State, nullptr);
+        if (State.TrapPc == CPU_SMC_NO_TRAP) {
+            break;                                   // ran off the end
+        }
+        Cs = (UINT16) State.Reg[RegV20CS];           // far CALL/RETF set the segment
+        if (Cs == 0xFFFF) {
+            break;                                   // halt sentinel
+        }
+        ResumeIp = (CPU_ADDR) State.TrapPc;          // ... and the IP
+    }
+    pArch->Release ();
+    return (int) (Ram[0x200] | (Ram[0x201] << 8));
+}
+
 static inline int
 RunAotV20Program (ICpuBackend *pBackend)
 {
@@ -302,6 +359,7 @@ RunAotV20Program (ICpuBackend *pBackend)
     int CsVal = -1;
     int CsRet = AotV20Cs (pBackend, Cs, (UINT32) sizeof (Cs), 0x0040, &CsVal);
     int Far   = AotV20Far (pBackend);
+    int FCall = AotV20FarCall (pBackend);
 
     std::printf ("  loop 5+4+3+2+1            -> [0x200] = %d (exp 15)\n", Sum);
     std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
@@ -314,13 +372,15 @@ RunAotV20Program (ICpuBackend *pBackend)
     std::printf ("  CS=0x0040 CALL/RET + MOV AX,CS -> [0x200] = %d (exp 8), CS read = 0x%04x (exp 0x0040)\n",
                  CsRet, CsVal);
     std::printf ("  far JMP CS:IP (0x40 -> 0x50)   -> [0x200] = 0x%04x (exp 0x0042)\n", Far);
+    std::printf ("  far CALL 0x50:0 / RETF        -> [0x200] = 0x%04x (exp 0x1234)\n", FCall);
 
     // With the in-artifact dispatcher, RET resolves inside the compiled code: one
     // translation, no host re-entry (it took 2 before the dispatch table).
     bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8 && Trans == 1
-              && Seg16 == 0x1234 && Unseg == 0 && CsRet == 8 && CsVal == 0x0040 && Far == 0x0042;
-    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x, cs %d/0x%04x, far 0x%04x)\n",
-                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16, CsRet, CsVal, Far);
+              && Seg16 == 0x1234 && Unseg == 0 && CsRet == 8 && CsVal == 0x0040 && Far == 0x0042
+              && FCall == 0x1234;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x, cs %d/0x%04x, far 0x%04x, farcall 0x%04x)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16, CsRet, CsVal, Far, FCall);
     return Ok ? 0 : 1;
 }
 
