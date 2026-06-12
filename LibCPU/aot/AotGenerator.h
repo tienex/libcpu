@@ -44,6 +44,41 @@ HRESULT GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                         CPU_ADDR Entry, CPU_ADDR End,
                         OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
 
+//
+// A static call edge discovered in a region: a CALL at Site to Callee, returning to
+// ReturnPoint (the instruction after the CALL). The call graph is static because
+// CALL targets are known at translate time; an edge/call-count trace weights these
+// by how often each caller ran (see PerfTrace / ProfiledAot).
+//
+typedef struct _CPU_CALL_EDGE {
+    CPU_ADDR Site;
+    CPU_ADDR Callee;
+    CPU_ADDR ReturnPoint;
+} CPU_CALL_EDGE;
+
+// Collect the static call edges reachable in [Entry, End). Writes up to MaxEdges
+// into pEdges and returns the total found.
+UINT32 CollectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
+                         OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges);
+
+//
+// One inlined callee for GenerateAotCfgInlined: the callee body [Callee, CalleeEnd)
+// is embedded at the call site -- the CALL elides its return-address push and falls
+// straight into the callee, and the callee's RET branches directly to ReturnPoint
+// (no pop, no dispatcher). Valid for a single-call-site leaf callee.
+//
+typedef struct _CPU_INLINE_SITE {
+    CPU_ADDR Callee;
+    CPU_ADDR CalleeEnd;
+    CPU_ADDR ReturnPoint;
+} CPU_INLINE_SITE;
+
+// Like GenerateAotCfg, but inlines every callee named in pInline (profile-guided).
+HRESULT GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                               CPU_ADDR Entry, CPU_ADDR End,
+                               CPU_INLINE_SITE CONST *pInline, UINT32 InlineCount,
+                               OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
+
 } // namespace LibCPU
 
 #endif // LIBCPU_AOTGENERATOR_H

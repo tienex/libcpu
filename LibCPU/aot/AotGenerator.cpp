@@ -69,14 +69,33 @@ GenerateAot (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 }
 
 HRESULT
-GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
-                CPU_ADDR Entry, CPU_ADDR End,
-                OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
+GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                       CPU_ADDR Entry, CPU_ADDR End,
+                       CPU_INLINE_SITE CONST *pInline, UINT32 InlineCount,
+                       OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
 {
     if (pArch == nullptr || pBackend == nullptr || ppCode == nullptr) {
         return E_INVALIDARG;
     }
     *ppCode = nullptr;
+
+    // Inline-plan lookups: is this CALL target inlined? is this PC inside an inlined
+    // callee (so its RET returns straight to the recorded continuation)?
+    auto IsInlinedCall = [&] (CPU_ADDR Callee) -> bool {
+        for (UINT32 I = 0; I < InlineCount; I++) {
+            if (pInline[I].Callee == Callee) { return true; }
+        }
+        return false;
+    };
+    auto InlinedRetOf = [&] (CPU_ADDR Pc, CPU_ADDR *pRet) -> bool {
+        for (UINT32 I = 0; I < InlineCount; I++) {
+            if (Pc >= pInline[I].Callee && Pc < pInline[I].CalleeEnd) {
+                *pRet = pInline[I].ReturnPoint;
+                return true;
+            }
+        }
+        return false;
+    };
 
     ComPtr<ICpuEmitter> Emitter;
     HRESULT hr = pBackend->CreateEmitter (pArch, &Emitter);
@@ -115,8 +134,9 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
             continue;
         }
-        if (Tag & TagReturn) {
-            HasIndirect = true;        // needs the dispatcher
+        CPU_ADDR RetDummy = 0;
+        if ((Tag & TagReturn) && !InlinedRetOf (Pc, &RetDummy)) {
+            HasIndirect = true;        // a non-inlined RET needs the dispatcher
         }
         if (Tag & (TagContinue | TagConditional | TagCall)) {
             Work.push_back (NextPc);   // CALL returns to NextPc, so it is reachable too
@@ -186,16 +206,29 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         if (pSmc != nullptr) {
             pSmc->EmitCodeGuard (Pc);   // trap here if code was modified since translation
         }
-        pArch->TranslateInstr (Pc, Emitter);
-        Count++;
 
+        // Tag first: an inlined CALL/RET skips its data effect (the push / the pop +
+        // dispatch) entirely and is realized as a plain branch.
         UINT32   Tag;
         CPU_ADDR NewPc;
         CPU_ADDR NextPc;
         pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
 
-        if (Tag & TagReturn) {
-            // An indirect transfer (e.g. RET): TranslateInstr stashed the runtime
+        bool     InlinedCall = (Tag & TagCall) != 0 && IsInlinedCall (NewPc);
+        CPU_ADDR RetPt       = 0;
+        bool     InlinedRet  = (Tag & TagReturn) != 0 && InlinedRetOf (Pc, &RetPt);
+
+        if (!InlinedCall && !InlinedRet) {
+            pArch->TranslateInstr (Pc, Emitter);   // normal effect (CALL push / RET pop included)
+        }
+        Count++;
+
+        if (InlinedRet) {
+            Emitter->Branch (Target (RetPt));         // RET -> the call's continuation, directly
+        } else if (InlinedCall) {
+            Emitter->Branch (Target (NewPc));         // CALL -> fall into the callee, no push
+        } else if (Tag & TagReturn) {
+            // A non-inlined indirect transfer (RET): TranslateInstr stashed the runtime
             // target via SetDispatchTarget; route through the in-artifact dispatcher.
             Emitter->Branch (pDispatch);
         } else if (Tag & TagConditional) {
@@ -254,6 +287,57 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         pSmc->Release ();
     }
     return hr;
+}
+
+HRESULT
+GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                CPU_ADDR Entry, CPU_ADDR End,
+                OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
+{
+    return GenerateAotCfgInlined (pArch, pBackend, Entry, End, nullptr, 0, ppCode, pInstrCount);
+}
+
+UINT32
+CollectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
+                  OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges)
+{
+    if (pArch == nullptr) {
+        return 0;
+    }
+    std::set<CPU_ADDR>    Seen;
+    std::vector<CPU_ADDR> Work;
+    UINT32                Found = 0;
+    Work.push_back (Entry);
+    while (!Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Pc >= End || Seen.count (Pc) != 0) {
+            continue;
+        }
+        Seen.insert (Pc);
+
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+            continue;
+        }
+        if (Tag & TagCall) {
+            if (pEdges != nullptr && Found < MaxEdges) {
+                pEdges[Found].Site        = Pc;
+                pEdges[Found].Callee      = NewPc;
+                pEdges[Found].ReturnPoint = NextPc;
+            }
+            Found++;
+        }
+        if (Tag & (TagContinue | TagConditional | TagCall)) {
+            Work.push_back (NextPc);
+        }
+        if (Tag & (TagBranch | TagConditional | TagCall)) {
+            Work.push_back (NewPc);
+        }
+    }
+    return Found;
 }
 
 } // namespace LibCPU

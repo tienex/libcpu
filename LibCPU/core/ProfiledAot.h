@@ -42,16 +42,21 @@ public:
 
     UINT32 TierOf      (CPU_ADDR Entry) CONST;
     UINT32 RegionCount () CONST;
+    UINT32 InlinedCount () CONST;           // how many callees Build() inlined
 
 private:
     struct Built { ICpuCode *pCode; UINT32 Tier; };
 
-    UINT32 PickTier (UINT64 Count) CONST;   // tier the recorded count warrants
+    UINT32  PickTier (UINT64 Count) CONST;  // tier the recorded count warrants
+    // True if Callee is a straight-line leaf (no calls/branches, ends in RET); sets
+    // *pEnd to the address past its RET so the callee body can be inlined.
+    BOOLEAN LeafCalleeRange (CPU_ADDR Callee, CPU_ADDR *pEnd) CONST;
 
     ICpuArchitecture        *m_pArch;       // borrowed
     std::vector<CPU_TIER>     m_Tiers;
     UINT64                    m_HotThreshold;
     std::map<CPU_ADDR, Built> m_Built;
+    UINT32                    m_Inlined = 0;
 };
 
 } // namespace LibCPU

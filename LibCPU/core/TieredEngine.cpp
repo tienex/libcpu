@@ -147,6 +147,18 @@ LcTieredEngine::ExportTrace (LcPerfTrace &Trace)
     std::lock_guard<std::mutex> Lk (m_Mutex);
     for (auto CONST &Pair : m_Slots) {
         Trace.Record (Pair.first, Pair.second.End, Pair.second.Count);
+
+        // The call graph is static (CALL targets are known), so weight each of the
+        // region's call edges by how often the region ran. For a call on the region's
+        // main path this is the true edge count; a call under a branch over-counts.
+        CPU_CALL_EDGE Edges[32];
+        UINT32 N = CollectCallEdges (m_pArch, Pair.first, Pair.second.End, Edges, 32);
+        if (N > 32) {
+            N = 32;
+        }
+        for (UINT32 I = 0; I < N; I++) {
+            Trace.RecordEdge (Edges[I].Site, Edges[I].Callee, Edges[I].ReturnPoint, Pair.second.Count);
+        }
     }
 }
 

@@ -17,6 +17,8 @@
 #include "../core/TieredEngine.h"
 #include "../core/PerfTrace.h"
 #include "../core/ProfiledAot.h"
+#include "../aot/AotGenerator.h"
+#include "LibCPU/PCom.h"
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -43,6 +45,16 @@ static UINT8 const g_Hot[] = {
 static UINT8 const g_Cold[] = {
     0xB8, 0x07, 0x00,   // MOV AX, 7
     0xA3, 0x02, 0x02    // MOV [0x202], AX
+};
+// A caller @0 that CALLs a leaf sub @3 (ADD AX,5; RET): result -> [0x200] = 8.
+static UINT8 const g_Call[] = {
+    0xE9, 0x04, 0x00,   // 0:  JMP main (IP 7)
+    0x05, 0x05, 0x00,   // 3:  sub: ADD AX, 5
+    0xC3,               // 6:       RET
+    0xB8, 0x03, 0x00,   // 7:  main: MOV AX, 3
+    0xBC, 0x00, 0x10,   // A:        MOV SP, 0x1000
+    0xE8, 0xF3, 0xFF,   // D:        CALL sub (IP 3)
+    0xA3, 0x00, 0x02    // 10:       MOV [0x200], AX
 };
 static CPU_ADDR const HOT_ENTRY  = 0,    HOT_END  = (CPU_ADDR) sizeof (g_Hot);
 static CPU_ADDR const COLD_ENTRY = 0x40, COLD_END = 0x40 + (CPU_ADDR) sizeof (g_Cold);
@@ -199,6 +211,92 @@ RunProfiledAotDemo (ICpuBackend *pTier0, ICpuBackend *pTier1, CHAR8 CONST *pTrac
 
     Ok = Ok && HotTier == 1 && ColdTier == 0;
     std::printf ("RESULT: %s  (trace re-used; hot AOT-built at the optimizing tier ahead of time, cold at the cheap tier)\n",
+                 Ok ? "PASS" : "FAIL");
+
+    pArch->Release ();
+    return Ok ? 0 : 1;
+}
+
+//
+// Edge-aware PGO: an edge/call-count trace lets profile-guided AOT INLINE a hot
+// callee -- eliding the CALL's return-address push, the RET's pop, and the dispatcher
+// round-trip. A caller @0 hot-calls a leaf sub @3; the trace records the edge, and
+// the inlined build embeds sub's body, branching its RET straight to the continuation.
+//
+static inline int
+RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
+{
+    std::printf ("\n== PGO inlining (edge trace): hot caller inlines its leaf callee\n");
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, g_Call, sizeof (g_Call));
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Call);
+
+    // ---- profiling pass: count the region; ExportTrace weights the call edge. -----
+    {
+        CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
+        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
+        LcPerfTrace Trace;
+        Profiler.ExportTrace (Trace);
+        Trace.Save (pTracePath);
+    }
+
+    LcPerfTrace Trace;
+    Trace.Load (pTracePath);
+    for (UINT32 i = 0; i < Trace.EdgeCount (); i++) {
+        CPU_TRACE_EDGE E = Trace.Edge (i);
+        std::printf ("  edge: CALL@0x%llx -> 0x%llx (ret 0x%llx), count %llu\n",
+                     (unsigned long long) E.Site, (unsigned long long) E.Callee,
+                     (unsigned long long) E.ReturnPoint, (unsigned long long) E.Count);
+    }
+
+    // ---- profile-guided AOT with inlining. ----------------------------------------
+    CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
+    LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    Pgo.Build (Trace);
+    UINT32 Inlined = Pgo.InlinedCount ();
+
+    bool Ok = true;
+    for (int i = 0; i < 4000; i++) {
+        Pgo.Run (Entry, Ram, &State, nullptr);
+        if (ResultWord (Ram, 0x200) != 8) { Ok = false; }
+    }
+    int InlinedResult = ResultWord (Ram, 0x200);
+
+    // ---- benefit: same optimizing backend, with vs without inlining. --------------
+    ComPtr<ICpuCode> Plain;
+    GenerateAotCfg (pArch, pOpt, Entry, End, &Plain, nullptr);
+    double PlainNs = 0, InlinedNs = 0;
+    int PlainResult = -1;
+    if (Plain != nullptr) {
+        std::memset (Ram + 0x200, 0, 2);
+        auto P0 = std::chrono::steady_clock::now ();
+        for (int i = 0; i < 20000; i++) { Plain->Execute (Ram, &State, nullptr); }
+        auto P1 = std::chrono::steady_clock::now ();
+        PlainResult = ResultWord (Ram, 0x200);
+        PlainNs = std::chrono::duration<double, std::nano> (P1 - P0).count () / 20000.0;
+
+        std::memset (Ram + 0x200, 0, 2);
+        auto Q0 = std::chrono::steady_clock::now ();
+        for (int i = 0; i < 20000; i++) { Pgo.Run (Entry, Ram, &State, nullptr); }
+        auto Q1 = std::chrono::steady_clock::now ();
+        InlinedNs = std::chrono::duration<double, std::nano> (Q1 - Q0).count () / 20000.0;
+    }
+
+    std::printf ("  inlined %u callee(s); result [0x200] = %d (exp 8)\n", Inlined, InlinedResult);
+    std::printf ("  on '%s': CALL/RET via dispatcher ~%.0f ns  ->  inlined ~%.0f ns  (%.2fx)  [plain result %d]\n",
+                 pOpt->GetName (), PlainNs, InlinedNs, InlinedNs > 0 ? PlainNs / InlinedNs : 0.0, PlainResult);
+
+    Ok = Ok && Inlined == 1 && InlinedResult == 8 && PlainResult == 8;
+    std::printf ("RESULT: %s  (edge trace drove inlining of the hot leaf callee; CALL/RET overhead elided)\n",
                  Ok ? "PASS" : "FAIL");
 
     pArch->Release ();

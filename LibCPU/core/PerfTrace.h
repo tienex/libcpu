@@ -28,14 +28,31 @@ typedef struct _CPU_TRACE_REGION {
     UINT64   Count;
 } CPU_TRACE_REGION;
 
+//
+// One profiled call edge: a CALL at Site to Callee (returning to ReturnPoint),
+// taken Count times. Lets profile-guided AOT decide which callees to inline.
+//
+typedef struct _CPU_TRACE_EDGE {
+    CPU_ADDR Site;
+    CPU_ADDR Callee;
+    CPU_ADDR ReturnPoint;
+    UINT64   Count;
+} CPU_TRACE_EDGE;
+
 class LcPerfTrace {
 public:
     // Merge a sample (adds Count to the region; remembers End).
     VOID Record (CPU_ADDR Entry, CPU_ADDR End, UINT64 Count);
 
+    // Merge a call-edge sample (adds Count to the Site->Callee edge).
+    VOID RecordEdge (CPU_ADDR Site, CPU_ADDR Callee, CPU_ADDR ReturnPoint, UINT64 Count);
+
     UINT32                  RegionCount () CONST;
     CPU_TRACE_REGION        Region (UINT32 Index) CONST;
     UINT64                  CountOf (CPU_ADDR Entry) CONST;
+
+    UINT32                  EdgeCount () CONST;
+    CPU_TRACE_EDGE          Edge (UINT32 Index) CONST;
 
     // Persist / restore the trace as text ("0xEntry 0xEnd Count" per line), so a
     // separate run can re-use the profile.
@@ -44,8 +61,10 @@ public:
     VOID    Clear ();
 
 private:
-    struct Sample { CPU_ADDR End; UINT64 Count; };
-    std::map<CPU_ADDR, Sample> m_Regions;
+    struct Sample   { CPU_ADDR End; UINT64 Count; };
+    struct EdgeData { CPU_ADDR Callee; CPU_ADDR ReturnPoint; UINT64 Count; };
+    std::map<CPU_ADDR, Sample>   m_Regions;   // keyed by entry
+    std::map<CPU_ADDR, EdgeData> m_Edges;     // keyed by call site
 };
 
 } // namespace LibCPU
