@@ -265,6 +265,13 @@ target_link_libraries(cachedemo PRIVATE LibCPU)
 add_executable(sysdemo test/sysdemo.cpp core/System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
 target_include_directories(sysdemo PRIVATE frontends/v20 test aot core)
 target_link_libraries(sysdemo PRIVATE LibCPU)
+
+# lcx -- the unified machine driver tying every subsystem together.
+add_executable(lcx test/lcx.cpp
+  aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
+  core/KnowledgeLibrary.cpp core/System.cpp frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
+target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core)
+target_link_libraries(lcx PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -340,6 +347,16 @@ if(TARGET interp_backend)
   add_test(NAME system.v20 COMMAND sysdemo "$<TARGET_BUNDLE_DIR:interp_backend>")
   set_tests_properties(system.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   list(APPEND LIBCPU_CHECK_DEPS sysdemo)
+
+  # lcx -- the unified driver. The backend resolves to the bundle beside the exe; a
+  # binary fixture exercises the run path, and system/know cover the other subsystems.
+  add_test(NAME lcx.run COMMAND lcx run "${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin" --arch v20 --dump 0x200)
+  set_tests_properties(lcx.run PROPERTIES PASS_REGULAR_EXPRESSION "= 0x0012")
+  add_test(NAME lcx.system COMMAND lcx system)
+  set_tests_properties(lcx.system PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  add_test(NAME lcx.know COMMAND lcx know "${CMAKE_CURRENT_SOURCE_DIR}/test/dos21.xml")
+  set_tests_properties(lcx.know PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  list(APPEND LIBCPU_CHECK_DEPS lcx)
 endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and
