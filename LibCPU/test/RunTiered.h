@@ -46,15 +46,19 @@ static UINT8 const g_Cold[] = {
     0xB8, 0x07, 0x00,   // MOV AX, 7
     0xA3, 0x02, 0x02    // MOV [0x202], AX
 };
-// A caller @0 that CALLs a leaf sub @3 (ADD AX,5; RET): result -> [0x200] = 8.
+// A caller @0 that CALLs the SAME leaf sub @3 (ADD AX,5; RET) from TWO sites:
+// [0x200] = 3+5 = 8 from site 1, [0x202] = 10+5 = 15 from site 2.
 static UINT8 const g_Call[] = {
     0xE9, 0x04, 0x00,   // 0:  JMP main (IP 7)
     0x05, 0x05, 0x00,   // 3:  sub: ADD AX, 5
     0xC3,               // 6:       RET
-    0xB8, 0x03, 0x00,   // 7:  main: MOV AX, 3
-    0xBC, 0x00, 0x10,   // A:        MOV SP, 0x1000
-    0xE8, 0xF3, 0xFF,   // D:        CALL sub (IP 3)
-    0xA3, 0x00, 0x02    // 10:       MOV [0x200], AX
+    0xBC, 0x00, 0x10,   // 7:  main: MOV SP, 0x1000
+    0xB8, 0x03, 0x00,   // A:        MOV AX, 3
+    0xE8, 0xF3, 0xFF,   // D:        CALL sub (IP 3)   [site 1, ret 0x10]
+    0xA3, 0x00, 0x02,   // 10:       MOV [0x200], AX   (= 8)
+    0xB8, 0x0A, 0x00,   // 13:       MOV AX, 10
+    0xE8, 0xEA, 0xFF,   // 16:       CALL sub (IP 3)   [site 2, ret 0x19]
+    0xA3, 0x02, 0x02    // 19:       MOV [0x202], AX   (= 15)
 };
 static CPU_ADDR const HOT_ENTRY  = 0,    HOT_END  = (CPU_ADDR) sizeof (g_Hot);
 static CPU_ADDR const COLD_ENTRY = 0x40, COLD_END = 0x40 + (CPU_ADDR) sizeof (g_Cold);
@@ -226,7 +230,7 @@ RunProfiledAotDemo (ICpuBackend *pTier0, ICpuBackend *pTier1, CHAR8 CONST *pTrac
 static inline int
 RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
 {
-    std::printf ("\n== PGO inlining (edge trace): hot caller inlines its leaf callee\n");
+    std::printf ("\n== PGO inlining (edge trace): hot caller inlines a leaf callee from TWO sites\n");
 
     static UINT8 Ram[65536];
     std::memset (Ram, 0, sizeof (Ram));
@@ -267,9 +271,10 @@ RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
     bool Ok = true;
     for (int i = 0; i < 4000; i++) {
         Pgo.Run (Entry, Ram, &State, nullptr);
-        if (ResultWord (Ram, 0x200) != 8) { Ok = false; }
+        if (ResultWord (Ram, 0x200) != 8 || ResultWord (Ram, 0x202) != 15) { Ok = false; }
     }
-    int InlinedResult = ResultWord (Ram, 0x200);
+    int Site1 = ResultWord (Ram, 0x200);
+    int Site2 = ResultWord (Ram, 0x202);
 
     // ---- benefit: same optimizing backend, with vs without inlining. --------------
     ComPtr<ICpuCode> Plain;
@@ -291,12 +296,14 @@ RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
         InlinedNs = std::chrono::duration<double, std::nano> (Q1 - Q0).count () / 20000.0;
     }
 
-    std::printf ("  inlined %u callee(s); result [0x200] = %d (exp 8)\n", Inlined, InlinedResult);
-    std::printf ("  on '%s': CALL/RET via dispatcher ~%.0f ns  ->  inlined ~%.0f ns  (%.2fx)  [plain result %d]\n",
-                 pOpt->GetName (), PlainNs, InlinedNs, InlinedNs > 0 ? PlainNs / InlinedNs : 0.0, PlainResult);
+    std::printf ("  inlined %u copies of the callee; [0x200] = %d (exp 8), [0x202] = %d (exp 15)\n",
+                 Inlined, Site1, Site2);
+    std::printf ("  on '%s': CALL/RET via dispatcher ~%.0f ns  ->  inlined ~%.0f ns  (%.2fx)  [plain results %d/%d]\n",
+                 pOpt->GetName (), PlainNs, InlinedNs, InlinedNs > 0 ? PlainNs / InlinedNs : 0.0,
+                 PlainResult, ResultWord (Ram, 0x202));
 
-    Ok = Ok && Inlined == 1 && InlinedResult == 8 && PlainResult == 8;
-    std::printf ("RESULT: %s  (edge trace drove inlining of the hot leaf callee; CALL/RET overhead elided)\n",
+    Ok = Ok && Inlined == 2 && Site1 == 8 && Site2 == 15 && PlainResult == 8;
+    std::printf ("RESULT: %s  (edge trace drove duplicate-and-specialize: 2 sites -> 2 private copies of the callee)\n",
                  Ok ? "PASS" : "FAIL");
 
     pArch->Release ();

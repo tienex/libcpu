@@ -48,9 +48,9 @@ private:
     struct Built { ICpuCode *pCode; UINT32 Tier; };
 
     UINT32  PickTier (UINT64 Count) CONST;  // tier the recorded count warrants
-    // True if Callee is a straight-line leaf (no calls/branches, ends in RET); sets
-    // *pEnd to the address past its RET so the callee body can be inlined.
-    BOOLEAN LeafCalleeRange (CPU_ADDR Callee, CPU_ADDR *pEnd) CONST;
+    // True if Callee is an inlinable leaf: no nested CALL on any path to its RET(s).
+    // Internal branches are allowed (the AOT driver duplicates the whole sub-CFG).
+    BOOLEAN InlinableLeaf (CPU_ADDR Callee) CONST;
 
     ICpuArchitecture        *m_pArch;       // borrowed
     std::vector<CPU_TIER>     m_Tiers;

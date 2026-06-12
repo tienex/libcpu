@@ -3,6 +3,7 @@
 **/
 #include "ProfiledAot.h"
 #include "../aot/AotGenerator.h"
+#include <set>
 
 namespace LibCPU {
 
@@ -35,29 +36,39 @@ LcProfiledAot::PickTier (UINT64 Count) CONST
 }
 
 BOOLEAN
-LcProfiledAot::LeafCalleeRange (CPU_ADDR Callee, CPU_ADDR *pEnd) CONST
+LcProfiledAot::InlinableLeaf (CPU_ADDR Callee) CONST
 {
-    // Walk straight through the callee: it must be a simple leaf -- no nested call,
-    // no branch -- ending in a RET. (A callee with internal control flow is not
-    // inlined by this slice.)
-    CPU_ADDR Pc = Callee;
-    for (UINT32 Guard = 0; Guard < 64; Guard++) {
+    // Walk the callee's reachable instructions (following internal branches, stopping
+    // at each RET). It is inlinable iff no path hits a nested CALL.
+    std::set<CPU_ADDR>    Seen;
+    std::vector<CPU_ADDR> Work;
+    Work.push_back (Callee);
+    while (!Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Seen.count (Pc) != 0) {
+            continue;
+        }
+        Seen.insert (Pc);
+        if (Seen.size () > 256) {
+            return FALSE;   // runaway: refuse to inline
+        }
         UINT32   Tag;
         CPU_ADDR NewPc;
         CPU_ADDR NextPc;
         if (FAILED (m_pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
             return FALSE;
         }
-        if (Tag & (TagCall | TagBranch | TagConditional)) {
-            return FALSE;   // not a straight-line leaf
+        if (Tag & TagCall) {
+            return FALSE;   // nested call: not a leaf
         }
         if (Tag & TagReturn) {
-            *pEnd = NextPc;   // address just past the RET
-            return TRUE;
+            continue;       // an exit; do not follow past it
         }
-        Pc = NextPc;
+        if (Tag & (TagContinue | TagConditional)) { Work.push_back (NextPc); }
+        if (Tag & (TagBranch | TagConditional))   { Work.push_back (NewPc); }
     }
-    return FALSE;
+    return TRUE;
 }
 
 HRESULT
@@ -69,21 +80,16 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
         UINT32 Tier = PickTier (R.Count);
 
         // Gather an inline plan for this region: every hot call edge whose site is in
-        // [R.Entry, R.End) and whose callee is a single-site straight-line leaf.
+        // [R.Entry, R.End) and whose callee is an inlinable leaf. Several sites calling
+        // the same callee each get their own entry -> their own duplicated copy.
         std::vector<CPU_INLINE_SITE> Plan;
         for (UINT32 E = 0; E < Trace.EdgeCount (); E++) {
             CPU_TRACE_EDGE Edge = Trace.Edge (E);
             if (Edge.Site < R.Entry || Edge.Site >= R.End || Edge.Count < m_HotThreshold) {
                 continue;
             }
-            // Single call site for this callee across the whole program?
-            UINT32 Sites = 0;
-            for (UINT32 J = 0; J < Trace.EdgeCount (); J++) {
-                if (Trace.Edge (J).Callee == Edge.Callee) { Sites++; }
-            }
-            CPU_ADDR CalleeEnd = 0;
-            if (Sites == 1 && LeafCalleeRange (Edge.Callee, &CalleeEnd)) {
-                CPU_INLINE_SITE Site = { Edge.Callee, CalleeEnd, Edge.ReturnPoint };
+            if (InlinableLeaf (Edge.Callee)) {
+                CPU_INLINE_SITE Site = { Edge.Site, Edge.Callee, Edge.ReturnPoint };
                 Plan.push_back (Site);
             }
         }

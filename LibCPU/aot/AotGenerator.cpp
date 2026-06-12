@@ -79,18 +79,12 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
     *ppCode = nullptr;
 
-    // Inline-plan lookups: is this CALL target inlined? is this PC inside an inlined
-    // callee (so its RET returns straight to the recorded continuation)?
-    auto IsInlinedCall = [&] (CPU_ADDR Callee) -> bool {
+    // Is the CALL at Site inlined? If so, return its callee + this site's return point.
+    auto SiteInfo = [&] (CPU_ADDR Site, CPU_ADDR *pCallee, CPU_ADDR *pRet) -> bool {
         for (UINT32 I = 0; I < InlineCount; I++) {
-            if (pInline[I].Callee == Callee) { return true; }
-        }
-        return false;
-    };
-    auto InlinedRetOf = [&] (CPU_ADDR Pc, CPU_ADDR *pRet) -> bool {
-        for (UINT32 I = 0; I < InlineCount; I++) {
-            if (Pc >= pInline[I].Callee && Pc < pInline[I].CalleeEnd) {
-                *pRet = pInline[I].ReturnPoint;
+            if (pInline[I].Site == Site) {
+                *pCallee = pInline[I].Callee;
+                *pRet    = pInline[I].ReturnPoint;
                 return true;
             }
         }
@@ -103,26 +97,24 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         return FAILED (hr) ? hr : E_FAIL;
     }
 
-    // Optional self-modifying-code support: if the emitter exposes it, a guard is
-    // planted at each block entry (inert unless the host arms CPU_STATE.Code*).
+    // Optional self-modifying-code support (inert unless the host arms CPU_STATE.Code*).
     ICpuSmcEmitter *pSmc = nullptr;
     if (FAILED (Emitter->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc))) {
         pSmc = nullptr;
     }
 
     //
-    // 1. Discover every reachable instruction address by following the edges
-    //    TagInstr reports: fall-through (NextPc) and branch target (NewPc).
+    // 1. Discover the CALLER's blocks. An inlined CALL site does NOT pull its callee
+    //    into the shared CFG (it is duplicated per site, below); it still reaches its
+    //    return point. A caller-level RET still needs the dispatcher.
     //
     std::set<CPU_ADDR>    Pcs;
     std::vector<CPU_ADDR> Work;
-    bool                  HasIndirect = false;   // any block ends in an indirect transfer?
+    bool                  HasIndirect = false;
     Work.push_back (Entry);
     while (!Work.empty ()) {
         CPU_ADDR Pc = Work.back ();
         Work.pop_back ();
-        // Bound only by End, NOT by Entry: a backward branch (loop) reaches PCs
-        // below the entry/resume point, and those blocks must be in the CFG too.
         if (Pc >= End || Pcs.count (Pc) != 0) {
             continue;
         }
@@ -134,15 +126,17 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
             continue;
         }
-        CPU_ADDR RetDummy = 0;
-        if ((Tag & TagReturn) && !InlinedRetOf (Pc, &RetDummy)) {
-            HasIndirect = true;        // a non-inlined RET needs the dispatcher
+        CPU_ADDR Cal = 0, Ret = 0;
+        bool InlinedCall = (Tag & TagCall) != 0 && SiteInfo (Pc, &Cal, &Ret);
+
+        if (Tag & TagReturn) {
+            HasIndirect = true;
         }
         if (Tag & (TagContinue | TagConditional | TagCall)) {
             Work.push_back (NextPc);   // CALL returns to NextPc, so it is reachable too
         }
-        if (Tag & (TagBranch | TagConditional | TagCall)) {
-            Work.push_back (NewPc);
+        if (!InlinedCall && (Tag & (TagBranch | TagConditional | TagCall))) {
+            Work.push_back (NewPc);    // an inlined callee is NOT a shared block
         }
     }
     if (Pcs.empty ()) {
@@ -150,8 +144,53 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
 
     //
-    // 2. One block per reachable address, plus a shared exit block. Raw pointers
-    //    (ComPtr is move-only) released after the compile.
+    // 2. For each inlined site, discover its callee's blocks -- a PRIVATE copy. The
+    //    callee is a leaf (no nested CALL); discovery follows internal branches but
+    //    stops at each RET.
+    //
+    struct Instance {
+        CPU_ADDR                        Callee;
+        CPU_ADDR                        ReturnPoint;
+        std::vector<CPU_ADDR>           CalleePcs;
+        std::map<CPU_ADDR, ICpuBlock *> Blocks;
+    };
+    std::vector<Instance>      Instances;
+    std::map<CPU_ADDR, UINT32> SiteToInst;   // call site -> instance index
+    for (UINT32 I = 0; I < InlineCount; I++) {
+        Instance Inst;
+        Inst.Callee      = pInline[I].Callee;
+        Inst.ReturnPoint = pInline[I].ReturnPoint;
+
+        std::set<CPU_ADDR>    Seen;
+        std::vector<CPU_ADDR> W;
+        W.push_back (Inst.Callee);
+        while (!W.empty ()) {
+            CPU_ADDR Cp = W.back ();
+            W.pop_back ();
+            if (Cp >= End || Seen.count (Cp) != 0) {
+                continue;
+            }
+            Seen.insert (Cp);
+            Inst.CalleePcs.push_back (Cp);
+
+            UINT32   T;
+            CPU_ADDR Nw;
+            CPU_ADDR Nx;
+            if (FAILED (pArch->TagInstr (Cp, &T, &Nw, &Nx))) {
+                continue;
+            }
+            if (T & TagReturn) {
+                continue;   // the callee exits here; do not follow past the RET
+            }
+            if (T & (TagContinue | TagConditional | TagCall)) { W.push_back (Nx); }
+            if (T & (TagBranch | TagConditional | TagCall))   { W.push_back (Nw); }
+        }
+        SiteToInst[pInline[I].Site] = (UINT32) Instances.size ();
+        Instances.push_back (std::move (Inst));
+    }
+
+    //
+    // 3. Create blocks: caller blocks + shared exit + (dispatcher) + per-instance copies.
     //
     std::map<CPU_ADDR, ICpuBlock *> Blocks;
     for (CPU_ADDR Pc : Pcs) {
@@ -169,10 +208,6 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         return (It != Blocks.end ()) ? It->second : pExit;
     };
 
-    // Indirect-branch dispatcher (built only when needed and the backend supports the
-    // dispatch scratch): a chain of compare-blocks that reads the runtime target from
-    // DispPc and routes to the matching instruction block; an unknown target falls to
-    // IndirectBranch (host re-translate). N+1 blocks for N instruction blocks.
     std::vector<ICpuBlock *> Disp;
     ICpuBlock *pDispatch = pExit;
     if (HasIndirect && pSmc != nullptr) {
@@ -184,71 +219,118 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         pDispatch = Disp[0];
     }
 
+    for (Instance &Inst : Instances) {
+        for (CPU_ADDR Cp : Inst.CalleePcs) {
+            ICpuBlock *pB = nullptr;
+            Emitter->CreateBlock ("inl", &pB);
+            Inst.Blocks[Cp] = pB;
+        }
+    }
+    auto InstTarget = [&] (Instance CONST &Inst, CPU_ADDR Pc) -> ICpuBlock * {
+        auto It = Inst.Blocks.find (Pc);
+        return (It != Inst.Blocks.end ()) ? It->second : Target (Pc);
+    };
+
     //
-    // 3. The emitter starts in its own "entry" block: jump from there to the
-    //    program entry, then fill and terminate each instruction block. If the
-    //    backend does not implement Branch (it stubs the block ops), bail cleanly
-    //    rather than emit wrong linear code.
+    // 4. Entry edge (and the clean bail-out for backends without block ops).
     //
     HRESULT BrHr = Emitter->Branch (Target (Entry));
     if (FAILED (BrHr)) {
-        for (auto CONST &Pair : Blocks) {
-            if (Pair.second != nullptr) { Pair.second->Release (); }
+        for (auto CONST &Pair : Blocks) { if (Pair.second != nullptr) { Pair.second->Release (); } }
+        for (Instance CONST &Inst : Instances) {
+            for (auto CONST &P : Inst.Blocks) { if (P.second != nullptr) { P.second->Release (); } }
         }
+        for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
         if (pExit != nullptr) { pExit->Release (); }
         if (pSmc != nullptr)  { pSmc->Release (); }
-        return BrHr;   // e.g. E_NOTIMPL: this backend has no control-flow support
+        return BrHr;
     }
 
+    //
+    // 5. Fill caller blocks. An inlined CALL site elides its push and falls into this
+    //    site's private callee copy.
+    //
     UINT32 Count = 0;
     for (CPU_ADDR Pc : Pcs) {
         Emitter->SetInsertBlock (Blocks[Pc]);
         if (pSmc != nullptr) {
-            pSmc->EmitCodeGuard (Pc);   // trap here if code was modified since translation
+            pSmc->EmitCodeGuard (Pc);
         }
 
-        // Tag first: an inlined CALL/RET skips its data effect (the push / the pop +
-        // dispatch) entirely and is realized as a plain branch.
         UINT32   Tag;
         CPU_ADDR NewPc;
         CPU_ADDR NextPc;
         pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
 
-        bool     InlinedCall = (Tag & TagCall) != 0 && IsInlinedCall (NewPc);
-        CPU_ADDR RetPt       = 0;
-        bool     InlinedRet  = (Tag & TagReturn) != 0 && InlinedRetOf (Pc, &RetPt);
-
-        if (!InlinedCall && !InlinedRet) {
-            pArch->TranslateInstr (Pc, Emitter);   // normal effect (CALL push / RET pop included)
+        CPU_ADDR Cal = 0, Ret = 0;
+        if ((Tag & TagCall) && SiteInfo (Pc, &Cal, &Ret)) {
+            Instance CONST &Inst = Instances[SiteToInst[Pc]];
+            Emitter->Branch (Inst.Blocks.at (Inst.Callee));   // no push; enter the copy
+            Count++;
+            continue;
         }
+
+        pArch->TranslateInstr (Pc, Emitter);
         Count++;
 
-        if (InlinedRet) {
-            Emitter->Branch (Target (RetPt));         // RET -> the call's continuation, directly
-        } else if (InlinedCall) {
-            Emitter->Branch (Target (NewPc));         // CALL -> fall into the callee, no push
-        } else if (Tag & TagReturn) {
-            // A non-inlined indirect transfer (RET): TranslateInstr stashed the runtime
-            // target via SetDispatchTarget; route through the in-artifact dispatcher.
+        if (Tag & TagReturn) {
             Emitter->Branch (pDispatch);
         } else if (Tag & TagConditional) {
             ComPtr<ICpuValue> Cond;
             if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
                 Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
             } else {
-                Emitter->Branch (Target (NextPc));   // no condition available: fall through
+                Emitter->Branch (Target (NextPc));
             }
         } else if (Tag & (TagBranch | TagCall)) {
-            Emitter->Branch (Target (NewPc));         // CALL: branch to the callee
+            Emitter->Branch (Target (NewPc));
         } else {
-            Emitter->Branch (Target (NextPc));        // TagContinue / end
+            Emitter->Branch (Target (NextPc));
         }
     }
 
     //
-    // 4. Fill the dispatcher chain: disp[k] compares the runtime target (DispPc)
-    //    against the k-th block's address and routes to it, else to disp[k+1]; the
-    //    final block falls back to a host re-translate for an unknown target.
+    // 6. Fill each inline instance (the duplicated callee body). Its RET is
+    //    specialized: it branches straight to this site's continuation -- no pop, no
+    //    dispatcher. Internal branches stay within the instance's private blocks.
+    //
+    for (Instance CONST &Inst : Instances) {
+        for (CPU_ADDR Cp : Inst.CalleePcs) {
+            Emitter->SetInsertBlock (Inst.Blocks.at (Cp));
+            if (pSmc != nullptr) {
+                pSmc->EmitCodeGuard (Cp);
+            }
+
+            UINT32   T;
+            CPU_ADDR Nw;
+            CPU_ADDR Nx;
+            pArch->TagInstr (Cp, &T, &Nw, &Nx);
+
+            bool IsRet = (T & TagReturn) != 0;
+            if (!IsRet) {
+                pArch->TranslateInstr (Cp, Emitter);   // callee effect (no pop for the RET)
+            }
+            Count++;
+
+            if (IsRet) {
+                Emitter->Branch (Target (Inst.ReturnPoint));   // specialized return
+            } else if (T & TagConditional) {
+                ComPtr<ICpuValue> Cond;
+                if (SUCCEEDED (pArch->TranslateCond (Cp, Emitter, &Cond)) && Cond != nullptr) {
+                    Emitter->CondBranch (Cond, InstTarget (Inst, Nw), InstTarget (Inst, Nx));
+                } else {
+                    Emitter->Branch (InstTarget (Inst, Nx));
+                }
+            } else if (T & TagBranch) {
+                Emitter->Branch (InstTarget (Inst, Nw));
+            } else {
+                Emitter->Branch (InstTarget (Inst, Nx));   // TagContinue
+            }
+        }
+    }
+
+    //
+    // 7. Fill the dispatcher chain (caller RETs only).
     //
     if (HasIndirect && pSmc != nullptr) {
         UINT32 K = 0;
@@ -262,7 +344,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         }
         Emitter->SetInsertBlock (Disp[K]);
         ComPtr<ICpuValue> Pc; pSmc->GetDispatchTarget (&Pc);
-        pSmc->IndirectBranch (Pc);   // unknown target: write TrapPc, return -> host resumes
+        pSmc->IndirectBranch (Pc);
     }
 
     if (pInstrCount != nullptr) {
@@ -270,22 +352,13 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
     hr = pBackend->Compile (Emitter, ppCode);
 
-    for (auto CONST &Pair : Blocks) {
-        if (Pair.second != nullptr) {
-            Pair.second->Release ();
-        }
+    for (auto CONST &Pair : Blocks) { if (Pair.second != nullptr) { Pair.second->Release (); } }
+    for (Instance CONST &Inst : Instances) {
+        for (auto CONST &P : Inst.Blocks) { if (P.second != nullptr) { P.second->Release (); } }
     }
-    for (ICpuBlock *pB : Disp) {
-        if (pB != nullptr) {
-            pB->Release ();
-        }
-    }
-    if (pExit != nullptr) {
-        pExit->Release ();
-    }
-    if (pSmc != nullptr) {
-        pSmc->Release ();
-    }
+    for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
+    if (pExit != nullptr) { pExit->Release (); }
+    if (pSmc != nullptr)  { pSmc->Release (); }
     return hr;
 }
 

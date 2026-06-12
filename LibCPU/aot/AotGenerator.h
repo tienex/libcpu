@@ -62,15 +62,16 @@ UINT32 CollectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
                          OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges);
 
 //
-// One inlined callee for GenerateAotCfgInlined: the callee body [Callee, CalleeEnd)
-// is embedded at the call site -- the CALL elides its return-address push and falls
-// straight into the callee, and the callee's RET branches directly to ReturnPoint
-// (no pop, no dispatcher). Valid for a single-call-site leaf callee.
+// One inlined CALL site for GenerateAotCfgInlined: the CALL at Site to Callee is
+// expanded by embedding a PRIVATE copy of the callee's body (duplicate-and-
+// specialize) -- the CALL elides its return-address push and falls straight into
+// that copy, and the copy's RET branches directly to ReturnPoint (no pop, no
+// dispatcher). Listing the same Callee under several Sites gives each its own copy.
 //
 typedef struct _CPU_INLINE_SITE {
-    CPU_ADDR Callee;
-    CPU_ADDR CalleeEnd;
-    CPU_ADDR ReturnPoint;
+    CPU_ADDR Site;          // the CALL pc
+    CPU_ADDR Callee;        // callee entry
+    CPU_ADDR ReturnPoint;   // where this site's copy of the callee returns
 } CPU_INLINE_SITE;
 
 // Like GenerateAotCfg, but inlines every callee named in pInline (profile-guided).
