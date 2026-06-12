@@ -41,9 +41,50 @@ LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 
 namespace LibCPU {
 
-LcProfiledAot::LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold)
-    : m_pArch (pArch), m_Tiers (pTiers, pTiers + TierCount), m_HotThreshold (HotThreshold)
+LcProfiledAot::LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
+                              UINT64 HotThreshold, UINT32 InlineBudget)
+    : m_pArch (pArch), m_Tiers (pTiers, pTiers + TierCount), m_HotThreshold (HotThreshold),
+      m_InlineBudget (InlineBudget)
 {
+}
+
+UINT32
+LcProfiledAot::CountTreeInstrs (CPU_ADDR Callee, UINT32 Depth) CONST
+{
+    // Sum of instructions across the whole inlined tree (this callee + nested copies).
+    UINT32 N = 0;
+    if (Depth > 8) {
+        return N;
+    }
+    std::set<CPU_ADDR>    Seen;
+    std::vector<CPU_ADDR> Work;
+    Work.push_back (Callee);
+    while (!Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Seen.count (Pc) != 0) {
+            continue;
+        }
+        Seen.insert (Pc);
+        N++;   // one instruction (block) of this copy
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        if (FAILED (m_pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+            continue;
+        }
+        if (Tag & TagCall) {
+            N += CountTreeInstrs (NewPc, Depth + 1);   // the nested copy's instructions
+            Work.push_back (NextPc);
+            continue;
+        }
+        if (Tag & TagReturn) {
+            continue;
+        }
+        if (Tag & (TagContinue | TagConditional)) { Work.push_back (NextPc); }
+        if (Tag & (TagBranch | TagConditional))   { Work.push_back (NewPc); }
+    }
+    return N;
 }
 
 LcProfiledAot::~LcProfiledAot ()
@@ -175,7 +216,10 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
         UINT32 Nd = CollectDirectCallEdges (m_pArch, R.Entry, R.End, Direct, 64);
         if (Nd > 64) { Nd = 64; }
 
-        std::vector<CPU_INLINE_SITE> Plan;
+        // Eligible candidates (hot + inlinable), each with its edge count and the
+        // instruction cost of inlining its tree.
+        struct Cand { CPU_INLINE_SITE Site; UINT64 Hotness; UINT32 Cost; };
+        std::vector<Cand> Cands;
         for (UINT32 D = 0; D < Nd; D++) {
             UINT64 EdgeCnt = 0;
             for (UINT32 E = 0; E < Trace.EdgeCount (); E++) {
@@ -186,9 +230,29 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
             }
             std::set<CPU_ADDR> Active;
             if (InlinableTree (Direct[D].Callee, 0, Active)) {
-                CPU_INLINE_SITE Site = { Direct[D].Site, Direct[D].Callee, Direct[D].ReturnPoint };
-                Plan.push_back (Site);
+                Cand C;
+                C.Site    = { Direct[D].Site, Direct[D].Callee, Direct[D].ReturnPoint };
+                C.Hotness = EdgeCnt;
+                C.Cost    = CountTreeInstrs (Direct[D].Callee, 0);
+                Cands.push_back (C);
             }
+        }
+
+        // Greedy by hotness: inline the hottest edges first, until the per-region
+        // instruction budget is spent (m_InlineBudget == 0 means unlimited).
+        for (UINT32 a = 0; a + 1 < (UINT32) Cands.size (); a++) {
+            for (UINT32 b = a + 1; b < (UINT32) Cands.size (); b++) {
+                if (Cands[b].Hotness > Cands[a].Hotness) { Cand T = Cands[a]; Cands[a] = Cands[b]; Cands[b] = T; }
+            }
+        }
+        std::vector<CPU_INLINE_SITE> Plan;
+        UINT32 Spent = 0;
+        for (Cand CONST &C : Cands) {
+            if (m_InlineBudget != 0 && Spent + C.Cost > m_InlineBudget) {
+                continue;   // would blow the budget; skip this (colder) site
+            }
+            Plan.push_back (C.Site);
+            Spent += C.Cost;
         }
 
         ICpuCode *pCode = nullptr;

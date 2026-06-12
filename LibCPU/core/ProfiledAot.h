@@ -38,7 +38,11 @@ HRESULT LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 
 class LcProfiledAot {
 public:
-    LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold);
+    // InlineBudget caps the total INSTRUCTIONS Build() may duplicate by inlining, per
+    // region (0 = unlimited). The hottest call edges are inlined first, until the
+    // budget is spent -- so a region never blows up in size chasing every hot call.
+    LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
+                   UINT64 HotThreshold, UINT32 InlineBudget = 0);
     ~LcProfiledAot ();
 
     LcProfiledAot (LcProfiledAot CONST &)            = delete;
@@ -63,10 +67,13 @@ private:
     BOOLEAN InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> &Active) CONST;
     // Number of instances Callee's tree expands to (itself + all nested callees).
     UINT32  CountTree (CPU_ADDR Callee, UINT32 Depth) CONST;
+    // Total INSTRUCTIONS Callee's tree duplicates when inlined (sum over all copies).
+    UINT32  CountTreeInstrs (CPU_ADDR Callee, UINT32 Depth) CONST;
 
     ICpuArchitecture        *m_pArch;       // borrowed
     std::vector<CPU_TIER>     m_Tiers;
     UINT64                    m_HotThreshold;
+    UINT32                    m_InlineBudget;
     std::map<CPU_ADDR, Built> m_Built;
     UINT32                    m_Inlined = 0;
 };

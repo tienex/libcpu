@@ -468,6 +468,60 @@ RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     return Ok ? 0 : 1;
 }
 
+//
+// Code-size budget: two hot call sites of the same leaf (2 instrs each, cost 2). A
+// budget of 2 fits only ONE copy, so only the hottest site inlines; the other stays a
+// real CALL (dispatcher). A budget of 0 (unlimited) inlines both. Results stay correct
+// either way (mixed inlined / non-inlined).
+//
+static inline int
+RunBudgetDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
+{
+    std::printf ("\n== Code-size budget: cap inlining; only the hottest site fits a small budget\n");
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, g_Call, sizeof (g_Call));   // 2 sites -> the same leaf sub
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+    CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Call);
+
+    LcPerfTrace Trace;
+    {
+        CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
+        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
+        Profiler.ExportTrace (Trace);
+    }
+
+    UINT32 Budgets[2] = { 2, 0 };   // 2 = room for one copy; 0 = unlimited
+    int    Inl[2], Res1[2], Res2[2];
+    for (int W = 0; W < 2; W++) {
+        CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
+        LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100, /*InlineBudget=*/ Budgets[W]);
+        Pgo.Build (Trace);
+        Inl[W] = (int) Pgo.InlinedCount ();
+        std::memset (Ram + 0x200, 0, 4);
+        Pgo.Run (Entry, Ram, &State, nullptr);
+        Res1[W] = ResultWord (Ram, 0x200);
+        Res2[W] = ResultWord (Ram, 0x202);
+    }
+
+    std::printf ("  budget 2 (one copy):  inlined %d site(s); results %d/%d (exp 8/15)\n", Inl[0], Res1[0], Res2[0]);
+    std::printf ("  budget 0 (unlimited): inlined %d site(s); results %d/%d (exp 8/15)\n", Inl[1], Res1[1], Res2[1]);
+
+    bool Ok = Inl[0] == 1 && Inl[1] == 2
+              && Res1[0] == 8 && Res2[0] == 15 && Res1[1] == 8 && Res2[1] == 15;
+    std::printf ("RESULT: %s  (budget capped inlining to the hottest site; results correct with the mix)\n",
+                 Ok ? "PASS" : "FAIL");
+
+    pArch->Release ();
+    return Ok ? 0 : 1;
+}
+
 } // namespace LibCPU
 
 #endif // LIBCPU_RUNTIERED_H
