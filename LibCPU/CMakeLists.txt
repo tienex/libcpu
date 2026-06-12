@@ -258,3 +258,38 @@ target_include_directories(cclist PRIVATE backends/cc)
 
 add_executable(jslist test/jslist.cpp backends/js/JsBackend.cpp)
 target_include_directories(jslist PRIVATE backends/js)
+
+# ---- backend-matrix regression harness (CTest) -----------------------------
+# Sweep every CFG-capable backend through the two whole-program CFG drivers
+# (aotv20: V20 instruction suite incl. segmentation + far CALL/JMP; tiered: JIT
+# promote/hot-swap, PGO inlining, edge counters, recursion). Each driver already
+# exits non-zero on any FAIL or crash and zero when every demo PASSes or SKIPs,
+# so one driver run == one backend's whole suite. Each backend runs in its own
+# process, which keeps the in-process managed runtimes (JVM/CLR/CPython) isolated.
+#
+# New CFG-capable backend? Add its target to LIBCPU_CFG_BACKENDS. A backend whose
+# toolchain was not found is simply skipped (its target does not exist).
+enable_testing()
+set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
+set(LIBCPU_CHECK_DEPS aotv20 tiered)
+foreach(_be ${LIBCPU_CFG_BACKENDS})
+  if(TARGET ${_be})
+    set(_bundle "$<TARGET_BUNDLE_DIR:${_be}>")
+    add_test(NAME aotv20.${_be} COMMAND aotv20 "${_bundle}")
+    add_test(NAME tiered.${_be} COMMAND tiered "${_bundle}" "${_bundle}")
+    # Belt-and-suspenders: fail the test if any demo prints a FAIL line, even
+    # should the driver's exit code ever regress.
+    set_tests_properties(aotv20.${_be} tiered.${_be} PROPERTIES
+      FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+    list(APPEND LIBCPU_CHECK_DEPS ${_be})
+  endif()
+endforeach()
+
+# `make check` (or `cmake --build build --target check`): build the drivers and
+# all present CFG backends, then run the matrix with per-failure output.
+add_custom_target(check
+  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  COMMENT "Running backend-matrix regression harness"
+  USES_TERMINAL)
+add_dependencies(check ${LIBCPU_CHECK_DEPS})
