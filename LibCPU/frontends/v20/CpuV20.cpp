@@ -157,6 +157,8 @@ public:
             Len = 5; Tag = TagTrap;
         } else if (Op == 0xCB) {                                 // RETF (far return: pop CS:IP at run time -> host)
             Len = 1; Tag = TagTrap;
+        } else if (Op == 0xCD) {                                 // INT imm8 (software interrupt -> host syscall)
+            Len = 2; Tag = TagTrap;
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
@@ -195,6 +197,8 @@ public:
             std::snprintf (pLine, MaxLine, "call 0x%04x:0x%04x", Imm16At (m_pCode, Pc + 3), Imm16At (m_pCode, Pc + 1));
         } else if (Op == 0xCB) {
             std::snprintf (pLine, MaxLine, "retf");
+        } else if (Op == 0xCD) {
+            std::snprintf (pLine, MaxLine, "int 0x%02x", m_pCode[Pc + 1]);
         } else if (Op == 0x0F) {
             CHAR8 CONST *pMnem = "?1";
             switch (m_pCode[Pc + 1]) {
@@ -418,6 +422,20 @@ public:
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
                 pFlow->IndirectBranch (Ip);   // TrapPc = popped IP; host resumes there (in popped CS)
                 pFlow->Release ();
+            }
+            break;
+        }
+        case 0xCD: {                                               // INT imm8 (software interrupt)
+            // Record the interrupt vector and trap to the instruction after the INT;
+            // the host's knowledge-library dispatcher performs the native call and
+            // resumes. Requires a syscall-capable backend (e.g. the interpreter); on
+            // one without it the INT is inert (treated as a no-op trap target).
+            UINT8 Vector = m_pCode[Pc + 1];
+            ICpuSyscallEmitter *pSys = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);
+                pSys->EmitSyscall (Vector, Ret);
+                pSys->Release ();
             }
             break;
         }

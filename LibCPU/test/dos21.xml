@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Knowledge library: a slice of the MS-DOS INT 21h API mapped onto host libc.
+
+  Each <syscall> matches a guest trap: vector="0x21" is INT 21h, and DOS selects
+  the function through the AH register (select="ah"), so value="0x09" is the
+  "print $-terminated string" call. The <host> block names the native function and
+  how to build its arguments from the guest:
+    from="ds:dx"  -> the far pointer DS:DX, as a linear guest address
+    conv="dollar_to_nul" -> read the '$'-terminated DOS string there into a C string
+    const="stdout" -> the host stdio stream
+  This is the data that turns an in-line DOS call into a real host call.
+-->
+<knowledge name="MS-DOS INT 21h (slice)" target="dos" host="posix">
+
+  <!-- AH=09: print the '$'-terminated string at DS:DX. -->
+  <syscall vector="0x21" select="ah" value="0x09" name="PrintString">
+    <host call="fputs" lib="libc">
+      <arg from="ds:dx" conv="dollar_to_nul"/>
+      <arg const="stdout"/>
+    </host>
+  </syscall>
+
+  <!-- AH=02: write the single character in DL. -->
+  <syscall vector="0x21" select="ah" value="0x02" name="WriteChar">
+    <host call="fputc" lib="libc">
+      <arg from="dl"/>
+      <arg const="stdout"/>
+    </host>
+  </syscall>
+
+  <!-- AH=4C: terminate with the exit code in AL. -->
+  <syscall vector="0x21" select="ah" value="0x4c" name="Terminate">
+    <host call="exit" lib="libc">
+      <arg from="al"/>
+    </host>
+  </syscall>
+
+</knowledge>

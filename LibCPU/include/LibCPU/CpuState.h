@@ -42,6 +42,11 @@ typedef struct _CPU_STATE {
                             // marshalling backend (cpython/jvm/clr) copies this many
                             // bytes; 0 means the legacy default (64 KiB). In-process
                             // backends address pRAM directly and ignore it.
+    UINT64 SyscallVector;   // a pending guest system call (e.g. a DOS INT number): an
+                            // INT/SVC instruction records its vector here and traps to
+                            // TrapPc (the instruction after it); the host's knowledge-
+                            // library dispatcher reads it, performs the native call, and
+                            // resumes. CPU_NO_SYSCALL means none pending.
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -65,6 +70,7 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_DISPPC_OFFSET    ((UINT32) (32 * 8 + 72)) // DispPc (after CodeDirty[32])
 #define CPU_STATE_EDGECOUNT_OFFSET ((UINT32) (32 * 8 + 80)) // EdgeCount[0] (after DispPc)
 #define CPU_STATE_RAMSIZE_OFFSET   ((UINT32) (32 * 8 + 80 + 32 * 8)) // RamSize (after EdgeCount[32])
+#define CPU_STATE_SYSCALL_OFFSET   ((UINT32) (32 * 8 + 88 + 32 * 8)) // SyscallVector (after RamSize)
 
 // Number of per-call-site edge counters (profiling instrumentation).
 #define CPU_PROFILE_SLOTS          ((UINT32) 32)
@@ -74,5 +80,8 @@ typedef struct _CPU_STATE {
 
 // Sentinel stored in TrapPc when no SMC guard has fired.
 #define CPU_SMC_NO_TRAP            (~UINT64_C (0))
+
+// Sentinel stored in SyscallVector when no guest system call is pending.
+#define CPU_NO_SYSCALL            (~UINT64_C (0))
 
 #endif // LIBCPU_CPUSTATE_H

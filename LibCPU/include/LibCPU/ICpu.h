@@ -282,6 +282,28 @@ DECLARE_INTERFACE_ (ICpuProfileEmitter, IUnknown)
     STDMETHOD (EmitEdgeCounter)(THIS_ UINT32 Index) PURE;
 };
 
+/**
+  ICpuSyscallEmitter -- optional emitter capability for guest system calls.
+
+  A frontend's INT/SVC/trap instruction, instead of being a black-box trap, records
+  its vector (e.g. a DOS interrupt number) in CPU_STATE.SyscallVector and traps to
+  pReturnPc (the instruction after it). The host resume loop, finding a pending
+  vector, hands it to a knowledge-library dispatcher, which reads the guest registers
+  and memory, performs the equivalent native call, writes results back, and resumes.
+  This is what lets an in-line guest system call become a native host call.
+  Discovered via QueryInterface (IID_ICpuSyscallEmitter).
+**/
+DECLARE_INTERFACE_ (ICpuSyscallEmitter, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Record Vector in CPU_STATE.SyscallVector and trap to pReturnPc: set TrapPc to
+    // the return address and terminate the block (same resume path as IndirectBranch).
+    STDMETHOD (EmitSyscall)(THIS_ UINT32 Vector, IN ICpuValue *pReturnPc) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -302,6 +324,8 @@ inline constexpr IID IID_ICpuSmcEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } };
 inline constexpr IID IID_ICpuProfileEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } };
+inline constexpr IID IID_ICpuSyscallEmitter =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
 
 } // namespace LibCPU
 

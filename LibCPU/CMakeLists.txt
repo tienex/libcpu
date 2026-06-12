@@ -245,6 +245,11 @@ target_link_libraries(tiered PRIVATE LibCPU Threads::Threads)
 add_executable(tiered6502 test/tiered6502.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/m6502/Cpu6502.cpp)
 target_include_directories(tiered6502 PRIVATE frontends/m6502 test aot core)
 target_link_libraries(tiered6502 PRIVATE LibCPU Threads::Threads)
+
+# Knowledge-library demo: a DOS program's in-line INT 21h calls become host libc calls.
+add_executable(dossys test/dossys.cpp aot/AotGenerator.cpp core/KnowledgeLibrary.cpp frontends/v20/CpuV20.cpp)
+target_include_directories(dossys PRIVATE frontends/v20 test aot core)
+target_link_libraries(dossys PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -290,6 +295,15 @@ foreach(_be ${LIBCPU_CFG_BACKENDS})
     list(APPEND LIBCPU_CHECK_DEPS ${_be})
   endif()
 endforeach()
+
+# The knowledge-library demo needs a syscall-capable backend (ICpuSyscallEmitter),
+# which today is the interpreter; register it as a single interp test.
+if(TARGET interp_backend)
+  add_test(NAME knowledge.dos
+    COMMAND dossys "$<TARGET_BUNDLE_DIR:interp_backend>" "${CMAKE_CURRENT_SOURCE_DIR}/test/dos21.xml")
+  set_tests_properties(knowledge.dos PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  list(APPEND LIBCPU_CHECK_DEPS dossys)
+endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and
 # all present CFG backends, then run the matrix with per-failure output.

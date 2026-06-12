@@ -21,7 +21,8 @@ typedef enum _INTERP_OP {
     OpIndirect,     // A = target temp: set TrapPc = target and return (resume there)
     OpSetDisp,      // A = target temp: DispPc = target (in-artifact dispatch scratch)
     OpGetDisp,      // Dest = DispPc
-    OpEdgeCount     // Imm = slot: ++EdgeCount[slot] (profiling instrumentation)
+    OpEdgeCount,    // Imm = slot: ++EdgeCount[slot] (profiling instrumentation)
+    OpSyscall       // Imm = vector, A = return-pc temp: set SyscallVector + TrapPc, return
 } INTERP_OP;
 
 //
@@ -195,6 +196,10 @@ public:
                     pState->EdgeCount[In.Imm]++;
                 }
                 break;
+            case OpSyscall:                           // guest system call: record + trap to host
+                pState->SyscallVector = In.Imm;
+                pState->TrapPc        = Temp[In.A];
+                return ExecSmc;
             }
             Ip++;
         }
@@ -265,10 +270,10 @@ private:
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter {
 public:
-    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve QI
-    // here, forward refcounting to the LcComObject base.
+    // Four interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter +
+    // ICpuSyscallEmitter): resolve QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
@@ -277,6 +282,11 @@ public:
         }
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSyscallEmitter)) {
+            *ppvObject = static_cast<ICpuSyscallEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -369,6 +379,10 @@ public:
     }
     HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
         Record (OpEdgeCount, 0, 0, 0, 0, 0, 0, (UINT64) Index);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
+        Record (OpSyscall, 0, 0, 0, TempOf (pReturnPc), 0, 0, (UINT64) Vector);
         return S_OK;
     }
 
