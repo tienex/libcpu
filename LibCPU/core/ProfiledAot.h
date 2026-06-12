@@ -19,6 +19,7 @@
 #define LIBCPU_PROFILEDAOT_H
 
 #include "LibCPU/ICpu.h"
+#include "LibCPU/CpuState.h"
 #include "TieredEngine.h"   // CPU_TIER
 #include "PerfTrace.h"
 #include <map>
@@ -26,6 +27,14 @@
 #include <vector>
 
 namespace LibCPU {
+
+// Profile the call edges of [Entry, End) with TRUE runtime counts: build an
+// instrumented version, run it Runs times (reusing pState, whose EdgeCount[] holds
+// the counters), and fill Trace with each edge's real frequency plus the region.
+// The backend must expose ICpuProfileEmitter (the interpreter does).
+HRESULT LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                              CPU_ADDR Entry, CPU_ADDR End,
+                              VOID *pRAM, CPU_STATE *pState, UINT32 Runs, LcPerfTrace &Trace);
 
 class LcProfiledAot {
 public:

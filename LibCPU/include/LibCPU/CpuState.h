@@ -35,6 +35,9 @@ typedef struct _CPU_STATE {
     UINT64 DispPc;          // indirect-branch dispatch target (in-artifact scratch):
                             // an indirect branch writes its runtime target here, then
                             // the artifact's dispatcher routes to the matching block
+    UINT64 EdgeCount[32];   // per-call-site execution counters: an instrumented
+                            // (profiling) build bumps EdgeCount[i] each time the i-th
+                            // CALL site runs, giving TRUE edge frequencies
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -56,6 +59,10 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_TRAPPC_OFFSET    ((UINT32) (32 * 8 + 32)) // TrapPc
 #define CPU_STATE_CODEDIRTY_OFFSET ((UINT32) (32 * 8 + 40)) // CodeDirty
 #define CPU_STATE_DISPPC_OFFSET    ((UINT32) (32 * 8 + 72)) // DispPc (after CodeDirty[32])
+#define CPU_STATE_EDGECOUNT_OFFSET ((UINT32) (32 * 8 + 80)) // EdgeCount[0] (after DispPc)
+
+// Number of per-call-site edge counters (profiling instrumentation).
+#define CPU_PROFILE_SLOTS          ((UINT32) 32)
 
 // Sentinel stored in TrapPc when no SMC guard has fired.
 #define CPU_SMC_NO_TRAP            (~UINT64_C (0))

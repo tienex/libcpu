@@ -263,6 +263,25 @@ DECLARE_INTERFACE_ (ICpuSmcEmitter, IUnknown)
     STDMETHOD (GetDispatchTarget)(THIS_ OUT ICpuValue **ppValue) PURE;
 };
 
+/**
+  ICpuProfileEmitter -- optional emitter capability for runtime edge profiling.
+
+  An instrumented (profiling) AOT build plants EmitEdgeCounter at each CALL block, so
+  CPU_STATE.EdgeCount[Index] is incremented every time that call site executes. The
+  host reads the counters after running to obtain TRUE per-edge frequencies (a call in
+  a loop counts per iteration; a conditional call counts only when taken). Discovered
+  via QueryInterface (IID_ICpuProfileEmitter).
+**/
+DECLARE_INTERFACE_ (ICpuProfileEmitter, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Increment CPU_STATE.EdgeCount[Index] (a 64-bit counter) when this point runs.
+    STDMETHOD (EmitEdgeCounter)(THIS_ UINT32 Index) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -281,6 +300,8 @@ inline constexpr IID IID_ICpuBackend =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } };
 inline constexpr IID IID_ICpuSmcEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } };
+inline constexpr IID IID_ICpuProfileEmitter =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } };
 
 } // namespace LibCPU
 

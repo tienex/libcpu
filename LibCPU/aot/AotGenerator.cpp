@@ -15,6 +15,7 @@
 **/
 #include "AotGenerator.h"
 #include "LibCPU/PCom.h"
+#include "LibCPU/CpuState.h"
 
 #include <cstdio>
 #include <functional>
@@ -409,6 +410,172 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                 OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
 {
     return GenerateAotCfgInlined (pArch, pBackend, Entry, End, nullptr, 0, ppCode, pInstrCount);
+}
+
+HRESULT
+GenerateAotCfgProfiling (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                         CPU_ADDR Entry, CPU_ADDR End,
+                         OUT ICpuCode **ppCode,
+                         OUT CPU_CALL_EDGE *pSites, UINT32 MaxSites, OUT UINT32 *pSiteCount)
+{
+    if (pArch == nullptr || pBackend == nullptr || ppCode == nullptr) {
+        return E_INVALIDARG;
+    }
+    *ppCode = nullptr;
+    if (pSiteCount != nullptr) {
+        *pSiteCount = 0;
+    }
+
+    ComPtr<ICpuEmitter> Emitter;
+    HRESULT hr = pBackend->CreateEmitter (pArch, &Emitter);
+    if (FAILED (hr) || Emitter == nullptr) {
+        return FAILED (hr) ? hr : E_FAIL;
+    }
+    ICpuSmcEmitter *pSmc = nullptr;
+    if (FAILED (Emitter->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc))) {
+        pSmc = nullptr;
+    }
+    ICpuProfileEmitter *pProf = nullptr;
+    if (FAILED (Emitter->QueryInterface (IID_ICpuProfileEmitter, (VOID **) &pProf))) {
+        pProf = nullptr;
+    }
+    if (pProf == nullptr) {
+        if (pSmc != nullptr) { pSmc->Release (); }
+        return E_NOTIMPL;   // backend cannot instrument edge counters
+    }
+
+    // Discover every reachable block (no inlining: callees are shared blocks).
+    std::set<CPU_ADDR>    Pcs;
+    std::vector<CPU_ADDR> Work;
+    bool                  HasIndirect = false;
+    Work.push_back (Entry);
+    while (!Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Pc >= End || Pcs.count (Pc) != 0) {
+            continue;
+        }
+        Pcs.insert (Pc);
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+            continue;
+        }
+        if (Tag & TagReturn) {
+            HasIndirect = true;
+        }
+        if (Tag & (TagContinue | TagConditional | TagCall)) { Work.push_back (NextPc); }
+        if (Tag & (TagBranch | TagConditional | TagCall))   { Work.push_back (NewPc); }
+    }
+    if (Pcs.empty ()) {
+        if (pSmc != nullptr) { pSmc->Release (); }
+        pProf->Release ();
+        return E_FAIL;
+    }
+
+    std::map<CPU_ADDR, ICpuBlock *> Blocks;
+    for (CPU_ADDR Pc : Pcs) {
+        ICpuBlock *pBlock = nullptr;
+        Emitter->CreateBlock ("pc", &pBlock);
+        Blocks[Pc] = pBlock;
+    }
+    ICpuBlock *pExit = nullptr;
+    Emitter->CreateBlock ("exit", &pExit);
+    auto Target = [&] (CPU_ADDR Pc) -> ICpuBlock * {
+        auto It = Blocks.find (Pc);
+        return (It != Blocks.end ()) ? It->second : pExit;
+    };
+
+    std::vector<ICpuBlock *> Disp;
+    ICpuBlock *pDispatch = pExit;
+    if (HasIndirect && pSmc != nullptr) {
+        for (UINT32 Idx = 0; Idx <= (UINT32) Blocks.size (); Idx++) {
+            ICpuBlock *pB = nullptr;
+            Emitter->CreateBlock ("disp", &pB);
+            Disp.push_back (pB);
+        }
+        pDispatch = Disp[0];
+    }
+
+    HRESULT BrHr = Emitter->Branch (Target (Entry));
+    if (FAILED (BrHr)) {
+        for (auto CONST &Pair : Blocks) { if (Pair.second != nullptr) { Pair.second->Release (); } }
+        for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
+        if (pExit != nullptr) { pExit->Release (); }
+        if (pSmc != nullptr)  { pSmc->Release (); }
+        pProf->Release ();
+        return BrHr;
+    }
+
+    UINT32 SiteCount = 0;
+    for (CPU_ADDR Pc : Pcs) {
+        Emitter->SetInsertBlock (Blocks[Pc]);
+        if (pSmc != nullptr) {
+            pSmc->EmitCodeGuard (Pc);
+        }
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+
+        if (Tag & TagCall) {
+            // Instrument: assign this call site a slot, record it, bump on every run.
+            if (SiteCount < CPU_PROFILE_SLOTS) {
+                if (pSites != nullptr && SiteCount < MaxSites) {
+                    pSites[SiteCount].Site        = Pc;
+                    pSites[SiteCount].Callee      = NewPc;
+                    pSites[SiteCount].ReturnPoint = NextPc;
+                }
+                pProf->EmitEdgeCounter (SiteCount);
+                SiteCount++;
+            }
+        }
+
+        pArch->TranslateInstr (Pc, Emitter);
+
+        if (Tag & TagReturn) {
+            Emitter->Branch (pDispatch);
+        } else if (Tag & TagConditional) {
+            ComPtr<ICpuValue> Cond;
+            if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
+                Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
+            } else {
+                Emitter->Branch (Target (NextPc));
+            }
+        } else if (Tag & (TagBranch | TagCall)) {
+            Emitter->Branch (Target (NewPc));
+        } else {
+            Emitter->Branch (Target (NextPc));
+        }
+    }
+
+    if (HasIndirect && pSmc != nullptr) {
+        UINT32 K = 0;
+        for (auto CONST &Pair : Blocks) {
+            Emitter->SetInsertBlock (Disp[K]);
+            ComPtr<ICpuValue> Pc;   pSmc->GetDispatchTarget (&Pc);
+            ComPtr<ICpuValue> Addr; Emitter->ConstInt (64, (UINT64) Pair.first, &Addr);
+            ComPtr<ICpuValue> Cond; Emitter->Compare (CmpEq, Pc, Addr, &Cond);
+            Emitter->CondBranch (Cond, Pair.second, Disp[K + 1]);
+            K++;
+        }
+        Emitter->SetInsertBlock (Disp[K]);
+        ComPtr<ICpuValue> Pc; pSmc->GetDispatchTarget (&Pc);
+        pSmc->IndirectBranch (Pc);
+    }
+
+    if (pSiteCount != nullptr) {
+        *pSiteCount = SiteCount;
+    }
+    hr = pBackend->Compile (Emitter, ppCode);
+
+    for (auto CONST &Pair : Blocks) { if (Pair.second != nullptr) { Pair.second->Release (); } }
+    for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
+    if (pExit != nullptr) { pExit->Release (); }
+    if (pSmc != nullptr)  { pSmc->Release (); }
+    pProf->Release ();
+    return hr;
 }
 
 UINT32

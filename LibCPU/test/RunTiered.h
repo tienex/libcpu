@@ -74,6 +74,21 @@ static UINT8 const g_Nested[] = {
     0xA3, 0x00, 0x02    // 17:        MOV [0x200], AX
 };
 
+// A loop that CALLs sub @3 (AX += 2) five times per run: [0x200] = 5*2 = 10. The one
+// call SITE executes 5x per run -- region count under-counts the edge 5-fold.
+static UINT8 const g_Loop[] = {
+    0xE9, 0x04, 0x00,   // 0:  JMP main (IP 7)
+    0x05, 0x02, 0x00,   // 3:  sub: ADD AX, 2
+    0xC3,               // 6:       RET
+    0xBC, 0x00, 0x10,   // 7:  main: MOV SP, 0x1000
+    0xB9, 0x05, 0x00,   // A:        MOV CX, 5
+    0xB8, 0x00, 0x00,   // D:        MOV AX, 0
+    0xE8, 0xF0, 0xFF,   // 10: loop: CALL sub (IP 3)
+    0x49,               // 13:       DEC CX
+    0x75, 0xFA,         // 14:       JNZ loop (IP 0x10)
+    0xA3, 0x00, 0x02    // 16:       MOV [0x200], AX
+};
+
 static CPU_ADDR const HOT_ENTRY  = 0,    HOT_END  = (CPU_ADDR) sizeof (g_Hot);
 static CPU_ADDR const COLD_ENTRY = 0x40, COLD_END = 0x40 + (CPU_ADDR) sizeof (g_Cold);
 
@@ -380,6 +395,73 @@ RunNestedInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTrace
 
     Ok = Ok && Inlined == 2 && Result == 9;
     std::printf ("RESULT: %s  (recursive inlining: the whole call tree embedded, every RET a direct branch)\n",
+                 Ok ? "PASS" : "FAIL");
+
+    pArch->Release ();
+    return Ok ? 0 : 1;
+}
+
+//
+// True per-edge runtime counters: a CALL inside a loop runs many times per region
+// run, so propagating the REGION count to the edge under-counts it. An instrumented
+// build counts the call site directly. With a threshold between the two, true counts
+// inline the hot in-loop call while propagated counts would miss it.
+//
+static inline int
+RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
+{
+    std::printf ("\n== True per-edge counters: a CALL in a loop (region count under-counts the edge)\n");
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, g_Loop, sizeof (g_Loop));
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+    CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Loop);
+    UINT32 const Runs = 200;
+
+    // (a) TRUE counts: instrumented profile.
+    LcPerfTrace TrueTrace;
+    LcCollectEdgeProfile (pArch, pCheap, Entry, End, Ram, &State, Runs, TrueTrace);
+    UINT64 TrueEdge = TrueTrace.EdgeCount () > 0 ? TrueTrace.Edge (0).Count : 0;
+
+    // (b) PROPAGATED counts: the JIT engine attributes the region count to the edge.
+    LcPerfTrace PropTrace;
+    {
+        CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
+        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        for (UINT32 i = 0; i < Runs; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
+        Profiler.ExportTrace (PropTrace);
+    }
+    UINT64 PropEdge = PropTrace.EdgeCount () > 0 ? PropTrace.Edge (0).Count : 0;
+
+    std::printf ("  region ran %u times; the loop CALLs sub 5x per run\n", Runs);
+    std::printf ("  edge count: TRUE = %llu (instrumented)   vs   PROPAGATED = %llu (region count)\n",
+                 (unsigned long long) TrueEdge, (unsigned long long) PropEdge);
+
+    // With a threshold between the two, the decision diverges.
+    UINT64 const Threshold = 500;
+    int Inl[2];
+    for (int Which = 0; Which < 2; Which++) {
+        LcPerfTrace CONST &T = (Which == 0) ? TrueTrace : PropTrace;
+        CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
+        LcProfiledAot Pgo (pArch, Tiers, 2, Threshold);
+        Pgo.Build (T);
+        Inl[Which] = (int) Pgo.InlinedCount ();
+        std::memset (Ram + 0x200, 0, 2);
+        Pgo.Run (Entry, Ram, &State, nullptr);
+    }
+    int Result = ResultWord (Ram, 0x200);
+
+    std::printf ("  with threshold %llu: TRUE trace inlines %d callee(s); PROPAGATED inlines %d; result=%d (exp 10)\n",
+                 (unsigned long long) Threshold, Inl[0], Inl[1], Result);
+
+    bool Ok = TrueEdge == (UINT64) (Runs * 5) && PropEdge == (UINT64) Runs
+              && Inl[0] == 1 && Inl[1] == 0 && Result == 10;
+    std::printf ("RESULT: %s  (true counters saw 5x the calls and inlined the hot in-loop call; propagation missed it)\n",
                  Ok ? "PASS" : "FAIL");
 
     pArch->Release ();

@@ -20,7 +20,8 @@ typedef enum _INTERP_OP {
     OpCodeGuard,    // Imm = block PC: trap if this page's dirty bit is set
     OpIndirect,     // A = target temp: set TrapPc = target and return (resume there)
     OpSetDisp,      // A = target temp: DispPc = target (in-artifact dispatch scratch)
-    OpGetDisp       // Dest = DispPc
+    OpGetDisp,      // Dest = DispPc
+    OpEdgeCount     // Imm = slot: ++EdgeCount[slot] (profiling instrumentation)
 } INTERP_OP;
 
 //
@@ -189,6 +190,11 @@ public:
             case OpGetDisp:                           // read it back for the dispatcher's compares
                 Temp[In.Dest] = pState->DispPc;
                 break;
+            case OpEdgeCount:                         // bump this call site's edge counter
+                if (In.Imm < CPU_PROFILE_SLOTS) {
+                    pState->EdgeCount[In.Imm]++;
+                }
+                break;
             }
             Ip++;
         }
@@ -259,13 +265,18 @@ private:
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
-    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
-    // refcounting to the LcComObject base.
+    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve QI
+    // here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+            *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -355,6 +366,10 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
         return Produce (64, OpGetDisp, 0, 0, 0, 0, 64, 0, ppValue);
+    }
+    HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
+        Record (OpEdgeCount, 0, 0, 0, 0, 0, 0, (UINT64) Index);
+        return S_OK;
     }
 
     ICpuCode *Build () {

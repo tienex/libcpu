@@ -86,6 +86,16 @@ HRESULT GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                                CPU_INLINE_SITE CONST *pInline, UINT32 InlineCount,
                                OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
 
+// Build an INSTRUMENTED CFG for edge profiling: each CALL block bumps
+// CPU_STATE.EdgeCount[i] (i = the call site's discovery order). The discovered call
+// sites are written to pSites (slot i -> that site) and *pSiteCount. The host runs
+// the build, then reads EdgeCount[i] for the TRUE frequency of edge pSites[i].
+// Requires a backend exposing ICpuProfileEmitter (returns E_NOTIMPL otherwise).
+HRESULT GenerateAotCfgProfiling (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                                 CPU_ADDR Entry, CPU_ADDR End,
+                                 OUT ICpuCode **ppCode,
+                                 OUT CPU_CALL_EDGE *pSites, UINT32 MaxSites, OUT UINT32 *pSiteCount);
+
 } // namespace LibCPU
 
 #endif // LIBCPU_AOTGENERATOR_H

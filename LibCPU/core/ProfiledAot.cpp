@@ -3,7 +3,41 @@
 **/
 #include "ProfiledAot.h"
 #include "../aot/AotGenerator.h"
+#include <cstring>
 #include <set>
+
+namespace LibCPU {
+
+HRESULT
+LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                      CPU_ADDR Entry, CPU_ADDR End,
+                      VOID *pRAM, CPU_STATE *pState, UINT32 Runs, LcPerfTrace &Trace)
+{
+    CPU_CALL_EDGE Sites[CPU_PROFILE_SLOTS];
+    UINT32        SiteCount = 0;
+    ICpuCode     *pCode     = nullptr;
+    HRESULT hr = GenerateAotCfgProfiling (pArch, pBackend, Entry, End, &pCode,
+                                          Sites, CPU_PROFILE_SLOTS, &SiteCount);
+    if (FAILED (hr) || pCode == nullptr) {
+        return FAILED (hr) ? hr : E_FAIL;
+    }
+
+    std::memset (pState->EdgeCount, 0, sizeof (pState->EdgeCount));
+    for (UINT32 R = 0; R < Runs; R++) {
+        pState->TrapPc = CPU_SMC_NO_TRAP;
+        pCode->Execute (pRAM, pState, nullptr);
+    }
+    pCode->Release ();
+
+    Trace.Record (Entry, End, (UINT64) Runs);   // region ran Runs times
+    for (UINT32 I = 0; I < SiteCount; I++) {
+        Trace.RecordEdge (Sites[I].Site, Sites[I].Callee, Sites[I].ReturnPoint,
+                          pState->EdgeCount[I]);   // TRUE per-edge count
+    }
+    return S_OK;
+}
+
+} // namespace LibCPU
 
 namespace LibCPU {
 

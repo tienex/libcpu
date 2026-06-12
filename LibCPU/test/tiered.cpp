@@ -16,8 +16,9 @@ int main (int argc, char **argv) {
     int Aot = RunProfiledAotDemo (pT0, pT1, "/tmp/libcpu-v20.trace");
     int Inl = RunInlineDemo (pT0, pT1, "/tmp/libcpu-v20-edges.trace");
     int Nst = RunNestedInlineDemo (pT0, pT1, "/tmp/libcpu-v20-nested.trace");
+    int Edg = RunEdgeCountDemo (pT0, pT1);
 
     pT1->Release ();
     pT0->Release ();
-    return (Jit == 0 && Aot == 0 && Inl == 0 && Nst == 0) ? 0 : 1;
+    return (Jit == 0 && Aot == 0 && Inl == 0 && Nst == 0 && Edg == 0) ? 0 : 1;
 }
