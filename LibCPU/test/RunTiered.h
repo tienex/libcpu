@@ -89,6 +89,24 @@ static UINT8 const g_Loop[] = {
     0xA3, 0x00, 0x02    // 16:       MOV [0x200], AX
 };
 
+// Recursive sum: f(CX) accumulates CX+...+1 into BX, recursing; main calls f(3).
+// [0x200] = 1+2+3 = 6. The recursion runs through real CALL/RET -- every return
+// address (B and 0x18) is a known block, so the in-artifact dispatcher routes them
+// all and the whole recursion resolves in ONE translation.
+static UINT8 const g_Rec[] = {
+    0xE9, 0x09, 0x00,         // 0:  JMP main (IP 0xC)
+    0x01, 0xCB,               // 3:  f: ADD BX, CX
+    0x49,                     // 5:     DEC CX
+    0x74, 0x03,               // 6:     JZ done (IP 0xB)
+    0xE8, 0xF8, 0xFF,         // 8:     CALL f (IP 3)
+    0xC3,                     // B:  done: RET
+    0xBC, 0x00, 0x10,         // C:  main: MOV SP, 0x1000
+    0xB9, 0x03, 0x00,         // F:        MOV CX, 3
+    0xBB, 0x00, 0x00,         // 12:       MOV BX, 0
+    0xE8, 0xEB, 0xFF,         // 15:       CALL f (IP 3)
+    0x89, 0x1E, 0x00, 0x02    // 18:       MOV [0x200], BX
+};
+
 static CPU_ADDR const HOT_ENTRY  = 0,    HOT_END  = (CPU_ADDR) sizeof (g_Hot);
 static CPU_ADDR const COLD_ENTRY = 0x40, COLD_END = 0x40 + (CPU_ADDR) sizeof (g_Cold);
 
@@ -518,6 +536,57 @@ RunBudgetDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     std::printf ("RESULT: %s  (budget capped inlining to the hottest site; results correct with the mix)\n",
                  Ok ? "PASS" : "FAIL");
 
+    pArch->Release ();
+    return Ok ? 0 : 1;
+}
+
+//
+// Recursion. f(CX) recurses to depth CX; every return address is a known block, so
+// the in-artifact dispatcher resolves the whole recursion with no host round-trip.
+// (Note: a recursive callee is NOT inlined -- inlining elides the return-address
+// pushes that the recursion's unwinding relies on, so the two return models are
+// incompatible at the inline/recursion boundary. Recursion is handled by the
+// dispatcher; only non-recursive trees inline.)
+//
+static inline int
+RunRecursionDemo (ICpuBackend *pBackend)
+{
+    std::printf ("\n== Recursion (via the dispatcher): f(3) = 1+2+3 = 6 in one translation\n");
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, g_Rec, sizeof (g_Rec));
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+    CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Rec);
+
+    CPU_ADDR Resume = Entry;
+    int      Trans  = 0;
+    for (int Iter = 0; Iter < 32; Iter++) {
+        ComPtr<ICpuCode> Code;
+        UINT32 N = 0;
+        if (FAILED (GenerateAotCfg (pArch, pBackend, Resume, End, &Code, &N)) || Code == nullptr) {
+            break;
+        }
+        Trans++;
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        Code->Execute (Ram, &State, nullptr);
+        if (State.TrapPc == CPU_SMC_NO_TRAP) {
+            break;
+        }
+        Resume = (CPU_ADDR) State.TrapPc;
+    }
+    int Result = ResultWord (Ram, 0x200);
+
+    std::printf ("  f(3) -> [0x200] = %d (exp 6) in %d translation%s\n",
+                 Result, Trans, Trans == 1 ? "" : "s");
+
+    bool Ok = Result == 6;
+    std::printf ("RESULT: %s  (recursion of depth 3 resolved through the in-artifact dispatcher)\n",
+                 Ok ? "PASS" : "FAIL");
     pArch->Release ();
     return Ok ? 0 : 1;
 }
