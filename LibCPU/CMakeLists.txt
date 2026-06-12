@@ -240,6 +240,11 @@ find_package(Threads REQUIRED)
 add_executable(tiered test/tiered.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/v20/CpuV20.cpp)
 target_include_directories(tiered PRIVATE frontends/v20 test aot core)
 target_link_libraries(tiered PRIVATE LibCPU Threads::Threads)
+
+# Same tiered / PGO suite, driven through the 6502 frontend (frontend-agnosticism).
+add_executable(tiered6502 test/tiered6502.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/m6502/Cpu6502.cpp)
+target_include_directories(tiered6502 PRIVATE frontends/m6502 test aot core)
+target_link_libraries(tiered6502 PRIVATE LibCPU Threads::Threads)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -271,15 +276,16 @@ target_include_directories(jslist PRIVATE backends/js)
 # toolchain was not found is simply skipped (its target does not exist).
 enable_testing()
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
-set(LIBCPU_CHECK_DEPS aotv20 tiered)
+set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502)
 foreach(_be ${LIBCPU_CFG_BACKENDS})
   if(TARGET ${_be})
     set(_bundle "$<TARGET_BUNDLE_DIR:${_be}>")
-    add_test(NAME aotv20.${_be} COMMAND aotv20 "${_bundle}")
-    add_test(NAME tiered.${_be} COMMAND tiered "${_bundle}" "${_bundle}")
+    add_test(NAME aotv20.${_be}     COMMAND aotv20 "${_bundle}")
+    add_test(NAME tiered.${_be}     COMMAND tiered "${_bundle}" "${_bundle}")
+    add_test(NAME tiered6502.${_be} COMMAND tiered6502 "${_bundle}" "${_bundle}")
     # Belt-and-suspenders: fail the test if any demo prints a FAIL line, even
     # should the driver's exit code ever regress.
-    set_tests_properties(aotv20.${_be} tiered.${_be} PROPERTIES
+    set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} PROPERTIES
       FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
     list(APPEND LIBCPU_CHECK_DEPS ${_be})
   endif()

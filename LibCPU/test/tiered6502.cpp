@@ -1,0 +1,26 @@
+/** @file  The tiered / PGO suite on the 6502 frontend (proves frontend-agnosticism). */
+#include "RunTiered6502.h"
+#include "LibCPU/Loader.h"
+#include <cstdio>
+using namespace LibCPU;
+int main (int argc, char **argv) {
+    if (argc < 3) {
+        std::printf ("usage: %s <tier0.backend> <tier1.backend>\n", argv[0]);
+        return 2;
+    }
+    ICpuBackend *pT0 = LoadBackendBundle (argv[1]);
+    ICpuBackend *pT1 = LoadBackendBundle (argv[2]);
+    if (!pT0 || !pT1) { std::printf ("failed to load bundles\n"); return 2; }
+
+    int Jit = RunTieredDemo (pT0, pT1);
+    int Aot = RunProfiledAotDemo (pT0, pT1, "/tmp/libcpu-6502.trace");
+    int Inl = RunInlineDemo (pT0, pT1, "/tmp/libcpu-6502-edges.trace");
+    int Nst = RunNestedInlineDemo (pT0, pT1, "/tmp/libcpu-6502-nested.trace");
+    int Edg = RunEdgeCountDemo (pT0, pT1);
+    int Bud = RunBudgetDemo (pT0, pT1);
+    int Rec = RunRecursionDemo (pT1);
+
+    pT1->Release ();
+    pT0->Release ();
+    return (Jit == 0 && Aot == 0 && Inl == 0 && Nst == 0 && Edg == 0 && Bud == 0 && Rec == 0) ? 0 : 1;
+}

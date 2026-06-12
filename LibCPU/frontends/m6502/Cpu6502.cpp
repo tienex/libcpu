@@ -2,9 +2,12 @@
   MOS 6502 frontend implementation (initial slice). See Cpu6502.h.
 
   Supported opcodes in this slice:
-    A9  LDA #imm     A5  LDA $zp     85  STA $zp
-    E6  INC $zp      69  ADC #imm
-  All are two bytes. Decimal mode is not modeled (binary ADC).
+    A9  LDA #imm     A5  LDA $zp     85  STA $zp     8D  STA $abs
+    E6  INC $zp      C6  DEC $zp     69  ADC #imm    18  CLC
+    D0  BNE rel      4C  JMP $abs    20  JSR $abs    60  RTS
+  Decimal mode is not modeled (binary ADC). JSR/RTS use the page-1 stack and
+  drive the in-artifact PC dispatcher exactly as the V20 CALL/RET do, so the
+  whole-program AOT / tiering / PGO machinery is frontend-agnostic.
 **/
 #include "Cpu6502.h"
 #include <cstdio>
@@ -57,16 +60,37 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
-        // Most opcodes in this slice are two bytes; STA abs (0x8D) is three. BNE is
-        // a relative conditional branch; everything else continues linearly.
-        *pNextPc = Pc + ((m_pCode[Pc] == 0x8D) ? 3 : 2);
-        if (m_pCode[Pc] == 0xD0) {   // BNE rel
-            *pTag   = TagConditional | TagBranch;
-            *pNewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);   // signed displacement
-        } else {
-            *pTag   = TagContinue;
-            *pNewPc = (CPU_ADDR) -1;
+        UINT8    Op    = m_pCode[Pc];
+        UINT32   Len   = 2;                       // most of the slice is two bytes
+        UINT32   Tag   = TagContinue;
+        CPU_ADDR NewPc = (CPU_ADDR) -1;
+        UINT16   Abs   = (UINT16) (m_pCode[Pc + 1] | (m_pCode[Pc + 2] << 8));   // abs operand
+        switch (Op) {
+        case 0x8D:                                // STA $abs
+            Len = 3;
+            break;
+        case 0x4C:                                // JMP $abs
+            Len = 3; Tag = TagBranch; NewPc = (CPU_ADDR) Abs;
+            break;
+        case 0x20:                                // JSR $abs (call: target known, ret = Pc+3)
+            Len = 3; Tag = TagCall; NewPc = (CPU_ADDR) Abs;
+            break;
+        case 0x60:                                // RTS (indirect: target popped at run time)
+            Len = 1; Tag = TagReturn;
+            break;
+        case 0x18:                                // CLC
+            Len = 1;
+            break;
+        case 0xD0:                                // BNE rel
+            Len = 2; Tag = TagConditional | TagBranch;
+            NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);   // signed displacement
+            break;
+        default:                                  // LDA/STA/INC/DEC/ADC: 2-byte, linear
+            break;
         }
+        *pNextPc = Pc + Len;
+        *pTag    = Tag;
+        *pNewPc  = NewPc;
         return S_OK;
     }
 
@@ -80,8 +104,13 @@ public:
         case 0x85: std::snprintf (pLine, MaxLine, "sta $%02x", Op1);  return S_OK;
         case 0x8D: std::snprintf (pLine, MaxLine, "sta $%04x", (unsigned) (Op1 | (m_pCode[Pc + 2] << 8))); return S_OK;
         case 0xE6: std::snprintf (pLine, MaxLine, "inc $%02x", Op1);  return S_OK;
+        case 0xC6: std::snprintf (pLine, MaxLine, "dec $%02x", Op1);  return S_OK;
         case 0x69: std::snprintf (pLine, MaxLine, "adc #$%02x", Op1); return S_OK;
+        case 0x18: std::snprintf (pLine, MaxLine, "clc");             return S_OK;
         case 0xD0: std::snprintf (pLine, MaxLine, "bne $%04x", (unsigned) (Pc + 2 + (INT8) Op1)); return S_OK;
+        case 0x4C: std::snprintf (pLine, MaxLine, "jmp $%04x", (unsigned) (Op1 | (m_pCode[Pc + 2] << 8))); return S_OK;
+        case 0x20: std::snprintf (pLine, MaxLine, "jsr $%04x", (unsigned) (Op1 | (m_pCode[Pc + 2] << 8))); return S_OK;
+        case 0x60: std::snprintf (pLine, MaxLine, "rts");            return S_OK;
         default:   pMnem = "???"; std::snprintf (pLine, MaxLine, "%s ($%02x)", pMnem, Opcode); return S_OK;
         }
     }
@@ -154,6 +183,77 @@ public:
             pE->SetFlag (FlagOverflow, VFlag);
 
             EmitSetNZ (pE, Res);
+            break;
+        }
+        case 0xC6: {   // DEC $zp
+            ComPtr<ICpuValue> Addr; pE->ConstInt (16, Op1, &Addr);
+            ComPtr<ICpuValue> Cur;  pE->Load (Addr, 8, &Cur);
+            ComPtr<ICpuValue> One;  pE->ConstInt (8, 1, &One);
+            ComPtr<ICpuValue> Res;  pE->BinaryOp (BinSub, Cur, One, &Res);
+            pE->Store (Res, Addr, 8);
+            EmitSetNZ (pE, Res);
+            break;
+        }
+        case 0x18: {   // CLC
+            ComPtr<ICpuValue> Zero; pE->ConstInt (1, 0, &Zero);
+            pE->SetFlag (FlagCarry, Zero);
+            break;
+        }
+        case 0x4C:     // JMP $abs -- no data effect; the branch is wired from TagInstr.
+            break;
+        case 0x20: {   // JSR $abs: push (Pc+2) hi, lo to the page-1 stack; S -= 2
+            // The 6502 pushes the address of the JSR's last byte (return - 1); RTS
+            // adds 1 back. The driver branches to the callee (TagCall).
+            UINT16 Ret1 = (UINT16) (Pc + 2);
+            ComPtr<ICpuValue> Base; pE->ConstInt (16, 0x100, &Base);
+            ComPtr<ICpuValue> One;  pE->ConstInt (8, 1, &One);
+            // push high byte at $0100 + S
+            ComPtr<ICpuValue> S;    pE->GetRegister (Reg6502S, 8, &S);
+            ComPtr<ICpuValue> S16;  pE->Cast (CastZExt, S, 16, &S16);
+            ComPtr<ICpuValue> AddrH; pE->BinaryOp (BinAdd, Base, S16, &AddrH);
+            ComPtr<ICpuValue> Hi;   pE->ConstInt (8, (Ret1 >> 8) & 0xFF, &Hi);
+            pE->Store (Hi, AddrH, 8);
+            // push low byte at $0100 + (S - 1)
+            ComPtr<ICpuValue> S1;   pE->BinaryOp (BinSub, S, One, &S1);
+            ComPtr<ICpuValue> S1_16; pE->Cast (CastZExt, S1, 16, &S1_16);
+            ComPtr<ICpuValue> AddrL; pE->BinaryOp (BinAdd, Base, S1_16, &AddrL);
+            ComPtr<ICpuValue> Lo;   pE->ConstInt (8, Ret1 & 0xFF, &Lo);
+            pE->Store (Lo, AddrL, 8);
+            // S -= 2
+            ComPtr<ICpuValue> S2;   pE->BinaryOp (BinSub, S1, One, &S2);
+            pE->PutRegister (Reg6502S, S2, 8, FALSE);
+            break;
+        }
+        case 0x60: {   // RTS: pull lo, hi from the page-1 stack; target = addr + 1
+            ComPtr<ICpuValue> Base; pE->ConstInt (16, 0x100, &Base);
+            ComPtr<ICpuValue> One;  pE->ConstInt (8, 1, &One);
+            // S += 1; lo = [$0100 + S]
+            ComPtr<ICpuValue> S;    pE->GetRegister (Reg6502S, 8, &S);
+            ComPtr<ICpuValue> S1;   pE->BinaryOp (BinAdd, S, One, &S1);
+            ComPtr<ICpuValue> S1_16; pE->Cast (CastZExt, S1, 16, &S1_16);
+            ComPtr<ICpuValue> AddrL; pE->BinaryOp (BinAdd, Base, S1_16, &AddrL);
+            ComPtr<ICpuValue> Lo;   pE->Load (AddrL, 8, &Lo);
+            // S += 2; hi = [$0100 + S]
+            ComPtr<ICpuValue> S2;   pE->BinaryOp (BinAdd, S1, One, &S2);
+            ComPtr<ICpuValue> S2_16; pE->Cast (CastZExt, S2, 16, &S2_16);
+            ComPtr<ICpuValue> AddrH; pE->BinaryOp (BinAdd, Base, S2_16, &AddrH);
+            ComPtr<ICpuValue> Hi;   pE->Load (AddrH, 8, &Hi);
+            pE->PutRegister (Reg6502S, S2, 8, FALSE);
+            // target = (hi << 8 | lo) + 1
+            ComPtr<ICpuValue> Lo16; pE->Cast (CastZExt, Lo, 16, &Lo16);
+            ComPtr<ICpuValue> Hi16; pE->Cast (CastZExt, Hi, 16, &Hi16);
+            ComPtr<ICpuValue> Eight; pE->ConstInt (16, 8, &Eight);
+            ComPtr<ICpuValue> HiSh; pE->BinaryOp (BinShl, Hi16, Eight, &HiSh);
+            ComPtr<ICpuValue> Word; pE->BinaryOp (BinOr, HiSh, Lo16, &Word);
+            ComPtr<ICpuValue> OneW; pE->ConstInt (16, 1, &OneW);
+            ComPtr<ICpuValue> Tgt;  pE->BinaryOp (BinAdd, Word, OneW, &Tgt);
+            // Hand the run-time return target to the in-artifact dispatcher (optional
+            // capability; same path the V20 RET uses).
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                pFlow->SetDispatchTarget (Tgt);
+                pFlow->Release ();
+            }
             break;
         }
         default:
