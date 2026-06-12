@@ -667,6 +667,9 @@ public:
         jclass Global = (jclass) Env->NewGlobalRef (Local);
         Env->DeleteLocalRef (Local);
         if (Method == nullptr) {
+            if (Env->ExceptionCheck ()) {
+                Env->ExceptionClear ();
+            }
             Env->DeleteGlobalRef (Global);
             return nullptr;
         }
@@ -675,14 +678,31 @@ public:
 
 private:
     UINT32 Fresh () { return m_Next++; }
-    UINT8  Slot (UINT32 Id) { return (UINT8) (2 + Id * 2); }   // 2 param slots, longs take 2 each
+    // Local slot for temp Id: 2 reserved param slots, longs take 2 slots each. A
+    // temp-heavy method (e.g. the 6502 frontend's byte-at-a-time stack math) can
+    // need >126 temps, pushing slots past 255 -- so this MUST NOT truncate, and the
+    // load/store below switch to the `wide` form past the 1-byte index range.
+    UINT32 Slot (UINT32 Id) { return 2 + Id * 2; }
 
     void B  (UINT8 Op) { m_Code.push_back (Op); }
     void B2 (UINT16 V) { m_Code.push_back ((UINT8) (V >> 8)); m_Code.push_back ((UINT8) V); }
 
     void ALoad  (UINT8 N)   { B ((UINT8) (0x2a + N)); }       // aload_0 / aload_1
-    void LLoad  (UINT32 Id) { B (0x16); B (Slot (Id)); }      // lload <slot>
-    void LStore (UINT32 Id) { B (0x37); B (Slot (Id)); }      // lstore <slot>
+    void LLoad  (UINT32 Id) { WideLocal (0x16, Slot (Id)); }  // lload <slot>
+    void LStore (UINT32 Id) { WideLocal (0x37, Slot (Id)); }  // lstore <slot>
+
+    // Emit a local load/store. Slots 0..255 use the 1-byte index form; beyond that
+    // the `wide` (0xC4) prefix carries a 2-byte index (JVMS 6.5 wide).
+    void WideLocal (UINT8 Op, UINT32 SlotIdx) {
+        if (SlotIdx <= 255) {
+            B (Op);
+            B ((UINT8) SlotIdx);
+        } else {
+            B (0xC4);                    // wide
+            B (Op);
+            B2 ((UINT16) SlotIdx);
+        }
+    }
 
     void EmitGoto (UINT32 BlockId) {
         UINT32 P = (UINT32) m_Code.size ();
