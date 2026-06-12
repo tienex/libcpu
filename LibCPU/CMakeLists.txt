@@ -260,6 +260,11 @@ target_link_libraries(lcdbg PRIVATE LibCPU)
 add_executable(cachedemo test/cachedemo.cpp core/TranslationCache.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
 target_include_directories(cachedemo PRIVATE frontends/v20 test aot core)
 target_link_libraries(cachedemo PRIVATE LibCPU)
+
+# System-level emulation: an 8086 machine with a device bus and timer interrupts.
+add_executable(sysdemo test/sysdemo.cpp core/System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
+target_include_directories(sysdemo PRIVATE frontends/v20 test aot core)
+target_link_libraries(sysdemo PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -330,6 +335,11 @@ if(TARGET interp_backend)
     COMMAND cachedemo "$<TARGET_BUNDLE_DIR:interp_backend>" "${CMAKE_BINARY_DIR}/cachetest")
   set_tests_properties(cache.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   list(APPEND LIBCPU_CHECK_DEPS cachedemo)
+
+  # System-level emulation: device bus (port IN/OUT) + timer interrupt (IVT/ISR/IRET).
+  add_test(NAME system.v20 COMMAND sysdemo "$<TARGET_BUNDLE_DIR:interp_backend>")
+  set_tests_properties(system.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  list(APPEND LIBCPU_CHECK_DEPS sysdemo)
 endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and

@@ -354,6 +354,32 @@ DECLARE_INTERFACE_ (ICpuBackendCache, IUnknown)
     STDMETHOD (LoadCode)(THIS_ IN UINT8 CONST *pBytes, UINT32 Len, OUT ICpuCode **ppCode) PURE;
 };
 
+/**
+  ICpuSystemEmitter -- optional emitter capability for SYSTEM-level emulation.
+
+  Where a user-level guest reaches the host through system calls (ICpuSyscallEmitter),
+  a system-level guest reaches an emulated machine through the DEVICE BUS (port I/O)
+  and privileged control instructions. Each such instruction records its kind in
+  CPU_STATE.IoCtrl (+ IoPort/IoData) and traps to the host machine (LcSystem), which
+  drives the addressed device or performs the control action and resumes -- the same
+  trap/resume path as the far-jump and syscall emitters. Discovered via
+  QueryInterface (IID_ICpuSystemEmitter).
+**/
+DECLARE_INTERFACE_ (ICpuSystemEmitter, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Port write: record IoCtrl=CPU_IO_OUT|width, IoPort=pPort, IoData=pData, and trap.
+    STDMETHOD (EmitPortOut)(THIS_ IN ICpuValue *pPort, IN ICpuValue *pData, UINT32 Width, IN ICpuValue *pReturnPc) PURE;
+    // Port read: record IoCtrl=CPU_IO_IN|width, IoPort=pPort, and trap; the host reads
+    // the device and writes the value back into AL/AX before resuming.
+    STDMETHOD (EmitPortIn)(THIS_ IN ICpuValue *pPort, UINT32 Width, IN ICpuValue *pReturnPc) PURE;
+    // Privileged control (CPU_IO_IRET/HLT/STI/CLI): record IoCtrl=Reason and trap.
+    STDMETHOD (EmitSystemTrap)(THIS_ UINT32 Reason, IN ICpuValue *pReturnPc) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -382,6 +408,8 @@ inline constexpr IID IID_ICpuCodeSerialize =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B } };
 inline constexpr IID IID_ICpuBackendCache =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
+inline constexpr IID IID_ICpuSystemEmitter =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D } };
 
 } // namespace LibCPU
 

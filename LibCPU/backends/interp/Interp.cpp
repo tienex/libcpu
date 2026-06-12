@@ -24,7 +24,10 @@ typedef enum _INTERP_OP {
     OpSetDisp,      // A = target temp: DispPc = target (in-artifact dispatch scratch)
     OpGetDisp,      // Dest = DispPc
     OpEdgeCount,    // Imm = slot: ++EdgeCount[slot] (profiling instrumentation)
-    OpSyscall       // Imm = vector, A = return-pc temp: set SyscallVector + TrapPc, return
+    OpSyscall,      // Imm = vector, A = return-pc temp: set SyscallVector + TrapPc, return
+    OpPortOut,      // Bits = width, A = port, B = data, C = return-pc: set IoCtrl=OUT, trap
+    OpPortIn,       // Bits = width, A = port, B = return-pc: set IoCtrl=IN, trap
+    OpSysTrap       // Imm = reason (IRET/HLT/STI/CLI), A = return-pc: set IoCtrl=reason, trap
 } INTERP_OP;
 
 //
@@ -222,6 +225,21 @@ public:
                 pState->SyscallVector = In.Imm;
                 pState->TrapPc        = Temp[In.A];
                 return ExecSmc;
+            case OpPortOut:                           // device-bus write: record + trap
+                pState->IoCtrl = CPU_IO_MAKE (CPU_IO_OUT, In.Bits);
+                pState->IoPort = Temp[In.A];
+                pState->IoData = Temp[In.B];
+                pState->TrapPc = Temp[In.C];
+                return ExecSmc;
+            case OpPortIn:                            // device-bus read: record + trap
+                pState->IoCtrl = CPU_IO_MAKE (CPU_IO_IN, In.Bits);
+                pState->IoPort = Temp[In.A];
+                pState->TrapPc = Temp[In.B];
+                return ExecSmc;
+            case OpSysTrap:                           // privileged control (IRET/HLT/STI/CLI)
+                pState->IoCtrl = CPU_IO_MAKE (In.Imm, 0);
+                pState->TrapPc = Temp[In.A];
+                return ExecSmc;
             }
             Ip++;
         }
@@ -323,6 +341,9 @@ FormatInterpInsn (INTERP_INSN CONST &In)
     case OpGetDisp:    std::snprintf (Buf, sizeof (Buf), "t%u = getdisp", In.Dest); break;
     case OpEdgeCount:  std::snprintf (Buf, sizeof (Buf), "edgecount[%llu]++", (unsigned long long) In.Imm); break;
     case OpSyscall:    std::snprintf (Buf, sizeof (Buf), "syscall 0x%llx -> t%u    ; trap -> host dispatch", (unsigned long long) In.Imm, In.A); break;
+    case OpPortOut:    std::snprintf (Buf, sizeof (Buf), "out.%u port t%u, t%u     ; trap -> device bus", In.Bits, In.A, In.B); break;
+    case OpPortIn:     std::snprintf (Buf, sizeof (Buf), "in.%u  port t%u          ; trap -> device bus", In.Bits, In.A); break;
+    case OpSysTrap:    std::snprintf (Buf, sizeof (Buf), "systrap %llu -> t%u       ; trap -> machine", (unsigned long long) In.Imm, In.A); break;
     default:           std::snprintf (Buf, sizeof (Buf), "op%u", In.Op); break;
     }
     return std::string (Buf);
@@ -378,9 +399,9 @@ InterpCode::Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter {
+class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter, public ICpuSystemEmitter {
 public:
-    // Four interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter +
+    // Five interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter +
     // ICpuSyscallEmitter): resolve QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
@@ -395,6 +416,11 @@ public:
         }
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSyscallEmitter)) {
             *ppvObject = static_cast<ICpuSyscallEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSystemEmitter)) {
+            *ppvObject = static_cast<ICpuSystemEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -491,6 +517,18 @@ public:
     }
     HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
         Record (OpSyscall, 0, 0, 0, TempOf (pReturnPc), 0, 0, (UINT64) Vector);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {
+        Record (OpPortOut, 0, Width, 0, TempOf (pPort), TempOf (pData), TempOf (pReturnPc), 0);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE EmitPortIn (ICpuValue *pPort, UINT32 Width, ICpuValue *pReturnPc) override {
+        Record (OpPortIn, 0, Width, 0, TempOf (pPort), TempOf (pReturnPc), 0, 0);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrap (UINT32 Reason, ICpuValue *pReturnPc) override {
+        Record (OpSysTrap, 0, 0, 0, TempOf (pReturnPc), 0, 0, (UINT64) Reason);
         return S_OK;
     }
 

@@ -16,6 +16,7 @@
   (sign), OF=FlagOverflow.
 **/
 #include "CpuV20.h"
+#include "LibCPU/CpuState.h"
 #include <cstdio>
 
 namespace LibCPU {
@@ -159,6 +160,12 @@ public:
             Len = 1; Tag = TagTrap;
         } else if (Op == 0xCD) {                                 // INT imm8 (software interrupt -> host syscall)
             Len = 2; Tag = TagTrap;
+        } else if (Op == 0xE4 || Op == 0xE6) {                   // IN AL,imm8 / OUT imm8,AL (device bus)
+            Len = 2; Tag = TagTrap;
+        } else if (Op == 0xEC || Op == 0xEE) {                   // IN AL,DX / OUT DX,AL (device bus)
+            Len = 1; Tag = TagTrap;
+        } else if (Op == 0xCF || Op == 0xF4 || Op == 0xFA || Op == 0xFB) {   // IRET / HLT / CLI / STI
+            Len = 1; Tag = TagTrap;
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
@@ -199,6 +206,22 @@ public:
             std::snprintf (pLine, MaxLine, "retf");
         } else if (Op == 0xCD) {
             std::snprintf (pLine, MaxLine, "int 0x%02x", m_pCode[Pc + 1]);
+        } else if (Op == 0xE4) {
+            std::snprintf (pLine, MaxLine, "in al,0x%02x", m_pCode[Pc + 1]);
+        } else if (Op == 0xE6) {
+            std::snprintf (pLine, MaxLine, "out 0x%02x,al", m_pCode[Pc + 1]);
+        } else if (Op == 0xEC) {
+            std::snprintf (pLine, MaxLine, "in al,dx");
+        } else if (Op == 0xEE) {
+            std::snprintf (pLine, MaxLine, "out dx,al");
+        } else if (Op == 0xCF) {
+            std::snprintf (pLine, MaxLine, "iret");
+        } else if (Op == 0xF4) {
+            std::snprintf (pLine, MaxLine, "hlt");
+        } else if (Op == 0xFA) {
+            std::snprintf (pLine, MaxLine, "cli");
+        } else if (Op == 0xFB) {
+            std::snprintf (pLine, MaxLine, "sti");
         } else if (Op == 0x0F) {
             CHAR8 CONST *pMnem = "?1";
             switch (m_pCode[Pc + 1]) {
@@ -437,6 +460,32 @@ public:
                 pSys->EmitSyscall (Vector, Ret);
                 pSys->Release ();
             }
+            break;
+        }
+        case 0xE4: case 0xE6: case 0xEC: case 0xEE:                // port I/O (device bus)
+        case 0xCF: case 0xF4: case 0xFA: case 0xFB: {              // IRET / HLT / CLI / STI
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (FAILED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) || pSysm == nullptr) {
+                break;                                             // backend is not system-capable
+            }
+            bool Imm8Port = (Op == 0xE4 || Op == 0xE6);            // port in imm8 vs DX
+            UINT16 Len = (Imm8Port ? 2 : 1);
+            ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+            ComPtr<ICpuValue> Port;
+            if (Imm8Port) { pE->ConstInt (16, m_pCode[Pc + 1], &Port); }
+            else          { pE->GetRegister (RegV20DX, 16, &Port); }
+            if (Op == 0xE6 || Op == 0xEE) {                        // OUT port, AL
+                ComPtr<ICpuValue> Data; pE->GetRegister (RegV20AX, 16, &Data);
+                pSysm->EmitPortOut (Port, Data, 8, Ret);
+            } else if (Op == 0xE4 || Op == 0xEC) {                 // IN AL, port
+                pSysm->EmitPortIn (Port, 8, Ret);
+            } else {                                               // IRET/HLT/CLI/STI
+                UINT32 Reason = (Op == 0xCF) ? (UINT32) CPU_IO_IRET :
+                                (Op == 0xF4) ? (UINT32) CPU_IO_HLT  :
+                                (Op == 0xFA) ? (UINT32) CPU_IO_CLI  : (UINT32) CPU_IO_STI;
+                pSysm->EmitSystemTrap (Reason, Ret);
+            }
+            pSysm->Release ();
             break;
         }
         case 0x0F: {                                               // NEC SET1/CLR1/NOT1/TEST1 r/m16,imm8

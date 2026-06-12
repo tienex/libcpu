@@ -47,6 +47,17 @@ typedef struct _CPU_STATE {
                             // TrapPc (the instruction after it); the host's knowledge-
                             // library dispatcher reads it, performs the native call, and
                             // resumes. CPU_NO_SYSCALL means none pending.
+
+    //
+    // System-level emulation. A device-bus instruction (port IN/OUT) or a privileged
+    // control instruction (IRET/HLT/STI/CLI) records its kind in IoCtrl and traps to
+    // TrapPc; the host machine (LcSystem) reads IoCtrl/IoPort/IoData, drives the
+    // emulated device or performs the control action, and resumes. IoCtrl == CPU_IO_NONE
+    // means no system trap is pending (so a plain control-flow trap is unaffected).
+    //
+    UINT64 IoCtrl;          // CPU_IO_* reason in the low 8 bits, access width in the next 8
+    UINT64 IoPort;          // I/O port (for OUT/IN)
+    UINT64 IoData;          // data written (OUT); the host writes the read value back to AL/AX (IN)
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -71,6 +82,9 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_EDGECOUNT_OFFSET ((UINT32) (32 * 8 + 80)) // EdgeCount[0] (after DispPc)
 #define CPU_STATE_RAMSIZE_OFFSET   ((UINT32) (32 * 8 + 80 + 32 * 8)) // RamSize (after EdgeCount[32])
 #define CPU_STATE_SYSCALL_OFFSET   ((UINT32) (32 * 8 + 88 + 32 * 8)) // SyscallVector (after RamSize)
+#define CPU_STATE_IOCTRL_OFFSET    ((UINT32) (32 * 8 + 96 + 32 * 8)) // IoCtrl (after SyscallVector)
+#define CPU_STATE_IOPORT_OFFSET    ((UINT32) (32 * 8 + 104 + 32 * 8))// IoPort
+#define CPU_STATE_IODATA_OFFSET    ((UINT32) (32 * 8 + 112 + 32 * 8))// IoData
 
 // Number of per-call-site edge counters (profiling instrumentation).
 #define CPU_PROFILE_SLOTS          ((UINT32) 32)
@@ -83,5 +97,17 @@ typedef struct _CPU_STATE {
 
 // Sentinel stored in SyscallVector when no guest system call is pending.
 #define CPU_NO_SYSCALL            (~UINT64_C (0))
+
+// CPU_STATE.IoCtrl reason codes (low byte). The access width (8/16) is the next byte.
+#define CPU_IO_NONE               ((UINT64) 0)   // no system trap pending
+#define CPU_IO_OUT                ((UINT64) 1)   // port write: IoPort, IoData
+#define CPU_IO_IN                 ((UINT64) 2)   // port read: IoPort; host writes AL/AX back
+#define CPU_IO_IRET               ((UINT64) 3)   // interrupt return: host pops IP:CS:FLAGS
+#define CPU_IO_HLT                ((UINT64) 4)   // halt until the next interrupt
+#define CPU_IO_STI                ((UINT64) 5)   // enable interrupts
+#define CPU_IO_CLI                ((UINT64) 6)   // disable interrupts
+#define CPU_IO_REASON(c)          ((UINT32) ((c) & 0xFF))
+#define CPU_IO_WIDTH(c)           ((UINT32) (((c) >> 8) & 0xFF))
+#define CPU_IO_MAKE(reason, w)    (((UINT64) (reason)) | (((UINT64) (w)) << 8))
 
 #endif // LIBCPU_CPUSTATE_H
