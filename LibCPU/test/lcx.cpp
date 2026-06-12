@@ -23,6 +23,7 @@
 #include "../core/TranslationCache.h"
 #include "../core/KnowledgeLibrary.h"
 #include "../core/System.h"
+#include "../core/NativeAot.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "LibCPU/PCom.h"
@@ -69,7 +70,8 @@ Positional (int argc, char **argv, int Which)
             // Skip options that take a value.
             if (std::strcmp (argv[I], "--arch") == 0 || std::strcmp (argv[I], "--backend") == 0 ||
                 std::strcmp (argv[I], "--count") == 0 || std::strcmp (argv[I], "--entry") == 0 ||
-                std::strcmp (argv[I], "--dump") == 0) {
+                std::strcmp (argv[I], "--dump") == 0 || std::strcmp (argv[I], "-o") == 0 ||
+                std::strcmp (argv[I], "--result") == 0) {
                 I++;
             }
             continue;
@@ -290,6 +292,47 @@ CmdDebug (int argc, char **argv, CHAR8 CONST *pArgv0)
 }
 
 static int
+CmdAot (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
+{
+    CHAR8 CONST *pImage = Positional (argc, argv, 0);
+    if (pImage == nullptr) {
+        std::printf ("usage: lcx aot <image> -o <exe> [--arch v20|6502] [--result <addr>]\n");
+        return 2;
+    }
+    CHAR8 CONST *pOut = Opt (argc, argv, "-o", "a.out");
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    UINT64 Len = 0;
+    if (!LoadImage (pImage, Ram, sizeof (Ram), &Len)) {
+        std::printf ("lcx: cannot read image '%s'\n", pImage);
+        return 2;
+    }
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    CPU_ADDR Entry = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
+    LC_NATIVE_OPTIONS NOpt;
+    CHAR8 CONST *pRes = Opt (argc, argv, "--result", nullptr);
+    NOpt.DumpResult = pRes != nullptr;
+    NOpt.ResultAddr = pRes ? (CPU_ADDR) std::strtoull (pRes, nullptr, 0) : 0;
+
+    std::string Source = LcGenerateNativeC (A.pArch, Ram, (UINT32) Len, Entry, (CPU_ADDR) Len, NOpt);
+    A.pArch->Release ();
+    if (Source.empty ()) {
+        std::printf ("lcx aot: code generation failed\n");
+        return 1;
+    }
+    std::string Error;
+    if (!LcCompileNative (Source, pOut, &Error)) {
+        std::printf ("lcx aot: host cc failed: %s\n", Error.c_str ());
+        return 1;
+    }
+    std::printf ("lcx aot: wrote standalone executable '%s' (%zu bytes of C, guest regs -> host regs)\n",
+                 pOut, Source.size ());
+    return 0;
+}
+
+static int
 CmdSystem (int argc, char **argv, CHAR8 CONST *pArgv0)
 {
     ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
@@ -350,6 +393,7 @@ CmdHelp ()
     std::printf (
         "lcx -- the LibCPU machine (run/debug/disasm/system/knowledge/cache)\n\n"
         "  lcx run    <image> [--arch v20|6502] [--aot|--jit] [--cache] [--dump <addr>]\n"
+        "  lcx aot    <image> -o <exe> [--arch ...] [--result <addr>]   standalone native exe\n"
         "  lcx disasm <image> [--arch ...] [--count N] [--entry N]\n"
         "  lcx debug  <image> [--arch ...]\n"
         "  lcx system <image> [--arch v20]            8086 device bus + timer interrupt\n"
@@ -372,6 +416,7 @@ main (int argc, char **argv)
     int      SubArgc = argc - 2;
     char   **SubArgv = argv + 2;
     if (Cmd == "run")          { return CmdRun (SubArgc, SubArgv, argv[0]); }
+    if (Cmd == "aot")          { return CmdAot (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "disasm")       { return CmdDisasm (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "debug")        { return CmdDebug (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "system")       { return CmdSystem (SubArgc, SubArgv, argv[0]); }
