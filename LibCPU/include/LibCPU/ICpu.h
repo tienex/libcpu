@@ -323,6 +323,37 @@ DECLARE_INTERFACE_ (ICpuCodeListing, IUnknown)
     STDMETHOD (GetListing)(THIS_ OUT CHAR8 *pBuf, UINT32 BufSize, OUT UINT32 *pNeeded) PURE;
 };
 
+/**
+  ICpuCodeSerialize / ICpuBackendCache -- optional capabilities enabling a disk
+  translation cache. A compiled artifact serialises itself to an opaque byte blob
+  (ICpuCodeSerialize on the ICpuCode); the producing backend reconstructs a runnable
+  ICpuCode from that blob (ICpuBackendCache on the ICpuBackend). The cache hashes the
+  guest bytes + arch + backend to a key, stores the blob, and on a later hit reloads
+  it instead of re-translating. A backend that implements neither is simply never
+  cached. Discovered via QueryInterface (IID_ICpuCodeSerialize / IID_ICpuBackendCache).
+**/
+DECLARE_INTERFACE_ (ICpuCodeSerialize, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Serialise the artifact into pBuf (truncated to BufSize). *pNeeded, if non-null,
+    // receives the full byte length so the caller can size the buffer and retry.
+    STDMETHOD (Serialize)(THIS_ OUT UINT8 *pBuf, UINT32 BufSize, OUT UINT32 *pNeeded) PURE;
+};
+
+DECLARE_INTERFACE_ (ICpuBackendCache, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Reconstruct a runnable ICpuCode from a blob previously produced by this
+    // backend's ICpuCodeSerialize. Returns E_FAIL if the blob is unrecognised.
+    STDMETHOD (LoadCode)(THIS_ IN UINT8 CONST *pBytes, UINT32 Len, OUT ICpuCode **ppCode) PURE;
+};
+
 //
 // Interface identifiers.
 //
@@ -347,6 +378,10 @@ inline constexpr IID IID_ICpuSyscallEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
 inline constexpr IID IID_ICpuCodeListing =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A } };
+inline constexpr IID IID_ICpuCodeSerialize =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B } };
+inline constexpr IID IID_ICpuBackendCache =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
 
 } // namespace LibCPU
 

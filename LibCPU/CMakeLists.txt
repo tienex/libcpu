@@ -255,6 +255,11 @@ target_link_libraries(dossys PRIVATE LibCPU)
 add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
 target_include_directories(lcdbg PRIVATE frontends/v20 frontends/m6502 test core)
 target_link_libraries(lcdbg PRIVATE LibCPU)
+
+# Disk-cached translation: translate once, reload the serialised artifact thereafter.
+add_executable(cachedemo test/cachedemo.cpp core/TranslationCache.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
+target_include_directories(cachedemo PRIVATE frontends/v20 test aot core)
+target_link_libraries(cachedemo PRIVATE LibCPU)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -319,6 +324,12 @@ if(TARGET interp_backend)
     "printf 'continue\\nexamine 0x200 2\\nquit\\n' | '$<TARGET_FILE:lcdbg>' '$<TARGET_BUNDLE_DIR:interp_backend>' --arch 6502")
   set_tests_properties(debugger.m6502 PROPERTIES PASS_REGULAR_EXPRESSION "0200: 0f 00")
   list(APPEND LIBCPU_CHECK_DEPS lcdbg)
+
+  # Disk translation cache: miss-stores / hit-reloads / cap / clean.
+  add_test(NAME cache.v20
+    COMMAND cachedemo "$<TARGET_BUNDLE_DIR:interp_backend>" "${CMAKE_BINARY_DIR}/cachetest")
+  set_tests_properties(cache.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  list(APPEND LIBCPU_CHECK_DEPS cachedemo)
 endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and

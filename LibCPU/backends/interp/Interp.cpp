@@ -109,15 +109,25 @@ static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<InterpBlock *> (pB
 //
 // The runnable code object: interprets the recorded IR.
 //
-class InterpCode final : public LcComObject<ICpuCode>, public ICpuCodeListing {
+// Serialised artifact header: magic+version, then the three counts. The op array
+// and block table follow as raw little-endian POD (the cache is host/build-local;
+// the magic invalidates blobs if the layout ever changes).
+static UINT32 CONST INTERP_BLOB_MAGIC = 0x31494C43;   // 'CLI1'
+
+class InterpCode final : public LcComObject<ICpuCode>, public ICpuCodeListing, public ICpuCodeSerialize {
 public:
     InterpCode (std::vector<INTERP_INSN> Insns, UINT32 TempCount, std::vector<UINT32> BlockStart)
         : m_Insns (std::move (Insns)), m_TempCount (TempCount), m_BlockStart (std::move (BlockStart)) {}
 
-    // ICpuCode + the optional ICpuCodeListing (translated-code disassembly).
+    // ICpuCode + the optional ICpuCodeListing (disasm) and ICpuCodeSerialize (cache).
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuCodeListing)) {
             *ppvObject = static_cast<ICpuCodeListing *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuCodeSerialize)) {
+            *ppvObject = static_cast<ICpuCodeSerialize *> (this);
             AddRef ();
             return S_OK;
         }
@@ -126,6 +136,7 @@ public:
     UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuCode>::AddRef (); }
     UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuCode>::Release (); }
     HRESULT STDMETHODCALLTYPE GetListing (CHAR8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override;
+    HRESULT STDMETHODCALLTYPE Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override;
 
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID * /*pFRF*/) override {
         UINT8        *pRam   = (UINT8 *) pRAM;
@@ -341,6 +352,29 @@ InterpCode::GetListing (CHAR8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
     return S_OK;
 }
 
+HRESULT STDMETHODCALLTYPE
+InterpCode::Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
+{
+    UINT32 InsnBytes = (UINT32) (m_Insns.size () * sizeof (INTERP_INSN));
+    UINT32 BlkBytes  = (UINT32) (m_BlockStart.size () * sizeof (UINT32));
+    UINT32 Total     = 4 * (UINT32) sizeof (UINT32) + InsnBytes + BlkBytes;
+    if (pNeeded != nullptr) {
+        *pNeeded = Total;
+    }
+    if (pBuf == nullptr || BufSize < Total) {
+        return S_OK;                               // caller sizes the buffer and retries
+    }
+    UINT8 *p = pBuf;
+    auto PutU32 = [&p] (UINT32 v) { std::memcpy (p, &v, 4); p += 4; };
+    PutU32 (INTERP_BLOB_MAGIC);
+    PutU32 ((UINT32) m_Insns.size ());
+    PutU32 (m_TempCount);
+    PutU32 ((UINT32) m_BlockStart.size ());
+    if (InsnBytes) { std::memcpy (p, m_Insns.data (), InsnBytes); p += InsnBytes; }
+    if (BlkBytes)  { std::memcpy (p, m_BlockStart.data (), BlkBytes); }
+    return S_OK;
+}
+
 //
 // The builder: records ops, hands back opaque value handles.
 //
@@ -493,11 +527,20 @@ private:
 //
 // The backend object.
 //
-class InterpBackend final : public LcComObject<ICpuBackend> {
+class InterpBackend final : public LcComObject<ICpuBackend>, public ICpuBackendCache {
 public:
+    // ICpuBackend + the optional ICpuBackendCache (reload a serialised artifact).
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuBackendCache)) {
+            *ppvObject = static_cast<ICpuBackendCache *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuBackend>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuBackend>::Release (); }
+
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "interpreter"; }
 
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture * /*pArch*/, ICpuEmitter **ppEmitter) override {
@@ -506,6 +549,32 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
         *ppCode = static_cast<InterpEmitter *> (pEmitter)->Build ();
+        return S_OK;
+    }
+
+    // Rebuild an InterpCode from a blob produced by InterpCode::Serialize.
+    HRESULT STDMETHODCALLTYPE LoadCode (UINT8 CONST *pBytes, UINT32 Len, ICpuCode **ppCode) override {
+        *ppCode = nullptr;
+        if (Len < 4 * sizeof (UINT32)) {
+            return E_FAIL;
+        }
+        UINT8 CONST *p = pBytes;
+        auto GetU32 = [&p] () -> UINT32 { UINT32 v; std::memcpy (&v, p, 4); p += 4; return v; };
+        if (GetU32 () != INTERP_BLOB_MAGIC) {
+            return E_FAIL;
+        }
+        UINT32 InsnCount = GetU32 ();
+        UINT32 TempCount = GetU32 ();
+        UINT32 BlkCount  = GetU32 ();
+        UINT32 Want = 4 * (UINT32) sizeof (UINT32) + InsnCount * (UINT32) sizeof (INTERP_INSN) + BlkCount * (UINT32) sizeof (UINT32);
+        if (Len < Want) {
+            return E_FAIL;
+        }
+        std::vector<INTERP_INSN> Insns (InsnCount);
+        if (InsnCount) { std::memcpy (Insns.data (), p, InsnCount * sizeof (INTERP_INSN)); p += InsnCount * sizeof (INTERP_INSN); }
+        std::vector<UINT32> Blocks (BlkCount);
+        if (BlkCount) { std::memcpy (Blocks.data (), p, BlkCount * sizeof (UINT32)); }
+        *ppCode = new InterpCode (std::move (Insns), TempCount, std::move (Blocks));
         return S_OK;
     }
 };
