@@ -41,6 +41,8 @@ static CHAR8 CONST *kTemplate =
     "def sT(p):\n for k in range(8):ST[288+k]=(p>>(8*k))&0xff\n"
     "def sD(p):\n for k in range(8):ST[328+k]=(p>>(8*k))&0xff\n"   // dispatch scratch (DispPc)
     "def gD():return int.from_bytes(ST[328:336],'little')\n"
+    // EdgeCount[] starts at 336 (CPU_STATE_EDGECOUNT_OFFSET): bump slot i in place.
+    "def eC(i):\n o=336+i*8\n v=int.from_bytes(ST[o:o+8],'little')+1\n for k in range(8):ST[o+k]=(v>>(8*k))&0xff\n"
     "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>11)&31)]|=1<<((a>>8)&7)\n"
     "def gF(f):return ST[256+f]&1\n"
     "def sF(f,v):ST[256+f]=v&1\n"
@@ -166,16 +168,21 @@ private:
     PyObject *m_Code;
 };
 
-class PyEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class PyEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
-    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
-    // refcounting to the LcComObject base.
+    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
+    // QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
         if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+            *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -316,6 +323,15 @@ public:
         UINT32 D = Fresh ();
         Line ("t%u=gD()", D);
         return Make (D, 64, ppValue);
+    }
+
+    // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
+    HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
+        if (Index >= CPU_PROFILE_SLOTS) {
+            return S_OK;
+        }
+        Line ("eC(%u)", Index);   // ++EdgeCount[Index]
+        return S_OK;
     }
 
     ICpuCode *Build () {

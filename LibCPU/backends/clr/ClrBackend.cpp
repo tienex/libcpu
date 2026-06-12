@@ -134,13 +134,18 @@ private:
     intptr_t m_Handle;
 };
 
-class ClrEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class ClrEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
-    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
-    // refcounting to the LcComObject base.
+    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
+    // QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+            *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -450,6 +455,38 @@ public:
         }
         StLoc (Dest);
         return Make (Dest, 64, ppValue);
+    }
+
+    // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
+    // ++EdgeCount[Index]: assemble the slot's 8 little-endian bytes into an int64,
+    // add 1, write the 8 bytes back. EdgeCount[] starts at CPU_STATE_EDGECOUNT_OFFSET.
+    HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
+        if (Index >= CPU_PROFILE_SLOTS) {
+            return S_OK;
+        }
+        UINT32 Base = CPU_STATE_EDGECOUNT_OFFSET + Index * 8;
+        UINT32 Tmp  = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {                          // grf[Base..) -> int64
+            LdArg (1);
+            PushI4 ((INT32) (Base + k));
+            B (0x91);                    // ldelem.u1
+            B (0x6a);                    // conv.i8
+            if (k > 0) {
+                PushI4 ((INT32) (8 * k));
+                B (0x62);                // shl
+                B (0x60);                // or
+            }
+        }
+        PushI8 (1);
+        B (0x58);                        // add
+        StLoc (Tmp);
+        for (UINT32 k = 0; k < 8; k++) {                          // int64 -> grf[Base..)
+            LdArg (1);
+            PushI4 ((INT32) (Base + k));
+            ByteValue (Tmp, 8 * k);
+            B (0x9c);                    // stelem.i1
+        }
+        return S_OK;
     }
 
     ICpuCode *Build () {

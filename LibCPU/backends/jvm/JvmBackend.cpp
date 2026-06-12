@@ -232,16 +232,21 @@ private:
     jmethodID m_Method;
 };
 
-class JvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class JvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
-    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
-    // refcounting to the LcComObject base.
+    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
+    // QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
         if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+            *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -587,6 +592,45 @@ public:
         }
         LStore (Dest);
         return Make (Dest, 64, ppValue);
+    }
+
+    // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
+    // ++EdgeCount[Index]: read the slot's 8 little-endian bytes into a long, add 1,
+    // write the 8 bytes back. EdgeCount[] starts at CPU_STATE_EDGECOUNT_OFFSET.
+    HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
+        if (Index >= CPU_PROFILE_SLOTS) {
+            return S_OK;
+        }
+        UINT32 Base = CPU_STATE_EDGECOUNT_OFFSET + Index * 8;
+        UINT32 Tmp  = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {     // load: grf[Base..Base+8) -> long
+            ALoad (1);
+            PushInt ((INT32) (Base + k));
+            B (0x33);                    // baload
+            PushInt (255);
+            B (0x7e);                    // iand
+            B (0x85);                    // i2l
+            if (k > 0) {
+                PushInt ((INT32) (8 * k));
+                B (0x79);                // lshl
+                B (0x81);                // lor
+            }
+        }
+        B (0x0a);                        // lconst_1
+        B (0x61);                        // ladd
+        LStore (Tmp);
+        for (UINT32 k = 0; k < 8; k++) {     // store: long -> grf[Base..Base+8)
+            ALoad (1);
+            PushInt ((INT32) (Base + k));
+            LLoad (Tmp);
+            PushInt ((INT32) (8 * k));
+            B (0x7d);                    // lushr
+            PushLong (255);
+            B (0x7f);                    // land
+            B (0x88);                    // l2i
+            B (0x54);                    // bastore
+        }
+        return S_OK;
     }
 
     ICpuCode *Build () {

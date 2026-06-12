@@ -279,16 +279,21 @@ private:
     std::string m_Dir, m_SrcPath, m_LibPath;
 };
 
-class CcEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class CcEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
-    // Two interfaces (ICpuEmitter + ICpuSmcEmitter): resolve QI here, forward
-    // refcounting to the LcComObject base.
+    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
+    // QI here, forward refcounting to the LcComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
         if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+            *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -455,6 +460,15 @@ public:
         UINT32 D = Decl ();
         Line ("t%u = *(uint64_t*)((char*)GRF+%u);", D, CPU_STATE_DISPPC_OFFSET);
         return Make (D, 64, ppValue);
+    }
+
+    // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
+    HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
+        if (Index >= CPU_PROFILE_SLOTS) {
+            return S_OK;
+        }
+        Line ("(*(uint64_t*)((char*)GRF+%u))++;", CPU_STATE_EDGECOUNT_OFFSET + Index * 8);
+        return S_OK;
     }
 
     void SetCompiler (std::string Path, CC_FAMILY Family) {
