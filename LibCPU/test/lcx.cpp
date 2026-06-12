@@ -25,6 +25,7 @@
 #include "../core/System.h"
 #include "../core/NativeAot.h"
 #include "../upcl/Parser.h"
+#include "../upcl/UpclArch.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "LibCPU/PCom.h"
@@ -120,12 +121,29 @@ struct ArchSetup {
     std::vector<std::string>  Flags;
 };
 
+static Upcl::Module *UpclParse (CHAR8 CONST *pFile, Upcl::SourceManager &Sm);   // fwd
+
 static ArchSetup
 MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
 {
     ArchSetup A;
+    A.pArch = nullptr;
     A.Flags = { "N", "V", "Z", "C" };
-    if (std::strcmp (pName, "6502") == 0) {
+    if (std::strncmp (pName, "upcl:", 5) == 0) {
+        // --arch upcl:<file> -- interpret a UPCL description as the frontend. The
+        // SourceManager + Module are leaked for the process lifetime (the arch borrows
+        // the module).
+        Upcl::SourceManager *pSm = new Upcl::SourceManager ();
+        Upcl::Module *pMod = UpclParse (pName + 5, *pSm);
+        if (pMod != nullptr) {
+            A.pArch = Upcl::CreateUpclArch (pMod, 0);
+            CPU_ARCH_INFO Info;
+            std::memset (&Info, 0, sizeof (Info));
+            A.pArch->GetInfo (&Info);
+            A.RegBytes = (Info.GprBits + 7) / 8;
+            for (Upcl::Reg CONST &R : pMod->Archs[0]->Registers) { A.Regs.push_back (R.Name); }
+        }
+    } else if (std::strcmp (pName, "6502") == 0) {
         A.pArch = Create6502 ();
         A.Regs = { "A", "X", "Y", "S" };
         A.RegBytes = 1;
@@ -135,7 +153,9 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
         A.Regs = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI", "ES", "CS", "SS", "DS" };
         A.RegBytes = 2;
     }
-    A.pArch->SetCodeMemory (pRam, 65536);
+    if (A.pArch != nullptr) {
+        A.pArch->SetCodeMemory (pRam, 65536);
+    }
     return A;
 }
 
@@ -153,12 +173,15 @@ DumpRegs (ArchSetup CONST &A, CPU_STATE CONST *pState)
 
 // --- subcommands -----------------------------------------------------------
 
+// Shared by `run` (Aot=false: JIT) and `translate` (Aot=true: AOT). The --arch value
+// may be v20, 6502, or upcl:<file> (interpret a UPCL description as the frontend).
 static int
-CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0)
+CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
 {
+    CHAR8 CONST *pVerb = Aot ? "translate" : "run";
     CHAR8 CONST *pImage = Positional (argc, argv, 0);
     if (pImage == nullptr) {
-        std::printf ("usage: lcx run <image> [--arch v20|6502] [--aot|--jit] [--cache] [--dump <addr>]\n");
+        std::printf ("usage: lcx %s <image> [--arch v20|6502|upcl:<file>] [--cache] [--dump <addr>]\n", pVerb);
         return 2;
     }
     ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
@@ -176,13 +199,18 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0)
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
     State.RamSize = sizeof (Ram);
-    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    CHAR8 CONST *pArchName = Opt (argc, argv, "--arch", "v20");
+    ArchSetup A = MakeArch (pArchName, Ram, &State);
+    if (A.pArch == nullptr) {
+        std::printf ("lcx %s: could not build the '%s' architecture\n", pVerb, pArchName);
+        pBackend->Release ();
+        return 1;
+    }
     CPU_ADDR Entry = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     CPU_ADDR End   = (CPU_ADDR) Len;
-    bool Aot   = !Flag (argc, argv, "--jit");
     bool Cache = Flag (argc, argv, "--cache");
 
-    std::printf ("lcx run: %s, %llu bytes, %s%s\n", Opt (argc, argv, "--arch", "v20"),
+    std::printf ("lcx %s: %s, %llu bytes, %s%s\n", pVerb, pArchName,
                  (unsigned long long) Len, Aot ? "AOT" : "JIT", Cache ? " +cache" : "");
 
     if (Aot) {
@@ -333,32 +361,78 @@ CmdAot (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     return 0;
 }
 
+// Parse a .upcl file, reporting clang-style diagnostics. Returns the module (caller
+// deletes) or nullptr on error.
+static Upcl::Module *
+UpclParse (CHAR8 CONST *pFile, Upcl::SourceManager &Sm)
+{
+    std::string Err;
+    Upcl::FILE_ID Fid = Sm.LoadFile (pFile, &Err);
+    if (Fid == Upcl::InvalidFile) {
+        std::printf ("lcx upcl: %s\n", Err.c_str ());
+        return nullptr;
+    }
+    Upcl::DiagnosticEngine Diag (&Sm, stderr);
+    Upcl::Parser Parser (&Sm, Fid, &Diag);
+    Upcl::Module *pMod = Parser.ParseModule ();
+    if (Diag.HadError ()) {
+        std::printf ("%u error(s); '%s' is not valid UPCL.\n", Diag.ErrorCount (), pFile);
+        delete pMod;
+        return nullptr;
+    }
+    return pMod;
+}
+
+// Lay out an instruction's canonical bytes from its format + opcode bindings (operand
+// fields left zero) -- the inverse of the decoder's field extraction. Used by
+// `produce` to round-trip the description's own encodings.
+static void
+UpclSynthesize (Upcl::Arch *pArch, Upcl::Insn *pInsn, UINT8 *pBytes, UINT32 *pLen)
+{
+    Upcl::Format *pFmt = nullptr;
+    for (Upcl::Format *F : pArch->Formats) { if (F->Name == pInsn->Format) { pFmt = F; break; } }
+    *pLen = 0;
+    if (pFmt == nullptr) { return; }
+    UINT32 Total = pFmt->TotalBits ();
+    *pLen = (Total + 7) / 8;
+    UINT32 BitPos = 0;
+    for (Upcl::FormatField CONST &FF : pFmt->Fields) {
+        UINT64 Val = 0;
+        for (Upcl::Field *B : pInsn->Bindings) {
+            if (B->Name == FF.Name && B->Value && B->Value->Kind == Upcl::ExprInt) { Val = B->Value->Int; }
+        }
+        UINT32 ByteOff = BitPos / 8;
+        if ((BitPos % 8) == 0 && (FF.Width % 8) == 0) {
+            UINT32 Bytes = FF.Width / 8;
+            for (UINT32 b = 0; b < Bytes; b++) {
+                UINT8 Byte = pArch->Little ? (UINT8) (Val >> (8 * b)) : (UINT8) (Val >> (8 * (Bytes - 1 - b)));
+                pBytes[ByteOff + b] = Byte;
+            }
+        } else {
+            UINT32 Shift = 8 - (BitPos % 8) - FF.Width;
+            pBytes[ByteOff] |= (UINT8) ((Val & ((1u << FF.Width) - 1)) << Shift);
+        }
+        BitPos += FF.Width;
+    }
+}
+
 static int
 CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
 {
     CHAR8 CONST *pVerb = Positional (argc, argv, 0);
     CHAR8 CONST *pFile = Positional (argc, argv, 1);
-    if (pVerb == nullptr || pFile == nullptr || std::strcmp (pVerb, "check") != 0) {
-        std::printf ("usage: lcx upcl check <file.upcl>\n");
+    bool Produce = pVerb != nullptr && std::strcmp (pVerb, "produce") == 0;
+    bool Check   = pVerb != nullptr && std::strcmp (pVerb, "check") == 0;
+    if (pFile == nullptr || (!Check && !Produce)) {
+        std::printf ("usage: lcx upcl check   <file.upcl>     validate + summarise\n"
+                     "       lcx upcl produce <file.upcl>     build the frontend + round-trip its encodings\n"
+                     "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
     }
     Upcl::SourceManager Sm;
-    std::string Err;
-    Upcl::FILE_ID Fid = Sm.LoadFile (pFile, &Err);
-    if (Fid == Upcl::InvalidFile) {
-        std::printf ("lcx upcl: %s\n", Err.c_str ());
-        return 2;
-    }
-    Upcl::DiagnosticEngine Diag (&Sm, stderr);
-    Upcl::Parser Parser (&Sm, Fid, &Diag);
-    Upcl::Module *pMod = Parser.ParseModule ();
+    Upcl::Module *pMod = UpclParse (pFile, Sm);
+    if (pMod == nullptr) { return 1; }
 
-    if (Diag.HadError ()) {
-        std::printf ("%u error(s); '%s' is not valid UPCL.\n", Diag.ErrorCount (), pFile);
-        delete pMod;
-        return 1;
-    }
-    // Success: summarise what was parsed.
     std::printf ("%s: ok -- %zu architecture(s)\n", pFile, pMod->Archs.size ());
     for (Upcl::Arch *pArch : pMod->Archs) {
         std::printf ("  arch \"%s\" (%s): %s-endian, word=%u addr=%u, %zu register(s), %zu format(s), %zu instruction(s)\n",
@@ -367,9 +441,7 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                      pArch->Formats.size (), pArch->Insns.size ());
         for (Upcl::Format *pFmt : pArch->Formats) {
             std::printf ("    format %-8s ", pFmt->Name.c_str ());
-            for (Upcl::FormatField CONST &Ff : pFmt->Fields) {
-                std::printf ("%s:%u ", Ff.Name.c_str (), Ff.Width);
-            }
+            for (Upcl::FormatField CONST &Ff : pFmt->Fields) { std::printf ("%s:%u ", Ff.Name.c_str (), Ff.Width); }
             std::printf (" (%u bits)\n", pFmt->TotalBits ());
         }
         for (Upcl::Insn *pInsn : pArch->Insns) {
@@ -381,6 +453,26 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             if (!pInsn->Super.empty ()) { std::printf (": %s ", pInsn->Super.c_str ()); }
             std::printf (" disasm \"%s\"  %zu stmt(s)\n", pInsn->Disasm.c_str (), pInsn->Semantics.size ());
         }
+    }
+
+    if (Produce) {
+        // Build the live frontend and self-test it: synthesise each instruction's
+        // canonical bytes and disassemble them back through the produced architecture.
+        ICpuArchitecture *pArch = Upcl::CreateUpclArch (pMod, 0);
+        static UINT8 Bytes[64];
+        std::printf ("  produced frontend '%s' -- round-tripping encodings:\n", pMod->Archs[0]->Name.c_str ());
+        for (Upcl::Insn *pInsn : pMod->Archs[0]->Insns) {
+            std::memset (Bytes, 0, sizeof (Bytes));
+            UINT32 Len = 0;
+            UpclSynthesize (pMod->Archs[0], pInsn, Bytes, &Len);
+            pArch->SetCodeMemory (Bytes, sizeof (Bytes));
+            char Line[64];
+            pArch->Disassemble (0, Line, sizeof (Line));
+            std::printf ("    %-14s = ", pInsn->Name.c_str ());
+            for (UINT32 b = 0; b < Len; b++) { std::printf ("%02x ", Bytes[b]); }
+            std::printf (" -> \"%s\"\n", Line);
+        }
+        pArch->Release ();
     }
     delete pMod;
     return 0;
@@ -446,13 +538,14 @@ CmdHelp ()
 {
     std::printf (
         "lcx -- the LibCPU machine (run/debug/disasm/system/knowledge/cache)\n\n"
-        "  lcx run    <image> [--arch v20|6502] [--aot|--jit] [--cache] [--dump <addr>]\n"
+        "  lcx run       <image> [--arch v20|6502|upcl:<file>] [--cache] [--dump <addr>]   (JIT)\n"
+        "  lcx translate <image> [--arch ...] [--cache] [--dump <addr>]                   (AOT)\n"
         "  lcx aot    <image> -o <exe> [--arch ...] [--result <addr>]   standalone native exe\n"
         "  lcx disasm <image> [--arch ...] [--count N] [--entry N]\n"
         "  lcx debug  <image> [--arch ...]\n"
         "  lcx system <image> [--arch v20]            8086 device bus + timer interrupt\n"
         "  lcx know   <library.xml> [--arch v20]      in-line syscalls -> host calls\n"
-        "  lcx upcl   check <file.upcl>                check a UPCL CPU description\n"
+        "  lcx upcl   check <file.upcl> | run <file.upcl> <image.bin>  UPCL CPU description\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
@@ -470,7 +563,8 @@ main (int argc, char **argv)
     std::string Cmd = argv[1];
     int      SubArgc = argc - 2;
     char   **SubArgv = argv + 2;
-    if (Cmd == "run")          { return CmdRun (SubArgc, SubArgv, argv[0]); }
+    if (Cmd == "run")          { return CmdRun (SubArgc, SubArgv, argv[0], /*Aot=*/ false); }   // JIT
+    if (Cmd == "translate")    { return CmdRun (SubArgc, SubArgv, argv[0], /*Aot=*/ true); }    // AOT
     if (Cmd == "aot")          { return CmdAot (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "disasm")       { return CmdDisasm (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "debug")        { return CmdDebug (SubArgc, SubArgv, argv[0]); }

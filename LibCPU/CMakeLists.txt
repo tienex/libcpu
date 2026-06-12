@@ -276,14 +276,14 @@ target_link_libraries(nativedemo PRIVATE LibCPU)
 # diagnostics, a hand-written recursive-descent parser); embeddable, and linked
 # dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
 # and links the LibCPU framework at run time.
-add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp)
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/UpclArch.cpp)
 set_target_properties(upcl PROPERTIES
   OUTPUT_NAME UPCL
   FRAMEWORK TRUE
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h")
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/UpclArch.h")
 target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
 if(APPLE)
@@ -406,6 +406,21 @@ add_test(NAME upcl.check COMMAND lcx upcl check "${CMAKE_CURRENT_SOURCE_DIR}/tes
 set_tests_properties(upcl.check PROPERTIES PASS_REGULAR_EXPRESSION "3 instruction")
 add_test(NAME upcl.diagnostics COMMAND lcx upcl check "${CMAKE_CURRENT_SOURCE_DIR}/test/broken.upcl")
 set_tests_properties(upcl.diagnostics PROPERTIES WILL_FAIL TRUE)
+
+# `lcx upcl produce` builds the live frontend and round-trips its encodings.
+add_test(NAME upcl.produce COMMAND lcx upcl produce "${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
+set_tests_properties(upcl.produce PROPERTIES PASS_REGULAR_EXPRESSION "mov ax")
+
+# A .upcl description used as a live frontend: `--arch upcl:<file>` runs a real program
+# (mov ax,3; mov cx,5; add ax,cx -> ax=8) through the interpreted decode + semantics.
+if(TARGET interp_backend)
+  add_test(NAME upcl.run COMMAND lcx run "${CMAKE_CURRENT_SOURCE_DIR}/test/add.v20.bin"
+    --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
+  set_tests_properties(upcl.run PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
+  add_test(NAME upcl.translate COMMAND lcx translate "${CMAKE_CURRENT_SOURCE_DIR}/test/add.v20.bin"
+    --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
+  set_tests_properties(upcl.translate PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
+endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and
 # all present CFG backends, then run the matrix with per-failure output.
