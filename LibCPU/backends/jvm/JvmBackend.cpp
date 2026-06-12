@@ -28,30 +28,65 @@ static CONST UINT32 RAM_SIZE = 0x10000;   // assumed guest RAM (6502 / CHIP-8)
 //
 // Process-wide embedded JVM, created on first use.
 //
-static JavaVM  *g_Jvm    = nullptr;
-static JNIEnv  *g_Env    = nullptr;
-static jobject  g_Loader = nullptr;       // system class loader (global ref)
+static JavaVM  *g_Jvm    = nullptr;        // process-global; created once
+static jobject  g_Loader = nullptr;        // system class loader (global ref, cross-thread)
 
+//
+// Detach guard. JNI requires a thread that attached itself to the VM to detach
+// before it exits, or the VM may fault on thread teardown. One of these lives in
+// each background thread's storage (thread_local); its destructor runs at thread
+// exit and detaches that thread. The VM-creating thread is attached implicitly and
+// must NOT be detached this way, so a guard is armed only for threads we attach.
+//
+struct JvmThreadDetach {
+    BOOLEAN Armed = FALSE;
+    ~JvmThreadDetach () {
+        if (Armed && g_Jvm != nullptr) {
+            g_Jvm->DetachCurrentThread ();
+        }
+    }
+};
+
+//
+// Return the JNIEnv for the CALLING thread. A JNIEnv is per-thread and is only
+// valid on the thread that obtained it -- it must never be cached and shared
+// across threads (the JIT recompiles on a background thread). The JavaVM, by
+// contrast, is process-global: create it once, then ask it for this thread's env,
+// attaching the thread on first use.
+//
 static JNIEnv *
 GetEnv (VOID)
 {
-    if (g_Env != nullptr) {
-        return g_Env;
+    if (g_Jvm == nullptr) {
+        JNIEnv         *Env = nullptr;
+        JavaVMInitArgs  Args;
+        Args.version            = JNI_VERSION_1_8;
+        Args.nOptions           = 0;
+        Args.options            = nullptr;
+        Args.ignoreUnrecognized = JNI_TRUE;
+        if (JNI_CreateJavaVM (&g_Jvm, (void **) &Env, &Args) != JNI_OK) {
+            g_Jvm = nullptr;
+            return nullptr;
+        }
+        jclass    ClCls = Env->FindClass ("java/lang/ClassLoader");
+        jmethodID Get   = Env->GetStaticMethodID (ClCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject   Ldr   = Env->CallStaticObjectMethod (ClCls, Get);
+        g_Loader = Env->NewGlobalRef (Ldr);
+        return Env;
     }
-    JavaVMInitArgs Args;
-    Args.version            = JNI_VERSION_1_8;
-    Args.nOptions           = 0;
-    Args.options            = nullptr;
-    Args.ignoreUnrecognized = JNI_TRUE;
-    if (JNI_CreateJavaVM (&g_Jvm, (void **) &g_Env, &Args) != JNI_OK) {
-        g_Env = nullptr;
+
+    JNIEnv *Env = nullptr;
+    if (g_Jvm->GetEnv ((void **) &Env, JNI_VERSION_1_8) == JNI_OK) {
+        return Env;
+    }
+    // A thread the VM does not yet know about (e.g. the JIT's background recompile
+    // thread): attach it and arm its detach guard so it unwinds cleanly at exit.
+    if (g_Jvm->AttachCurrentThread ((void **) &Env, nullptr) != JNI_OK) {
         return nullptr;
     }
-    jclass   ClCls = g_Env->FindClass ("java/lang/ClassLoader");
-    jmethodID Get  = g_Env->GetStaticMethodID (ClCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject   Ldr  = g_Env->CallStaticObjectMethod (ClCls, Get);
-    g_Loader = g_Env->NewGlobalRef (Ldr);
-    return g_Env;
+    static thread_local JvmThreadDetach s_Detach;
+    s_Detach.Armed = TRUE;
+    return Env;
 }
 
 static UINT64
@@ -153,8 +188,9 @@ public:
     JvmCode (jclass Class, jmethodID Method) : m_Class (Class), m_Method (Method) {}
 
     ~JvmCode () override {
-        if (m_Class != nullptr && g_Env != nullptr) {
-            g_Env->DeleteGlobalRef (m_Class);
+        JNIEnv *Env = GetEnv ();
+        if (m_Class != nullptr && Env != nullptr) {
+            Env->DeleteGlobalRef (m_Class);
         }
     }
 

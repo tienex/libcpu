@@ -60,9 +60,30 @@ InitPython (VOID)
 {
     if (!Py_IsInitialized ()) {
         Py_Initialize ();
+        // Py_Initialize leaves the GIL held by THIS thread, which would block every
+        // other thread forever. Release it so any thread (notably the JIT's
+        // background recompile thread) can acquire it through PyGILState_Ensure.
+        PyEval_SaveThread ();
     }
     return (BOOLEAN) Py_IsInitialized ();
 }
+
+//
+// RAII holder for the Global Interpreter Lock. The embedded interpreter has one
+// GIL; every thread that touches the C-API must hold it. With the GIL released by
+// InitPython, each entry point (compile, execute, teardown) brackets its work with
+// one of these -- this is what lets the JIT recompile on a background thread while
+// the main thread executes, without corrupting interpreter state.
+//
+class PyGilGuard {
+public:
+    PyGilGuard () : m_State (PyGILState_Ensure ()) {}
+    ~PyGilGuard () { PyGILState_Release (m_State); }
+    PyGilGuard (CONST PyGilGuard &) = delete;
+    PyGilGuard &operator= (CONST PyGilGuard &) = delete;
+private:
+    PyGILState_STATE m_State;
+};
 
 class PyValue final : public LcComObject<ICpuValue> {
 public:
@@ -95,6 +116,7 @@ public:
 
     ~PyCode () override {
         if (m_Code != nullptr && Py_IsInitialized ()) {
+            PyGilGuard Gil;   // refcount drop touches the interpreter; hold the GIL
             Py_DECREF (m_Code);
         }
     }
@@ -104,6 +126,7 @@ public:
     }
 
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID * /*pFRF*/) override {
+        PyGilGuard Gil;   // hold the GIL for the duration of the evaluation
         UINT64 RamSize = ((CPU_STATE *) pGRF)->RamSize;   // host-stated; 0 -> 64 KiB
         if (RamSize == 0) { RamSize = CPU_RAM_DEFAULT; }
         size_t Ram   = (size_t) RamSize;
@@ -299,6 +322,7 @@ public:
         if (!InitPython ()) {
             return nullptr;
         }
+        PyGilGuard Gil;   // hold the GIL while compiling (may run on a background thread)
         std::string Full = kTemplate;
         Subst (Full, "%S%", std::to_string (sizeof (CPU_STATE)));
         Subst (Full, "%B%", BuildBody ());
