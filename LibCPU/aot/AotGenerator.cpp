@@ -308,7 +308,10 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         pArch->TranslateInstr (Pc, Emitter);
         Count++;
 
-        if (Tag & TagReturn) {
+        if (Tag & TagTrap) {
+            // A far transfer (CS:IP reload): TranslateInstr emitted IndirectBranch,
+            // which terminates the block and traps to the host. Nothing to add.
+        } else if (Tag & TagReturn) {
             Emitter->Branch (pDispatch);
         } else if (Tag & TagConditional) {
             ComPtr<ICpuValue> Cond;

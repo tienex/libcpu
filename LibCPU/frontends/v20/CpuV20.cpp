@@ -110,9 +110,19 @@ public:
         // Instructions are fetched from CS * 16 + IP. The AOT driver works in IP
         // space, so we bias the decode pointer by the code segment base once here;
         // every decode (m_pCode[Pc]) then reads the right linear byte.
+        m_pBase    = pBase;
         m_pCode    = pBase + ((UINT64) m_CodeSeg << 4);
         m_CodeSize = Size;
         return S_OK;
+    }
+
+    // Re-point the decode base at a new code segment (used by a far JMP/CALL: the host
+    // reads the guest CS register after the trap and re-translates the new segment).
+    VOID SetCodeSeg (UINT16 Cs) {
+        m_CodeSeg = Cs;
+        if (m_pBase != nullptr) {
+            m_pCode = m_pBase + ((UINT64) Cs << 4);
+        }
     }
 
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
@@ -141,6 +151,8 @@ public:
             Len = 3; Tag = TagCall; NewPc = (CPU_ADDR) (Pc + 3 + (INT16) Imm16At (m_pCode, Pc + 1));
         } else if (Op == 0xC3) {                                 // RET (indirect: target popped at run time)
             Len = 1; Tag = TagReturn;
+        } else if (Op == 0xEA) {                                 // JMP ptr16:16 (far: CS:IP reload -> host)
+            Len = 5; Tag = TagTrap;
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
@@ -335,6 +347,20 @@ public:
             }
             break;
         }
+        case 0xEA: {                                               // JMP ptr16:16 (far)
+            // Load CS:IP and trap to the host, which re-translates the new segment.
+            UINT16 NewIp = Imm16At (m_pCode, Pc + 1);
+            UINT16 NewCs = Imm16At (m_pCode, Pc + 3);
+            ComPtr<ICpuValue> Cs; pE->ConstInt (16, NewCs, &Cs);
+            pE->PutRegister (RegV20CS, Cs, 16, FALSE);             // guest CS = NewCs
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                ComPtr<ICpuValue> Ip; pE->ConstInt (16, NewIp, &Ip);
+                pFlow->IndirectBranch (Ip);   // TrapPc = NewIp; host resumes there (in NewCs)
+                pFlow->Release ();
+            }
+            break;
+        }
         case 0x0F: {                                               // NEC SET1/CLR1/NOT1/TEST1 r/m16,imm8
             UINT8  Op2 = m_pCode[Pc + 1];
             UINT32 Rm  = m_pCode[Pc + 2] & 7;
@@ -504,7 +530,8 @@ private:
         return kNames[Index & 7];
     }
 
-    UINT8 CONST *m_pCode    = nullptr;
+    UINT8 CONST *m_pBase    = nullptr;   // RAM base (for re-biasing on a CS change)
+    UINT8 CONST *m_pCode    = nullptr;   // = m_pBase + m_CodeSeg * 16
     UINT64       m_CodeSize = 0;
     UINT16       m_CodeSeg  = 0;   // CS: code is fetched from m_CodeSeg * 16 + IP
 };
@@ -521,6 +548,12 @@ ICpuArchitecture *
 CreateV20 (VOID)
 {
     return new CpuV20 (0);
+}
+
+VOID
+SetV20CodeSegment (ICpuArchitecture *pArch, UINT16 Cs)
+{
+    static_cast<CpuV20 *> (pArch)->SetCodeSeg (Cs);
 }
 
 } // namespace LibCPU

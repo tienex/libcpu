@@ -163,6 +163,54 @@ AotV20Cs (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, UINT16 Cs, 
     return (int) (Ram[0x200] | (Ram[0x201] << 8));
 }
 
+//
+// Far JMP (CS:IP reload). Segment A @ CS=0x40 sets AX then JMP 0x50:0; segment B @
+// CS=0x50 stores AX then JMP 0xFFFF:0xFFFF (a halt sentinel). A far JMP traps to the
+// host, which re-points the frontend at the new CS and resumes at the new IP.
+// Returns the word at 0x200 (= 0x42 written from segment B).
+//
+static inline int
+AotV20Far (ICpuBackend *pBackend)
+{
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    UINT8 const SegA[] = { 0xB8, 0x42, 0x00, 0xEA, 0x00, 0x00, 0x50, 0x00 };  // MOV AX,0x42; JMP 0x50:0
+    UINT8 const SegB[] = { 0xA3, 0x00, 0x02, 0xEA, 0xFF, 0xFF, 0xFF, 0xFF };  // MOV [0x200],AX; JMP 0xFFFF:0xFFFF
+    std::memcpy (Ram + 0x400, SegA, sizeof (SegA));   // CS 0x40 -> linear 0x400
+    std::memcpy (Ram + 0x500, SegB, sizeof (SegB));   // CS 0x50 -> linear 0x500
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    State.Reg[RegV20CS] = 0x40;
+
+    ICpuArchitecture *pArch = CreateV20 (0x40);
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    CPU_ADDR ResumeIp = 0;
+    UINT16   Cs       = 0x40;
+    for (int Iter = 0; Iter < 16; Iter++) {
+        SetV20CodeSegment (pArch, Cs);
+        ComPtr<ICpuCode> Code;
+        UINT32 Count = 0;
+        if (FAILED (GenerateAotCfg (pArch, pBackend, ResumeIp, 0x100, &Code, &Count)) || Code == nullptr) {
+            pArch->Release ();
+            return -1;
+        }
+        State.TrapPc = CPU_SMC_NO_TRAP;
+        Code->Execute (Ram, &State, nullptr);
+        if (State.TrapPc == CPU_SMC_NO_TRAP) {
+            break;                                   // ran off the end (no far jump)
+        }
+        Cs = (UINT16) State.Reg[RegV20CS];           // the far JMP set the new CS
+        if (Cs == 0xFFFF) {
+            break;                                   // halt sentinel
+        }
+        ResumeIp = (CPU_ADDR) State.TrapPc;          // ... and the new IP
+    }
+    pArch->Release ();
+    return (int) (Ram[0x200] | (Ram[0x201] << 8));
+}
+
 static inline int
 RunAotV20Program (ICpuBackend *pBackend)
 {
@@ -253,6 +301,7 @@ RunAotV20Program (ICpuBackend *pBackend)
     int Seg16 = AotV20Seg (pBackend, Seg, (UINT32) sizeof (Seg), 0x10010, &Unseg);
     int CsVal = -1;
     int CsRet = AotV20Cs (pBackend, Cs, (UINT32) sizeof (Cs), 0x0040, &CsVal);
+    int Far   = AotV20Far (pBackend);
 
     std::printf ("  loop 5+4+3+2+1            -> [0x200] = %d (exp 15)\n", Sum);
     std::printf ("  SET1/SET1/NOT1 bit ops   -> [0x200] = %d (exp 1)\n", Bit);
@@ -264,13 +313,14 @@ RunAotV20Program (ICpuBackend *pBackend)
                  Seg16, Unseg);
     std::printf ("  CS=0x0040 CALL/RET + MOV AX,CS -> [0x200] = %d (exp 8), CS read = 0x%04x (exp 0x0040)\n",
                  CsRet, CsVal);
+    std::printf ("  far JMP CS:IP (0x40 -> 0x50)   -> [0x200] = 0x%04x (exp 0x0042)\n", Far);
 
     // With the in-artifact dispatcher, RET resolves inside the compiled code: one
     // translation, no host re-entry (it took 2 before the dispatch table).
     bool Ok = Sum == 15 && Bit == 1 && Arr == 100 && Stk == 0x1234 && Cal == 8 && Trans == 1
-              && Seg16 == 0x1234 && Unseg == 0 && CsRet == 8 && CsVal == 0x0040;
-    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x, cs %d/0x%04x)\n",
-                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16, CsRet, CsVal);
+              && Seg16 == 0x1234 && Unseg == 0 && CsRet == 8 && CsVal == 0x0040 && Far == 0x0042;
+    std::printf ("RESULT: %s  (loop %d, bits %d, array %d, stack 0x%04x, call/ret %d in %d, seg 0x%04x, cs %d/0x%04x, far 0x%04x)\n",
+                 Ok ? "PASS" : "FAIL", Sum, Bit, Arr, Stk, Cal, Trans, Seg16, CsRet, CsVal, Far);
     return Ok ? 0 : 1;
 }
 

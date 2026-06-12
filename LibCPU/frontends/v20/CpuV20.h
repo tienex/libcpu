@@ -45,6 +45,10 @@ enum {
 ICpuArchitecture *CreateV20 (UINT16 CodeSeg);
 ICpuArchitecture *CreateV20 (VOID);
 
+// Re-point a V20 frontend's code segment (CS), used by the host's far-JMP/CALL resume
+// loop after the guest reloads CS:IP.
+VOID SetV20CodeSegment (ICpuArchitecture *pArch, UINT16 Cs);
+
 } // namespace LibCPU
 
 #endif // LIBCPU_CPUV20_H
