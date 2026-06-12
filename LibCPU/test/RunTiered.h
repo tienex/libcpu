@@ -60,6 +60,20 @@ static UINT8 const g_Call[] = {
     0xE8, 0xEA, 0xFF,   // 16:       CALL sub (IP 3)   [site 2, ret 0x19]
     0xA3, 0x02, 0x02    // 19:       MOV [0x202], AX   (= 15)
 };
+// main @E -> outer @7 (+5) -> inner @3 (+3): nested call tree. [0x200] = 1+5+3 = 9.
+static UINT8 const g_Nested[] = {
+    0xE9, 0x0B, 0x00,   // 0:  JMP main (IP 0xE)
+    0x05, 0x03, 0x00,   // 3:  inner: ADD AX, 3
+    0xC3,               // 6:         RET
+    0x05, 0x05, 0x00,   // 7:  outer: ADD AX, 5
+    0xE8, 0xF6, 0xFF,   // A:         CALL inner (IP 3)
+    0xC3,               // D:         RET
+    0xBC, 0x00, 0x10,   // E:  main:  MOV SP, 0x1000
+    0xB8, 0x01, 0x00,   // 11:        MOV AX, 1
+    0xE8, 0xF0, 0xFF,   // 14:        CALL outer (IP 7)
+    0xA3, 0x00, 0x02    // 17:        MOV [0x200], AX
+};
+
 static CPU_ADDR const HOT_ENTRY  = 0,    HOT_END  = (CPU_ADDR) sizeof (g_Hot);
 static CPU_ADDR const COLD_ENTRY = 0x40, COLD_END = 0x40 + (CPU_ADDR) sizeof (g_Cold);
 
@@ -304,6 +318,68 @@ RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
 
     Ok = Ok && Inlined == 2 && Site1 == 8 && Site2 == 15 && PlainResult == 8;
     std::printf ("RESULT: %s  (edge trace drove duplicate-and-specialize: 2 sites -> 2 private copies of the callee)\n",
+                 Ok ? "PASS" : "FAIL");
+
+    pArch->Release ();
+    return Ok ? 0 : 1;
+}
+
+//
+// Recursive inlining: a hot call tree (main -> outer -> inner) is inlined whole. One
+// top-level site expands to a TREE of copies (outer + inner), each nested RET
+// branching to its parent copy's continuation -- no CALL/RET, no dispatcher anywhere.
+//
+static inline int
+RunNestedInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
+{
+    std::printf ("\n== PGO inlining (recursive): inline a whole call tree (main -> outer -> inner)\n");
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    std::memcpy (Ram, g_Nested, sizeof (g_Nested));
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+
+    ICpuArchitecture *pArch = CreateV20 ();
+    pArch->SetCodeMemory (Ram, sizeof (Ram));
+
+    CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Nested);
+
+    {
+        CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
+        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
+        LcPerfTrace Trace;
+        Profiler.ExportTrace (Trace);
+        Trace.Save (pTracePath);
+    }
+
+    LcPerfTrace Trace;
+    Trace.Load (pTracePath);
+    std::printf ("  trace edges (incl. nested): %u\n", Trace.EdgeCount ());
+    for (UINT32 i = 0; i < Trace.EdgeCount (); i++) {
+        CPU_TRACE_EDGE E = Trace.Edge (i);
+        std::printf ("    CALL@0x%llx -> 0x%llx (count %llu)\n",
+                     (unsigned long long) E.Site, (unsigned long long) E.Callee, (unsigned long long) E.Count);
+    }
+
+    CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
+    LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    Pgo.Build (Trace);
+    UINT32 Inlined = Pgo.InlinedCount ();
+
+    bool Ok = true;
+    for (int i = 0; i < 4000; i++) {
+        Pgo.Run (Entry, Ram, &State, nullptr);
+        if (ResultWord (Ram, 0x200) != 9) { Ok = false; }
+    }
+    int Result = ResultWord (Ram, 0x200);
+
+    std::printf ("  inlined %u copies (outer + inner from ONE top-level site); [0x200] = %d (exp 9)\n",
+                 Inlined, Result);
+
+    Ok = Ok && Inlined == 2 && Result == 9;
+    std::printf ("RESULT: %s  (recursive inlining: the whole call tree embedded, every RET a direct branch)\n",
                  Ok ? "PASS" : "FAIL");
 
     pArch->Release ();

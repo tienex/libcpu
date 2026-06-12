@@ -22,6 +22,7 @@
 #include "TieredEngine.h"   // CPU_TIER
 #include "PerfTrace.h"
 #include <map>
+#include <set>
 #include <vector>
 
 namespace LibCPU {
@@ -48,9 +49,11 @@ private:
     struct Built { ICpuCode *pCode; UINT32 Tier; };
 
     UINT32  PickTier (UINT64 Count) CONST;  // tier the recorded count warrants
-    // True if Callee is an inlinable leaf: no nested CALL on any path to its RET(s).
-    // Internal branches are allowed (the AOT driver duplicates the whole sub-CFG).
-    BOOLEAN InlinableLeaf (CPU_ADDR Callee) CONST;
+    // True if Callee's whole call tree is inlinable: finite (acyclic) and within the
+    // depth cap. Recursive calls (a cycle) and over-deep trees are rejected.
+    BOOLEAN InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> &Active) CONST;
+    // Number of instances Callee's tree expands to (itself + all nested callees).
+    UINT32  CountTree (CPU_ADDR Callee, UINT32 Depth) CONST;
 
     ICpuArchitecture        *m_pArch;       // borrowed
     std::vector<CPU_TIER>     m_Tiers;

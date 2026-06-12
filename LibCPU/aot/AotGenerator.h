@@ -56,10 +56,16 @@ typedef struct _CPU_CALL_EDGE {
     CPU_ADDR ReturnPoint;
 } CPU_CALL_EDGE;
 
-// Collect the static call edges reachable in [Entry, End). Writes up to MaxEdges
-// into pEdges and returns the total found.
+// Collect the static call edges reachable in [Entry, End), descending through callees
+// (so nested calls are included). Writes up to MaxEdges and returns the total found.
 UINT32 CollectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
                          OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges);
+
+// Like CollectCallEdges, but does NOT descend into callees -- it reports only the
+// caller's TOP-LEVEL (direct) call sites of [Entry, End). Profile-guided inlining
+// uses this so it inlines top-level sites and lets the AOT driver recurse the rest.
+UINT32 CollectDirectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
+                               OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges);
 
 //
 // One inlined CALL site for GenerateAotCfgInlined: the CALL at Site to Callee is

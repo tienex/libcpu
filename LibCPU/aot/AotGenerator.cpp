@@ -17,8 +17,10 @@
 #include "LibCPU/PCom.h"
 
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace LibCPU {
@@ -144,53 +146,8 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
 
     //
-    // 2. For each inlined site, discover its callee's blocks -- a PRIVATE copy. The
-    //    callee is a leaf (no nested CALL); discovery follows internal branches but
-    //    stops at each RET.
-    //
-    struct Instance {
-        CPU_ADDR                        Callee;
-        CPU_ADDR                        ReturnPoint;
-        std::vector<CPU_ADDR>           CalleePcs;
-        std::map<CPU_ADDR, ICpuBlock *> Blocks;
-    };
-    std::vector<Instance>      Instances;
-    std::map<CPU_ADDR, UINT32> SiteToInst;   // call site -> instance index
-    for (UINT32 I = 0; I < InlineCount; I++) {
-        Instance Inst;
-        Inst.Callee      = pInline[I].Callee;
-        Inst.ReturnPoint = pInline[I].ReturnPoint;
-
-        std::set<CPU_ADDR>    Seen;
-        std::vector<CPU_ADDR> W;
-        W.push_back (Inst.Callee);
-        while (!W.empty ()) {
-            CPU_ADDR Cp = W.back ();
-            W.pop_back ();
-            if (Cp >= End || Seen.count (Cp) != 0) {
-                continue;
-            }
-            Seen.insert (Cp);
-            Inst.CalleePcs.push_back (Cp);
-
-            UINT32   T;
-            CPU_ADDR Nw;
-            CPU_ADDR Nx;
-            if (FAILED (pArch->TagInstr (Cp, &T, &Nw, &Nx))) {
-                continue;
-            }
-            if (T & TagReturn) {
-                continue;   // the callee exits here; do not follow past the RET
-            }
-            if (T & (TagContinue | TagConditional | TagCall)) { W.push_back (Nx); }
-            if (T & (TagBranch | TagConditional | TagCall))   { W.push_back (Nw); }
-        }
-        SiteToInst[pInline[I].Site] = (UINT32) Instances.size ();
-        Instances.push_back (std::move (Inst));
-    }
-
-    //
-    // 3. Create blocks: caller blocks + shared exit + (dispatcher) + per-instance copies.
+    // 2. Create caller blocks + shared exit. (Inlined callees are NOT shared blocks;
+    //    each inlined site gets a private copy, built recursively below.)
     //
     std::map<CPU_ADDR, ICpuBlock *> Blocks;
     for (CPU_ADDR Pc : Pcs) {
@@ -219,22 +176,99 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         pDispatch = Disp[0];
     }
 
-    for (Instance &Inst : Instances) {
-        for (CPU_ADDR Cp : Inst.CalleePcs) {
-            ICpuBlock *pB = nullptr;
-            Emitter->CreateBlock ("inl", &pB);
-            Inst.Blocks[Cp] = pB;
-        }
+    //
+    // 3. Build the inline-instance TREE. Each inlined CALL site -- at ANY depth -- gets
+    //    a private copy of its callee (duplicate-and-specialize). A CALL inside a copy
+    //    recurses into a child instance whose RET returns to THIS copy's continuation
+    //    block (ReturnBlock). Post-order: children are pushed before their parent.
+    //
+    struct Instance {
+        CPU_ADDR                        Callee;
+        ICpuBlock                      *ReturnBlock;
+        std::vector<CPU_ADDR>           CalleePcs;
+        std::map<CPU_ADDR, ICpuBlock *> Blocks;
+        std::map<CPU_ADDR, UINT32>      NestedAt;   // nested-call site Pc -> child instance index
+    };
+    std::vector<Instance>      Instances;
+    std::map<CPU_ADDR, UINT32> SiteToTop;   // top-level call site -> instance index
+    bool                       InlineFailed = false;
+
+    std::function<UINT32 (CPU_ADDR, ICpuBlock *, UINT32)> BuildInstance =
+        [&] (CPU_ADDR Callee, ICpuBlock *ReturnBlock, UINT32 Depth) -> UINT32 {
+            if (Depth > 16) {                       // defensive (ProfiledAot vets finite trees)
+                InlineFailed = true;
+                return 0;
+            }
+            Instance Inst;
+            Inst.Callee      = Callee;
+            Inst.ReturnBlock = ReturnBlock;
+
+            std::set<CPU_ADDR>                          Seen;
+            std::vector<CPU_ADDR>                        W;
+            std::vector<std::pair<CPU_ADDR, CPU_ADDR> >  Nested;   // (siteCp, nestedCallee)
+            W.push_back (Callee);
+            while (!W.empty ()) {
+                CPU_ADDR Cp = W.back ();
+                W.pop_back ();
+                if (Cp >= End || Seen.count (Cp) != 0) {
+                    continue;
+                }
+                Seen.insert (Cp);
+                Inst.CalleePcs.push_back (Cp);
+
+                UINT32   T;
+                CPU_ADDR Nw;
+                CPU_ADDR Nx;
+                if (FAILED (pArch->TagInstr (Cp, &T, &Nw, &Nx))) {
+                    continue;
+                }
+                if (T & TagReturn) {
+                    continue;                       // the callee exits here
+                }
+                if (T & TagCall) {
+                    Nested.push_back (std::make_pair (Cp, Nw));
+                    W.push_back (Nx);               // the continuation is a block in THIS copy
+                } else {
+                    if (T & (TagContinue | TagConditional)) { W.push_back (Nx); }
+                    if (T & (TagBranch | TagConditional))   { W.push_back (Nw); }
+                }
+            }
+
+            for (CPU_ADDR Cp : Inst.CalleePcs) {
+                ICpuBlock *pB = nullptr;
+                Emitter->CreateBlock ("inl", &pB);
+                Inst.Blocks[Cp] = pB;
+            }
+
+            for (std::pair<CPU_ADDR, CPU_ADDR> CONST &N : Nested) {
+                UINT32   T2;
+                CPU_ADDR Nw2;
+                CPU_ADDR ContPc;
+                pArch->TagInstr (N.first, &T2, &Nw2, &ContPc);
+                auto It = Inst.Blocks.find (ContPc);
+                ICpuBlock *pCont = (It != Inst.Blocks.end ()) ? It->second : Target (ContPc);
+                Inst.NestedAt[N.first] = BuildInstance (N.second, pCont, Depth + 1);
+            }
+
+            UINT32 Idx = (UINT32) Instances.size ();
+            Instances.push_back (std::move (Inst));
+            return Idx;
+        };
+
+    for (UINT32 I = 0; I < InlineCount; I++) {
+        SiteToTop[pInline[I].Site] = BuildInstance (pInline[I].Callee, Target (pInline[I].ReturnPoint), 0);
     }
+
     auto InstTarget = [&] (Instance CONST &Inst, CPU_ADDR Pc) -> ICpuBlock * {
         auto It = Inst.Blocks.find (Pc);
         return (It != Inst.Blocks.end ()) ? It->second : Target (Pc);
     };
 
     //
-    // 4. Entry edge (and the clean bail-out for backends without block ops).
+    // 4. Entry edge (and the clean bail-out for backends without block ops, or a tree
+    //    that exceeded the inline-depth guard).
     //
-    HRESULT BrHr = Emitter->Branch (Target (Entry));
+    HRESULT BrHr = InlineFailed ? E_FAIL : Emitter->Branch (Target (Entry));
     if (FAILED (BrHr)) {
         for (auto CONST &Pair : Blocks) { if (Pair.second != nullptr) { Pair.second->Release (); } }
         for (Instance CONST &Inst : Instances) {
@@ -264,7 +298,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 
         CPU_ADDR Cal = 0, Ret = 0;
         if ((Tag & TagCall) && SiteInfo (Pc, &Cal, &Ret)) {
-            Instance CONST &Inst = Instances[SiteToInst[Pc]];
+            Instance CONST &Inst = Instances[SiteToTop[Pc]];
             Emitter->Branch (Inst.Blocks.at (Inst.Callee));   // no push; enter the copy
             Count++;
             continue;
@@ -290,9 +324,9 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
 
     //
-    // 6. Fill each inline instance (the duplicated callee body). Its RET is
-    //    specialized: it branches straight to this site's continuation -- no pop, no
-    //    dispatcher. Internal branches stay within the instance's private blocks.
+    // 6. Fill each inline instance copy. A nested CALL branches into ITS child copy;
+    //    the RET branches straight to this copy's return block (no pop, no dispatcher);
+    //    internal branches stay within this copy's private blocks.
     //
     for (Instance CONST &Inst : Instances) {
         for (CPU_ADDR Cp : Inst.CalleePcs) {
@@ -306,15 +340,22 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
             CPU_ADDR Nx;
             pArch->TagInstr (Cp, &T, &Nw, &Nx);
 
-            bool IsRet = (T & TagReturn) != 0;
-            if (!IsRet) {
-                pArch->TranslateInstr (Cp, Emitter);   // callee effect (no pop for the RET)
+            if (T & TagReturn) {
+                Emitter->Branch (Inst.ReturnBlock);            // specialized return
+                Count++;
+                continue;
             }
+            if (T & TagCall) {                                 // nested inlined call
+                UINT32 Child = Inst.NestedAt.at (Cp);
+                Emitter->Branch (Instances[Child].Blocks.at (Instances[Child].Callee));
+                Count++;
+                continue;
+            }
+
+            pArch->TranslateInstr (Cp, Emitter);   // callee effect
             Count++;
 
-            if (IsRet) {
-                Emitter->Branch (Target (Inst.ReturnPoint));   // specialized return
-            } else if (T & TagConditional) {
+            if (T & TagConditional) {
                 ComPtr<ICpuValue> Cond;
                 if (SUCCEEDED (pArch->TranslateCond (Cp, Emitter, &Cond)) && Cond != nullptr) {
                     Emitter->CondBranch (Cond, InstTarget (Inst, Nw), InstTarget (Inst, Nx));
@@ -408,6 +449,49 @@ CollectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
         }
         if (Tag & (TagBranch | TagConditional | TagCall)) {
             Work.push_back (NewPc);
+        }
+    }
+    return Found;
+}
+
+UINT32
+CollectDirectCallEdges (ICpuArchitecture *pArch, CPU_ADDR Entry, CPU_ADDR End,
+                        OUT CPU_CALL_EDGE *pEdges, UINT32 MaxEdges)
+{
+    if (pArch == nullptr) {
+        return 0;
+    }
+    std::set<CPU_ADDR>    Seen;
+    std::vector<CPU_ADDR> Work;
+    UINT32                Found = 0;
+    Work.push_back (Entry);
+    while (!Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Pc >= End || Seen.count (Pc) != 0) {
+            continue;
+        }
+        Seen.insert (Pc);
+
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+            continue;
+        }
+        if (Tag & TagCall) {
+            if (pEdges != nullptr && Found < MaxEdges) {
+                pEdges[Found].Site        = Pc;
+                pEdges[Found].Callee      = NewPc;
+                pEdges[Found].ReturnPoint = NextPc;
+            }
+            Found++;
+        }
+        if (Tag & (TagContinue | TagConditional | TagCall)) {
+            Work.push_back (NextPc);   // CALL returns to NextPc -- but do NOT descend
+        }
+        if (!(Tag & TagCall) && (Tag & (TagBranch | TagConditional))) {
+            Work.push_back (NewPc);    // follow the caller's own branches only
         }
     }
     return Found;

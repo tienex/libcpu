@@ -35,11 +35,67 @@ LcProfiledAot::PickTier (UINT64 Count) CONST
     return Tier;
 }
 
+static UINT32 const kMaxInlineDepth = 4;
+
 BOOLEAN
-LcProfiledAot::InlinableLeaf (CPU_ADDR Callee) CONST
+LcProfiledAot::InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> &Active) CONST
 {
-    // Walk the callee's reachable instructions (following internal branches, stopping
-    // at each RET). It is inlinable iff no path hits a nested CALL.
+    if (Depth > kMaxInlineDepth) {
+        return FALSE;                 // too deep
+    }
+    if (Active.count (Callee) != 0) {
+        return FALSE;                 // recursion (a cycle on the active chain)
+    }
+    Active.insert (Callee);
+
+    // Walk the callee's own blocks (following internal branches, stopping at RET). A
+    // nested CALL is OK only if its callee's tree is also inlinable.
+    BOOLEAN               Ok = TRUE;
+    std::set<CPU_ADDR>    Seen;
+    std::vector<CPU_ADDR> Work;
+    Work.push_back (Callee);
+    while (Ok && !Work.empty ()) {
+        CPU_ADDR Pc = Work.back ();
+        Work.pop_back ();
+        if (Seen.count (Pc) != 0) {
+            continue;
+        }
+        Seen.insert (Pc);
+        if (Seen.size () > 256) {
+            Ok = FALSE;
+            break;
+        }
+        UINT32   Tag;
+        CPU_ADDR NewPc;
+        CPU_ADDR NextPc;
+        if (FAILED (m_pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+            Ok = FALSE;
+            break;
+        }
+        if (Tag & TagCall) {
+            if (!InlinableTree (NewPc, Depth + 1, Active)) { Ok = FALSE; break; }
+            Work.push_back (NextPc);   // continue past the (inlinable) nested call
+            continue;
+        }
+        if (Tag & TagReturn) {
+            continue;                  // an exit
+        }
+        if (Tag & (TagContinue | TagConditional)) { Work.push_back (NextPc); }
+        if (Tag & (TagBranch | TagConditional))   { Work.push_back (NewPc); }
+    }
+
+    Active.erase (Callee);
+    return Ok;
+}
+
+UINT32
+LcProfiledAot::CountTree (CPU_ADDR Callee, UINT32 Depth) CONST
+{
+    // 1 for this callee + the trees of its nested callees.
+    UINT32 N = 1;
+    if (Depth > kMaxInlineDepth) {
+        return N;
+    }
     std::set<CPU_ADDR>    Seen;
     std::vector<CPU_ADDR> Work;
     Work.push_back (Callee);
@@ -50,25 +106,24 @@ LcProfiledAot::InlinableLeaf (CPU_ADDR Callee) CONST
             continue;
         }
         Seen.insert (Pc);
-        if (Seen.size () > 256) {
-            return FALSE;   // runaway: refuse to inline
-        }
         UINT32   Tag;
         CPU_ADDR NewPc;
         CPU_ADDR NextPc;
         if (FAILED (m_pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
-            return FALSE;
+            continue;
         }
         if (Tag & TagCall) {
-            return FALSE;   // nested call: not a leaf
+            N += CountTree (NewPc, Depth + 1);
+            Work.push_back (NextPc);
+            continue;
         }
         if (Tag & TagReturn) {
-            continue;       // an exit; do not follow past it
+            continue;
         }
         if (Tag & (TagContinue | TagConditional)) { Work.push_back (NextPc); }
         if (Tag & (TagBranch | TagConditional))   { Work.push_back (NewPc); }
     }
-    return TRUE;
+    return N;
 }
 
 HRESULT
@@ -79,17 +134,25 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
         CPU_TRACE_REGION R = Trace.Region (I);
         UINT32 Tier = PickTier (R.Count);
 
-        // Gather an inline plan for this region: every hot call edge whose site is in
-        // [R.Entry, R.End) and whose callee is an inlinable leaf. Several sites calling
-        // the same callee each get their own entry -> their own duplicated copy.
+        // Gather an inline plan: the region's TOP-LEVEL (direct) call sites that are
+        // hot and whose whole callee tree is inlinable. The AOT driver recursively
+        // inlines each tree, so nested calls are NOT listed here.
+        CPU_CALL_EDGE Direct[64];
+        UINT32 Nd = CollectDirectCallEdges (m_pArch, R.Entry, R.End, Direct, 64);
+        if (Nd > 64) { Nd = 64; }
+
         std::vector<CPU_INLINE_SITE> Plan;
-        for (UINT32 E = 0; E < Trace.EdgeCount (); E++) {
-            CPU_TRACE_EDGE Edge = Trace.Edge (E);
-            if (Edge.Site < R.Entry || Edge.Site >= R.End || Edge.Count < m_HotThreshold) {
+        for (UINT32 D = 0; D < Nd; D++) {
+            UINT64 EdgeCnt = 0;
+            for (UINT32 E = 0; E < Trace.EdgeCount (); E++) {
+                if (Trace.Edge (E).Site == Direct[D].Site) { EdgeCnt = Trace.Edge (E).Count; break; }
+            }
+            if (EdgeCnt < m_HotThreshold) {
                 continue;
             }
-            if (InlinableLeaf (Edge.Callee)) {
-                CPU_INLINE_SITE Site = { Edge.Site, Edge.Callee, Edge.ReturnPoint };
+            std::set<CPU_ADDR> Active;
+            if (InlinableTree (Direct[D].Callee, 0, Active)) {
+                CPU_INLINE_SITE Site = { Direct[D].Site, Direct[D].Callee, Direct[D].ReturnPoint };
                 Plan.push_back (Site);
             }
         }
@@ -108,7 +171,9 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
         }
         B.pCode = pCode;           // adopt GenerateAotCfgInlined's +1 ref
         B.Tier  = Tier;
-        m_Inlined += (UINT32) Plan.size ();
+        for (CPU_INLINE_SITE CONST &S : Plan) {
+            m_Inlined += CountTree (S.Callee, 0);   // each top-level site expands to a tree
+        }
     }
     return Result;
 }
