@@ -124,7 +124,9 @@ public:
         if (g_Execute == nullptr) {
             return ExecTrap;
         }
-        g_Execute (m_Handle, (UINT8 *) pRAM, (int) RAM_SIZE, (UINT8 *) pGRF, (int) sizeof (CPU_STATE));
+        UINT64 RamSize = ((CPU_STATE *) pGRF)->RamSize;   // host-stated; 0 -> 64 KiB
+        if (RamSize == 0) { RamSize = CPU_RAM_DEFAULT; }
+        g_Execute (m_Handle, (UINT8 *) pRAM, (int) RamSize, (UINT8 *) pGRF, (int) sizeof (CPU_STATE));
         return ExecOk;
     }
 

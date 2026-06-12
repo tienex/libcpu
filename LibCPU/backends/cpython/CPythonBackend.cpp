@@ -28,8 +28,8 @@ static CONST UINT32 RAM_SIZE = 0x10000;   // assumed guest RAM (6502 / CHIP-8)
 // %S% is sizeof(CPU_STATE), %B% the body. RAM/ST are memoryviews into the bytearray
 // d (supplied by the host each call); the helpers mutate it in place.
 static CHAR8 CONST *kTemplate =
-    "RAM=memoryview(d)[0:65536]\n"
-    "ST=memoryview(d)[65536:65536+%S%]\n"
+    "RAM=memoryview(d)[0:_rs]\n"             // _rs = host-stated RAM size (dynamic)
+    "ST=memoryview(d)[_rs:_rs+%S%]\n"
     "def gR(i,b):\n v=0\n for k in range(b//8):v|=ST[i*8+k]<<(8*k)\n return v\n"
     "def pR(i,v,b):\n for k in range(8):ST[i*8+k]=((v>>(8*k))&0xff) if k<b//8 else 0\n"
     "def rM(a,b):\n v=0\n for k in range(b//8):v|=RAM[a+k]<<(8*k)\n return v\n"
@@ -104,17 +104,22 @@ public:
     }
 
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID * /*pFRF*/) override {
-        size_t Total = RAM_SIZE + sizeof (CPU_STATE);
+        UINT64 RamSize = ((CPU_STATE *) pGRF)->RamSize;   // host-stated; 0 -> 64 KiB
+        if (RamSize == 0) { RamSize = CPU_RAM_DEFAULT; }
+        size_t Ram   = (size_t) RamSize;
+        size_t Total = Ram + sizeof (CPU_STATE);
 
         // Marshal the native RAM + register file into one contiguous bytearray.
         std::vector<char> Buffer (Total);
-        std::memcpy (Buffer.data (), pRAM, RAM_SIZE);
-        std::memcpy (Buffer.data () + RAM_SIZE, pGRF, sizeof (CPU_STATE));
+        std::memcpy (Buffer.data (), pRAM, Ram);
+        std::memcpy (Buffer.data () + Ram, pGRF, sizeof (CPU_STATE));
 
         PyObject *Ba = PyByteArray_FromStringAndSize (Buffer.data (), (Py_ssize_t) Total);
         PyObject *Globals = PyDict_New ();
         PyDict_SetItemString (Globals, "__builtins__", PyEval_GetBuiltins ());
         PyDict_SetItemString (Globals, "d", Ba);
+        PyObject *Rs = PyLong_FromUnsignedLongLong ((unsigned long long) Ram);
+        PyDict_SetItemString (Globals, "_rs", Rs);   // RAM size for the RAM/ST split
 
         PyObject *Result = PyEval_EvalCode (m_Code, Globals, Globals);
         CPU_EXEC_STATUS Status = ExecOk;
@@ -124,9 +129,10 @@ public:
         } else {
             Py_DECREF (Result);
             CONST char *Out = PyByteArray_AS_STRING (Ba);
-            std::memcpy (pRAM, Out, RAM_SIZE);
-            std::memcpy (pGRF, Out + RAM_SIZE, sizeof (CPU_STATE));
+            std::memcpy (pRAM, Out, Ram);
+            std::memcpy (pGRF, Out + Ram, sizeof (CPU_STATE));
         }
+        Py_DECREF (Rs);
 
         Py_DECREF (Globals);
         Py_DECREF (Ba);

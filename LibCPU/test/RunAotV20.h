@@ -96,21 +96,21 @@ AotV20CallRet (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, int *p
 }
 
 //
-// Run a program and return the word at linear address LinAddr; *pUnseg gets the word
-// at the bare offset 0x10 (which must stay 0, proving the DS shift was applied). The
-// segment is kept small so the linear address stays inside the 64 KB window every
-// backend marshals -- the in-process backends (llvm/cc/interp) address the full 20-bit
-// (1 MB) space, but the textual/managed backends copy a fixed 64 KB RAM.
+// Run a program over a 1 MB RAM and return the word at linear address LinAddr;
+// *pUnseg gets the word at the bare offset 0x10 (must stay 0, proving the DS shift).
+// State.RamSize is set so the marshalling backends (cpython/jvm/clr) copy the full
+// 1 MB -- segmented linear addresses past 64 KB now work on every backend.
 //
 static inline int
 AotV20Seg (ICpuBackend *pBackend, UINT8 CONST *pProg, UINT32 ProgLen, UINT32 LinAddr, int *pUnseg)
 {
-    static UINT8 Ram[65536];
+    static UINT8 Ram[0x100000];   // 1 MB
     std::memset (Ram, 0, sizeof (Ram));
     std::memcpy (Ram, pProg, ProgLen);
 
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
+    State.RamSize = sizeof (Ram);   // marshal the full 1 MB
 
     ICpuArchitecture *pArch = CreateV20 ();
     pArch->SetCodeMemory (Ram, sizeof (Ram));
@@ -234,13 +234,13 @@ RunAotV20Program (ICpuBackend *pBackend)
         0xA3, 0x02, 0x02    // 15:       MOV [0x202], AX
     };
 
-    // Segmentation: set DS = 0x0100, then MOV [0x0010],AX lands at linear
-    // 0x0100*16 + 0x10 = 0x1010 -- not at offset 0x10.
+    // Segmentation: set DS = 0x1000, then MOV [0x0010],AX lands at linear
+    // 0x1000*16 + 0x10 = 0x10010 (past 64 KB) -- not at offset 0x10.
     UINT8 const Seg[] = {
-        0xB8, 0x00, 0x01,   // MOV AX, 0x0100
+        0xB8, 0x00, 0x10,   // MOV AX, 0x1000
         0x8E, 0xD8,         // MOV DS, AX        (ModR/M D8 = mod11 reg=DS rm=AX)
         0xB8, 0x34, 0x12,   // MOV AX, 0x1234
-        0xA3, 0x10, 0x00    // MOV [0x0010], AX  -> linear 0x1010
+        0xA3, 0x10, 0x00    // MOV [0x0010], AX  -> linear 0x10010
     };
 
     int Sum   = AotV20Run (pBackend, Loop,  (UINT32) sizeof (Loop),  nullptr, 0, 0);
@@ -250,7 +250,7 @@ RunAotV20Program (ICpuBackend *pBackend)
     int Trans = 0;
     int Cal   = AotV20CallRet (pBackend, Call, (UINT32) sizeof (Call), &Trans);
     int Unseg = -1;
-    int Seg16 = AotV20Seg (pBackend, Seg, (UINT32) sizeof (Seg), 0x1010, &Unseg);
+    int Seg16 = AotV20Seg (pBackend, Seg, (UINT32) sizeof (Seg), 0x10010, &Unseg);
     int CsVal = -1;
     int CsRet = AotV20Cs (pBackend, Cs, (UINT32) sizeof (Cs), 0x0040, &CsVal);
 
@@ -260,7 +260,7 @@ RunAotV20Program (ICpuBackend *pBackend)
     std::printf ("  PUSH/POP + MOV [m],BX    -> [0x200] = 0x%04x (exp 0x1234)\n", Stk);
     std::printf ("  CALL sub / RET (indirect)-> [0x200] = %d (exp 8, %d translation%s; in-artifact dispatch)\n",
                  Cal, Trans, Trans == 1 ? "" : "s");
-    std::printf ("  DS=0x0100; MOV [0x10],AX  -> [linear 0x1010] = 0x%04x (exp 0x1234), [0x10] = %d (exp 0)\n",
+    std::printf ("  DS=0x1000; MOV [0x10],AX  -> [linear 0x10010] = 0x%04x (exp 0x1234), [0x10] = %d (exp 0)\n",
                  Seg16, Unseg);
     std::printf ("  CS=0x0040 CALL/RET + MOV AX,CS -> [0x200] = %d (exp 8), CS read = 0x%04x (exp 0x0040)\n",
                  CsRet, CsVal);

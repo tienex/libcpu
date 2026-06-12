@@ -167,9 +167,13 @@ public:
         if (Env == nullptr) {
             return ExecTrap;
         }
-        jbyteArray Ram = Env->NewByteArray ((jsize) RAM_SIZE);
+        // The host states how much RAM to marshal (0 -> legacy 64 KiB).
+        UINT64 RamSize = ((CPU_STATE *) pGRF)->RamSize;
+        if (RamSize == 0) { RamSize = CPU_RAM_DEFAULT; }
+
+        jbyteArray Ram = Env->NewByteArray ((jsize) RamSize);
         jbyteArray Grf = Env->NewByteArray ((jsize) sizeof (CPU_STATE));
-        Env->SetByteArrayRegion (Ram, 0, (jsize) RAM_SIZE, (CONST jbyte *) pRAM);
+        Env->SetByteArrayRegion (Ram, 0, (jsize) RamSize, (CONST jbyte *) pRAM);
         Env->SetByteArrayRegion (Grf, 0, (jsize) sizeof (CPU_STATE), (CONST jbyte *) pGRF);
 
         Env->CallStaticVoidMethod (m_Class, m_Method, Ram, Grf);
@@ -180,7 +184,7 @@ public:
             return ExecTrap;
         }
 
-        Env->GetByteArrayRegion (Ram, 0, (jsize) RAM_SIZE, (jbyte *) pRAM);
+        Env->GetByteArrayRegion (Ram, 0, (jsize) RamSize, (jbyte *) pRAM);
         Env->GetByteArrayRegion (Grf, 0, (jsize) sizeof (CPU_STATE), (jbyte *) pGRF);
         Env->DeleteLocalRef (Ram);
         Env->DeleteLocalRef (Grf);

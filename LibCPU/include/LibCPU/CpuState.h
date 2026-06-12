@@ -38,6 +38,10 @@ typedef struct _CPU_STATE {
     UINT64 EdgeCount[32];   // per-call-site execution counters: an instrumented
                             // (profiling) build bumps EdgeCount[i] each time the i-th
                             // CALL site runs, giving TRUE edge frequencies
+    UINT64 RamSize;         // size of the guest RAM the host passes to Execute. A
+                            // marshalling backend (cpython/jvm/clr) copies this many
+                            // bytes; 0 means the legacy default (64 KiB). In-process
+                            // backends address pRAM directly and ignore it.
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -60,9 +64,13 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_CODEDIRTY_OFFSET ((UINT32) (32 * 8 + 40)) // CodeDirty
 #define CPU_STATE_DISPPC_OFFSET    ((UINT32) (32 * 8 + 72)) // DispPc (after CodeDirty[32])
 #define CPU_STATE_EDGECOUNT_OFFSET ((UINT32) (32 * 8 + 80)) // EdgeCount[0] (after DispPc)
+#define CPU_STATE_RAMSIZE_OFFSET   ((UINT32) (32 * 8 + 80 + 32 * 8)) // RamSize (after EdgeCount[32])
 
 // Number of per-call-site edge counters (profiling instrumentation).
 #define CPU_PROFILE_SLOTS          ((UINT32) 32)
+
+// Default guest RAM size when CPU_STATE.RamSize is 0 (the legacy 16-bit space).
+#define CPU_RAM_DEFAULT            ((UINT64) 0x10000)
 
 // Sentinel stored in TrapPc when no SMC guard has fired.
 #define CPU_SMC_NO_TRAP            (~UINT64_C (0))
