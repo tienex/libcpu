@@ -86,6 +86,12 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatAif:        return "arm-aif";
         case SymbolFormatOs360:      return "os360-obj";
         case SymbolFormatGoff:       return "goff";
+        case SymbolFormatBout:       return "b.out";
+        case SymbolFormatIeee695:    return "ieee-695";
+        case SymbolFormatSrec:       return "srec";
+        case SymbolFormatIntelHex:   return "intel-hex";
+        case SymbolFormatTekHex:     return "tektronix-hex";
+        case SymbolFormatVerilogHex: return "verilog-hex";
         default:                     return "unknown";
     }
 }
@@ -1034,6 +1040,41 @@ public:
 };
 
 // ===========================================================================
+//  Intel i960 b.out: an a.out variant (BMAGIC 0415, 44-byte header, both endiannesses).
+//  Standard 12-byte nlist with names in the trailing string table.
+// ===========================================================================
+
+class BoutReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatBout; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 44 && (Le32 (p) == 0x10D || Be32 (p) == 0x10D);
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        bool Be = (Le32 (p) != 0x10D);                       // big-endian b.out variant
+        auto U32 = [&] (UINT64 o) -> UINT32 { return Be ? Be32 (p + o) : Le32 (p + o); };
+        UINT32 Text = U32 (4), Data = U32 (8), Syms = U32 (16);
+        UINT32 TrSize = U32 (24), DrSize = U32 (28);
+        UINT64 SymOff = 44 + (UINT64) Text + Data + TrSize + DrSize;   // EXEC_BYTES_SIZE = 44
+        UINT64 StrOff = SymOff + Syms;
+        if (SymOff > Len || Syms > Len - SymOff || StrOff > Len) { return; }
+        for (UINT64 O = 0; O + 12 <= Syms; O += 12) {        // struct nlist = 12 bytes
+            UINT64 E = SymOff + O;
+            UINT32 StrX = U32 (E);
+            UINT8  Type = p[E + 4];
+            bool   Ext  = (Type & 0x01) != 0;                // N_EXT
+            UINT8  Ty   = Type & 0x1E;                       // N_TYPE
+            bool   Defined = (Ty == 0x04 || Ty == 0x06 || Ty == 0x08);   // TEXT/DATA/BSS
+            if (Ext && Defined && StrX != 0 && StrOff + StrX < Len) {
+                CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + StrX);
+                size_t NameLen = strnlen (pName, (size_t) (Len - (StrOff + StrX)));
+                if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+            }
+        }
+    }
+};
+
+// ===========================================================================
 //  IBM OS/360 object deck: 80-byte ESD records; SD/LD items are defined symbols,
 //  names are 8 EBCDIC characters.
 // ===========================================================================
@@ -1209,6 +1250,12 @@ static bool DetectOs360 (UINT8 CONST *p, UINT64 Len) {     // X'02' + EBCDIC "ES
     return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;
 }
 static bool DetectGoff (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0x03 && p[1] == 0xF0; }   // PTV + HDR
+static bool IsHex (UINT8 c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); }
+static bool DetectIeee695 (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0xE0; }                 // MB record
+static bool DetectSrec (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && p[0] == 'S' && p[1] >= '0' && p[1] <= '9' && IsHex (p[2]) && IsHex (p[3]); }
+static bool DetectIntelHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && p[0] == ':' && IsHex (p[1]) && IsHex (p[2]); }
+static bool DetectTekHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && (p[0] == '/' || p[0] == '%') && IsHex (p[1]) && IsHex (p[2]); }
+static bool DetectVerilogHex (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == '@' && IsHex (p[1]); }
 
 } // anonymous namespace
 
@@ -1236,8 +1283,14 @@ Registry ()
     static NlmReader       S_Nlm;
     static VmsReader       S_Vms;
     static AOutReader      S_AOut;
+    static BoutReader      S_Bout;
     static Plan9Reader     S_Plan9;
     static MinixReader     S_MinixAOut;
+    static SignatureReader S_Ieee695 (SymbolFormatIeee695, DetectIeee695);
+    static SignatureReader S_Srec (SymbolFormatSrec, DetectSrec);
+    static SignatureReader S_IntelHex (SymbolFormatIntelHex, DetectIntelHex);
+    static SignatureReader S_TekHex (SymbolFormatTekHex, DetectTekHex);
+    static SignatureReader S_VerilogHex (SymbolFormatVerilogHex, DetectVerilogHex);
     static SignatureReader S_XenixXOut (SymbolFormatXenixXOut, DetectXenixXOut);
     static BigObjReader    S_BigObj;
     static WinCoffReader   S_WinCoff;
@@ -1257,10 +1310,11 @@ Registry ()
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_Elf, &S_Rdoff, &S_Gemdos, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif,
-        &S_AOut, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
+        &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff               // record-type / structural heuristics, last
+        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff,              // record-type / structural heuristics, last
+        &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex   // ASCII / record formats, last
     };
     return List;
 }
@@ -1296,6 +1350,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatRdoff:
         case SymbolFormatOs360:
         case SymbolFormatVms:
+        case SymbolFormatBout:
             return true;
         default:
             return false;

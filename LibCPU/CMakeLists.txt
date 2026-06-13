@@ -525,6 +525,9 @@ add_test(NAME symbols.os360 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR
 set_tests_properties(symbols.os360 PROPERTIES PASS_REGULAR_EXPRESSION "OS360SYM")
 add_test(NAME symbols.vms COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.vms")
 set_tests_properties(symbols.vms PROPERTIES PASS_REGULAR_EXPRESSION "_VMS_SYM")
+# Intel i960 b.out (a.out variant).
+add_test(NAME symbols.bout COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.bout")
+set_tests_properties(symbols.bout PROPERTIES PASS_REGULAR_EXPRESSION "_bout_sym")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

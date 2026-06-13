@@ -61,7 +61,13 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatPdp10Sav,       // PDP-10 .SAV core image (TOPS-10/20)
     SymbolFormatGemdos,         // GEMDOS/DRI m68k (Atari ST/TT/Falcon, CP/M-68K) -- 0x601A
     SymbolFormatRdoff,          // NASM RDOFF2 ("RDOFF2") -- export records
+    SymbolFormatBout,           // Intel i960 b.out (a.out variant, BMAGIC 0415)
     // --- detection only ---
+    SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
+    SymbolFormatSrec,           // Motorola S-records (ASCII)
+    SymbolFormatIntelHex,       // Intel HEX (ASCII)
+    SymbolFormatTekHex,         // Tektronix Hex (ASCII)
+    SymbolFormatVerilogHex,     // Verilog $readmemh (ASCII)
     SymbolFormatUefiTe,         // UEFI Terse Executable ("VZ")
     SymbolFormatPharLap,        // Phar-Lap DOS-extender ("MP"/"P2"/"P3")
     SymbolFormatX68000,         // Sharp X68000 .X ("HU")

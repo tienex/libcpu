@@ -26,6 +26,11 @@ printf 'HU\000\000'                                              > "$d/x68000"  
 { dd if=/dev/zero bs=1 count=16 2>/dev/null; printf '\021\000\000\357'; } > "$d/aif"  # AIF: 0xEF000011 @0x10
 printf '\002\305\342\304'                                        > "$d/os360"    # X'02' + EBCDIC ESD
 printf '\003\360\000\000'                                        > "$d/goff"     # PTV X'03' + HDR
+printf '\340\000\000\000'                                        > "$d/ieee695"  # MB record 0xE0
+printf 'S00600004844521B\n'                                      > "$d/srec"     # Motorola S-record
+printf ':10010000214601360121470136007EFE09D219\n'              > "$d/ihex"     # Intel HEX
+printf '/00100010ABCD\n'                                         > "$d/tekhex"   # Tektronix hex
+printf '@0000\nDEAD\n'                                           > "$d/vhex"     # Verilog memh
 
 ok=1
 check() {
@@ -51,5 +56,10 @@ check x68000 "x68000:"
 check aif    "arm-aif:"
 check os360  "os360-obj:"
 check goff   "goff:"
+check ieee695 "ieee-695:"
+check srec   "srec:"
+check ihex   "intel-hex:"
+check tekhex "tektronix-hex:"
+check vhex   "verilog-hex:"
 
 test "$ok" -eq 1
