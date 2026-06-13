@@ -52,7 +52,7 @@ static UINT32 RegPos  (UINT32 Index, UINT32 Byte) { return GRF_BASE + CPU_STATE_
 static UINT32 FlagPos (UINT32 Flag)               { return GRF_BASE + CPU_STATE_FLAG_OFFSET + Flag; }
 static UINT32 PcPos   (UINT32 Byte)               { return GRF_BASE + CPU_STATE_PC_OFFSET + Byte; }
 
-class CmdValue final : public LcComObject<ICpuValue> {
+class CmdValue final : public ComObject<ICpuValue> {
 public:
     CmdValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -62,7 +62,7 @@ public:
     UINT32 m_Bits;
 };
 
-class CmdBlock final : public LcComObject<ICpuBlock> {
+class CmdBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -72,7 +72,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<CmdValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<CmdValue *> (pValue)->m_Bits; }
 
-class CmdCode final : public LcComObject<ICpuCode> {
+class CmdCode final : public ComObject<ICpuCode> {
 public:
     CmdCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -135,7 +135,7 @@ private:
     std::string m_Dir;
 };
 
-class CmdEmitter final : public LcComObject<ICpuEmitter> {
+class CmdEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -387,7 +387,7 @@ private:
     std::unordered_map<UINT32, UINT64>   m_Const;
 };
 
-class CmdBackend final : public LcComObject<ICpuBackend> {
+class CmdBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

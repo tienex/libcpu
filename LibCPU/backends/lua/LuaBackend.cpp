@@ -49,7 +49,7 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class LuaValue final : public LcComObject<ICpuValue> {
+class LuaValue final : public ComObject<ICpuValue> {
 public:
     LuaValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -59,7 +59,7 @@ public:
     UINT32 m_Bits;
 };
 
-class LuaBlock final : public LcComObject<ICpuBlock> {
+class LuaBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -69,7 +69,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<LuaValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<LuaValue *> (pValue)->m_Bits; }
 
-class LuaCode final : public LcComObject<ICpuCode> {
+class LuaCode final : public ComObject<ICpuCode> {
 public:
     LuaCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -118,7 +118,7 @@ private:
     std::string m_Dir;
 };
 
-class LuaEmitter final : public LcComObject<ICpuEmitter> {
+class LuaEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -314,7 +314,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class LuaBackend final : public LcComObject<ICpuBackend> {
+class LuaBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

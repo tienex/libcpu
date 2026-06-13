@@ -21,7 +21,7 @@ namespace {
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class LnValue final : public LcComObject<ICpuValue> {
+class LnValue final : public ComObject<ICpuValue> {
 public:
     LnValue (INT32 Slot, UINT32 Bits) : m_Slot (Slot), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -31,7 +31,7 @@ public:
     UINT32 m_Bits;
 };
 
-class LnBlock final : public LcComObject<ICpuBlock> {
+class LnBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -43,7 +43,7 @@ static UINT32 BitsOf (ICpuValue *pV) { return static_cast<LnValue *> (pV)->m_Bit
 
 typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
-class LnCode final : public LcComObject<ICpuCode> {
+class LnCode final : public ComObject<ICpuCode> {
 public:
     LnCode (jit_state_t *Jit, JittedFn Fn) : _jit (Jit), m_Fn (Fn) {}
     ~LnCode () override { if (_jit) jit_destroy_state (); }
@@ -58,7 +58,7 @@ private:
     JittedFn     m_Fn;
 };
 
-class LnEmitter final : public LcComObject<ICpuEmitter> {
+class LnEmitter final : public ComObject<ICpuEmitter> {
 public:
     LnEmitter () {
         _jit = jit_new_state ();
@@ -223,7 +223,7 @@ private:
     jit_state_t *_jit;
 };
 
-class LightningBackend final : public LcComObject<ICpuBackend> {
+class LightningBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

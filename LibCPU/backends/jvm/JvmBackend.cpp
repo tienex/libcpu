@@ -160,7 +160,7 @@ private:
     std::unordered_map<INT32, UINT16> m_IntIndex;
 };
 
-class JvmValue final : public LcComObject<ICpuValue> {
+class JvmValue final : public ComObject<ICpuValue> {
 public:
     JvmValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -170,7 +170,7 @@ public:
     UINT32 m_Bits;
 };
 
-class JvmBlock final : public LcComObject<ICpuBlock> {
+class JvmBlock final : public ComObject<ICpuBlock> {
 public:
     explicit JvmBlock (UINT32 Id) : m_Id (Id) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -183,7 +183,7 @@ static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<JvmValue *> (pValu
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<JvmValue *> (pValue)->m_Bits; }
 static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<JvmBlock *> (pBlock)->m_Id; }
 
-class JvmCode final : public LcComObject<ICpuCode> {
+class JvmCode final : public ComObject<ICpuCode> {
 public:
     JvmCode (jclass Class, jmethodID Method) : m_Class (Class), m_Method (Method) {}
 
@@ -232,28 +232,28 @@ private:
     jmethodID m_Method;
 };
 
-class JvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class JvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
     // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the LcComObject base.
+    // QI here, forward refcounting to the ComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
@@ -834,7 +834,7 @@ private:
     std::vector<std::pair<UINT32, UINT32>>   m_Fixups;       // (offset-field opcode pos, target block id)
 };
 
-class JvmBackend final : public LcComObject<ICpuBackend> {
+class JvmBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

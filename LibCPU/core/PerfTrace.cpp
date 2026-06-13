@@ -7,7 +7,7 @@
 namespace LibCPU {
 
 VOID
-LcPerfTrace::Record (CPU_ADDR Entry, CPU_ADDR End, UINT64 Count)
+PerfTrace::Record (CPU_ADDR Entry, CPU_ADDR End, UINT64 Count)
 {
     Sample &R = m_Regions[Entry];
     R.End    = End;
@@ -15,7 +15,7 @@ LcPerfTrace::Record (CPU_ADDR Entry, CPU_ADDR End, UINT64 Count)
 }
 
 VOID
-LcPerfTrace::RecordEdge (CPU_ADDR Site, CPU_ADDR Callee, CPU_ADDR ReturnPoint, UINT64 Count)
+PerfTrace::RecordEdge (CPU_ADDR Site, CPU_ADDR Callee, CPU_ADDR ReturnPoint, UINT64 Count)
 {
     EdgeData &E = m_Edges[Site];
     E.Callee       = Callee;
@@ -24,19 +24,19 @@ LcPerfTrace::RecordEdge (CPU_ADDR Site, CPU_ADDR Callee, CPU_ADDR ReturnPoint, U
 }
 
 UINT32
-LcPerfTrace::RegionCount () CONST
+PerfTrace::RegionCount () CONST
 {
     return (UINT32) m_Regions.size ();
 }
 
 UINT32
-LcPerfTrace::EdgeCount () CONST
+PerfTrace::EdgeCount () CONST
 {
     return (UINT32) m_Edges.size ();
 }
 
 CPU_TRACE_EDGE
-LcPerfTrace::Edge (UINT32 Index) CONST
+PerfTrace::Edge (UINT32 Index) CONST
 {
     CPU_TRACE_EDGE Out = { 0, 0, 0, 0 };
     UINT32 I = 0;
@@ -53,7 +53,7 @@ LcPerfTrace::Edge (UINT32 Index) CONST
 }
 
 CPU_TRACE_REGION
-LcPerfTrace::Region (UINT32 Index) CONST
+PerfTrace::Region (UINT32 Index) CONST
 {
     CPU_TRACE_REGION Out = { 0, 0, 0 };
     UINT32 I = 0;
@@ -69,14 +69,14 @@ LcPerfTrace::Region (UINT32 Index) CONST
 }
 
 UINT64
-LcPerfTrace::CountOf (CPU_ADDR Entry) CONST
+PerfTrace::CountOf (CPU_ADDR Entry) CONST
 {
     auto It = m_Regions.find (Entry);
     return (It != m_Regions.end ()) ? It->second.Count : 0;
 }
 
 BOOLEAN
-LcPerfTrace::Save (CHAR8 CONST *pPath) CONST
+PerfTrace::Save (CHAR8 CONST *pPath) CONST
 {
     FILE *pF = std::fopen (pPath, "w");
     if (pF == nullptr) {
@@ -102,7 +102,7 @@ LcPerfTrace::Save (CHAR8 CONST *pPath) CONST
 }
 
 BOOLEAN
-LcPerfTrace::Load (CHAR8 CONST *pPath)
+PerfTrace::Load (CHAR8 CONST *pPath)
 {
     FILE *pF = std::fopen (pPath, "r");
     if (pF == nullptr) {
@@ -132,7 +132,7 @@ LcPerfTrace::Load (CHAR8 CONST *pPath)
 }
 
 VOID
-LcPerfTrace::Clear ()
+PerfTrace::Clear ()
 {
     m_Regions.clear ();
     m_Edges.clear ();

@@ -24,10 +24,19 @@
 #include "../core/KnowledgeLibrary.h"
 #include "../core/System.h"
 #include "../core/NativeAot.h"
+#include "../core/SymbolReader.h"
+#include "../core/HeaderParser.h"
+#include "../core/DerivationEngine.h"
+#ifdef LIBCPU_HAVE_ZSTD
+#include "../core/ZooArchive.h"
+#endif
 #include "../upcl/Parser.h"
 #include "../upcl/UpclArch.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
+#include "RunHostCall.h"
+#include "RunStruct.h"
+#include "RunDerivedMap.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
 #include <cstring>
@@ -217,8 +226,8 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         ComPtr<ICpuCode> Code;
         bool Hit = false;
         if (Cache) {
-            LcTranslationCache TCache (LcTranslationCache::DefaultDir ());
-            LcCachedTranslate (TCache, A.pArch, pBackend, Ram, Entry, End, &Code, &Hit);
+            TranslationCache TCache (TranslationCache::DefaultDir ());
+            CachedTranslate (TCache, A.pArch, pBackend, Ram, Entry, End, &Code, &Hit);
             std::printf ("  cache: %s\n", Hit ? "hit (reloaded)" : "miss (translated + stored)");
         } else {
             GenerateAotCfg (A.pArch, pBackend, Entry, End, &Code, nullptr);
@@ -312,7 +321,7 @@ CmdDebug (int argc, char **argv, CHAR8 CONST *pArgv0)
     std::memset (&State, 0, sizeof (State));
     State.RamSize = sizeof (Ram);
     ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
-    LcDebugger Debugger (A.pArch, pBackend, Ram, sizeof (Ram), &State, 0, (CPU_ADDR) Len,
+    Debugger Debugger (A.pArch, pBackend, Ram, sizeof (Ram), &State, 0, (CPU_ADDR) Len,
                          A.Regs, A.RegBytes, A.Flags);
     int Rc = Debugger.Repl ();
     A.pArch->Release ();
@@ -345,14 +354,14 @@ CmdAot (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     NOpt.DumpResult = pRes != nullptr;
     NOpt.ResultAddr = pRes ? (CPU_ADDR) std::strtoull (pRes, nullptr, 0) : 0;
 
-    std::string Source = LcGenerateNativeC (A.pArch, Ram, (UINT32) Len, Entry, (CPU_ADDR) Len, NOpt);
+    std::string Source = GenerateNativeC (A.pArch, Ram, (UINT32) Len, Entry, (CPU_ADDR) Len, NOpt);
     A.pArch->Release ();
     if (Source.empty ()) {
         std::printf ("lcx aot: code generation failed\n");
         return 1;
     }
     std::string Error;
-    if (!LcCompileNative (Source, pOut, &Error)) {
+    if (!CompileNative (Source, pOut, &Error)) {
         std::printf ("lcx aot: host cc failed: %s\n", Error.c_str ());
         return 1;
     }
@@ -491,12 +500,176 @@ CmdSystem (int argc, char **argv, CHAR8 CONST *pArgv0)
     return Rc;
 }
 
+// Collect the -I/-D/-std=/-isysroot/--target args to forward to libclang (shared by the
+// `headers` and `know derive` paths).
+static std::vector<CHAR8 CONST *>
+CollectClangArgs (int argc, char **argv)
+{
+    std::vector<CHAR8 CONST *> Out = { "-x", "c" };
+    for (int I = 0; I < argc; I++) {
+        if (argv[I][0] == '-' && (argv[I][1] == 'I' || argv[I][1] == 'D' ||
+            std::strncmp (argv[I], "-std", 4) == 0 || std::strcmp (argv[I], "-isysroot") == 0 ||
+            std::strncmp (argv[I], "--target", 8) == 0)) {
+            Out.push_back (argv[I]);
+            if ((std::strcmp (argv[I], "-isysroot") == 0 || std::strcmp (argv[I], "-I") == 0 ||
+                 std::strcmp (argv[I], "-D") == 0) && I + 1 < argc) {
+                Out.push_back (argv[++I]);
+            }
+        }
+    }
+    return Out;
+}
+
+// lcx know derive <header> <lib> [-o out.klib] [clang args] -- join signatures + symbols
+// into a host-call catalog (v2 step d), optionally saved as a ZOO/zstd knowledge archive.
+static int
+CmdKnowDerive (int argc, char **argv)
+{
+    CHAR8 CONST *pHeader = Positional (argc, argv, 1);
+    CHAR8 CONST *pLib    = Positional (argc, argv, 2);
+    if (pHeader == nullptr || pLib == nullptr) {
+        std::printf ("usage: lcx know derive <header.h> <lib.tbd|dylib> [-o out.klib] [-I/-D/...]\n");
+        return 2;
+    }
+    HeaderParser Parser;
+    SymbolReader Reader;
+    std::string Error;
+    std::vector<CHAR8 CONST *> Args = CollectClangArgs (argc, argv);
+    if (!Parser.Parse (pHeader, Args.data (), (UINT32) Args.size (), &Error)) {
+        std::printf ("lcx know: %s\n", Error.c_str ());
+        return 2;
+    }
+    if (!Reader.Read (pLib, &Error)) {
+        std::printf ("lcx know: %s\n", Error.c_str ());
+        return 2;
+    }
+    KnowledgeCatalog Catalog;
+    Catalog.Derive (Parser, Reader);
+    for (HOST_ENTITY CONST &E : Catalog.Functions ()) {
+        std::printf ("  [%s] %s %s(%s%s)\n", E.Exported ? "x" : " ",
+                     E.ReturnType.c_str (), E.Name.c_str (),
+                     E.Params.empty () && !E.Variadic ? "void" : "", E.Variadic ? "..." : "");
+    }
+    std::printf ("derived %u entit(y/ies): %u exported, %u struct(s)%s\n",
+                 (UINT32) Catalog.Functions ().size (), Catalog.ExportedCount (),
+                 (UINT32) Catalog.Structs ().size (),
+                 Parser.UsedClang () ? " [libclang]" : " [built-in]");
+    if (CHAR8 CONST *pOut = Opt (argc, argv, "-o", nullptr)) {
+        if (!Catalog.Save (pOut, &Error)) {
+            std::printf ("lcx know: %s\n", Error.c_str ());
+            return 2;
+        }
+        std::printf ("wrote %s\n", pOut);
+    }
+    return 0;
+}
+
+// lcx know catalog <archive.klib> -- load and list a derived host-call catalog.
+static int
+CmdKnowCatalog (int argc, char **argv)
+{
+    CHAR8 CONST *pArchive = Positional (argc, argv, 1);
+    if (pArchive == nullptr) {
+        std::printf ("usage: lcx know catalog <archive.klib>\n");
+        return 2;
+    }
+    KnowledgeCatalog Catalog;
+    std::string Error;
+    if (!Catalog.Load (pArchive, &Error)) {
+        std::printf ("lcx know: %s\n", Error.c_str ());
+        return 2;
+    }
+    if (!Catalog.Library ().empty ()) {
+        std::printf ("library: %s\n", Catalog.Library ().c_str ());
+    }
+    for (HEADER_STRUCT CONST &S : Catalog.Structs ()) {
+        std::printf ("struct %s (%llu bytes)\n", S.Name.c_str (), (unsigned long long) S.Size);
+        for (HEADER_FIELD CONST &F : S.Fields) {
+            std::printf ("    +%-4llu %s %s\n", (unsigned long long) F.Offset, F.Type.c_str (), F.Name.c_str ());
+        }
+    }
+    for (HOST_ENTITY CONST &E : Catalog.Functions ()) {
+        std::printf ("  [%s] %s %s\n", E.Exported ? "x" : " ", E.ReturnType.c_str (), E.Name.c_str ());
+    }
+    std::printf ("%u entit(y/ies), %u exported, %u struct(s)\n",
+                 (UINT32) Catalog.Functions ().size (), Catalog.ExportedCount (),
+                 (UINT32) Catalog.Structs ().size ());
+    return 0;
+}
+
 static int
 CmdKnowledge (int argc, char **argv, CHAR8 CONST *pArgv0)
 {
-    CHAR8 CONST *pXml = Positional (argc, argv, 0);
+    CHAR8 CONST *pVerb = Positional (argc, argv, 0);
+    if (pVerb != nullptr && std::strcmp (pVerb, "derive") == 0) {
+        return CmdKnowDerive (argc, argv);
+    }
+    if (pVerb != nullptr && std::strcmp (pVerb, "catalog") == 0) {
+        return CmdKnowCatalog (argc, argv);
+    }
+    if (pVerb != nullptr && std::strcmp (pVerb, "bind") == 0) {
+        // lcx know bind <header> <lib> <xml> -- derive a catalog, then run the built-in
+        // demo guest whose syscall is dispatched to a dynamically-bound host call.
+        CHAR8 CONST *pHeader = Positional (argc, argv, 1);
+        CHAR8 CONST *pLib    = Positional (argc, argv, 2);
+        CHAR8 CONST *pXml    = Positional (argc, argv, 3);
+        if (pHeader == nullptr || pLib == nullptr || pXml == nullptr) {
+            std::printf ("usage: lcx know bind <header.h> <lib.tbd|dylib> <mapping.xml>\n");
+            return 2;
+        }
+        ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
+        if (pBackend == nullptr) {
+            std::printf ("lcx: cannot load backend\n");
+            return 2;
+        }
+        int Rc = RunHostCallDemo (pBackend, pHeader, pLib, pXml);
+        pBackend->Release ();
+        return Rc;
+    }
+    if (pVerb != nullptr && std::strcmp (pVerb, "marshal") == 0) {
+        // lcx know marshal <header> <dylib> <xml> -- derive a catalog including a struct
+        // layout, then dispatch a guest call whose struct out-parameter is marshalled back.
+        CHAR8 CONST *pHeader = Positional (argc, argv, 1);
+        CHAR8 CONST *pDylib  = Positional (argc, argv, 2);
+        CHAR8 CONST *pXml    = Positional (argc, argv, 3);
+        if (pHeader == nullptr || pDylib == nullptr || pXml == nullptr) {
+            std::printf ("usage: lcx know marshal <header.h> <lib.dylib> <mapping.xml>\n");
+            return 2;
+        }
+        ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
+        if (pBackend == nullptr) {
+            std::printf ("lcx: cannot load backend\n");
+            return 2;
+        }
+        int Rc = RunStructDemo (pBackend, pHeader, pDylib, pXml);
+        pBackend->Release ();
+        return Rc;
+    }
+    if (pVerb != nullptr && std::strcmp (pVerb, "derive-map") == 0) {
+        // lcx know derive-map <header> <lib> <target.abi> -- derive the target->host
+        // mapping from a target ABI table + the host catalog, then run a real program.
+        CHAR8 CONST *pHeader = Positional (argc, argv, 1);
+        CHAR8 CONST *pLib    = Positional (argc, argv, 2);
+        CHAR8 CONST *pAbi    = Positional (argc, argv, 3);
+        if (pHeader == nullptr || pLib == nullptr || pAbi == nullptr) {
+            std::printf ("usage: lcx know derive-map <header.h> <lib.tbd|dylib> <target.abi>\n");
+            return 2;
+        }
+        ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
+        if (pBackend == nullptr) {
+            std::printf ("lcx: cannot load backend\n");
+            return 2;
+        }
+        int Rc = RunDerivedMapDemo (pBackend, pHeader, pLib, pAbi);
+        pBackend->Release ();
+        return Rc;
+    }
+    // Default: run the built-in DOS program through the XML knowledge library.
+    CHAR8 CONST *pXml = pVerb;
     if (pXml == nullptr) {
-        std::printf ("usage: lcx know <library.xml> [--arch v20]\n");
+        std::printf ("usage: lcx know <library.xml> [--arch v20]\n"
+                     "       lcx know derive <header.h> <lib> [-o out.klib]\n"
+                     "       lcx know catalog <archive.klib>\n");
         return 2;
     }
     ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
@@ -513,8 +686,8 @@ static int
 CmdCache (int argc, char **argv)
 {
     CHAR8 CONST *pVerb = Positional (argc, argv, 0);
-    LcTranslationCache Cache (LcTranslationCache::DefaultDir ());
-    std::printf ("cache dir: %s\n", LcTranslationCache::DefaultDir ().c_str ());
+    TranslationCache Cache (TranslationCache::DefaultDir ());
+    std::printf ("cache dir: %s\n", TranslationCache::DefaultDir ().c_str ());
     if (pVerb == nullptr || std::strcmp (pVerb, "info") == 0) {
         auto E = Cache.List ();
         std::printf ("  %zu artifact(s), %llu bytes\n", E.size (), (unsigned long long) Cache.TotalSize ());
@@ -533,6 +706,226 @@ CmdCache (int argc, char **argv)
     return 0;
 }
 
+#ifdef LIBCPU_HAVE_ZSTD
+// Read a whole file into a byte vector. Returns false on open failure.
+static bool
+SlurpFile (CHAR8 CONST *pPath, std::vector<UINT8> *pOut)
+{
+    std::FILE *pf = std::fopen (pPath, "rb");
+    if (pf == nullptr) {
+        return false;
+    }
+    std::fseek (pf, 0, SEEK_END);
+    long Len = std::ftell (pf);
+    std::fseek (pf, 0, SEEK_SET);
+    pOut->resize (Len > 0 ? (size_t) Len : 0);
+    if (Len > 0) {
+        size_t Got = std::fread (pOut->data (), 1, (size_t) Len, pf);
+        pOut->resize (Got);
+    }
+    std::fclose (pf);
+    return true;
+}
+
+// The member name is the file's basename (knowledge libraries are flat namespaces).
+static std::string
+BaseName (CHAR8 CONST *pPath)
+{
+    std::string S (pPath);
+    size_t Slash = S.find_last_of ('/');
+    return Slash == std::string::npos ? S : S.substr (Slash + 1);
+}
+
+//
+// lcx klib -- the knowledge-library container (a ZOO-style directory with solid zstd
+// compression). create/ls/extract over the archive that v2 knowledge libraries live in.
+//
+static int
+CmdKlib (int argc, char **argv)
+{
+    CHAR8 CONST *pVerb = Positional (argc, argv, 0);
+    if (pVerb == nullptr) {
+        std::printf ("usage: lcx klib create <archive> <file...> | ls <archive> | extract <archive> <member> [-o <out>]\n");
+        return 2;
+    }
+
+    if (std::strcmp (pVerb, "create") == 0) {
+        CHAR8 CONST *pArchive = Positional (argc, argv, 1);
+        if (pArchive == nullptr || Positional (argc, argv, 2) == nullptr) {
+            std::printf ("usage: lcx klib create <archive> <file...>\n");
+            return 2;
+        }
+        ZooWriter Writer;
+        for (int I = 2; ; I++) {                       // members start at positional 2
+            CHAR8 CONST *pFile = Positional (argc, argv, I);
+            if (pFile == nullptr) {
+                break;
+            }
+            std::vector<UINT8> Data;
+            if (!SlurpFile (pFile, &Data)) {
+                std::printf ("lcx klib: cannot read '%s'\n", pFile);
+                return 2;
+            }
+            Writer.Add (BaseName (pFile), Data.data (), Data.size ());
+            std::printf ("  + %-24s %llu bytes\n", BaseName (pFile).c_str (), (unsigned long long) Data.size ());
+        }
+        std::string Error;
+        INT32 Level = (INT32) std::atoi (Opt (argc, argv, "--level", "19"));
+        if (!Writer.Save (pArchive, Level, &Error)) {
+            std::printf ("lcx klib: %s\n", Error.c_str ());
+            return 2;
+        }
+        std::printf ("wrote %s (%u member(s), zstd level %d)\n", pArchive, Writer.MemberCount (), Level);
+        return 0;
+    }
+
+    if (std::strcmp (pVerb, "ls") == 0) {
+        CHAR8 CONST *pArchive = Positional (argc, argv, 1);
+        if (pArchive == nullptr) {
+            std::printf ("usage: lcx klib ls <archive>\n");
+            return 2;
+        }
+        ZooArchive Archive;
+        std::string Error;
+        if (!Archive.Load (pArchive, &Error)) {
+            std::printf ("lcx klib: %s\n", Error.c_str ());
+            return 2;
+        }
+        for (std::string CONST &Name : Archive.List ()) {
+            std::vector<UINT8> Data;
+            Archive.Extract (Name, &Data);
+            std::printf ("  %-28s %llu bytes\n", Name.c_str (), (unsigned long long) Data.size ());
+        }
+        UINT64 Raw = Archive.UncompressedSize ();
+        UINT64 Comp = Archive.CompressedSize ();
+        double Ratio = Comp ? (double) Raw / (double) Comp : 0.0;
+        std::printf ("%u member(s): %llu bytes -> %llu compressed (%.2fx, solid zstd)\n",
+                     Archive.MemberCount (), (unsigned long long) Raw, (unsigned long long) Comp, Ratio);
+        return 0;
+    }
+
+    if (std::strcmp (pVerb, "extract") == 0) {
+        CHAR8 CONST *pArchive = Positional (argc, argv, 1);
+        CHAR8 CONST *pMember  = Positional (argc, argv, 2);
+        if (pArchive == nullptr || pMember == nullptr) {
+            std::printf ("usage: lcx klib extract <archive> <member> [-o <out>]\n");
+            return 2;
+        }
+        ZooArchive Archive;
+        std::string Error;
+        if (!Archive.Load (pArchive, &Error)) {
+            std::printf ("lcx klib: %s\n", Error.c_str ());
+            return 2;
+        }
+        std::vector<UINT8> Data;
+        if (!Archive.Extract (std::string (pMember), &Data)) {
+            std::printf ("lcx klib: no member '%s'\n", pMember);
+            return 2;
+        }
+        CHAR8 CONST *pOut = Opt (argc, argv, "-o", nullptr);
+        if (pOut == nullptr) {
+            std::fwrite (Data.data (), 1, Data.size (), stdout);   // to stdout by default
+        } else {
+            std::FILE *pf = std::fopen (pOut, "wb");
+            if (pf == nullptr) {
+                std::printf ("lcx klib: cannot create '%s'\n", pOut);
+                return 2;
+            }
+            std::fwrite (Data.data (), 1, Data.size (), pf);
+            std::fclose (pf);
+            std::printf ("extracted %s (%llu bytes) -> %s\n", pMember, (unsigned long long) Data.size (), pOut);
+        }
+        return 0;
+    }
+
+    if (std::strcmp (pVerb, "symbols") == 0) {
+        // Derive a library's exported-symbol set from a real toolchain artifact (a .tbd
+        // stub or a Mach-O binary) -- the symbol half of a knowledge entity (v2 step b).
+        CHAR8 CONST *pLib = Positional (argc, argv, 1);
+        if (pLib == nullptr) {
+            std::printf ("usage: lcx klib symbols <lib.tbd|dylib> [--grep <substr>]\n");
+            return 2;
+        }
+        SymbolReader Reader;
+        std::string Error;
+        if (!Reader.Read (pLib, &Error)) {
+            std::printf ("lcx klib: %s\n", Error.c_str ());
+            return 2;
+        }
+        CHAR8 CONST *pFmt = SymbolFormatName (Reader.Format ());
+        if (!Reader.InstallName ().empty ()) {
+            std::printf ("install-name: %s\n", Reader.InstallName ().c_str ());
+        }
+        CHAR8 CONST *pGrep = Opt (argc, argv, "--grep", nullptr);
+        UINT32 Shown = 0;
+        for (std::string CONST &S : Reader.Symbols ()) {
+            if (pGrep == nullptr || S.find (pGrep) != std::string::npos) {
+                std::printf ("  %s\n", S.c_str ());
+                Shown++;
+            }
+        }
+        std::printf ("%s: %u exported symbol(s)%s\n", pFmt, (UINT32) Reader.Symbols ().size (),
+                     Reader.Symbols ().empty () && Reader.Format () > SymbolFormatPeCoff
+                         ? " (format recognised; symbol extraction not yet implemented)" : "");
+        if (pGrep != nullptr) {
+            std::printf ("  (%u matched '%s')\n", Shown, pGrep);
+        }
+        return 0;
+    }
+
+    if (std::strcmp (pVerb, "headers") == 0) {
+        // Derive function signatures + struct layouts from a C header (v2 step c). Uses
+        // libclang when present (dlopen'd), else a built-in scanner. Any argv token after
+        // the path that looks like a compiler flag (-I.../-D.../-std=.../-isysroot ...) is
+        // forwarded to libclang.
+        CHAR8 CONST *pHdr = Positional (argc, argv, 1);
+        if (pHdr == nullptr) {
+            std::printf ("usage: lcx klib headers <file.h> [-I dir] [-D macro] [-std=...] ...\n");
+            return 2;
+        }
+        std::vector<CHAR8 CONST *> ClangArgs = { "-x", "c" };
+        for (int I = 0; I < argc; I++) {
+            if (argv[I][0] == '-' && (argv[I][1] == 'I' || argv[I][1] == 'D' ||
+                std::strncmp (argv[I], "-std", 4) == 0 || std::strcmp (argv[I], "-isysroot") == 0 ||
+                std::strncmp (argv[I], "--target", 8) == 0)) {
+                ClangArgs.push_back (argv[I]);
+                if ((std::strcmp (argv[I], "-isysroot") == 0 || std::strcmp (argv[I], "-I") == 0 ||
+                     std::strcmp (argv[I], "-D") == 0) && I + 1 < argc) {
+                    ClangArgs.push_back (argv[++I]);            // flag takes a separate value
+                }
+            }
+        }
+        HeaderParser Parser;
+        std::string Error;
+        if (!Parser.Parse (pHdr, ClangArgs.data (), (UINT32) ClangArgs.size (), &Error)) {
+            std::printf ("lcx klib: %s\n", Error.c_str ());
+            return 2;
+        }
+        for (HEADER_STRUCT CONST &S : Parser.Structs ()) {
+            std::printf ("struct %s (%llu bytes)\n", S.Name.c_str (), (unsigned long long) S.Size);
+            for (HEADER_FIELD CONST &F : S.Fields) {
+                std::printf ("    +%-4llu %s %s\n", (unsigned long long) F.Offset, F.Type.c_str (), F.Name.c_str ());
+            }
+        }
+        for (HEADER_FUNCTION CONST &Fn : Parser.Functions ()) {
+            std::printf ("%s %s(", Fn.ReturnType.c_str (), Fn.Name.c_str ());
+            for (UINT32 I = 0; I < Fn.Params.size (); I++) {
+                std::printf ("%s%s%s%s", I ? ", " : "", Fn.Params[I].Type.c_str (),
+                             Fn.Params[I].Name.empty () ? "" : " ", Fn.Params[I].Name.c_str ());
+            }
+            std::printf ("%s%s)\n", Fn.Variadic ? (Fn.Params.empty () ? "..." : ", ...") : "",
+                         Fn.Params.empty () && !Fn.Variadic ? "void" : "");
+        }
+        std::printf ("%s: %u function(s), %u struct(s)\n", Parser.UsedClang () ? "libclang" : "built-in",
+                     (UINT32) Parser.Functions ().size (), (UINT32) Parser.Structs ().size ());
+        return 0;
+    }
+
+    std::printf ("lcx klib: unknown verb '%s' (create | ls | extract | symbols | headers)\n", pVerb);
+    return 2;
+}
+#endif // LIBCPU_HAVE_ZSTD
+
 static int
 CmdHelp ()
 {
@@ -545,7 +938,16 @@ CmdHelp ()
         "  lcx debug  <image> [--arch ...]\n"
         "  lcx system <image> [--arch v20]            8086 device bus + timer interrupt\n"
         "  lcx know   <library.xml> [--arch v20]      in-line syscalls -> host calls\n"
+        "  lcx know   derive <header.h> <lib> [-o a.klib] | catalog <a.klib>   derived host catalog\n"
+        "  lcx know   bind <header.h> <lib> <mapping.xml>            dispatch a guest call to a bound host fn\n"
+        "  lcx know   marshal <header.h> <lib.dylib> <mapping.xml>   marshal a struct out-param to guest layout\n"
+        "  lcx know   derive-map <header.h> <lib> <target.abi>       derive the target->host mapping\n"
         "  lcx upcl   check <file.upcl> | run <file.upcl> <image.bin>  UPCL CPU description\n"
+#ifdef LIBCPU_HAVE_ZSTD
+        "  lcx klib   create <a> <file...> | ls <a> | extract <a> <m>  knowledge-library archive\n"
+        "  lcx klib   symbols <lib.tbd|dylib> [--grep <s>]            exported symbols of a library\n"
+        "  lcx klib   headers <file.h> [-I dir] [-D macro] ...        prototypes + struct layouts\n"
+#endif
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
@@ -571,6 +973,9 @@ main (int argc, char **argv)
     if (Cmd == "system")       { return CmdSystem (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "upcl")         { return CmdUpcl (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "know")         { return CmdKnowledge (SubArgc, SubArgv, argv[0]); }
+#ifdef LIBCPU_HAVE_ZSTD
+    if (Cmd == "klib")         { return CmdKlib (SubArgc, SubArgv); }
+#endif
     if (Cmd == "cache")        { return CmdCache (SubArgc, SubArgv); }
     if (Cmd == "version")      { std::printf ("lcx (LibCPU) -- unified machine driver\n"); return 0; }
     if (Cmd == "help" || Cmd == "-h" || Cmd == "--help") { return CmdHelp (); }

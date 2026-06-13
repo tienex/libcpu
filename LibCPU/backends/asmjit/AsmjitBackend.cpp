@@ -22,14 +22,14 @@ using namespace asmjit;
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class AjValue final : public LcComObject<ICpuValue> {
+class AjValue final : public ComObject<ICpuValue> {
 public:
     AjValue (a64::Gp Reg, UINT32 Bits) : m_Reg (Reg), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuValue, ppvObject); }
     a64::Gp m_Reg;
     UINT32  m_Bits;
 };
-class AjBlock final : public LcComObject<ICpuBlock> {
+class AjBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBlock, ppvObject); }
 };
@@ -38,7 +38,7 @@ static UINT32  BitsOf (ICpuValue *pV) { return static_cast<AjValue *> (pV)->m_Bi
 
 typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
-class AjCode final : public LcComObject<ICpuCode> {
+class AjCode final : public ComObject<ICpuCode> {
 public:
     AjCode (JitRuntime *Rt, JittedFn Fn) : m_Rt (Rt), m_Fn (Fn) {}
     ~AjCode () override { if (m_Rt) { m_Rt->release (m_Fn); delete m_Rt; } }
@@ -51,7 +51,7 @@ private:
     JittedFn    m_Fn;
 };
 
-class AjEmitter final : public LcComObject<ICpuEmitter> {
+class AjEmitter final : public ComObject<ICpuEmitter> {
 public:
     AjEmitter () {
         m_Rt = new JitRuntime ();
@@ -215,7 +215,7 @@ private:
     a64::Gp        m_Ram, m_Grf;
 };
 
-class AsmjitBackend final : public LcComObject<ICpuBackend> {
+class AsmjitBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBackend, ppvObject); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "asmjit"; }

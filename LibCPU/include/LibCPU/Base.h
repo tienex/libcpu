@@ -104,7 +104,7 @@ typedef GUID       *PGUID;
   @retval FALSE  The GUIDs differ.
 **/
 static inline BOOLEAN
-LcIsEqualGUID (
+CompareGuid (
     IN PCGUID pA,
     IN PCGUID pB
     )

@@ -1,0 +1,12 @@
+# MS-DOS INT 21h target ABI table (subset) -- the TARGET-side knowledge that cannot be
+# read from host headers/symbols. Joined with the host catalog, this derives the full
+# target->host mapping (the <syscall> entries that used to be hand-authored).
+#
+# Format:  vector select value name | hostcall | result | operand:conv operand:conv ...
+#   conv = string ($-terminated far string) | int | struct:<type> | outstruct:<type>
+#   result "-" means the call's return is discarded.
+
+0x21 ah 0x09 WriteString | fputs | -  | ds:dx:string
+0x21 ah 0x4C Exit        | exit  | -  | al:int
+# "auto": the host call is inferred by matching the name to the catalog (toupper -> toupper).
+0x21 ah 0x30 toupper     | auto  | al | al:int

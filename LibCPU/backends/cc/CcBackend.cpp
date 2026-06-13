@@ -227,7 +227,7 @@ DiscoverCompilers (std::vector<CcRec> &Out)
     }
 }
 
-class CcValue final : public LcComObject<ICpuValue> {
+class CcValue final : public ComObject<ICpuValue> {
 public:
     CcValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -237,7 +237,7 @@ public:
     UINT32 m_Bits;
 };
 
-class CcBlock final : public LcComObject<ICpuBlock> {
+class CcBlock final : public ComObject<ICpuBlock> {
 public:
     explicit CcBlock (UINT32 Label) : m_Label (Label) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -256,7 +256,7 @@ typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 //
 // The compiled code object: owns the dlopen handle and the temp files.
 //
-class CcCode final : public LcComObject<ICpuCode> {
+class CcCode final : public ComObject<ICpuCode> {
 public:
     CcCode (void *pHandle, JittedFn Fn, std::string Dir, std::string SrcPath, std::string LibPath)
         : m_pHandle (pHandle), m_Fn (Fn), m_Dir (std::move (Dir)),
@@ -279,28 +279,28 @@ private:
     std::string m_Dir, m_SrcPath, m_LibPath;
 };
 
-class CcEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class CcEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
     // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the LcComObject base.
+    // QI here, forward refcounting to the ComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     // ---- values -----------------------------------------------------------
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
@@ -633,9 +633,9 @@ public:
     // ---- IUnknown (shared by both interface vtables) ----
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) return E_POINTER;
-        if (LcIsEqualGUID (&riid, &IID_IUnknown) || LcIsEqualGUID (&riid, &IID_ICpuBackend)) {
+        if (CompareGuid (&riid, &IID_IUnknown) || CompareGuid (&riid, &IID_ICpuBackend)) {
             *ppvObject = static_cast<ICpuBackend *> (this);
-        } else if (LcIsEqualGUID (&riid, &IID_ICpuCcCompilers)) {
+        } else if (CompareGuid (&riid, &IID_ICpuCcCompilers)) {
             *ppvObject = static_cast<ICpuCcCompilers *> (this);
         } else {
             *ppvObject = nullptr;

@@ -1,0 +1,11 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos ]
+install-name:    '/usr/lib/libknow.dylib'
+current-version: 1.0
+exports:
+  - targets:         [ x86_64-macos, arm64-macos ]
+    symbols:         [ '_know_open', '_know_read', '_know_write', '_know_close',
+                       '_know_seek', '_know_ioctl' ]
+    weak-symbols:    [ '_know_optional' ]
+...

@@ -3,15 +3,15 @@
 
   Translating a guest region is the expensive step; its result (a serialised
   backend artifact) depends only on the guest bytes, the frontend, and the backend.
-  LcTranslationCache hashes those into a key and stores the artifact under a cache
+  TranslationCache hashes those into a key and stores the artifact under a cache
   directory, so a later run with the same inputs RELOADS the artifact instead of
   re-translating. It works for both JIT and AOT (the caller just routes its
-  translate call through LcCachedTranslate). The cache is manageable: it can be
+  translate call through CachedTranslate). The cache is manageable: it can be
   listed, sized, capped to a byte budget (oldest-first eviction), and cleaned.
 
   Caching requires a backend that serialises its artifacts (ICpuCodeSerialize) and
   reloads them (ICpuBackendCache); the interpreter does. A backend that does neither
-  is simply never cached -- LcCachedTranslate falls back to a plain translation.
+  is simply never cached -- CachedTranslate falls back to a plain translation.
 
   Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
 **/
@@ -25,9 +25,9 @@
 
 namespace LibCPU {
 
-class LcTranslationCache {
+class TranslationCache {
 public:
-    explicit LcTranslationCache (std::string Dir);
+    explicit TranslationCache (std::string Dir);
 
     // Default cache directory: $LIBCPU_CACHE, else $XDG_CACHE_HOME/libcpu, else
     // $HOME/.cache/libcpu.
@@ -76,7 +76,7 @@ private:
 // region bytes can be hashed. *pHit, if non-null, reports whether the cache hit.
 // Returns the same HRESULT the underlying translate would.
 //
-HRESULT LcCachedTranslate (LcTranslationCache &Cache, ICpuArchitecture *pArch, ICpuBackend *pBackend,
+HRESULT CachedTranslate (TranslationCache &Cache, ICpuArchitecture *pArch, ICpuBackend *pBackend,
                            UINT8 CONST *pRamBase, CPU_ADDR Entry, CPU_ADDR End,
                            OUT ICpuCode **ppCode, OUT bool *pHit);
 

@@ -34,7 +34,7 @@ EmitSetNZ (ICpuEmitter *pE, ICpuValue *pResult)
     pE->SetFlag (FlagNegative, NFlag);
 }
 
-class Cpu6502 final : public LcComObject<ICpuArchitecture> {
+class Cpu6502 final : public ComObject<ICpuArchitecture> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);

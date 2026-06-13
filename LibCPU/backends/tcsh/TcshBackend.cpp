@@ -45,7 +45,7 @@ Mask (UINT64 Value, UINT32 Bits)
 // 1-based index into d for the guest byte at register-file offset Off.
 static UINT32 GrfPos (UINT32 Off) { return RAM_SIZE + Off + 1; }
 
-class TcshValue final : public LcComObject<ICpuValue> {
+class TcshValue final : public ComObject<ICpuValue> {
 public:
     TcshValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -55,7 +55,7 @@ public:
     UINT32 m_Bits;
 };
 
-class TcshBlock final : public LcComObject<ICpuBlock> {
+class TcshBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -65,7 +65,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<TcshValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<TcshValue *> (pValue)->m_Bits; }
 
-class TcshCode final : public LcComObject<ICpuCode> {
+class TcshCode final : public ComObject<ICpuCode> {
 public:
     TcshCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -114,7 +114,7 @@ private:
     std::string m_Dir;
 };
 
-class TcshEmitter final : public LcComObject<ICpuEmitter> {
+class TcshEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -356,7 +356,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class TcshBackend final : public LcComObject<ICpuBackend> {
+class TcshBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

@@ -85,20 +85,20 @@ static VOID S (Bytes &B, INT64 X) {
 static VOID Name (Bytes &B, CHAR8 CONST *s) { UINTN n = std::strlen (s); U (B, n); for (UINTN i = 0; i < n; i++) B.push_back ((UINT8) s[i]); }
 static VOID Section (Bytes &Mod, UINT8 Id, Bytes CONST &C) { Mod.push_back (Id); U (Mod, C.size ()); Mod.insert (Mod.end (), C.begin (), C.end ()); }
 
-class WaValue final : public LcComObject<ICpuValue> {
+class WaValue final : public ComObject<ICpuValue> {
 public:
     WaValue (UINT32 L, UINT32 Bits) : m_Local (L), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuValue, ppvObject); }
     UINT32 m_Local, m_Bits;
 };
-class WaBlock final : public LcComObject<ICpuBlock> {
+class WaBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBlock, ppvObject); }
 };
 static UINT32 LocOf  (ICpuValue *pV) { return static_cast<WaValue *> (pV)->m_Local; }
 static UINT32 BitsOf (ICpuValue *pV) { return static_cast<WaValue *> (pV)->m_Bits; }
 
-class WasmCode final : public LcComObject<ICpuCode> {
+class WasmCode final : public ComObject<ICpuCode> {
 public:
     WasmCode (IM3Environment Env, IM3Runtime Rt, IM3Function Fn, WCtx *Ctx, Bytes Mod)
         : m_Env (Env), m_Rt (Rt), m_Fn (Fn), m_Ctx (Ctx), m_Mod (std::move (Mod)) {}
@@ -117,7 +117,7 @@ private:
     IM3Environment m_Env; IM3Runtime m_Rt; IM3Function m_Fn; WCtx *m_Ctx; Bytes m_Mod;
 };
 
-class WasmEmitter final : public LcComObject<ICpuEmitter> {
+class WasmEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuEmitter, ppvObject); }
 
@@ -262,7 +262,7 @@ private:
     UINT32 m_NumLocals = 0;
 };
 
-class WasmBackend final : public LcComObject<ICpuBackend> {
+class WasmBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBackend, ppvObject); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "wasm"; }

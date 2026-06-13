@@ -1,5 +1,5 @@
 /** @file
-  Substrate smoke test: instantiate a COM object via LcComObject, exercise
+  Substrate smoke test: instantiate a COM object via ComObject, exercise
   QueryInterface / AddRef / Release. Proves the C++20 portable-COM layer is
   well-formed and behaves.
 **/
@@ -13,7 +13,7 @@ using namespace LibCPU;
 // A trivial ICpuValue implementation (an opaque value handle has no extra
 // methods beyond IUnknown), used only to drive the refcount/QI machinery.
 //
-class DummyValue final : public LcComObject<ICpuValue> {
+class DummyValue final : public ComObject<ICpuValue> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, void **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuValue, ppvObject);

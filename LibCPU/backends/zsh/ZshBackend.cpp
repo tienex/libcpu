@@ -47,7 +47,7 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class ZshValue final : public LcComObject<ICpuValue> {
+class ZshValue final : public ComObject<ICpuValue> {
 public:
     ZshValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -57,7 +57,7 @@ public:
     UINT32 m_Bits;
 };
 
-class ZshBlock final : public LcComObject<ICpuBlock> {
+class ZshBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -67,7 +67,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<ZshValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<ZshValue *> (pValue)->m_Bits; }
 
-class ZshCode final : public LcComObject<ICpuCode> {
+class ZshCode final : public ComObject<ICpuCode> {
 public:
     ZshCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -116,7 +116,7 @@ private:
     std::string m_Dir;
 };
 
-class ZshEmitter final : public LcComObject<ICpuEmitter> {
+class ZshEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -312,7 +312,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class ZshBackend final : public LcComObject<ICpuBackend> {
+class ZshBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

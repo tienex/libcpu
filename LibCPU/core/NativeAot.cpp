@@ -30,7 +30,7 @@ Mask (UINT32 Bits)
 }
 
 // A translated value: a C temp t<Id> of a given width.
-class NativeValue final : public LcComObject<ICpuValue> {
+class NativeValue final : public ComObject<ICpuValue> {
 public:
     NativeValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -46,21 +46,21 @@ public:
 // QIs ICpuSmcEmitter so a frontend's RET can record its dispatch target (-> "disp").
 // The generator owns block structure; the emitter only produces per-instruction C.
 //
-class NativeEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class NativeEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
     std::string *m_pCur;        // current instruction's statement buffer
     UINT32       m_Next = 0;    // next temp id
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 D = Decl ();
@@ -206,7 +206,7 @@ private:
 } // anonymous namespace
 
 std::string
-LcGenerateNativeC (ICpuArchitecture *pArch, UINT8 CONST *pImage, UINT32 ImageLen,
+GenerateNativeC (ICpuArchitecture *pArch, UINT8 CONST *pImage, UINT32 ImageLen,
                    CPU_ADDR Entry, CPU_ADDR End, LC_NATIVE_OPTIONS CONST &Opt)
 {
     // 1. Discover every reachable instruction and how each terminates.
@@ -348,7 +348,7 @@ LcGenerateNativeC (ICpuArchitecture *pArch, UINT8 CONST *pImage, UINT32 ImageLen
 }
 
 bool
-LcCompileNative (std::string CONST &Source, CHAR8 CONST *pOutExe, std::string *pError)
+CompileNative (std::string CONST &Source, CHAR8 CONST *pOutExe, std::string *pError)
 {
     char Tmpl[] = "/tmp/libcpu_native_XXXXXX";
     if (mkdtemp (Tmpl) == nullptr) {

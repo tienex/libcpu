@@ -34,12 +34,12 @@ typedef struct _LC_NATIVE_OPTIONS {
 // Generate a standalone C program translating [Entry, End) of pArch's code memory.
 // pImage/ImageLen are the guest bytes embedded into the executable. Returns the C
 // source, or an empty string on failure.
-std::string LcGenerateNativeC (ICpuArchitecture *pArch, UINT8 CONST *pImage, UINT32 ImageLen,
+std::string GenerateNativeC (ICpuArchitecture *pArch, UINT8 CONST *pImage, UINT32 ImageLen,
                                CPU_ADDR Entry, CPU_ADDR End, LC_NATIVE_OPTIONS CONST &Opt);
 
 // Compile C source to a standalone native executable at pOutExe using the host C
 // compiler ($CC, else "cc"). Returns false and fills *pError on failure.
-bool LcCompileNative (std::string CONST &Source, CHAR8 CONST *pOutExe, std::string *pError);
+bool CompileNative (std::string CONST &Source, CHAR8 CONST *pOutExe, std::string *pError);
 
 } // namespace LibCPU
 

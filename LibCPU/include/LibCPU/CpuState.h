@@ -51,7 +51,7 @@ typedef struct _CPU_STATE {
     //
     // System-level emulation. A device-bus instruction (port IN/OUT) or a privileged
     // control instruction (IRET/HLT/STI/CLI) records its kind in IoCtrl and traps to
-    // TrapPc; the host machine (LcSystem) reads IoCtrl/IoPort/IoData, drives the
+    // TrapPc; the host machine (System) reads IoCtrl/IoPort/IoData, drives the
     // emulated device or performs the control action, and resumes. IoCtrl == CPU_IO_NONE
     // means no system trap is pending (so a plain control-flow trap is unaffected).
     //

@@ -1,8 +1,8 @@
 /** @file
   The tiered-execution / PGO suite, ported to the MOS 6502 frontend.
 
-  This is the SAME engine exercised by RunTiered.h (V20) -- LcTieredEngine,
-  LcProfiledAot, the AOT inliner, the edge-count instrumentation, and the
+  This is the SAME engine exercised by RunTiered.h (V20) -- TieredEngine,
+  ProfiledAot, the AOT inliner, the edge-count instrumentation, and the
   in-artifact PC dispatcher -- driven through a different frontend. Nothing in
   the engine is V20-specific: it operates entirely on ICpuArchitecture, so the
   only things that change here are the guest programs (6502 machine code) and the
@@ -163,7 +163,7 @@ RunTieredDemo (ICpuBackend *pTier0, ICpuBackend *pTier1)
     pArch->SetCodeMemory (Ram, sizeof (Ram));
 
     CPU_TIER Tiers[2] = { { pTier0, pTier0->GetName () }, { pTier1, pTier1->GetName () } };
-    LcTieredEngine Engine (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    TieredEngine Engine (pArch, Tiers, 2, /*HotThreshold=*/ 100);
 
     bool Ok = true;
 
@@ -231,17 +231,17 @@ RunProfiledAotDemo (ICpuBackend *pTier0, ICpuBackend *pTier1, CHAR8 CONST *pTrac
 
     {
         CPU_TIER One[1] = { { pTier0, pTier0->GetName () } };
-        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        TieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
         for (int i = 0; i < 200; i++) { Profiler.Run (HOT_ENTRY, HOT_END, Ram, &State, nullptr); }
         for (int i = 0; i < 3;   i++) { Profiler.Run (COLD_ENTRY, COLD_END, Ram, &State, nullptr); }
-        LcPerfTrace Trace;
+        PerfTrace Trace;
         Profiler.ExportTrace (Trace);
         Trace.Save (pTracePath);
         std::printf ("  profiled %u regions on '%s'; trace saved to %s\n",
                      Trace.RegionCount (), pTier0->GetName (), pTracePath);
     }
 
-    LcPerfTrace Reloaded;
+    PerfTrace Reloaded;
     if (!Reloaded.Load (pTracePath)) {
         std::printf ("  failed to reload trace\n");
         pArch->Release ();
@@ -252,7 +252,7 @@ RunProfiledAotDemo (ICpuBackend *pTier0, ICpuBackend *pTier1, CHAR8 CONST *pTrac
                  (unsigned long long) Reloaded.CountOf (COLD_ENTRY));
 
     CPU_TIER Tiers[2] = { { pTier0, pTier0->GetName () }, { pTier1, pTier1->GetName () } };
-    LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    ProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
     Pgo.Build (Reloaded);
 
     UINT32 HotTier  = Pgo.TierOf (HOT_ENTRY);
@@ -303,14 +303,14 @@ RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
 
     {
         CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
-        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        TieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
         for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
-        LcPerfTrace Trace;
+        PerfTrace Trace;
         Profiler.ExportTrace (Trace);
         Trace.Save (pTracePath);
     }
 
-    LcPerfTrace Trace;
+    PerfTrace Trace;
     Trace.Load (pTracePath);
     for (UINT32 i = 0; i < Trace.EdgeCount (); i++) {
         CPU_TRACE_EDGE E = Trace.Edge (i);
@@ -320,7 +320,7 @@ RunInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTracePath)
     }
 
     CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
-    LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    ProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
     Pgo.Build (Trace);
     UINT32 Inlined = Pgo.InlinedCount ();
 
@@ -365,14 +365,14 @@ RunNestedInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTrace
 
     {
         CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
-        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        TieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
         for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
-        LcPerfTrace Trace;
+        PerfTrace Trace;
         Profiler.ExportTrace (Trace);
         Trace.Save (pTracePath);
     }
 
-    LcPerfTrace Trace;
+    PerfTrace Trace;
     Trace.Load (pTracePath);
     std::printf ("  trace edges (incl. nested): %u\n", Trace.EdgeCount ());
     for (UINT32 i = 0; i < Trace.EdgeCount (); i++) {
@@ -382,7 +382,7 @@ RunNestedInlineDemo (ICpuBackend *pCheap, ICpuBackend *pOpt, CHAR8 CONST *pTrace
     }
 
     CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
-    LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
+    ProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100);
     Pgo.Build (Trace);
     UINT32 Inlined = Pgo.InlinedCount ();
 
@@ -429,8 +429,8 @@ RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     // which only the in-process 'interp' backend implements; elsewhere
     // GenerateAotCfgProfiling returns E_NOTIMPL -- a capability gap, report SKIP so
     // a cross-backend sweep stays clean.
-    LcPerfTrace TrueTrace;
-    HRESULT HrProf = LcCollectEdgeProfile (pArch, pCheap, Entry, End, Ram, &State, Runs, TrueTrace);
+    PerfTrace TrueTrace;
+    HRESULT HrProf = CollectEdgeProfile (pArch, pCheap, Entry, End, Ram, &State, Runs, TrueTrace);
     if (HrProf == E_NOTIMPL) {
         std::printf ("  backend '%s' has no ICpuProfileEmitter -- edge instrumentation N/A\n",
                      pCheap->GetName ());
@@ -441,10 +441,10 @@ RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     UINT64 TrueEdge = TrueTrace.EdgeCount () > 0 ? TrueTrace.Edge (0).Count : 0;
 
     // (b) PROPAGATED counts: the JIT engine attributes the region count to the edge.
-    LcPerfTrace PropTrace;
+    PerfTrace PropTrace;
     {
         CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
-        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        TieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
         for (UINT32 i = 0; i < Runs; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
         Profiler.ExportTrace (PropTrace);
     }
@@ -457,9 +457,9 @@ RunEdgeCountDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     UINT64 const Threshold = 500;
     int Inl[2];
     for (int Which = 0; Which < 2; Which++) {
-        LcPerfTrace CONST &T = (Which == 0) ? TrueTrace : PropTrace;
+        PerfTrace CONST &T = (Which == 0) ? TrueTrace : PropTrace;
         CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
-        LcProfiledAot Pgo (pArch, Tiers, 2, Threshold);
+        ProfiledAot Pgo (pArch, Tiers, 2, Threshold);
         Pgo.Build (T);
         Inl[Which] = (int) Pgo.InlinedCount ();
         std::memset (Ram + 0x200, 0, 2);
@@ -499,10 +499,10 @@ RunBudgetDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     pArch->SetCodeMemory (Ram, sizeof (Ram));
     CPU_ADDR const Entry = 0, End = (CPU_ADDR) sizeof (g_Call);
 
-    LcPerfTrace Trace;
+    PerfTrace Trace;
     {
         CPU_TIER One[1] = { { pCheap, pCheap->GetName () } };
-        LcTieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
+        TieredEngine Profiler (pArch, One, 1, ~(UINT64) 0);
         for (int i = 0; i < 200; i++) { Profiler.Run (Entry, End, Ram, &State, nullptr); }
         Profiler.ExportTrace (Trace);
     }
@@ -511,7 +511,7 @@ RunBudgetDemo (ICpuBackend *pCheap, ICpuBackend *pOpt)
     int    Inl[2], Res1[2], Res2[2];
     for (int W = 0; W < 2; W++) {
         CPU_TIER Tiers[2] = { { pCheap, pCheap->GetName () }, { pOpt, pOpt->GetName () } };
-        LcProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100, /*InlineBudget=*/ Budgets[W]);
+        ProfiledAot Pgo (pArch, Tiers, 2, /*HotThreshold=*/ 100, /*InlineBudget=*/ Budgets[W]);
         Pgo.Build (Trace);
         Inl[W] = (int) Pgo.InlinedCount ();
         std::memset (Ram + 0x200, 0, 4);

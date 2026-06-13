@@ -86,7 +86,7 @@ RamWrite (UINT8 *pRam, UINT64 Addr, UINT64 Value, UINT32 Bits)
 //
 // ICpuValue / ICpuBlock implementations: opaque handles carrying a temp index.
 //
-class InterpValue final : public LcComObject<ICpuValue> {
+class InterpValue final : public ComObject<ICpuValue> {
 public:
     InterpValue (UINT32 TempId, UINT32 Bits) : m_TempId (TempId), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -96,7 +96,7 @@ public:
     UINT32 m_Bits;
 };
 
-class InterpBlock final : public LcComObject<ICpuBlock> {
+class InterpBlock final : public ComObject<ICpuBlock> {
 public:
     explicit InterpBlock (UINT32 Id) : m_Id (Id) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -117,27 +117,27 @@ static UINT32 BlkId  (ICpuBlock *pBlock) { return static_cast<InterpBlock *> (pB
 // the magic invalidates blobs if the layout ever changes).
 static UINT32 CONST INTERP_BLOB_MAGIC = 0x31494C43;   // 'CLI1'
 
-class InterpCode final : public LcComObject<ICpuCode>, public ICpuCodeListing, public ICpuCodeSerialize {
+class InterpCode final : public ComObject<ICpuCode>, public ICpuCodeListing, public ICpuCodeSerialize {
 public:
     InterpCode (std::vector<INTERP_INSN> Insns, UINT32 TempCount, std::vector<UINT32> BlockStart)
         : m_Insns (std::move (Insns)), m_TempCount (TempCount), m_BlockStart (std::move (BlockStart)) {}
 
     // ICpuCode + the optional ICpuCodeListing (disasm) and ICpuCodeSerialize (cache).
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuCodeListing)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuCodeListing)) {
             *ppvObject = static_cast<ICpuCodeListing *> (this);
             AddRef ();
             return S_OK;
         }
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuCodeSerialize)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuCodeSerialize)) {
             *ppvObject = static_cast<ICpuCodeSerialize *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuCode, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuCode>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuCode>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuCode>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuCode>::Release (); }
     HRESULT STDMETHODCALLTYPE GetListing (CHAR8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override;
     HRESULT STDMETHODCALLTYPE Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override;
 
@@ -399,35 +399,35 @@ InterpCode::Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter, public ICpuSystemEmitter {
+class InterpEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter, public ICpuSystemEmitter {
 public:
     // Five interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter +
-    // ICpuSyscallEmitter): resolve QI here, forward refcounting to the LcComObject base.
+    // ICpuSyscallEmitter): resolve QI here, forward refcounting to the ComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSyscallEmitter)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSyscallEmitter)) {
             *ppvObject = static_cast<ICpuSyscallEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuSystemEmitter)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSystemEmitter)) {
             *ppvObject = static_cast<ICpuSystemEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         return Produce (Bits, OpConstInt, 0, 0, 0, 0, Bits, Value, ppValue);
@@ -565,19 +565,19 @@ private:
 //
 // The backend object.
 //
-class InterpBackend final : public LcComObject<ICpuBackend>, public ICpuBackendCache {
+class InterpBackend final : public ComObject<ICpuBackend>, public ICpuBackendCache {
 public:
     // ICpuBackend + the optional ICpuBackendCache (reload a serialised artifact).
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
-        if (ppvObject != nullptr && LcIsEqualGUID (&riid, &IID_ICpuBackendCache)) {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuBackendCache)) {
             *ppvObject = static_cast<ICpuBackendCache *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuBackend>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuBackend>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuBackend>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuBackend>::Release (); }
 
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "interpreter"; }
 

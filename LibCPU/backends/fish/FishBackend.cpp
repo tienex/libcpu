@@ -55,7 +55,7 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class FishValue final : public LcComObject<ICpuValue> {
+class FishValue final : public ComObject<ICpuValue> {
 public:
     FishValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -65,7 +65,7 @@ public:
     UINT32 m_Bits;
 };
 
-class FishBlock final : public LcComObject<ICpuBlock> {
+class FishBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -75,7 +75,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<FishValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<FishValue *> (pValue)->m_Bits; }
 
-class FishCode final : public LcComObject<ICpuCode> {
+class FishCode final : public ComObject<ICpuCode> {
 public:
     FishCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -124,7 +124,7 @@ private:
     std::string m_Dir;
 };
 
-class FishEmitter final : public LcComObject<ICpuEmitter> {
+class FishEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -322,7 +322,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class FishBackend final : public LcComObject<ICpuBackend> {
+class FishBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

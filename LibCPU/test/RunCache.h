@@ -28,7 +28,7 @@ RunCacheDemo (ICpuBackend *pBackend, CHAR8 CONST *pCacheDir)
 {
     std::printf ("== Disk-cached translation on '%s', cache dir '%s'\n", pBackend->GetName (), pCacheDir);
 
-    LcTranslationCache Cache (pCacheDir);
+    TranslationCache Cache (pCacheDir);
     Cache.Clean ();                                   // start from an empty cache
 
     static UINT8 Ram[65536];
@@ -53,14 +53,14 @@ RunCacheDemo (ICpuBackend *pBackend, CHAR8 CONST *pCacheDir)
     // --- pass 1: cold cache -> miss, translate + store ----------------------
     bool Hit1 = false;
     ComPtr<ICpuCode> Code1;
-    LcCachedTranslate (Cache, pArch, pBackend, Ram, EntryA, EndA, &Code1, &Hit1);
+    CachedTranslate (Cache, pArch, pBackend, Ram, EntryA, EndA, &Code1, &Hit1);
     int Res1 = Code1 != nullptr ? RunArtifact (Code1, 0x200) : -1;
 
     // --- pass 2: warm cache (a fresh cache object on the same dir) -> hit ----
-    LcTranslationCache Cache2 (pCacheDir);
+    TranslationCache Cache2 (pCacheDir);
     bool Hit2 = false;
     ComPtr<ICpuCode> Code2;
-    LcCachedTranslate (Cache2, pArch, pBackend, Ram, EntryA, EndA, &Code2, &Hit2);
+    CachedTranslate (Cache2, pArch, pBackend, Ram, EntryA, EndA, &Code2, &Hit2);
     int Res2 = Code2 != nullptr ? RunArtifact (Code2, 0x200) : -1;
 
     std::printf ("  pass 1: hit=%d -> [0x200]=0x%02x (exp 0x12)   [miss: translated + stored]\n", (int) Hit1, Res1);
@@ -71,13 +71,13 @@ RunCacheDemo (ICpuBackend *pBackend, CHAR8 CONST *pCacheDir)
     std::memcpy (Ram + 0x40, ProgB, sizeof (ProgB));
     bool HitB = false;
     ComPtr<ICpuCode> CodeB;
-    LcCachedTranslate (Cache2, pArch, pBackend, Ram, 0x40, 0x40 + (CPU_ADDR) sizeof (ProgB), &CodeB, &HitB);
+    CachedTranslate (Cache2, pArch, pBackend, Ram, 0x40, 0x40 + (CPU_ADDR) sizeof (ProgB), &CodeB, &HitB);
 
-    std::vector<LcTranslationCache::LC_CACHE_ENTRY> Entries = Cache2.List ();
+    std::vector<TranslationCache::LC_CACHE_ENTRY> Entries = Cache2.List ();
     std::printf ("  cache now holds %zu artifact(s), %llu bytes total:\n",
                  Entries.size (), (unsigned long long) Cache2.TotalSize ());
     UINT64 SmallSize = ~UINT64_C (0);
-    for (LcTranslationCache::LC_CACHE_ENTRY CONST &E : Entries) {
+    for (TranslationCache::LC_CACHE_ENTRY CONST &E : Entries) {
         std::printf ("    %s  arch=%s backend=%s  %llu bytes\n",
                      E.Path.substr (E.Path.find_last_of ('/') + 1).c_str (),
                      E.Arch.c_str (), E.Backend.c_str (), (unsigned long long) E.Size);

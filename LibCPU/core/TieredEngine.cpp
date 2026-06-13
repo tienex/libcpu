@@ -7,12 +7,12 @@
 
 namespace LibCPU {
 
-LcTieredEngine::LcTieredEngine (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold)
+TieredEngine::TieredEngine (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold)
     : m_pArch (pArch), m_Tiers (pTiers, pTiers + TierCount), m_HotThreshold (HotThreshold)
 {
 }
 
-LcTieredEngine::~LcTieredEngine ()
+TieredEngine::~TieredEngine ()
 {
     Drain ();   // no thread may touch a Slot after this
     for (auto CONST &Pair : m_Slots) {
@@ -23,7 +23,7 @@ LcTieredEngine::~LcTieredEngine ()
 }
 
 CPU_EXEC_STATUS
-LcTieredEngine::Run (CPU_ADDR Entry, CPU_ADDR End, VOID *pRAM, VOID *pGRF, VOID *pFRF)
+TieredEngine::Run (CPU_ADDR Entry, CPU_ADDR End, VOID *pRAM, VOID *pGRF, VOID *pFRF)
 {
     ICpuCode *pExec = nullptr;
     bool      Launch = false;
@@ -68,7 +68,7 @@ LcTieredEngine::Run (CPU_ADDR Entry, CPU_ADDR End, VOID *pRAM, VOID *pGRF, VOID 
 }
 
 VOID
-LcTieredEngine::LaunchUpgrade (CPU_ADDR Entry)
+TieredEngine::LaunchUpgrade (CPU_ADDR Entry)
 {
     UINT32   NextTier;
     CPU_ADDR End;
@@ -103,7 +103,7 @@ LcTieredEngine::LaunchUpgrade (CPU_ADDR Entry)
 }
 
 VOID
-LcTieredEngine::Drain ()
+TieredEngine::Drain ()
 {
     std::vector<std::thread> Pending;
     {
@@ -118,7 +118,7 @@ LcTieredEngine::Drain ()
 }
 
 UINT32
-LcTieredEngine::TierOf (CPU_ADDR Entry)
+TieredEngine::TierOf (CPU_ADDR Entry)
 {
     std::lock_guard<std::mutex> Lk (m_Mutex);
     auto It = m_Slots.find (Entry);
@@ -126,7 +126,7 @@ LcTieredEngine::TierOf (CPU_ADDR Entry)
 }
 
 UINT64
-LcTieredEngine::CountOf (CPU_ADDR Entry)
+TieredEngine::CountOf (CPU_ADDR Entry)
 {
     std::lock_guard<std::mutex> Lk (m_Mutex);
     auto It = m_Slots.find (Entry);
@@ -134,7 +134,7 @@ LcTieredEngine::CountOf (CPU_ADDR Entry)
 }
 
 UINT32
-LcTieredEngine::UpgradesOf (CPU_ADDR Entry)
+TieredEngine::UpgradesOf (CPU_ADDR Entry)
 {
     std::lock_guard<std::mutex> Lk (m_Mutex);
     auto It = m_Slots.find (Entry);
@@ -142,7 +142,7 @@ LcTieredEngine::UpgradesOf (CPU_ADDR Entry)
 }
 
 VOID
-LcTieredEngine::ExportTrace (LcPerfTrace &Trace)
+TieredEngine::ExportTrace (PerfTrace &Trace)
 {
     std::lock_guard<std::mutex> Lk (m_Mutex);
     for (auto CONST &Pair : m_Slots) {

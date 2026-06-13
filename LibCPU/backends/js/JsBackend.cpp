@@ -124,7 +124,7 @@ WhichExe (CHAR8 CONST *Name)
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class JsValue final : public LcComObject<ICpuValue> {
+class JsValue final : public ComObject<ICpuValue> {
 public:
     JsValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -133,7 +133,7 @@ public:
     UINT32 m_Id, m_Bits;
 };
 
-class JsBlock final : public LcComObject<ICpuBlock> {
+class JsBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -143,7 +143,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pV) { return static_cast<JsValue *> (pV)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pV) { return static_cast<JsValue *> (pV)->m_Bits; }
 
-class JsCode final : public LcComObject<ICpuCode> {
+class JsCode final : public ComObject<ICpuCode> {
 public:
     JsCode (std::string Dir, std::string Func, CONST JS_ENGINE *pEngine, std::string ExePath)
         : m_Dir (std::move (Dir)), m_Func (std::move (Func)), m_pEngine (pEngine), m_ExePath (std::move (ExePath)) {}
@@ -226,7 +226,7 @@ private:
     std::string      m_ExePath;
 };
 
-class JsEmitter final : public LcComObject<ICpuEmitter> {
+class JsEmitter final : public ComObject<ICpuEmitter> {
 public:
     explicit JsEmitter (CONST JS_ENGINE *pEngine, std::string ExePath)
         : m_pEngine (pEngine), m_ExePath (std::move (ExePath)) {}
@@ -382,9 +382,9 @@ public:
     // ---- IUnknown (shared by both interface vtables) ----
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) return E_POINTER;
-        if (LcIsEqualGUID (&riid, &IID_IUnknown) || LcIsEqualGUID (&riid, &IID_ICpuBackend)) {
+        if (CompareGuid (&riid, &IID_IUnknown) || CompareGuid (&riid, &IID_ICpuBackend)) {
             *ppvObject = static_cast<ICpuBackend *> (this);
-        } else if (LcIsEqualGUID (&riid, &IID_ICpuJsEngines)) {
+        } else if (CompareGuid (&riid, &IID_ICpuJsEngines)) {
             *ppvObject = static_cast<ICpuJsEngines *> (this);
         } else {
             *ppvObject = nullptr;

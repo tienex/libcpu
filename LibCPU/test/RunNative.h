@@ -35,7 +35,7 @@ RunNativeAotDemo (CHAR8 CONST *pOutExe)
     LC_NATIVE_OPTIONS Opt;
     Opt.DumpResult = true;
     Opt.ResultAddr = 0x200;
-    std::string Source = LcGenerateNativeC (pArch, Ram, (UINT32) sizeof (Prog), 0, (CPU_ADDR) sizeof (Prog), Opt);
+    std::string Source = GenerateNativeC (pArch, Ram, (UINT32) sizeof (Prog), 0, (CPU_ADDR) sizeof (Prog), Opt);
     pArch->Release ();
     if (Source.empty ()) {
         std::printf ("  code generation failed\n");
@@ -44,7 +44,7 @@ RunNativeAotDemo (CHAR8 CONST *pOutExe)
     std::printf ("  generated %zu bytes of C (guest registers -> C locals r0..r31)\n", Source.size ());
 
     std::string Error;
-    if (!LcCompileNative (Source, pOutExe, &Error)) {
+    if (!CompileNative (Source, pOutExe, &Error)) {
         std::printf ("  host cc failed: %s\n", Error.c_str ());
         return 1;
     }

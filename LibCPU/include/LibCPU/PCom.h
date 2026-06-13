@@ -62,17 +62,17 @@ inline constexpr IID IID_IUnknown =
 namespace LibCPU {
 
 /**
-  LcComObject -- a minimal reference-counted base for interface implementations.
+  ComObject -- a minimal reference-counted base for interface implementations.
 
-  Derive an implementation from LcComObject<IFoo[, IBar...]> and implement
+  Derive an implementation from ComObject<IFoo[, IBar...]> and implement
   QueryInterface; AddRef/Release are provided. Single-threaded refcount is
   promoted to atomic so objects may cross threads safely.
 **/
 template <class Iface>
-class LcComObject : public Iface {
+class ComObject : public Iface {
 public:
-    LcComObject () : m_RefCount (1) {}
-    virtual ~LcComObject () = default;
+    ComObject () : m_RefCount (1) {}
+    virtual ~ComObject () = default;
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override {
         return (UINT32)++m_RefCount;
@@ -95,8 +95,8 @@ protected:
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
-        if (LcIsEqualGUID (&riid, &IID_IUnknown) ||
-            LcIsEqualGUID (&riid, &PrimaryId)) {
+        if (CompareGuid (&riid, &IID_IUnknown) ||
+            CompareGuid (&riid, &PrimaryId)) {
             *ppvObject = static_cast<Iface *> (this);
             AddRef ();
             return S_OK;

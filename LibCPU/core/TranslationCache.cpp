@@ -44,7 +44,7 @@ Fnv1a (VOID CONST *pData, size_t Len, UINT64 Seed)
     return H;
 }
 
-LcTranslationCache::LcTranslationCache (std::string Dir)
+TranslationCache::TranslationCache (std::string Dir)
     : m_Dir (std::move (Dir)), m_Hits (0), m_Misses (0)
 {
     std::error_code Ec;
@@ -52,7 +52,7 @@ LcTranslationCache::LcTranslationCache (std::string Dir)
 }
 
 std::string
-LcTranslationCache::DefaultDir ()
+TranslationCache::DefaultDir ()
 {
     if (CHAR8 CONST *p = std::getenv ("LIBCPU_CACHE")) {
         return std::string (p);
@@ -67,7 +67,7 @@ LcTranslationCache::DefaultDir ()
 }
 
 UINT64
-LcTranslationCache::Key (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
+TranslationCache::Key (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
                          UINT8 CONST *pRegion, UINT32 RegionLen) CONST
 {
     UINT64 H = UINT64_C (0xcbf29ce484222325);
@@ -81,7 +81,7 @@ LcTranslationCache::Key (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Ent
 }
 
 std::string
-LcTranslationCache::PathFor (CHAR8 CONST *pArch, UINT64 Key) CONST
+TranslationCache::PathFor (CHAR8 CONST *pArch, UINT64 Key) CONST
 {
     char Name[32];
     std::snprintf (Name, sizeof (Name), "%016llx.lcc", (unsigned long long) Key);
@@ -89,7 +89,7 @@ LcTranslationCache::PathFor (CHAR8 CONST *pArch, UINT64 Key) CONST
 }
 
 bool
-LcTranslationCache::Lookup (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
+TranslationCache::Lookup (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
                             UINT8 CONST *pRegion, UINT32 RegionLen, std::vector<UINT8> &Blob)
 {
     std::string Path = PathFor (pArch, Key (pArch, pBackend, Entry, End, pRegion, RegionLen));
@@ -118,7 +118,7 @@ LcTranslationCache::Lookup (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR 
 }
 
 void
-LcTranslationCache::Store (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
+TranslationCache::Store (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR Entry, CPU_ADDR End,
                            UINT8 CONST *pRegion, UINT32 RegionLen, UINT8 CONST *pBlob, UINT32 BlobLen)
 {
     std::error_code Ec;
@@ -145,8 +145,8 @@ LcTranslationCache::Store (CHAR8 CONST *pArch, CHAR8 CONST *pBackend, CPU_ADDR E
     std::fclose (pf);
 }
 
-std::vector<LcTranslationCache::LC_CACHE_ENTRY>
-LcTranslationCache::List () CONST
+std::vector<TranslationCache::LC_CACHE_ENTRY>
+TranslationCache::List () CONST
 {
     std::vector<LC_CACHE_ENTRY> Out;
     std::error_code Ec;
@@ -181,7 +181,7 @@ LcTranslationCache::List () CONST
 }
 
 UINT64
-LcTranslationCache::TotalSize () CONST
+TranslationCache::TotalSize () CONST
 {
     UINT64 Total = 0;
     for (LC_CACHE_ENTRY CONST &E : List ()) {
@@ -191,7 +191,7 @@ LcTranslationCache::TotalSize () CONST
 }
 
 UINT32
-LcTranslationCache::Clean ()
+TranslationCache::Clean ()
 {
     UINT32 Count = 0;
     std::error_code Ec;
@@ -204,7 +204,7 @@ LcTranslationCache::Clean ()
 }
 
 UINT32
-LcTranslationCache::Cap (UINT64 MaxBytes)
+TranslationCache::Cap (UINT64 MaxBytes)
 {
     std::vector<LC_CACHE_ENTRY> Entries = List ();
     UINT64 Total = 0;
@@ -234,7 +234,7 @@ LcTranslationCache::Cap (UINT64 MaxBytes)
 }
 
 HRESULT
-LcCachedTranslate (LcTranslationCache &Cache, ICpuArchitecture *pArch, ICpuBackend *pBackend,
+CachedTranslate (TranslationCache &Cache, ICpuArchitecture *pArch, ICpuBackend *pBackend,
                    UINT8 CONST *pRamBase, CPU_ADDR Entry, CPU_ADDR End,
                    ICpuCode **ppCode, bool *pHit)
 {

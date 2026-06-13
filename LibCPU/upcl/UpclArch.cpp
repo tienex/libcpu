@@ -22,7 +22,7 @@ typedef struct _DECODED {
     UINT32     Length;
 } DECODED;
 
-class UpclArch final : public LcComObject<ICpuArchitecture> {
+class UpclArch final : public ComObject<ICpuArchitecture> {
 public:
     UpclArch (Module *pMod, Arch *pArch) : m_pMod (pMod), m_pArch (pArch)
     {

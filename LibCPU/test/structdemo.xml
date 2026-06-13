@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Maps a guest INT 21h/AH=20h onto demo_stat_fill(struct demo_stat *). The argument is
+     a far pointer (DS:DX) to a guest buffer; the dispatcher allocates a host-layout struct,
+     calls the function (which fills it), and marshals the result back into the guest's
+     16-bit-packed layout. The host function is bound dynamically through the catalog. -->
+<knowledge target="demo8086" host="structdemo">
+  <syscall vector="0x21" select="ah" value="0x20" name="StatFill">
+    <host call="demo_stat_fill" lib="structdemo">
+      <arg struct="demo_stat" from="ds:dx" dir="out"/>
+    </host>
+  </syscall>
+  <syscall vector="0x21" select="ah" value="0x21" name="PackFill">
+    <host call="demo_pack_fill" lib="structdemo">
+      <arg struct="demo_pack" from="ds:dx" dir="out"/>
+    </host>
+  </syscall>
+</knowledge>

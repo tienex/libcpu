@@ -13,7 +13,7 @@
 namespace LibCPU {
 namespace {
 
-class Chip8 final : public LcComObject<ICpuArchitecture> {
+class Chip8 final : public ComObject<ICpuArchitecture> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);

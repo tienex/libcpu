@@ -1,0 +1,40 @@
+#!/bin/sh
+# Format-detection sweep for SymbolReader: craft each format's magic bytes and assert that
+# `lcx klib symbols` names the format. $1 = path to the lcx executable.
+set -e
+lcx="$1"
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+
+printf '\177ELF\002\001\000\000\000\000\000\000\000\000\000\000' > "$d/elf"
+printf 'Joy!peffpwpc\000\000\000\001'                            > "$d/cfmppc"
+printf 'Joy!peffm68k\000\000\000\001'                            > "$d/cfm68k"
+printf '\000\000\003\363\000\000\000\000'                        > "$d/hunk"
+printf 'NetWare Loadable Module\032'                             > "$d/nlm"
+printf 'L\001\000\000'                                           > "$d/coff"
+printf '\001\337\000\000'                                        > "$d/xcoff"   # 0x01DF big-endian
+# OpenVMS EIHD: size=0x60@+0, hdrblkcnt=1@+4, majorid=3@+8, minorid=0@+12, imgtype=1@+16.
+printf '\140\000\000\000\001\000\000\000\003\000\000\000\000\000\000\000\001\000\000\000' > "$d/vms"
+# MZ + PE: 'MZ', e_lfanew=0x40 at offset 0x3C, 'PE\0\0' at 0x40.
+{ printf 'MZ'; dd if=/dev/zero bs=1 count=58 2>/dev/null; \
+  printf '\100\000\000\000'; printf 'PE\000\000'; } > "$d/pe"
+
+ok=1
+check() {
+    got=$("$lcx" klib symbols "$d/$1" 2>&1 | tail -1)
+    case "$got" in
+        *"$2"*) ;;
+        *) echo "MISMATCH $1: want '$2' got '$got'"; ok=0 ;;
+    esac
+}
+check elf    "elf:"
+check cfmppc "cfm-ppc:"
+check cfm68k "cfm-68k:"
+check hunk   "amiga-hunk:"
+check nlm    "nlm:"
+check coff   "coff:"
+check xcoff  "xcoff:"
+check pe     "pe/coff:"
+check vms    "vms:"
+
+test "$ok" -eq 1

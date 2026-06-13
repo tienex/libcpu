@@ -86,7 +86,7 @@ EmitSubFlags (ICpuEmitter *pE, ICpuValue *pA, ICpuValue *pB, ICpuValue *pRes)
     EmitZSF (pE, pRes);
 }
 
-class CpuV20 final : public LcComObject<ICpuArchitecture> {
+class CpuV20 final : public ComObject<ICpuArchitecture> {
 public:
     explicit CpuV20 (UINT16 CodeSeg) : m_CodeSeg (CodeSeg) {}
 
@@ -134,6 +134,8 @@ public:
 
         if (Op >= 0xB8 && Op <= 0xBF) {                          // MOV reg16,imm16
             Len = 3;
+        } else if (Op >= 0xB0 && Op <= 0xB7) {                   // MOV reg8,imm8
+            Len = 2;
         } else if (Op >= 0x40 && Op <= 0x4F) {                   // INC/DEC reg16
             Len = 1;
         } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
@@ -185,6 +187,8 @@ public:
         UINT8 Op = m_pCode[Pc];
         if (Op >= 0xB8 && Op <= 0xBF) {
             std::snprintf (pLine, MaxLine, "mov %s,0x%04x", RegName (Op - 0xB8), Imm16At (m_pCode, Pc + 1));
+        } else if (Op >= 0xB0 && Op <= 0xB7) {
+            std::snprintf (pLine, MaxLine, "mov %s,0x%02x", Reg8Name (Op - 0xB0), m_pCode[Pc + 1]);
         } else if (Op >= 0x40 && Op <= 0x47) {
             std::snprintf (pLine, MaxLine, "inc %s", RegName (Op - 0x40));
         } else if (Op >= 0x48 && Op <= 0x4F) {
@@ -243,6 +247,21 @@ public:
         if (Op >= 0xB8 && Op <= 0xBF) {            // MOV reg16, imm16
             ComPtr<ICpuValue> V; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &V);
             pE->PutRegister (Op - 0xB8, V, 16, FALSE);
+            return S_OK;
+        }
+        if (Op >= 0xB0 && Op <= 0xB7) {            // MOV reg8, imm8
+            // The register file holds 16-bit GPRs (AL/AH are halves of AX), so write the
+            // byte by read-modify-write: clear the target half and OR the immediate in.
+            UINT32 Enc  = Op - 0xB0;               // 0..7 -> AL,CL,DL,BL,AH,CH,DH,BH
+            UINT32 Gpr  = Enc & 3;                 // AX,CX,DX,BX
+            bool   High = Enc >= 4;
+            UINT16 Imm  = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> Cur;  pE->GetRegister (Gpr, 16, &Cur);
+            ComPtr<ICpuValue> Mask; pE->ConstInt (16, High ? 0x00FF : 0xFF00, &Mask);
+            ComPtr<ICpuValue> Kept; pE->BinaryOp (BinAnd, Cur, Mask, &Kept);
+            ComPtr<ICpuValue> ImmV; pE->ConstInt (16, High ? (UINT16) (Imm << 8) : Imm, &ImmV);
+            ComPtr<ICpuValue> Res;  pE->BinaryOp (BinOr, Kept, ImmV, &Res);
+            pE->PutRegister (Gpr, Res, 16, FALSE);
             return S_OK;
         }
         if (Op >= 0x40 && Op <= 0x47) {            // INC reg16
@@ -654,6 +673,14 @@ private:
 
     static CHAR8 CONST *RegName (UINT32 Index) {
         static CHAR8 CONST *kNames[8] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
+        return kNames[Index & 7];
+    }
+
+    // 8-bit register encoding (B0+r, ModR/M reg field in byte ops): the four GPR low bytes
+    // then the four high bytes -- AL,CL,DL,BL,AH,CH,DH,BH. Index 0..3 is the GPR (AX..BX);
+    // index >= 4 selects its high byte.
+    static CHAR8 CONST *Reg8Name (UINT32 Index) {
+        static CHAR8 CONST *kNames[8] = { "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh" };
         return kNames[Index & 7];
     }
 

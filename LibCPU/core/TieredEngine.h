@@ -28,7 +28,7 @@
 
 namespace LibCPU {
 
-class LcPerfTrace;   // PerfTrace.h
+class PerfTrace;   // PerfTrace.h
 
 //
 // One compilation tier: a backend and a human-readable label. Tiers are ordered
@@ -40,14 +40,14 @@ typedef struct _CPU_TIER {
     CHAR8 CONST *pLabel;
 } CPU_TIER;
 
-class LcTieredEngine {
+class TieredEngine {
 public:
     // HotThreshold is the run count at which a region is promoted to the next tier.
-    LcTieredEngine (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold);
-    ~LcTieredEngine ();
+    TieredEngine (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount, UINT64 HotThreshold);
+    ~TieredEngine ();
 
-    LcTieredEngine (LcTieredEngine CONST &)            = delete;
-    LcTieredEngine &operator= (LcTieredEngine CONST &) = delete;
+    TieredEngine (TieredEngine CONST &)            = delete;
+    TieredEngine &operator= (TieredEngine CONST &) = delete;
 
     // Execute the region [Entry, End) once. The first touch compiles tier 0
     // synchronously; crossing the heat threshold launches a background upgrade.
@@ -63,7 +63,7 @@ public:
 
     // Emit the collected per-region counts as a performance trace, which can be
     // persisted and re-used to drive profile-guided AOT (see PerfTrace / ProfiledAot).
-    VOID ExportTrace (LcPerfTrace &Trace);
+    VOID ExportTrace (PerfTrace &Trace);
 
 private:
     struct Slot {

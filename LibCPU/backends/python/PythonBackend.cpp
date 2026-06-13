@@ -42,20 +42,20 @@ static CHAR8 CONST *kTemplate =
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class PyValue final : public LcComObject<ICpuValue> {
+class PyValue final : public ComObject<ICpuValue> {
 public:
     PyValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuValue, ppvObject); }
     UINT32 m_Id, m_Bits;
 };
-class PyBlock final : public LcComObject<ICpuBlock> {
+class PyBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBlock, ppvObject); }
 };
 static UINT32 IdOf   (ICpuValue *pV) { return static_cast<PyValue *> (pV)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pV) { return static_cast<PyValue *> (pV)->m_Bits; }
 
-class PyCode final : public LcComObject<ICpuCode> {
+class PyCode final : public ComObject<ICpuCode> {
 public:
     PyCode (std::string Dir) : m_Dir (std::move (Dir)) {}
     ~PyCode () override {
@@ -88,7 +88,7 @@ private:
     std::string m_Dir;
 };
 
-class PyEmitter final : public LcComObject<ICpuEmitter> {
+class PyEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuEmitter, ppvObject); }
 
@@ -202,7 +202,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class PythonBackend final : public LcComObject<ICpuBackend> {
+class PythonBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBackend, ppvObject); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "python"; }

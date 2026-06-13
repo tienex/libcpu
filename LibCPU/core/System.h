@@ -6,7 +6,7 @@
   devices reached by port I/O, and a hardware-interrupt path (a device raises an IRQ,
   the machine vectors the CPU through the interrupt table to a guest ISR, which
   returns with IRET). The CPU's privileged instructions -- IN/OUT, STI/CLI, HLT,
-  IRET -- trap to LcSystem (via ICpuSystemEmitter), which drives the addressed device
+  IRET -- trap to System (via ICpuSystemEmitter), which drives the addressed device
   or performs the control action and resumes. This is the 8086/PC model (IRQ n ->
   INT 8+n, real-mode IVT at physical 0).
 
@@ -26,9 +26,9 @@ namespace LibCPU {
 // An emulated device on the machine. It claims a set of I/O ports and may, each time
 // the machine polls it, request a hardware interrupt (returning an IRQ number, or -1).
 //
-class LcDevice {
+class Device {
 public:
-    virtual ~LcDevice () {}
+    virtual ~Device () {}
     virtual CHAR8 CONST *Name () CONST = 0;
     virtual bool   HandlesPort (UINT16 Port) CONST { return false; }
     virtual UINT16 ReadPort (UINT16 Port, UINT32 Width) { return 0; }
@@ -47,11 +47,11 @@ typedef struct _LC_SYS_RESULT {
     UINT64 PortReads;
 } LC_SYS_RESULT;
 
-class LcSystem {
+class System {
 public:
-    LcSystem (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize);
+    System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize);
 
-    void AddDevice (LcDevice *pDevice);                // borrowed; caller keeps it alive
+    void AddDevice (Device *pDevice);                // borrowed; caller keeps it alive
     void RequestShutdown () { m_Shutdown = true; }
 
     // Seed an interrupt-vector-table entry (real-mode IVT at physical 0): vector ->
@@ -66,7 +66,7 @@ public:
     LC_SYS_RESULT Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps);
 
 private:
-    LcDevice *FindPort (UINT16 Port) CONST;
+    Device *FindPort (UINT16 Port) CONST;
     int       PollDevices ();                          // first device asserting an IRQ
     void      InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc);
 
@@ -75,7 +75,7 @@ private:
     UINT8                  *m_pRAM;
     UINT64                  m_RamSize;
     CPU_STATE               m_State;
-    std::vector<LcDevice *> m_Devices;
+    std::vector<Device *> m_Devices;
     bool                    m_If;          // interrupt-enable flag (8086 IF)
     bool                    m_Halted;      // executed HLT, waiting for an interrupt
     bool                    m_Shutdown;

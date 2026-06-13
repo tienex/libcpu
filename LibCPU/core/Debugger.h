@@ -6,7 +6,7 @@
   maintaining the guest PC, breakpoints, and the live CPU_STATE. It offers gdb-like
   commands -- step / continue / break / info registers / x (examine) / disassemble --
   plus a "tdis" that shows the TRANSLATED form of an instruction beside the guest
-  ("real") disassembly. Input comes through LcLineEditor, so an interactive session
+  ("real") disassembly. Input comes through LineEditor, so an interactive session
   gets colouring + completion and a piped script gets plain batch execution.
 
   Register and flag names are supplied by the caller (which knows the frontend), so
@@ -27,9 +27,9 @@
 
 namespace LibCPU {
 
-class LcDebugger {
+class Debugger {
 public:
-    LcDebugger (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+    Debugger (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                 UINT8 *pRAM, UINT64 RamSize, CPU_STATE *pState, CPU_ADDR Entry, CPU_ADDR End,
                 std::vector<std::string> RegNames, UINT32 RegBytes,
                 std::vector<std::string> FlagNames);

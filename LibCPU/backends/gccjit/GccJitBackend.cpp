@@ -18,7 +18,7 @@ namespace {
 //
 // Opaque handles.
 //
-class GccValue final : public LcComObject<ICpuValue> {
+class GccValue final : public ComObject<ICpuValue> {
 public:
     GccValue (gcc_jit_rvalue *pV, UINT32 Bits) : m_pV (pV), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -28,7 +28,7 @@ public:
     UINT32          m_Bits;
 };
 
-class GccBlock final : public LcComObject<ICpuBlock> {
+class GccBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -43,7 +43,7 @@ static UINT32          BitsOf (ICpuValue *pV) { return static_cast<GccValue *> (
 //
 typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
-class GccCode final : public LcComObject<ICpuCode> {
+class GccCode final : public ComObject<ICpuCode> {
 public:
     GccCode (gcc_jit_result *pResult, JittedFn Fn) : m_pResult (pResult), m_Fn (Fn) {}
     ~GccCode () override { if (m_pResult) gcc_jit_result_release (m_pResult); }
@@ -61,7 +61,7 @@ private:
 //
 // The builder.
 //
-class GccEmitter final : public LcComObject<ICpuEmitter> {
+class GccEmitter final : public ComObject<ICpuEmitter> {
 public:
     GccEmitter () {
         m_C = gcc_jit_context_acquire ();
@@ -250,7 +250,7 @@ private:
     gcc_jit_rvalue   *m_RamU8, *m_GrfU8, *m_GrfU64, *m_Zero;
 };
 
-class GccJitBackend final : public LcComObject<ICpuBackend> {
+class GccJitBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

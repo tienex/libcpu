@@ -80,7 +80,7 @@ main (int argc, char **argv)
     std::printf ("== lcdbg: arch=%s backend=%s, %llu-byte demo program\n",
                  pArchName, pBackend->GetName (), (unsigned long long) End);
 
-    LcDebugger Debugger (pArch, pBackend, Ram, sizeof (Ram), &State, 0, End, Regs, RegBytes, Flags);
+    Debugger Debugger (pArch, pBackend, Ram, sizeof (Ram), &State, 0, End, Regs, RegBytes, Flags);
     int Rc = Debugger.Repl ();
 
     pArch->Release ();

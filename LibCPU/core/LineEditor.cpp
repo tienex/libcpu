@@ -23,7 +23,7 @@ static CHAR8 CONST *const C_BAD   = "\x1b[1;31m";   // unknown: bold red
 static CHAR8 CONST *const C_NUM   = "\x1b[36m";     // numeric argument: cyan
 static CHAR8 CONST *const C_GHOST = "\x1b[2m";      // completion ghost: dim
 
-LcLineEditor::LcLineEditor (std::vector<std::string> Commands)
+LineEditor::LineEditor (std::vector<std::string> Commands)
     : m_Commands (std::move (Commands))
 {
     std::sort (m_Commands.begin (), m_Commands.end ());
@@ -35,7 +35,7 @@ LcLineEditor::LcLineEditor (std::vector<std::string> Commands)
 }
 
 std::string
-LcLineEditor::FirstToken (std::string CONST &Line) CONST
+LineEditor::FirstToken (std::string CONST &Line) CONST
 {
     size_t I = 0;
     while (I < Line.size () && Line[I] == ' ') {
@@ -52,7 +52,7 @@ LcLineEditor::FirstToken (std::string CONST &Line) CONST
 // a prefix of one or more commands, the remaining text of their longest common
 // prefix (so it only ever offers unambiguous characters).
 std::string
-LcLineEditor::Ghost (std::string CONST &Line) CONST
+LineEditor::Ghost (std::string CONST &Line) CONST
 {
     // Only complete the command word (no space typed yet).
     if (Line.find (' ') != std::string::npos || Line.empty ()) {
@@ -80,7 +80,7 @@ LcLineEditor::Ghost (std::string CONST &Line) CONST
 
 // Redraw the prompt + buffer (coloured) + ghost, leaving the cursor at Cursor.
 void
-LcLineEditor::Render (CHAR8 CONST *pPrompt, std::string CONST &Line, size_t Cursor) CONST
+LineEditor::Render (CHAR8 CONST *pPrompt, std::string CONST &Line, size_t Cursor) CONST
 {
     std::string Token = FirstToken (Line);
     int Matches = 0;
@@ -143,7 +143,7 @@ LcLineEditor::Render (CHAR8 CONST *pPrompt, std::string CONST &Line, size_t Curs
 }
 
 bool
-LcLineEditor::ReadLinePlain (std::string &Out)
+LineEditor::ReadLinePlain (std::string &Out)
 {
     Out.clear ();
     int c;
@@ -161,7 +161,7 @@ LcLineEditor::ReadLinePlain (std::string &Out)
 #if LCED_POSIX
 
 bool
-LcLineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
+LineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
 {
     struct termios Old;
     if (tcgetattr (STDIN_FILENO, &Old) != 0) {
@@ -241,7 +241,7 @@ LcLineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
 #else
 
 bool
-LcLineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
+LineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
 {
     std::fputs (pPrompt, stdout);
     std::fflush (stdout);
@@ -251,7 +251,7 @@ LcLineEditor::ReadLineRaw (CHAR8 CONST *pPrompt, std::string &Out)
 #endif
 
 bool
-LcLineEditor::ReadLine (CHAR8 CONST *pPrompt, std::string &Out)
+LineEditor::ReadLine (CHAR8 CONST *pPrompt, std::string &Out)
 {
     if (m_IsTty) {
         return ReadLineRaw (pPrompt, Out);

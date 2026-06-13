@@ -9,9 +9,9 @@
 namespace LibCPU {
 
 HRESULT
-LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+CollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                       CPU_ADDR Entry, CPU_ADDR End,
-                      VOID *pRAM, CPU_STATE *pState, UINT32 Runs, LcPerfTrace &Trace)
+                      VOID *pRAM, CPU_STATE *pState, UINT32 Runs, PerfTrace &Trace)
 {
     CPU_CALL_EDGE Sites[CPU_PROFILE_SLOTS];
     UINT32        SiteCount = 0;
@@ -41,7 +41,7 @@ LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 
 namespace LibCPU {
 
-LcProfiledAot::LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
+ProfiledAot::ProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
                               UINT64 HotThreshold, UINT32 InlineBudget)
     : m_pArch (pArch), m_Tiers (pTiers, pTiers + TierCount), m_HotThreshold (HotThreshold),
       m_InlineBudget (InlineBudget)
@@ -49,7 +49,7 @@ LcProfiledAot::LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, U
 }
 
 UINT32
-LcProfiledAot::CountTreeInstrs (CPU_ADDR Callee, UINT32 Depth) CONST
+ProfiledAot::CountTreeInstrs (CPU_ADDR Callee, UINT32 Depth) CONST
 {
     // Sum of instructions across the whole inlined tree (this callee + nested copies).
     UINT32 N = 0;
@@ -87,7 +87,7 @@ LcProfiledAot::CountTreeInstrs (CPU_ADDR Callee, UINT32 Depth) CONST
     return N;
 }
 
-LcProfiledAot::~LcProfiledAot ()
+ProfiledAot::~ProfiledAot ()
 {
     for (auto CONST &Pair : m_Built) {
         if (Pair.second.pCode != nullptr) {
@@ -97,7 +97,7 @@ LcProfiledAot::~LcProfiledAot ()
 }
 
 UINT32
-LcProfiledAot::PickTier (UINT64 Count) CONST
+ProfiledAot::PickTier (UINT64 Count) CONST
 {
     // Highest tier whose threshold the recorded count meets (tier i needs
     // HotThreshold * i). With one threshold this is simply hot -> top, cold -> 0.
@@ -113,7 +113,7 @@ LcProfiledAot::PickTier (UINT64 Count) CONST
 static UINT32 const kMaxInlineDepth = 4;
 
 BOOLEAN
-LcProfiledAot::InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> &Active) CONST
+ProfiledAot::InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> &Active) CONST
 {
     if (Depth > kMaxInlineDepth) {
         return FALSE;                 // too deep
@@ -164,7 +164,7 @@ LcProfiledAot::InlinableTree (CPU_ADDR Callee, UINT32 Depth, std::set<CPU_ADDR> 
 }
 
 UINT32
-LcProfiledAot::CountTree (CPU_ADDR Callee, UINT32 Depth) CONST
+ProfiledAot::CountTree (CPU_ADDR Callee, UINT32 Depth) CONST
 {
     // 1 for this callee + the trees of its nested callees.
     UINT32 N = 1;
@@ -202,7 +202,7 @@ LcProfiledAot::CountTree (CPU_ADDR Callee, UINT32 Depth) CONST
 }
 
 HRESULT
-LcProfiledAot::Build (LcPerfTrace CONST &Trace)
+ProfiledAot::Build (PerfTrace CONST &Trace)
 {
     HRESULT Result = S_OK;
     for (UINT32 I = 0; I < Trace.RegionCount (); I++) {
@@ -277,13 +277,13 @@ LcProfiledAot::Build (LcPerfTrace CONST &Trace)
 }
 
 UINT32
-LcProfiledAot::InlinedCount () CONST
+ProfiledAot::InlinedCount () CONST
 {
     return m_Inlined;
 }
 
 CPU_EXEC_STATUS
-LcProfiledAot::Run (CPU_ADDR Entry, VOID *pRAM, VOID *pGRF, VOID *pFRF)
+ProfiledAot::Run (CPU_ADDR Entry, VOID *pRAM, VOID *pGRF, VOID *pFRF)
 {
     auto It = m_Built.find (Entry);
     if (It == m_Built.end () || It->second.pCode == nullptr) {
@@ -293,14 +293,14 @@ LcProfiledAot::Run (CPU_ADDR Entry, VOID *pRAM, VOID *pGRF, VOID *pFRF)
 }
 
 UINT32
-LcProfiledAot::TierOf (CPU_ADDR Entry) CONST
+ProfiledAot::TierOf (CPU_ADDR Entry) CONST
 {
     auto It = m_Built.find (Entry);
     return (It != m_Built.end ()) ? It->second.Tier : 0;
 }
 
 UINT32
-LcProfiledAot::RegionCount () CONST
+ProfiledAot::RegionCount () CONST
 {
     return (UINT32) m_Built.size ();
 }

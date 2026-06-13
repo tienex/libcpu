@@ -31,7 +31,7 @@ MaskValue (UINT64 Value, UINT32 Bits)
 //
 // Opaque handles.
 //
-class SljitValue final : public LcComObject<ICpuValue> {
+class SljitValue final : public ComObject<ICpuValue> {
 public:
     SljitValue (UINT32 Slot, UINT32 Bits) : m_Slot (Slot), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -41,7 +41,7 @@ public:
     UINT32 m_Bits;
 };
 
-class SljitBlock final : public LcComObject<ICpuBlock> {
+class SljitBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -56,7 +56,7 @@ static UINT32 BitsOf (ICpuValue *pV) { return static_cast<SljitValue *> (pV)->m_
 //
 typedef sljit_sw (SLJIT_FUNC *JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
-class SljitCode final : public LcComObject<ICpuCode> {
+class SljitCode final : public ComObject<ICpuCode> {
 public:
     explicit SljitCode (void *pCode) : m_pCode (pCode) {}
     ~SljitCode () override { if (m_pCode) sljit_free_code (m_pCode, nullptr); }
@@ -74,7 +74,7 @@ private:
 //
 // The builder.
 //
-class SljitEmitter final : public LcComObject<ICpuEmitter> {
+class SljitEmitter final : public ComObject<ICpuEmitter> {
 public:
     SljitEmitter () {
         m_C = sljit_create_compiler (nullptr);
@@ -296,7 +296,7 @@ private:
     UINT32                 m_NextSlot = 0;
 };
 
-class SljitBackend final : public LcComObject<ICpuBackend> {
+class SljitBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

@@ -44,7 +44,7 @@ EnsureNativeTargetInit ()
 //
 // Opaque-handle wrappers over LLVM Value / BasicBlock.
 //
-class LlvmValue final : public LcComObject<ICpuValue> {
+class LlvmValue final : public ComObject<ICpuValue> {
 public:
     explicit LlvmValue (llvm::Value *pV) : m_pV (pV) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -53,7 +53,7 @@ public:
     llvm::Value *m_pV;
 };
 
-class LlvmBlock final : public LcComObject<ICpuBlock> {
+class LlvmBlock final : public ComObject<ICpuBlock> {
 public:
     explicit LlvmBlock (llvm::BasicBlock *pB) : m_pB (pB) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -70,7 +70,7 @@ static llvm::BasicBlock *BlkOf (ICpuBlock *pBlock) { return static_cast<LlvmBloc
 //
 typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 
-class LlvmCode final : public LcComObject<ICpuCode> {
+class LlvmCode final : public ComObject<ICpuCode> {
 public:
     LlvmCode (std::unique_ptr<orc::LLJIT> Jit, JittedFn Fn)
         : m_Jit (std::move (Jit)), m_Fn (Fn) {}
@@ -88,7 +88,7 @@ private:
 //
 // The builder: emits LLVM IR for one translation unit (one function "insn").
 //
-class LlvmEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class LlvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter {
 public:
     LlvmEmitter () {
         m_Ctx     = std::make_unique<LLVMContext> ();
@@ -115,20 +115,20 @@ public:
     }
 
     // This object exposes two interfaces (ICpuEmitter + ICpuSmcEmitter), so it
-    // resolves QueryInterface itself and forwards refcounting to the LcComObject base.
+    // resolves QueryInterface itself and forwards refcounting to the ComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);   // IUnknown + ICpuEmitter
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     // ---- values -----------------------------------------------------------
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
@@ -405,7 +405,7 @@ private:
     llvm::Value *m_pFRF = nullptr;
 };
 
-class LlvmBackend final : public LcComObject<ICpuBackend> {
+class LlvmBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

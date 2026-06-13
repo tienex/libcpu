@@ -23,7 +23,7 @@ RunDosSyscallDemo (ICpuBackend *pBackend, CHAR8 CONST *pXmlPath)
 {
     std::printf ("== Knowledge library: DOS INT 21h -> host libc, on '%s'\n", pBackend->GetName ());
 
-    LcKnowledgeLibrary Library;
+    KnowledgeLibrary Library;
     if (!Library.Load (pXmlPath)) {
         std::printf ("  failed to load knowledge library '%s'\n", pXmlPath);
         return 1;
@@ -72,12 +72,12 @@ RunDosSyscallDemo (ICpuBackend *pBackend, CHAR8 CONST *pXmlPath)
     KN_RUN_RESULT Result;
     if (pTmp != nullptr && SavedFd >= 0) {
         dup2 (fileno (pTmp), 1);
-        Result = LcRunWithSyscalls (pArch, pBackend, 0, (CPU_ADDR) sizeof (Prog), Ram, &State, Library);
+        Result = RunWithSyscalls (pArch, pBackend, 0, (CPU_ADDR) sizeof (Prog), Ram, &State, Library);
         std::fflush (stdout);
         dup2 (SavedFd, 1);
         close (SavedFd);
     } else {
-        Result = LcRunWithSyscalls (pArch, pBackend, 0, (CPU_ADDR) sizeof (Prog), Ram, &State, Library);
+        Result = RunWithSyscalls (pArch, pBackend, 0, (CPU_ADDR) sizeof (Prog), Ram, &State, Library);
     }
 
     std::string Captured;

@@ -27,11 +27,11 @@
 
 namespace LibCPU {
 
-class LcLineEditor {
+class LineEditor {
 public:
     // pCommands: the command keywords used for colouring + completion (canonical
     // spellings, e.g. "step", "continue", "disassemble").
-    explicit LcLineEditor (std::vector<std::string> Commands);
+    explicit LineEditor (std::vector<std::string> Commands);
 
     // Read one line into Out. Returns false at end of input (EOF / Ctrl-D). The
     // prompt is printed by the editor. Interactive when stdin is a TTY, else plain.

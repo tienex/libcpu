@@ -46,7 +46,7 @@ static CHAR8 CONST *kTemplate =
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class JavaValue final : public LcComObject<ICpuValue> {
+class JavaValue final : public ComObject<ICpuValue> {
 public:
     JavaValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -55,7 +55,7 @@ public:
     UINT32 m_Id, m_Bits;
 };
 
-class JavaBlock final : public LcComObject<ICpuBlock> {
+class JavaBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -67,7 +67,7 @@ static UINT32 BitsOf (ICpuValue *pV) { return static_cast<JavaValue *> (pV)->m_B
 
 typedef int (*Unused) ();
 
-class JavaCode final : public LcComObject<ICpuCode> {
+class JavaCode final : public ComObject<ICpuCode> {
 public:
     JavaCode (std::string Dir) : m_Dir (std::move (Dir)) {}
     ~JavaCode () override {
@@ -103,7 +103,7 @@ private:
     std::string m_Dir;
 };
 
-class JavaEmitter final : public LcComObject<ICpuEmitter> {
+class JavaEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -228,7 +228,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class JavaBackend final : public LcComObject<ICpuBackend> {
+class JavaBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

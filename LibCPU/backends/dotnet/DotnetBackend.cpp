@@ -46,7 +46,7 @@ static CHAR8 CONST *kTemplate =
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class DnValue final : public LcComObject<ICpuValue> {
+class DnValue final : public ComObject<ICpuValue> {
 public:
     DnValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -55,7 +55,7 @@ public:
     UINT32 m_Id, m_Bits;
 };
 
-class DnBlock final : public LcComObject<ICpuBlock> {
+class DnBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -65,7 +65,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pV) { return static_cast<DnValue *> (pV)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pV) { return static_cast<DnValue *> (pV)->m_Bits; }
 
-class DnCode final : public LcComObject<ICpuCode> {
+class DnCode final : public ComObject<ICpuCode> {
 public:
     DnCode (std::string Dir, std::string Runner) : m_Dir (std::move (Dir)), m_Runner (std::move (Runner)) {}
     ~DnCode () override {
@@ -101,7 +101,7 @@ private:
     std::string m_Dir, m_Runner;
 };
 
-class DnEmitter final : public LcComObject<ICpuEmitter> {
+class DnEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -245,7 +245,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class DotnetBackend final : public LcComObject<ICpuBackend> {
+class DotnetBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

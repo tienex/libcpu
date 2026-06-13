@@ -10,7 +10,7 @@ namespace LibCPU {
 // 8086 register-file indices (must match the V20 frontend's RegV20* layout).
 enum { S_AX = 0, S_DX = 2, S_SP = 4, S_CS = 9, S_SS = 10 };
 
-LcSystem::LcSystem (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize)
+System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize)
     : m_pArch (pArch), m_pBackend (pBackend), m_pRAM (pRAM), m_RamSize (RamSize),
       m_If (false), m_Halted (false), m_Shutdown (false), m_NextPc (0)
 {
@@ -19,13 +19,13 @@ LcSystem::LcSystem (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM,
 }
 
 void
-LcSystem::AddDevice (LcDevice *pDevice)
+System::AddDevice (Device *pDevice)
 {
     m_Devices.push_back (pDevice);
 }
 
 void
-LcSystem::SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off)
+System::SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off)
 {
     UINT32 Slot = Vector * 4;                          // real-mode IVT at physical 0
     if (Slot + 4 > m_RamSize) {
@@ -37,10 +37,10 @@ LcSystem::SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off)
     m_pRAM[Slot + 3] = (UINT8) (Seg >> 8);
 }
 
-LcDevice *
-LcSystem::FindPort (UINT16 Port) CONST
+Device *
+System::FindPort (UINT16 Port) CONST
 {
-    for (LcDevice *p : m_Devices) {
+    for (Device *p : m_Devices) {
         if (p->HandlesPort (Port)) {
             return p;
         }
@@ -49,9 +49,9 @@ LcSystem::FindPort (UINT16 Port) CONST
 }
 
 int
-LcSystem::PollDevices ()
+System::PollDevices ()
 {
-    for (LcDevice *p : m_Devices) {
+    for (Device *p : m_Devices) {
         int Irq = p->Poll ();
         if (Irq >= 0) {
             return Irq;
@@ -62,7 +62,7 @@ LcSystem::PollDevices ()
 
 // 8086 interrupt entry: push FLAGS, CS, IP; load CS:IP from the IVT; mask interrupts.
 void
-LcSystem::InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc)
+System::InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc)
 {
     UINT16 Sp = (UINT16) m_State.Reg[S_SP];
     UINT16 Ss = (UINT16) m_State.Reg[S_SS];
@@ -87,7 +87,7 @@ LcSystem::InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc)
 }
 
 LC_SYS_RESULT
-LcSystem::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
+System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
 {
     LC_SYS_RESULT R;
     R.Reason = LC_SYS_RESULT::StepBudget;
@@ -152,7 +152,7 @@ LcSystem::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         case CPU_IO_OUT: {
             UINT16 Port = (UINT16) m_State.IoPort;
             UINT16 Data = (UINT16) (m_State.IoData & (Width == 8 ? 0xFF : 0xFFFF));
-            if (LcDevice *p = FindPort (Port)) { p->WritePort (Port, Width, Data); }
+            if (Device *p = FindPort (Port)) { p->WritePort (Port, Width, Data); }
             R.PortWrites++;
             Pc = Return;
             break;
@@ -160,7 +160,7 @@ LcSystem::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         case CPU_IO_IN: {
             UINT16 Port = (UINT16) m_State.IoPort;
             UINT16 Val  = 0;
-            if (LcDevice *p = FindPort (Port)) { Val = p->ReadPort (Port, Width); }
+            if (Device *p = FindPort (Port)) { Val = p->ReadPort (Port, Width); }
             if (Width == 8) {
                 m_State.Reg[S_AX] = (m_State.Reg[S_AX] & 0xFF00) | (Val & 0xFF);
             } else {

@@ -1,15 +1,15 @@
 /** @file
   Profile-guided AOT builder (LibCPU core).
 
-  The AOT counterpart of LcTieredEngine. Where the JIT engine decides tiers AT RUN
+  The AOT counterpart of TieredEngine. Where the JIT engine decides tiers AT RUN
   TIME (count, then background-recompile), this decides them AHEAD OF TIME from a
   persisted performance trace: Build() walks the trace and compiles each region once
   at the tier its recorded hotness justifies (hot -> optimizing backend, cold ->
   cheap backend). Run() is then pure execution -- no counting, no recompiling, no
   background threads -- so a hot region is already native on its very first run.
 
-  Workflow: a profiling run emits a trace (LcTieredEngine::ExportTrace or any
-  counting pass) -> LcPerfTrace::Save -> a later run LcPerfTrace::Load -> Build ->
+  Workflow: a profiling run emits a trace (TieredEngine::ExportTrace or any
+  counting pass) -> PerfTrace::Save -> a later run PerfTrace::Load -> Build ->
   Run. The expensive optimizing compiles happen once, up front, reused thereafter.
 
   Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
@@ -32,24 +32,24 @@ namespace LibCPU {
 // instrumented version, run it Runs times (reusing pState, whose EdgeCount[] holds
 // the counters), and fill Trace with each edge's real frequency plus the region.
 // The backend must expose ICpuProfileEmitter (the interpreter does).
-HRESULT LcCollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+HRESULT CollectEdgeProfile (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                               CPU_ADDR Entry, CPU_ADDR End,
-                              VOID *pRAM, CPU_STATE *pState, UINT32 Runs, LcPerfTrace &Trace);
+                              VOID *pRAM, CPU_STATE *pState, UINT32 Runs, PerfTrace &Trace);
 
-class LcProfiledAot {
+class ProfiledAot {
 public:
     // InlineBudget caps the total INSTRUCTIONS Build() may duplicate by inlining, per
     // region (0 = unlimited). The hottest call edges are inlined first, until the
     // budget is spent -- so a region never blows up in size chasing every hot call.
-    LcProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
+    ProfiledAot (ICpuArchitecture *pArch, CPU_TIER CONST *pTiers, UINT32 TierCount,
                    UINT64 HotThreshold, UINT32 InlineBudget = 0);
-    ~LcProfiledAot ();
+    ~ProfiledAot ();
 
-    LcProfiledAot (LcProfiledAot CONST &)            = delete;
-    LcProfiledAot &operator= (LcProfiledAot CONST &) = delete;
+    ProfiledAot (ProfiledAot CONST &)            = delete;
+    ProfiledAot &operator= (ProfiledAot CONST &) = delete;
 
     // Compile every region in the trace at the tier its recorded count justifies.
-    HRESULT Build (LcPerfTrace CONST &Trace);
+    HRESULT Build (PerfTrace CONST &Trace);
 
     // Execute a region that Build() compiled. Pure execution -- no profiling.
     CPU_EXEC_STATUS Run (CPU_ADDR Entry, VOID *pRAM, VOID *pGRF, VOID *pFRF);

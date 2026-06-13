@@ -22,7 +22,7 @@
 namespace LibCPU {
 
 // A console: bytes written to its port land on host stdout and in a capture buffer.
-class SysConsole final : public LcDevice {
+class SysConsole final : public Device {
 public:
     explicit SysConsole (UINT16 Port) : m_Port (Port) {}
     CHAR8 CONST *Name () CONST override { return "console"; }
@@ -40,7 +40,7 @@ private:
 };
 
 // A read-only "dip switch": IN returns a fixed value.
-class SysDipSwitch final : public LcDevice {
+class SysDipSwitch final : public Device {
 public:
     SysDipSwitch (UINT16 Port, UINT8 Value) : m_Port (Port), m_Value (Value) {}
     CHAR8 CONST *Name () CONST override { return "dipswitch"; }
@@ -52,7 +52,7 @@ private:
 };
 
 // A timer: raises IRQ0 once every Period polls, up to MaxFires times, then stops.
-class SysTimer final : public LcDevice {
+class SysTimer final : public Device {
 public:
     SysTimer (UINT32 Period, UINT32 MaxFires) : m_Period (Period), m_Max (MaxFires) {}
     CHAR8 CONST *Name () CONST override { return "timer"; }
@@ -90,7 +90,7 @@ RunSystemDemo (ICpuBackend *pBackend)
     ICpuArchitecture *pArch = CreateV20 ();
     pArch->SetCodeMemory (Ram, sizeof (Ram));
 
-    LcSystem Machine (pArch, pBackend, Ram, sizeof (Ram));
+    System Machine (pArch, pBackend, Ram, sizeof (Ram));
     SysConsole   Console (0xE9);
     SysDipSwitch Dip (0x64, (UINT8) 'S');
     SysTimer     Timer (1, 3);

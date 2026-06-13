@@ -48,7 +48,7 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class SwiftValue final : public LcComObject<ICpuValue> {
+class SwiftValue final : public ComObject<ICpuValue> {
 public:
     SwiftValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -58,7 +58,7 @@ public:
     UINT32 m_Bits;
 };
 
-class SwiftBlock final : public LcComObject<ICpuBlock> {
+class SwiftBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -68,7 +68,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<SwiftValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<SwiftValue *> (pValue)->m_Bits; }
 
-class SwiftCode final : public LcComObject<ICpuCode> {
+class SwiftCode final : public ComObject<ICpuCode> {
 public:
     SwiftCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -117,7 +117,7 @@ private:
     std::string m_Dir;
 };
 
-class SwiftEmitter final : public LcComObject<ICpuEmitter> {
+class SwiftEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -314,7 +314,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class SwiftBackend final : public LcComObject<ICpuBackend> {
+class SwiftBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

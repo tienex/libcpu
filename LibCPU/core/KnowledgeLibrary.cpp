@@ -196,7 +196,7 @@ Attr (XmlNode CONST &N, CHAR8 CONST *pKey)
 // ===========================================================================
 
 bool
-LcKnowledgeLibrary::Load (CHAR8 CONST *pPath)
+KnowledgeLibrary::Load (CHAR8 CONST *pPath)
 {
     std::FILE *pf = std::fopen (pPath, "rb");
     if (pf == nullptr) {
@@ -236,17 +236,26 @@ LcKnowledgeLibrary::Load (CHAR8 CONST *pPath)
             if (H.Name != "host") {
                 continue;
             }
-            Entry.Host.Call = Attr (H, "call");
-            Entry.Host.Lib  = Attr (H, "lib");
+            Entry.Host.Call   = Attr (H, "call");
+            Entry.Host.Lib    = Attr (H, "lib");
+            Entry.Host.Result = Attr (H, "result");
             for (XmlNode CONST &A : H.Children) {
                 if (A.Name != "arg") {
                     continue;
                 }
                 KN_HOST_ARG Arg;
+                Arg.Dir = KnDirNone;
                 std::string Cst = Attr (A, "const");
+                std::string Str = Attr (A, "struct");
                 if (!Cst.empty ()) {
                     Arg.Kind  = KN_HOST_ARG::ConstName;
                     Arg.Const = Cst;
+                } else if (!Str.empty ()) {
+                    Arg.Kind   = KN_HOST_ARG::StructPtr;
+                    Arg.Struct = Str;
+                    Arg.From   = Attr (A, "from");
+                    std::string D = Attr (A, "dir");
+                    Arg.Dir = (D == "in") ? KnDirIn : (D == "inout") ? KnDirInOut : KnDirOut;
                 } else {
                     Arg.Kind = KN_HOST_ARG::FromValue;
                     Arg.From = Attr (A, "from");
@@ -261,7 +270,7 @@ LcKnowledgeLibrary::Load (CHAR8 CONST *pPath)
 }
 
 KN_SYSCALL CONST *
-LcKnowledgeLibrary::Find (UINT32 Vector, UINT32 Selector) CONST
+KnowledgeLibrary::Find (UINT32 Vector, UINT32 Selector) CONST
 {
     for (KN_SYSCALL CONST &S : m_Syscalls) {
         if (S.Vector != Vector) {
@@ -338,11 +347,36 @@ Resolve (CPU_STATE CONST *pState, std::string CONST &Name, bool *pOk)
 
 // A host-call argument once materialised from the guest.
 struct HostVal {
-    enum { Int, Str, Stream } Kind;
+    enum { Int, Str, Stream, Struct } Kind;
     long long   I;
     std::string S;
     std::FILE  *F;
+    // For Struct: a host-layout buffer passed by pointer, plus what is needed to write it
+    // back into guest RAM after the call.
+    std::vector<UINT8>        Buf;
+    UINT64                    GuestLinear;
+    int                       Dir;
+    std::vector<KN_FIELD_MAP> Fields;
 };
+
+// Read / write a little-endian field of 1..8 bytes within a byte buffer.
+static UINT64
+ReadLE (UINT8 CONST *p, UINT32 Off, UINT32 Size)
+{
+    UINT64 V = 0;
+    for (UINT32 I = 0; I < Size && I < 8; I++) {
+        V |= (UINT64) p[Off + I] << (8 * I);
+    }
+    return V;
+}
+
+static VOID
+WriteLE (UINT8 *p, UINT32 Off, UINT32 Size, UINT64 V)
+{
+    for (UINT32 I = 0; I < Size && I < 8; I++) {
+        p[Off + I] = (UINT8) (V >> (8 * I));
+    }
+}
 
 // Copy a '$'-terminated DOS string out of guest RAM into a host C string.
 static std::string
@@ -381,8 +415,10 @@ Materialise (KN_HOST_ARG CONST &Arg, CPU_STATE CONST *pState, UINT8 CONST *pRAM,
     return V;
 }
 
-// Execute one host call. Sets *pExited / *pCode for an "exit"-class call.
-static VOID
+// Execute one built-in host call. Returns true if the call name was recognised here;
+// false leaves it for the dynamic (catalog-bound) path. Sets *pExited / *pCode for an
+// "exit"-class call.
+static bool
 DoHostCall (KN_HOST_CALL CONST &Call, std::vector<HostVal> CONST &Args, bool *pExited, INT32 *pCode)
 {
     if (Call.Call == "fputs") {
@@ -390,27 +426,98 @@ DoHostCall (KN_HOST_CALL CONST &Call, std::vector<HostVal> CONST &Args, bool *pE
             std::fputs (Args[0].S.c_str (), Args[1].F);
             std::fflush (Args[1].F);
         }
-    } else if (Call.Call == "fputc" || Call.Call == "putchar") {
+        return true;
+    }
+    if (Call.Call == "fputc" || Call.Call == "putchar") {
         std::FILE *F = (Args.size () >= 2 && Args[1].Kind == HostVal::Stream) ? Args[1].F : stdout;
         if (!Args.empty ()) {
             std::fputc ((int) (Args[0].I & 0xFF), F);
             std::fflush (F);
         }
-    } else if (Call.Call == "exit") {
+        return true;
+    }
+    if (Call.Call == "exit") {
         *pExited = true;
         *pCode   = Args.empty () ? 0 : (INT32) (Args[0].I & 0xFF);
+        return true;
     }
-    // An unknown call name is a no-op: the library named a host function the runtime
-    // does not yet provide. (The loader keeps it so a future runtime can bind it.)
+    return false;          // not a built-in: try the catalog binder
+}
+
+// Lower a materialised argument to an integer-class value (the only class the generic
+// invoker supports: int / pointer / size_t -- exactly what libc syscalls take). Strings
+// and streams pass as the address of their host storage.
+static long long
+ToWord (HostVal CONST &V)
+{
+    if (V.Kind == HostVal::Str)    { return (long long) (CONST char *) V.S.c_str (); }
+    if (V.Kind == HostVal::Stream) { return (long long) V.F; }
+    if (V.Kind == HostVal::Struct) { return (long long) (UINT8 CONST *) V.Buf.data (); }
+    return V.I;
+}
+
+// Invoke a native function pointer with up to six integer-class arguments and return its
+// integer result. Higher arities / floating-point / struct-by-value are not supported (a
+// knowledge library binds C entry points whose arguments are integer/pointer-class).
+static long long
+CallNative (VOID *pFn, std::vector<long long> CONST &A, bool *pOk)
+{
+    *pOk = true;
+    switch (A.size ()) {
+        case 0: return ((long long (*) (void)) pFn) ();
+        case 1: return ((long long (*) (long long)) pFn) (A[0]);
+        case 2: return ((long long (*) (long long, long long)) pFn) (A[0], A[1]);
+        case 3: return ((long long (*) (long long, long long, long long)) pFn) (A[0], A[1], A[2]);
+        case 4: return ((long long (*) (long long, long long, long long, long long)) pFn) (A[0], A[1], A[2], A[3]);
+        case 5: return ((long long (*) (long long, long long, long long, long long, long long)) pFn) (A[0], A[1], A[2], A[3], A[4]);
+        case 6: return ((long long (*) (long long, long long, long long, long long, long long, long long)) pFn) (A[0], A[1], A[2], A[3], A[4], A[5]);
+        default: *pOk = false; return 0;
+    }
+}
+
+// Write an integer return value back into a named 8086 operand (a word register like
+// "ax" or a byte half like "al"). Unknown names are ignored.
+static VOID
+WriteOperand (CPU_STATE *pState, std::string CONST &Name, long long Value)
+{
+    static struct { CHAR8 CONST *p; int idx; } const Word[] = {
+        { "ax", R_AX }, { "cx", R_CX }, { "dx", R_DX }, { "bx", R_BX },
+        { "sp", R_SP }, { "bp", R_BP }, { "si", R_SI }, { "di", R_DI },
+        { "es", R_ES }, { "cs", R_CS }, { "ss", R_SS }, { "ds", R_DS }
+    };
+    for (auto CONST &W : Word) {
+        if (Name == W.p) {
+            pState->Reg[W.idx] = (pState->Reg[W.idx] & ~UINT64_C (0xFFFF)) | (UINT64) (Value & 0xFFFF);
+            return;
+        }
+    }
+    static struct { CHAR8 CONST *p; int idx; bool hi; } const Byte[] = {
+        { "al", R_AX, false }, { "ah", R_AX, true },
+        { "cl", R_CX, false }, { "ch", R_CX, true },
+        { "dl", R_DX, false }, { "dh", R_DX, true },
+        { "bl", R_BX, false }, { "bh", R_BX, true }
+    };
+    for (auto CONST &B : Byte) {
+        if (Name == B.p) {
+            UINT64 V = pState->Reg[B.idx];
+            if (B.hi) {
+                pState->Reg[B.idx] = (V & ~UINT64_C (0xFF00)) | (((UINT64) Value & 0xFF) << 8);
+            } else {
+                pState->Reg[B.idx] = (V & ~UINT64_C (0x00FF)) | ((UINT64) Value & 0xFF);
+            }
+            return;
+        }
+    }
 }
 
 } // anonymous namespace
 
 KN_RUN_RESULT
-LcRunWithSyscalls (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+RunWithSyscalls (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                    CPU_ADDR Entry, CPU_ADDR End,
                    VOID *pRAM, CPU_STATE *pState,
-                   LcKnowledgeLibrary CONST &Library)
+                   KnowledgeLibrary CONST &Library,
+                   HOST_BINDER CONST *pBinder)
 {
     KN_RUN_RESULT R;
     R.Exited       = false;
@@ -466,11 +573,65 @@ LcRunWithSyscalls (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         std::vector<HostVal> Args;
         Args.reserve (pEntry->Host.Args.size ());
         for (KN_HOST_ARG CONST &A : pEntry->Host.Args) {
-            Args.push_back (Materialise (A, pState, pBytes, RamSize));
+            if (A.Kind == KN_HOST_ARG::StructPtr && pBinder != nullptr && pBinder->Layout != nullptr) {
+                // Resolve the guest far pointer, fetch the struct's field map from the binder
+                // (host layout from the catalog, guest layout = the target convention), and
+                // build a host-layout buffer. For an IN/INOUT struct, convert guest -> host now.
+                bool Ok = false;
+                UINT64 GuestLinear = Resolve (pState, A.From, &Ok);
+                KN_FIELD_MAP Fields[64];
+                UINT32 HostSize = 0, GuestSize = 0;
+                UINT32 NF = pBinder->Layout (pBinder->pCtx, A.Struct.c_str (), Fields, 64, &HostSize, &GuestSize);
+                HostVal V;
+                V.Kind = HostVal::Struct;
+                V.GuestLinear = GuestLinear;
+                V.Dir = A.Dir;
+                V.Buf.assign (HostSize, 0);
+                V.Fields.assign (Fields, Fields + NF);
+                if ((A.Dir == KnDirIn || A.Dir == KnDirInOut) && GuestLinear < RamSize) {
+                    for (KN_FIELD_MAP CONST &F : V.Fields) {
+                        if (GuestLinear + F.GuestOffset + F.GuestSize <= RamSize && F.HostOffset + F.HostSize <= HostSize) {
+                            UINT64 Val = ReadLE (pBytes, (UINT32) GuestLinear + F.GuestOffset, F.GuestSize);
+                            WriteLE (V.Buf.data (), F.HostOffset, F.HostSize, Val);
+                        }
+                    }
+                }
+                Args.push_back (std::move (V));
+            } else {
+                Args.push_back (Materialise (A, pState, pBytes, RamSize));
+            }
         }
         bool  Exited = false;
         INT32 Code32 = 0;
-        DoHostCall (pEntry->Host, Args, &Exited, &Code32);
+        if (!DoHostCall (pEntry->Host, Args, &Exited, &Code32) && pBinder != nullptr && pBinder->Bind != nullptr) {
+            // Not a built-in: bind the named host function through the caller's binder
+            // (e.g. a derived catalog -> dlsym) and invoke it natively.
+            if (VOID *pFn = pBinder->Bind (pBinder->pCtx, pEntry->Host.Call.c_str ())) {
+                std::vector<long long> Words;
+                Words.reserve (Args.size ());
+                for (HostVal CONST &V : Args) {
+                    Words.push_back (ToWord (V));
+                }
+                bool Ok = false;
+                long long Ret = CallNative (pFn, Words, &Ok);
+                if (Ok && !pEntry->Host.Result.empty ()) {
+                    WriteOperand (pState, pEntry->Host.Result, Ret);
+                }
+                // For OUT/INOUT struct arguments, convert the host buffer the call just
+                // wrote back into the guest's layout in RAM.
+                for (HostVal CONST &V : Args) {
+                    if (V.Kind != HostVal::Struct || (V.Dir != KnDirOut && V.Dir != KnDirInOut)) {
+                        continue;
+                    }
+                    for (KN_FIELD_MAP CONST &F : V.Fields) {
+                        if (V.GuestLinear + F.GuestOffset + F.GuestSize <= RamSize && F.HostOffset + F.HostSize <= V.Buf.size ()) {
+                            UINT64 Val = ReadLE (V.Buf.data (), F.HostOffset, F.HostSize);
+                            WriteLE (pBytes, (UINT32) V.GuestLinear + F.GuestOffset, F.GuestSize, Val);
+                        }
+                    }
+                }
+            }
+        }
         if (Exited) {
             R.Exited   = true;
             R.ExitCode = Code32;

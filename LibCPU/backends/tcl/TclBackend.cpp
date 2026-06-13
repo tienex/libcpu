@@ -47,7 +47,7 @@ Mask (UINT64 Value, UINT32 Bits)
     return (Bits >= 64) ? Value : (Value & (((UINT64) 1 << Bits) - 1));
 }
 
-class TclValue final : public LcComObject<ICpuValue> {
+class TclValue final : public ComObject<ICpuValue> {
 public:
     TclValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -57,7 +57,7 @@ public:
     UINT32 m_Bits;
 };
 
-class TclBlock final : public LcComObject<ICpuBlock> {
+class TclBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -67,7 +67,7 @@ public:
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<TclValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<TclValue *> (pValue)->m_Bits; }
 
-class TclCode final : public LcComObject<ICpuCode> {
+class TclCode final : public ComObject<ICpuCode> {
 public:
     TclCode (std::string Dir) : m_Dir (std::move (Dir)) {}
 
@@ -116,7 +116,7 @@ private:
     std::string m_Dir;
 };
 
-class TclEmitter final : public LcComObject<ICpuEmitter> {
+class TclEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
@@ -313,7 +313,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class TclBackend final : public LcComObject<ICpuBackend> {
+class TclBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

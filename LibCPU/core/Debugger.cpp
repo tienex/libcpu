@@ -8,7 +8,7 @@
 
 namespace LibCPU {
 
-// Canonical command set (LcLineEditor colours + completes these; ResolveCommand
+// Canonical command set (LineEditor colours + completes these; ResolveCommand
 // also accepts any unambiguous prefix and a few one-letter aliases).
 static std::vector<std::string>
 CommandList ()
@@ -32,7 +32,7 @@ Split (std::string CONST &Line)
     return Out;
 }
 
-LcDebugger::LcDebugger (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+Debugger::Debugger (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                         UINT8 *pRAM, UINT64 RamSize, CPU_STATE *pState, CPU_ADDR Entry, CPU_ADDR End,
                         std::vector<std::string> RegNames, UINT32 RegBytes,
                         std::vector<std::string> FlagNames)
@@ -43,7 +43,7 @@ LcDebugger::LcDebugger (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 }
 
 std::string
-LcDebugger::ResolveCommand (std::string CONST &Tok) CONST
+Debugger::ResolveCommand (std::string CONST &Tok) CONST
 {
     static struct { CHAR8 CONST *a; CHAR8 CONST *c; } const Alias[] = {
         { "s", "step" }, { "c", "continue" }, { "b", "break" }, { "x", "examine" },
@@ -65,7 +65,7 @@ LcDebugger::ResolveCommand (std::string CONST &Tok) CONST
 }
 
 bool
-LcDebugger::ParseAddr (std::string CONST &S, CPU_ADDR *pOut) CONST
+Debugger::ParseAddr (std::string CONST &S, CPU_ADDR *pOut) CONST
 {
     std::string T = S;
     if (!T.empty () && T[0] == '*') { T = T.substr (1); }   // gdb-style *addr
@@ -80,7 +80,7 @@ LcDebugger::ParseAddr (std::string CONST &S, CPU_ADDR *pOut) CONST
 // --- single-step engine ----------------------------------------------------
 
 bool
-LcDebugger::EvalCond (CPU_ADDR Pc)
+Debugger::EvalCond (CPU_ADDR Pc)
 {
     ComPtr<ICpuEmitter> Em;
     if (FAILED (m_pBackend->CreateEmitter (m_pArch, &Em)) || Em == nullptr) {
@@ -110,7 +110,7 @@ LcDebugger::EvalCond (CPU_ADDR Pc)
 }
 
 CPU_ADDR
-LcDebugger::StepOne ()
+Debugger::StepOne ()
 {
     UINT32   Tag = 0;
     CPU_ADDR NewPc = 0, NextPc = 0;
@@ -157,7 +157,7 @@ LcDebugger::StepOne ()
 // --- output helpers --------------------------------------------------------
 
 void
-LcDebugger::ShowLocation ()
+Debugger::ShowLocation ()
 {
     char Line[64];
     m_pArch->Disassemble (m_Pc, Line, sizeof (Line));
@@ -167,7 +167,7 @@ LcDebugger::ShowLocation ()
 // --- commands --------------------------------------------------------------
 
 void
-LcDebugger::CmdStep (UINT32 Count)
+Debugger::CmdStep (UINT32 Count)
 {
     for (UINT32 I = 0; I < Count && !m_Halted; I++) {
         char Line[64];
@@ -181,7 +181,7 @@ LcDebugger::CmdStep (UINT32 Count)
 }
 
 void
-LcDebugger::CmdContinue ()
+Debugger::CmdContinue ()
 {
     UINT32 Steps = 0;
     while (!m_Halted && m_Pc < m_End && Steps < 2000000u) {
@@ -200,7 +200,7 @@ LcDebugger::CmdContinue ()
 }
 
 void
-LcDebugger::CmdBreak (std::string CONST &Arg)
+Debugger::CmdBreak (std::string CONST &Arg)
 {
     CPU_ADDR Addr = 0;
     if (!ParseAddr (Arg, &Addr)) {
@@ -212,7 +212,7 @@ LcDebugger::CmdBreak (std::string CONST &Arg)
 }
 
 void
-LcDebugger::CmdRegisters ()
+Debugger::CmdRegisters ()
 {
     UINT64 Mask = (m_RegBytes >= 8) ? ~UINT64_C (0) : ((UINT64_C (1) << (m_RegBytes * 8)) - 1);
     int Width = (int) (m_RegBytes * 2);
@@ -234,7 +234,7 @@ LcDebugger::CmdRegisters ()
 }
 
 void
-LcDebugger::CmdInfo (std::string CONST &What)
+Debugger::CmdInfo (std::string CONST &What)
 {
     std::string W = What.empty () ? "registers" : What;
     if (std::string ("registers").compare (0, W.size (), W) == 0 || W == "r" || W == "reg") {
@@ -253,7 +253,7 @@ LcDebugger::CmdInfo (std::string CONST &What)
 }
 
 void
-LcDebugger::CmdDisas (std::string CONST &AddrArg, std::string CONST &CountArg)
+Debugger::CmdDisas (std::string CONST &AddrArg, std::string CONST &CountArg)
 {
     CPU_ADDR Addr = m_Pc;
     if (!AddrArg.empty ()) { ParseAddr (AddrArg, &Addr); }
@@ -273,7 +273,7 @@ LcDebugger::CmdDisas (std::string CONST &AddrArg, std::string CONST &CountArg)
 }
 
 void
-LcDebugger::CmdTransDisas (std::string CONST &AddrArg)
+Debugger::CmdTransDisas (std::string CONST &AddrArg)
 {
     CPU_ADDR Addr = m_Pc;
     if (!AddrArg.empty ()) { ParseAddr (AddrArg, &Addr); }
@@ -307,7 +307,7 @@ LcDebugger::CmdTransDisas (std::string CONST &AddrArg)
 }
 
 void
-LcDebugger::CmdExamine (std::string CONST &AddrArg, std::string CONST &CountArg)
+Debugger::CmdExamine (std::string CONST &AddrArg, std::string CONST &CountArg)
 {
     CPU_ADDR Addr = 0;
     if (!ParseAddr (AddrArg, &Addr)) {
@@ -329,7 +329,7 @@ LcDebugger::CmdExamine (std::string CONST &AddrArg, std::string CONST &CountArg)
 }
 
 void
-LcDebugger::CmdReset ()
+Debugger::CmdReset ()
 {
     std::memset (m_pState, 0, sizeof (*m_pState));
     m_pState->RamSize = m_RamSize;
@@ -339,7 +339,7 @@ LcDebugger::CmdReset ()
 }
 
 void
-LcDebugger::CmdHelp ()
+Debugger::CmdHelp ()
 {
     std::printf (
         "commands (any unambiguous prefix works; aliases s c b x q r i h):\n"
@@ -356,9 +356,9 @@ LcDebugger::CmdHelp ()
 }
 
 int
-LcDebugger::Repl ()
+Debugger::Repl ()
 {
-    LcLineEditor Editor (CommandList ());
+    LineEditor Editor (CommandList ());
     std::printf ("LibCPU debugger -- 'help' for commands, 'quit' to exit.\n");
     ShowLocation ();
 

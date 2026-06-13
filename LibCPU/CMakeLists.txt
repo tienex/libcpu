@@ -295,12 +295,18 @@ if(APPLE)
     COMMENT "Embedding UPCL.framework as a sub-framework of LibCPU.framework")
 endif()
 
+# zstd -- the solid compressor behind knowledge-library (ZOO) archives. VENDORED as a
+# single-file amalgamation under third_party/zstd, so it builds from source (universal
+# across the toolchain's arches, no external dependency) and powers `lcx klib`.
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
-  core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp
-  frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
-target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core)
-target_link_libraries(lcx PRIVATE LibCPU upcl)
+  core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp core/ZooArchive.cpp
+  core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp
+  frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp
+  third_party/zstd/zstd.c)
+target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core third_party/zstd)
+target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
+target_link_libraries(lcx PRIVATE LibCPU upcl ${CMAKE_DL_LIBS})   # dl for HeaderParser's dlopen(libclang)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
@@ -420,6 +426,109 @@ if(TARGET interp_backend)
   add_test(NAME upcl.translate COMMAND lcx translate "${CMAKE_CURRENT_SOURCE_DIR}/test/add.v20.bin"
     --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
   set_tests_properties(upcl.translate PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
+endif()
+
+# Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
+# (asserting the solid container holds them), then extract one and diff it against the
+# original -- a full create/ls/extract round-trip proving the format is lossless.
+set(_klib "${CMAKE_BINARY_DIR}/test.klib")
+add_test(NAME klib.roundtrip COMMAND sh -c
+  "set -e; \
+   '$<TARGET_FILE:lcx>' klib create '${_klib}' \
+      '${CMAKE_CURRENT_SOURCE_DIR}/test/dos21.xml' \
+      '${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl' \
+      '${CMAKE_CURRENT_SOURCE_DIR}/test/broken.upcl'; \
+   '$<TARGET_FILE:lcx>' klib ls '${_klib}'; \
+   '$<TARGET_FILE:lcx>' klib extract '${_klib}' v20.upcl -o '${CMAKE_BINARY_DIR}/v20.extracted'; \
+   cmp '${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl' '${CMAKE_BINARY_DIR}/v20.extracted'")
+set_tests_properties(klib.roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "solid zstd")
+list(APPEND LIBCPU_CHECK_DEPS lcx)
+
+# Symbol reader (knowledge-library v2 step b): derive a library's exported-symbol set
+# from a real toolchain artifact. Two formats, two hermetic fixtures:
+#  - TBD text stub: a checked-in tapi-tbd v4 file; assert a known export is read.
+#  - Mach-O binary: our own interp.backend bundle; assert its module entry symbol
+#    (_LibCPUModuleCreateBackend, the C export the loader dlsym's) is read.
+add_test(NAME symbols.tbd COMMAND lcx klib symbols
+  "${CMAKE_CURRENT_SOURCE_DIR}/test/libknow.tbd" --grep _know_ioctl)
+set_tests_properties(symbols.tbd PROPERTIES PASS_REGULAR_EXPRESSION "_know_ioctl")
+if(TARGET interp_backend)
+  add_test(NAME symbols.macho COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' klib symbols '$<TARGET_FILE:interp_backend>' --grep LibCPUModuleCreateBackend")
+  set_tests_properties(symbols.macho PROPERTIES PASS_REGULAR_EXPRESSION "_LibCPUModuleCreateBackend")
+  # Mach-O install-name capture (LC_ID_DYLIB): a real dylib reports its install name.
+  add_test(NAME symbols.installname COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' klib symbols '$<TARGET_FILE:structdemo>'")
+  set_tests_properties(symbols.installname PROPERTIES PASS_REGULAR_EXPRESSION "install-name:")
+endif()
+
+# Classic a.out symbol extraction from a crafted minimal fixture (one exported symbol).
+add_test(NAME symbols.aout COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.aout")
+set_tests_properties(symbols.aout PROPERTIES PASS_REGULAR_EXPRESSION "_aout_sym")
+
+# Format detection sweep: craft each format's magic and assert the reader names it. Proves
+# the detection registry across the object/executable format family (extraction varies).
+add_test(NAME symbols.detect
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test/detect_formats.sh" "$<TARGET_FILE:lcx>")
+set_tests_properties(symbols.detect PROPERTIES FAIL_REGULAR_EXPRESSION "MISMATCH")
+
+# Header parser (knowledge-library v2 step c): function signatures + struct layouts from a
+# C header. Uses libclang when present (dlopen'd, not linked), else a built-in scanner --
+# either way the self-contained fixture yields know_open() and struct know_stat.
+add_test(NAME headers.parse COMMAND lcx klib headers "${CMAKE_CURRENT_SOURCE_DIR}/test/know.h")
+set_tests_properties(headers.parse PROPERTIES PASS_REGULAR_EXPRESSION "know_open")
+# The built-in fallback (libclang forced off) must still recover the same declarations,
+# proving the no-hard-dependency promise holds.
+add_test(NAME headers.fallback COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/know.h' | grep -q 'know_open(' && \
+   '$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/know.h' | grep -q '^built-in:'")
+set_tests_properties(headers.fallback PROPERTIES ENVIRONMENT "LIBCPU_NO_CLANG=1")
+
+# Derivation engine (knowledge-library v2 step d + e): join the header signatures with the
+# library's exported symbols into a host-call catalog, save it as a ZOO/zstd archive, and
+# reload it. know.h declares 7 functions; libknow.tbd exports 4 of them -- so the catalog
+# must report exactly 4 exported, proving the join (and the archive round-trip) work.
+add_test(NAME know.derive COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' know derive '${CMAKE_CURRENT_SOURCE_DIR}/test/know.h' \
+       '${CMAKE_CURRENT_SOURCE_DIR}/test/libknow.tbd' -o '${CMAKE_BINARY_DIR}/know.klib' && \
+   '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/know.klib'")
+set_tests_properties(know.derive PROPERTIES PASS_REGULAR_EXPRESSION "4 exported")
+
+# 8-bit immediate moves (B0..B7, MOV reg8,imm8) on the V20 frontend: a fixture of four
+# such moves (incl. the high-byte forms ah/bh) must disassemble correctly.
+add_test(NAME disasm.mov8 COMMAND lcx disasm "${CMAKE_CURRENT_SOURCE_DIR}/test/mov8.v20.bin" --arch v20 --count 4)
+set_tests_properties(disasm.mov8 PROPERTIES PASS_REGULAR_EXPRESSION "mov ah,0x80")
+
+# Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
+# bound dynamically through the derived catalog (not a built-in handler). The guest sets
+# AL='a'; after the run AL must be 'A', proving native call + argument/result marshalling.
+if(TARGET interp_backend)
+  add_test(NAME know.bind COMMAND lcx know bind
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/hostcall.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/libc_subset.tbd"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/hostcall.xml")
+  set_tests_properties(know.bind PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+
+  # Struct marshalling: a real demo shared library (built here) whose out-parameter call
+  # fills a 32-bit-field struct; the dispatcher marshals it back to the guest's 16-bit
+  # packed layout by the catalog's field offsets. Proves struct-conversion end to end.
+  add_library(structdemo SHARED test/structdemo.c)
+  add_test(NAME know.marshal COMMAND lcx know marshal
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/structdemo.h"
+    "$<TARGET_FILE:structdemo>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/structdemo.xml")
+  set_tests_properties(know.marshal PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  list(APPEND LIBCPU_CHECK_DEPS structdemo)
+
+  # Derived target->host mapping: the DOS INT 21h mapping is generated from a target ABI
+  # table (test/dos.abi) joined with a libc catalog -- no hand-authored <syscall> blocks --
+  # then drives the canonical "Hello, LibCPU!" program. Proves derivation yields a working
+  # mapping (incl. signature-driven auto-fill of fputs's FILE* argument with stdout).
+  add_test(NAME know.derivemap COMMAND lcx know derive-map
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/libc_min.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/libc_min.tbd"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/dos.abi")
+  set_tests_properties(know.derivemap PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
 endif()
 
 # `make check` (or `cmake --build build --target check`): build the drivers and

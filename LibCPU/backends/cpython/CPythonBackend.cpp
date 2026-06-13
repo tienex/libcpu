@@ -87,7 +87,7 @@ private:
     PyGILState_STATE m_State;
 };
 
-class PyValue final : public LcComObject<ICpuValue> {
+class PyValue final : public ComObject<ICpuValue> {
 public:
     PyValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -97,7 +97,7 @@ public:
     UINT32 m_Bits;
 };
 
-class PyBlock final : public LcComObject<ICpuBlock> {
+class PyBlock final : public ComObject<ICpuBlock> {
 public:
     explicit PyBlock (UINT32 Index) : m_Index (Index) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -112,7 +112,7 @@ static UINT32 BlkIndex (ICpuBlock *pB) { return static_cast<PyBlock *> (pB)->m_I
 static UINT32 IdOf   (ICpuValue *pValue) { return static_cast<PyValue *> (pValue)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pValue) { return static_cast<PyValue *> (pValue)->m_Bits; }
 
-class PyCode final : public LcComObject<ICpuCode> {
+class PyCode final : public ComObject<ICpuCode> {
 public:
     PyCode (PyObject *Code) : m_Code (Code) {}
 
@@ -168,28 +168,28 @@ private:
     PyObject *m_Code;
 };
 
-class PyEmitter final : public LcComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class PyEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
 public:
     // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the LcComObject base.
+    // QI here, forward refcounting to the ComObject base.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuSmcEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
             AddRef ();
             return S_OK;
         }
-        if (LcIsEqualGUID (&riid, &IID_ICpuProfileEmitter)) {
+        if (CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
             AddRef ();
             return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
-    UINT32 STDMETHODCALLTYPE AddRef () override { return LcComObject<ICpuEmitter>::AddRef (); }
-    UINT32 STDMETHODCALLTYPE Release () override { return LcComObject<ICpuEmitter>::Release (); }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         UINT32 D = Fresh ();
@@ -411,7 +411,7 @@ private:
     UINT32                 m_Next = 0;
 };
 
-class CPythonBackend final : public LcComObject<ICpuBackend> {
+class CPythonBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);

@@ -33,20 +33,20 @@ static CHAR8 CONST *kHelpers =
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
 
-class JcValue final : public LcComObject<ICpuValue> {
+class JcValue final : public ComObject<ICpuValue> {
 public:
     JcValue (UINT32 Id, UINT32 Bits) : m_Id (Id), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuValue, ppvObject); }
     UINT32 m_Id, m_Bits;
 };
-class JcBlock final : public LcComObject<ICpuBlock> {
+class JcBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBlock, ppvObject); }
 };
 static UINT32 IdOf   (ICpuValue *pV) { return static_cast<JcValue *> (pV)->m_Id; }
 static UINT32 BitsOf (ICpuValue *pV) { return static_cast<JcValue *> (pV)->m_Bits; }
 
-class JcCode final : public LcComObject<ICpuCode> {
+class JcCode final : public ComObject<ICpuCode> {
 public:
     explicit JcCode (std::string Script) : m_Script (std::move (Script)) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuCode, ppvObject); }
@@ -78,7 +78,7 @@ private:
     std::string m_Script;
 };
 
-class JcEmitter final : public LcComObject<ICpuEmitter> {
+class JcEmitter final : public ComObject<ICpuEmitter> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuEmitter, ppvObject); }
 
@@ -180,7 +180,7 @@ private:
     UINT32      m_Next = 0;
 };
 
-class JscoreBackend final : public LcComObject<ICpuBackend> {
+class JscoreBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBackend, ppvObject); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "jscore"; }

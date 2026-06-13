@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Maps a guest INT 21h/AH=10h onto the host libc toupper(): take AL as the argument,
+     write the integer return back into AL. The host function is NOT one of the built-in
+     calls (fputs/fputc/exit) -- it is resolved dynamically through the derived catalog. -->
+<knowledge target="demo8086" host="libc">
+  <syscall vector="0x21" select="ah" value="0x10" name="ToUpper">
+    <host call="toupper" lib="libc" result="al">
+      <arg from="al"/>
+    </host>
+  </syscall>
+</knowledge>

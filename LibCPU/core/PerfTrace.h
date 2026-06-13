@@ -39,7 +39,7 @@ typedef struct _CPU_TRACE_EDGE {
     UINT64   Count;
 } CPU_TRACE_EDGE;
 
-class LcPerfTrace {
+class PerfTrace {
 public:
     // Merge a sample (adds Count to the region; remembers End).
     VOID Record (CPU_ADDR Entry, CPU_ADDR End, UINT64 Count);

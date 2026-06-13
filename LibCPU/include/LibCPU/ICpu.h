@@ -360,7 +360,7 @@ DECLARE_INTERFACE_ (ICpuBackendCache, IUnknown)
   Where a user-level guest reaches the host through system calls (ICpuSyscallEmitter),
   a system-level guest reaches an emulated machine through the DEVICE BUS (port I/O)
   and privileged control instructions. Each such instruction records its kind in
-  CPU_STATE.IoCtrl (+ IoPort/IoData) and traps to the host machine (LcSystem), which
+  CPU_STATE.IoCtrl (+ IoPort/IoData) and traps to the host machine (System), which
   drives the addressed device or performs the control action and resumes -- the same
   trap/resume path as the far-jump and syscall emitters. Discovered via
   QueryInterface (IID_ICpuSystemEmitter).

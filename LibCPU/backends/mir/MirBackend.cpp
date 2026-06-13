@@ -19,7 +19,7 @@ extern "C" {
 namespace LibCPU {
 namespace {
 
-class MirValue final : public LcComObject<ICpuValue> {
+class MirValue final : public ComObject<ICpuValue> {
 public:
     MirValue (MIR_reg_t Reg, UINT32 Bits) : m_Reg (Reg), m_Bits (Bits) {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -29,7 +29,7 @@ public:
     UINT32    m_Bits;
 };
 
-class MirBlock final : public LcComObject<ICpuBlock> {
+class MirBlock final : public ComObject<ICpuBlock> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
@@ -44,7 +44,7 @@ typedef int64_t (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 //
 // The compiled code object owns the MIR context (which owns the generated code).
 //
-class MirCode final : public LcComObject<ICpuCode> {
+class MirCode final : public ComObject<ICpuCode> {
 public:
     MirCode (MIR_context_t Ctx, JittedFn Fn) : m_Ctx (Ctx), m_Fn (Fn) {}
     ~MirCode () override {
@@ -61,7 +61,7 @@ private:
     JittedFn      m_Fn;
 };
 
-class MirEmitter final : public LcComObject<ICpuEmitter> {
+class MirEmitter final : public ComObject<ICpuEmitter> {
 public:
     MirEmitter () {
         m_Ctx  = MIR_init ();
@@ -260,7 +260,7 @@ private:
     UINT32        m_NextTemp = 0;
 };
 
-class MirBackend final : public LcComObject<ICpuBackend> {
+class MirBackend final : public ComObject<ICpuBackend> {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
