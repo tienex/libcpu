@@ -520,6 +520,11 @@ add_test(NAME symbols.gemdos COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DI
 set_tests_properties(symbols.gemdos PROPERTIES PASS_REGULAR_EXPRESSION "_gemdos")
 add_test(NAME symbols.rdoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.rdoff")
 set_tests_properties(symbols.rdoff PROPERTIES PASS_REGULAR_EXPRESSION "_rdoff")
+# IBM OS/360 object deck (EBCDIC ESD) and OpenVMS image GST (EIHD->EIHS->EGSD/EGST).
+add_test(NAME symbols.os360 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.os360")
+set_tests_properties(symbols.os360 PROPERTIES PASS_REGULAR_EXPRESSION "OS360SYM")
+add_test(NAME symbols.vms COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.vms")
+set_tests_properties(symbols.vms PROPERTIES PASS_REGULAR_EXPRESSION "_VMS_SYM")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

@@ -1034,6 +1034,99 @@ public:
 };
 
 // ===========================================================================
+//  IBM OS/360 object deck: 80-byte ESD records; SD/LD items are defined symbols,
+//  names are 8 EBCDIC characters.
+// ===========================================================================
+
+// Translate an EBCDIC (CP037) byte to ASCII for the symbol-name character set.
+static char
+EbcdicToAscii (UINT8 C)
+{
+    if (C >= 0xC1 && C <= 0xC9) { return (char) ('A' + (C - 0xC1)); }
+    if (C >= 0xD1 && C <= 0xD9) { return (char) ('J' + (C - 0xD1)); }
+    if (C >= 0xE2 && C <= 0xE9) { return (char) ('S' + (C - 0xE2)); }
+    if (C >= 0x81 && C <= 0x89) { return (char) ('a' + (C - 0x81)); }
+    if (C >= 0x91 && C <= 0x99) { return (char) ('j' + (C - 0x91)); }
+    if (C >= 0xA2 && C <= 0xA9) { return (char) ('s' + (C - 0xA2)); }
+    if (C >= 0xF0 && C <= 0xF9) { return (char) ('0' + (C - 0xF0)); }
+    if (C == 0x40) { return ' '; }
+    if (C == 0x5B) { return '$'; }
+    if (C == 0x7B) { return '#'; }
+    if (C == 0x7C) { return '@'; }
+    if (C == 0x6D) { return '_'; }
+    return '?';
+}
+
+class Os360Reader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatOs360; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;   // 02 + "ESD"
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        for (UINT64 Rec = 0; Rec + 80 <= Len; Rec += 80) {   // object deck = 80-byte records
+            if (p[Rec] != 0x02 || p[Rec + 1] != 0xC5 || p[Rec + 2] != 0xE2 || p[Rec + 3] != 0xC4) {
+                continue;                                     // not an ESD record
+            }
+            UINT32 Count = Be16 (p + Rec + 10);               // bytes of ESD items (each 16)
+            for (UINT32 O = 0; O + 16 <= Count && Rec + 16 + O + 16 <= Rec + 80; O += 16) {
+                UINT64 It = Rec + 16 + O;
+                UINT8 Type = p[It + 8];
+                if (Type == 0x00 || Type == 0x01) {           // SD (CSECT) / LD (entry) -> defined
+                    std::string Nm;
+                    for (int I = 0; I < 8; I++) { Nm.push_back (EbcdicToAscii (p[It + I])); }
+                    while (!Nm.empty () && Nm.back () == ' ') { Nm.pop_back (); }
+                    if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+                }
+            }
+        }
+    }
+};
+
+// ===========================================================================
+//  OpenVMS image GST: EIHD -> EIHS -> global symbol table (EGSD records). Universal
+//  symbols are EGSD__C_SYMG (8) subrecords with a length-prefixed name at +37.
+// ===========================================================================
+
+class VmsReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatVms; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 24 || Le32 (p + 8) != 3 || Le32 (p + 12) != 0) { return false; }
+        UINT32 Size = Le32 (p);
+        return Size >= 0x20 && Size <= 0x4000;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 SymDbg = Le32 (p + 20);                        // EIHD__L_SYMDBGOFF -> EIHS
+        if (SymDbg == 0 || (UINT64) SymDbg + 24 > Len) { return; }
+        UINT32 GstVbn  = Le32 (p + SymDbg + 16);              // EIHS__L_GSTVBN
+        UINT32 GstSize = Le32 (p + SymDbg + 20);              // EIHS__L_GSTSIZE
+        if (GstVbn == 0) { return; }
+        UINT64 O = (UINT64) (GstVbn - 1) * 512;               // VBN 1 == file offset 0
+        UINT64 End = O + GstSize;
+        if (End > Len) { End = Len; }
+        while (O + 8 <= End) {                                // EGSD records: rectyp,recsiz,alignlw
+            UINT16 RecSiz = Le16 (p + O + 2);
+            if (RecSiz < 8 || O + RecSiz > End) { break; }
+            UINT64 S = O + 8;                                 // subrecords
+            while (S + 4 <= O + RecSiz) {
+                UINT16 GsdTyp = Le16 (p + S);
+                UINT16 GsdSiz = Le16 (p + S + 2);
+                if (GsdSiz < 4) { break; }
+                if (GsdTyp == 8 && S + 37 <= Len) {           // EGSD__C_SYMG (GST universal symbol)
+                    UINT8 NamLng = p[S + 36];                 // EGST: namlng@36, name@37
+                    if (S + 37 + NamLng <= Len) {
+                        pSink->Add (std::string ((CHAR8 CONST *) (p + S + 37), NamLng));
+                    }
+                }
+                S += GsdSiz;
+            }
+            O += RecSiz;
+        }
+    }
+};
+
+// ===========================================================================
 //  .tbd (Apple text-based dylib stub)
 // ===========================================================================
 
@@ -1099,11 +1192,6 @@ private:
     PredicateFn   m_Pred;
 };
 
-static bool DetectVms (UINT8 CONST *p, UINT64 Len) {
-    if (Len < 20 || Le32 (p + 8) != 3 || Le32 (p + 12) != 0) { return false; }
-    UINT32 Size = Le32 (p);
-    return Size >= 0x20 && Size <= 0x4000;
-}
 static bool DetectXenixXOut (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && (Le16 (p) == 0x0206 || Be16 (p) == 0x0206); }
 static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
     if (Len < 2) { return false; }
@@ -1139,14 +1227,14 @@ Registry ()
     static SignatureReader S_PharLap (SymbolFormatPharLap, DetectPharLap);
     static SignatureReader S_X68000 (SymbolFormatX68000, DetectX68000);
     static SignatureReader S_Aif (SymbolFormatAif, DetectAif);
-    static SignatureReader S_Os360 (SymbolFormatOs360, DetectOs360);
+    static Os360Reader     S_Os360;
     static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
     static AmigaHunkReader S_AmigaHunk;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
     static NlmReader       S_Nlm;
-    static SignatureReader S_Vms (SymbolFormatVms, DetectVms);
+    static VmsReader       S_Vms;
     static AOutReader      S_AOut;
     static Plan9Reader     S_Plan9;
     static MinixReader     S_MinixAOut;
@@ -1206,6 +1294,8 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatMinixAOut:
         case SymbolFormatGemdos:
         case SymbolFormatRdoff:
+        case SymbolFormatOs360:
+        case SymbolFormatVms:
             return true;
         default:
             return false;
