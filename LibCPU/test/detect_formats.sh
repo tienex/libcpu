@@ -11,7 +11,9 @@ printf 'Joy!peffpwpc\000\000\000\001'                            > "$d/cfmppc"
 printf 'Joy!peffm68k\000\000\000\001'                            > "$d/cfm68k"
 printf '\000\000\003\363\000\000\000\000'                        > "$d/hunk"
 printf 'NetWare Loadable Module\032'                             > "$d/nlm"
-printf 'L\001\000\000'                                           > "$d/coff"
+printf 'L\001\000\000'                                           > "$d/wincoff"   # i386 COFF machine magic
+# bigobj: Sig1=0, Sig2=0xFFFF, then 8 bytes, then the bigobj GUID at offset 12.
+printf '\000\000\377\377\002\000\000\000\000\000\000\000\307\241\272\321\356\272\251\113\257\040\372\366\152\244\334\270' > "$d/bigobj"
 printf '\001\337\000\000'                                        > "$d/xcoff"   # 0x01DF big-endian
 # OpenVMS EIHD: size=0x60@+0, hdrblkcnt=1@+4, majorid=3@+8, minorid=0@+12, imgtype=1@+16.
 printf '\140\000\000\000\001\000\000\000\003\000\000\000\000\000\000\000\001\000\000\000' > "$d/vms"
@@ -32,7 +34,8 @@ check cfmppc "cfm-ppc:"
 check cfm68k "cfm-68k:"
 check hunk   "amiga-hunk:"
 check nlm    "nlm:"
-check coff   "coff:"
+check wincoff "wincoff:"
+check bigobj  "bigobj-coff:"
 check xcoff  "xcoff:"
 check pe     "pe/coff:"
 check vms    "vms:"

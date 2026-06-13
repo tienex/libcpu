@@ -117,7 +117,8 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatElf:       return "elf";
         case SymbolFormatAOut:      return "a.out";
         case SymbolFormatPeCoff:    return "pe/coff";
-        case SymbolFormatCoff:      return "coff";
+        case SymbolFormatWinCoff:   return "wincoff";
+        case SymbolFormatBigObjCoff: return "bigobj-coff";
         case SymbolFormatXcoff:     return "xcoff";
         case SymbolFormatEcoff:     return "ecoff";
         case SymbolFormatMz:        return "mz";
@@ -135,6 +136,25 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatNlm:       return "nlm";
         case SymbolFormatVms:       return "vms";
         default:                    return "unknown";
+    }
+}
+
+bool
+SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
+{
+    switch (Format) {
+        case SymbolFormatTbd:
+        case SymbolFormatMachO:
+        case SymbolFormatElf:
+        case SymbolFormatAOut:
+        case SymbolFormatPeCoff:
+        case SymbolFormatWinCoff:
+        case SymbolFormatBigObjCoff:
+        case SymbolFormatOmf:
+        case SymbolFormatNe:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -189,12 +209,22 @@ DetectFormat (UINT8 CONST *p, UINT64 Len)
         if (Be16 (p) == 0x0301 || Le16 (p) == 0x0301) { return SymbolFormatMinixAOut; }
         if (Le16 (p) == 0x0206 || Be16 (p) == 0x0206) { return SymbolFormatXenixXOut; }
     }
+    // Microsoft /bigobj COFF: Sig1=IMAGE_FILE_MACHINE_UNKNOWN(0), Sig2=0xFFFF, and the
+    // anon-object bigobj class-id GUID at offset 12.
+    static UINT8 CONST BigObjMagic[16] = {
+        0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B,
+        0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8
+    };
+    if (Len >= 28 && Le16 (p) == 0x0000 && Le16 (p + 2) == 0xFFFF &&
+        std::memcmp (p + 12, BigObjMagic, 16) == 0) {
+        return SymbolFormatBigObjCoff;
+    }
     // COFF-family machine magics (16-bit, little-endian) when there's no MZ wrapper.
     if (Len >= 2) {
         UINT16 Mach = Le16 (p);
         UINT16 MachBe = Be16 (p);
         if (Mach == 0x014C || Mach == 0x8664 || Mach == 0x01C0 || Mach == 0x01C4 || Mach == 0x0200) {
-            return SymbolFormatCoff;                     // i386/x64/arm/arm-thumb/ia64
+            return SymbolFormatWinCoff;                  // i386/x64/arm/arm-thumb/ia64
         }
         if (Mach == 0x0162 || Mach == 0x0166 || Mach == 0x0140 || Mach == 0x0184) {
             return SymbolFormatEcoff;                    // MIPS / Alpha ECOFF
@@ -260,6 +290,8 @@ SymbolReader::Read (CHAR8 CONST *pPath, std::string *pError)
         case SymbolFormatPeCoff: return ReadPeCoff (Data.data (), Data.size (), pError);
         case SymbolFormatOmf:    return ReadOmf (Data.data (), Data.size (), pError);
         case SymbolFormatNe:     return ReadNe (Data.data (), Data.size (), pError);
+        case SymbolFormatWinCoff:    return ReadWinCoff (Data.data (), Data.size (), pError);
+        case SymbolFormatBigObjCoff: return ReadBigObjCoff (Data.data (), Data.size (), pError);
         case SymbolFormatUnknown:
             if (pError) { *pError = std::string ("'") + pPath + "': unrecognised object/executable format"; }
             return false;
@@ -583,36 +615,7 @@ SymbolReader::ReadPeCoff (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
 
     // (1) COFF symbol table -- present in object files and unstripped images.
     if (SymPtr != 0 && NSym != 0) {
-        UINT64 SymOff = SymPtr;
-        UINT64 StrOff = SymOff + (UINT64) NSym * 18;
-        if (SymOff <= Len && (UINT64) NSym * 18 <= Len - SymOff && StrOff <= Len) {
-            for (UINT32 I = 0; I < NSym; ) {
-                UINT64 E = SymOff + (UINT64) I * 18;          // COFF symbol = 18 bytes
-                INT16  Section = (INT16) Le16 (p + E + 12);
-                UINT8  Class   = p[E + 16];
-                UINT8  Aux     = p[E + 17];
-                if (Class == 2 && Section > 0) {              // IMAGE_SYM_CLASS_EXTERNAL, defined
-                    std::string Name;
-                    if (Le32 (p + E) == 0) {                  // long name: offset into string table
-                        UINT32 So = Le32 (p + E + 4);
-                        if (StrOff + So < Len) {
-                            CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
-                            size_t Max = (size_t) (Len - (StrOff + So));
-                            Name.assign (pName, strnlen (pName, Max));
-                        }
-                    } else {                                  // inline 8-byte name (NUL-padded)
-                        char Buf[9];
-                        std::memcpy (Buf, p + E, 8);
-                        Buf[8] = '\0';
-                        Name = Buf;
-                    }
-                    if (!Name.empty ()) {
-                        AddSymbol (std::move (Name));
-                    }
-                }
-                I += 1 + Aux;                                 // skip auxiliary records
-            }
-        }
+        HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false);
     }
 
     // (2) PE export directory -- where stripped images / DLLs publish their exports. The
@@ -750,6 +753,82 @@ ReadNeNameTable (SymbolReader *pSelf, void (*Add) (SymbolReader *, std::string),
         First = false;
         Off += NameLen + 2;                                  // name + 2-byte ordinal
     }
+}
+
+// --- shared COFF symbol-table harvest (WinCOFF / PE / bigobj) ---------------
+
+void
+SymbolReader::HarvestCoff (UINT8 CONST *p, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj)
+{
+    UINT32 RecSize = BigObj ? 20 : 18;                       // bigobj widens SectionNumber to 32-bit
+    if (SymOff > Len || (UINT64) NSym * RecSize > Len - SymOff) {
+        return;
+    }
+    UINT64 StrOff = SymOff + (UINT64) NSym * RecSize;
+    for (UINT32 I = 0; I < NSym; ) {
+        UINT64 E = SymOff + (UINT64) I * RecSize;
+        INT32 Section;
+        UINT8 Class, Aux;
+        if (BigObj) {
+            Section = (INT32) Le32 (p + E + 12);
+            Class   = p[E + 18];
+            Aux     = p[E + 19];
+        } else {
+            Section = (INT16) Le16 (p + E + 12);
+            Class   = p[E + 16];
+            Aux     = p[E + 17];
+        }
+        if (Class == 2 && Section > 0) {                     // IMAGE_SYM_CLASS_EXTERNAL, defined
+            std::string Name;
+            if (Le32 (p + E) == 0) {                         // long name: offset into string table
+                UINT32 So = Le32 (p + E + 4);
+                if (StrOff + So < Len) {
+                    CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
+                    Name.assign (pName, strnlen (pName, (size_t) (Len - (StrOff + So))));
+                }
+            } else {                                         // inline 8-byte name (NUL-padded)
+                char Buf[9];
+                std::memcpy (Buf, p + E, 8);
+                Buf[8] = '\0';
+                Name = Buf;
+            }
+            if (!Name.empty ()) {
+                AddSymbol (std::move (Name));
+            }
+        }
+        I += 1 + Aux;                                        // skip auxiliary records
+    }
+}
+
+// Bare Windows COFF object: a 20-byte COFF header at offset 0, then the symbol table.
+bool
+SymbolReader::ReadWinCoff (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
+{
+    if (Len < 20) {
+        return true;
+    }
+    UINT32 SymPtr = Le32 (p + 8);
+    UINT32 NSym   = Le32 (p + 12);
+    if (SymPtr != 0 && NSym != 0) {
+        HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false);
+    }
+    return true;
+}
+
+// Microsoft /bigobj COFF: a 56-byte anon-object bigobj header (PointerToSymbolTable@48,
+// NumberOfSymbols@52), then a symbol table of 20-byte records.
+bool
+SymbolReader::ReadBigObjCoff (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
+{
+    if (Len < 56) {
+        return true;
+    }
+    UINT32 SymPtr = Le32 (p + 48);
+    UINT32 NSym   = Le32 (p + 52);
+    if (SymPtr != 0 && NSym != 0) {
+        HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ true);
+    }
+    return true;
 }
 
 bool

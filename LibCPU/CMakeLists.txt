@@ -479,6 +479,11 @@ add_test(NAME symbols.omf COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/
 set_tests_properties(symbols.omf PROPERTIES PASS_REGULAR_EXPRESSION "_omf_pub")
 add_test(NAME symbols.ne COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ne")
 set_tests_properties(symbols.ne PROPERTIES PASS_REGULAR_EXPRESSION "_ne_export")
+# Bare Windows COFF object and Microsoft /bigobj COFF (20-byte symbol records).
+add_test(NAME symbols.wincoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.wincoff")
+set_tests_properties(symbols.wincoff PROPERTIES PASS_REGULAR_EXPRESSION "_wincoff")
+add_test(NAME symbols.bigobj COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.bigobj")
+set_tests_properties(symbols.bigobj PROPERTIES PASS_REGULAR_EXPRESSION "_bigobj")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

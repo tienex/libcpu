@@ -40,12 +40,14 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatElf,            // ELF object/shared object (32/64, LE/BE)
     SymbolFormatAOut,           // classic BSD/SysV a.out
     SymbolFormatPeCoff,         // PE (MZ + PE\0\0) -- COFF symbol table / export directory
+    SymbolFormatWinCoff,        // bare Windows COFF object (machine magic, no MZ)
+    SymbolFormatBigObjCoff,     // Microsoft /bigobj COFF (anon-object bigobj header)
+    SymbolFormatOmf,            // OMF object/library (PUBDEF records)
+    SymbolFormatNe,             // 16-bit Windows/OS2 New Executable (resident-name table)
     // --- detection only (recognised by magic; symbol extraction TODO) ---
-    SymbolFormatCoff,           // bare COFF (machine-type magic, no MZ)
     SymbolFormatXcoff,          // AIX XCOFF (32/64)
     SymbolFormatEcoff,          // MIPS/Alpha ECOFF
     SymbolFormatMz,             // DOS MZ executable (no new-exe header)
-    SymbolFormatNe,             // 16-bit Windows/OS2 New Executable
     SymbolFormatLe,             // VxD/OS2 Linear Executable
     SymbolFormatLx,             // OS/2 2.x Linear eXecutable
     SymbolFormatMinixAOut,      // MINIX a.out
@@ -55,13 +57,15 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatCfmPpc,         // PEF, PowerPC architecture
     SymbolFormatSom,            // HP-UX SOM
     SymbolFormatAmigaHunk,      // AmigaOS Hunk executable/library
-    SymbolFormatOmf,            // Object Module Format (OMF)
     SymbolFormatNlm,            // NetWare Loadable Module
     SymbolFormatVms             // OpenVMS image (Alpha/Itanium EIHD)
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).
 CHAR8 CONST *SymbolFormatName (SYMBOL_FORMAT Format);
+
+// Whether the reader extracts symbols for a format (vs. detection only).
+bool SymbolFormatHasExtractor (SYMBOL_FORMAT Format);
 
 //
 // Reads the exported-symbol set (and install name, when present) of one library artifact.
@@ -85,6 +89,11 @@ private:
     bool ReadPeCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
     bool ReadOmf (UINT8 CONST *pData, UINT64 Len, std::string *pError);
     bool ReadNe (UINT8 CONST *pData, UINT64 Len, std::string *pError);
+    bool ReadWinCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
+    bool ReadBigObjCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
+    // Harvest external defined symbols from a COFF symbol table. BigObj selects the 20-byte
+    // record layout (32-bit section number) used by Microsoft /bigobj, vs the normal 18-byte.
+    void HarvestCoff (UINT8 CONST *pData, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj);
     void AddSymbol (std::string Name);          // de-duplicating append
 
     SYMBOL_FORMAT            m_Format = SymbolFormatUnknown;
