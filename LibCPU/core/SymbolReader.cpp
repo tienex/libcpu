@@ -90,6 +90,8 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatOsfRose:    return "osf-rose";
         case SymbolFormatCpmZ8000:   return "cpm-z8000";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
+        case SymbolFormatGeos:       return "geos-geode";
+        case SymbolFormatGeosC64:    return "geos-c64";
         case SymbolFormatIeee695:    return "ieee-695";
         case SymbolFormatSrec:       return "srec";
         case SymbolFormatIntelHex:   return "intel-hex";
@@ -1044,6 +1046,28 @@ public:
 };
 
 // ===========================================================================
+//  GEOS geode (PC/GEOS and the GEOS-derived handheld/embedded OS). The file opens with the
+//  big-endian signature 0xC745C153; a file-type byte sits at offset 0x28 (1 = executable,
+//  2 = VM file, 3 = binary, 4 = directory label) and the geode's name is a NUL-terminated
+//  string at offset 4. Geode entry points are exported by ordinal, not by a symbol-name
+//  table, so the only name recovered is the geode name itself, reported as the install name.
+// ===========================================================================
+
+class GeosReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatGeos; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 0x29 && Be32 (p) == 0xC745C153u;        // signature + room for the file-type byte
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        (void) Len;
+        // The name occupies the bytes between the signature and the file-type byte at 0x28.
+        std::string Nm ((CHAR8 CONST *) (p + 4), strnlen ((CHAR8 CONST *) (p + 4), 0x28 - 4));
+        if (!Nm.empty ()) { pSink->SetInstallName (std::move (Nm)); }
+    }
+};
+
+// ===========================================================================
 //  NASM RDOFF2: a record-based header; RDFREC_GLOBAL (type 3) records export symbols.
 // ===========================================================================
 
@@ -1393,6 +1417,11 @@ static bool DetectSrec (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && p[0] ==
 static bool DetectIntelHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && p[0] == ':' && IsHex (p[1]) && IsHex (p[2]); }
 static bool DetectTekHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && (p[0] == '/' || p[0] == '%') && IsHex (p[1]) && IsHex (p[2]); }
 static bool DetectVerilogHex (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == '@' && IsHex (p[1]); }
+// Commodore 64 GEOS: the file header block carries the ASCII tag "PRG formatted GEOS file"
+// or "SEQ formatted GEOS file" at offset 0x1E, i.e. "formatted GEOS file" at 0x22.
+static bool DetectGeosC64 (UINT8 CONST *p, UINT64 Len) {
+    return Len >= 0x22 + 19 && std::memcmp (p + 0x22, "formatted GEOS file", 19) == 0;
+}
 
 } // anonymous namespace
 
@@ -1415,6 +1444,8 @@ Registry ()
     static SignatureReader S_Aif (SymbolFormatAif, DetectAif);
     static Os360Reader     S_Os360;
     static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
+    static GeosReader      S_Geos;
+    static SignatureReader S_GeosC64 (SymbolFormatGeosC64, DetectGeosC64);
     static AmigaHunkReader S_AmigaHunk;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
@@ -1449,12 +1480,12 @@ Registry ()
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
-        &S_Nlm, &S_Vms, &S_Aif,
+        &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
         &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd,   // record-type / structural heuristics, last
-        &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex   // ASCII / record formats, last
+        &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex, &S_GeosC64   // ASCII / record formats, last
     };
     return List;
 }

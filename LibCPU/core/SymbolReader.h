@@ -76,7 +76,9 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatAif,            // ARM Image Format (AIF)
     SymbolFormatOs360,          // IBM OS/360 object deck (EBCDIC ESD/TXT/RLD/END)
     SymbolFormatGoff,           // IBM GOFF object (X'03' PTV records)
-    SymbolFormatDriCmd          // DRI CMD command file (CP/M-86 / FlexOS 186/286 group descriptors)
+    SymbolFormatDriCmd,         // DRI CMD command file (CP/M-86 / FlexOS 186/286 group descriptors)
+    SymbolFormatGeos,           // GEOS geode (PC/GEOS & handheld, BE signature 0xC745C153)
+    SymbolFormatGeosC64         // Commodore 64 GEOS file ("PRG/SEQ formatted GEOS file")
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).
