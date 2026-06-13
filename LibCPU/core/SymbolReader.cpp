@@ -89,6 +89,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatBout:       return "b.out";
         case SymbolFormatOsfRose:    return "osf-rose";
         case SymbolFormatCpmZ8000:   return "cpm-z8000";
+        case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatIeee695:    return "ieee-695";
         case SymbolFormatSrec:       return "srec";
         case SymbolFormatIntelHex:   return "intel-hex";
@@ -1364,6 +1365,28 @@ static bool DetectOs360 (UINT8 CONST *p, UINT64 Len) {     // X'02' + EBCDIC "ES
     return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;
 }
 static bool DetectGoff (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0x03 && p[1] == 0xF0; }   // PTV + HDR
+// DRI CMD command file (CP/M-86 / Concurrent CP/M / DOS Plus / FlexOS 186/286): a 128-byte
+// header of up to eight 9-byte group descriptors (g_type, g_length, a_base, g_min, g_max),
+// then the section contents. The .286 and .CMD command files share this layout; symbols are
+// not stored in it (they go to the separate .SYM file and the OMF object modules). There is
+// no magic word, so the descriptor chain is validated instead of compared.
+static bool DetectDriCmd (UINT8 CONST *p, UINT64 Len) {
+    if (Len < 128) { return false; }
+    if (p[0] != 0x01 && p[0] != 0x09) { return false; }       // first group must be code (01 plain / 09 shared)
+    UINT32 CodeLen = 0;
+    UINT32 i = 0;
+    for (; i < 8; ++i) {
+        UINT8 Type = p[i * 9];
+        if (Type == 0) { break; }                             // 0 terminates the descriptor list
+        if (Type > 9) { return false; }                       // valid DRI group types are 1..9
+        if (Type == 0x01 || Type == 0x09) { CodeLen = Le16 (p + i * 9 + 1); }   // length in 16-byte paragraphs
+    }
+    if (i == 8) { return false; }                             // eight groups with no terminator -> not a CMD header
+    for (UINT64 O = (UINT64) i * 9; O < 128; ++O) {           // the rest of the header must be zero padding
+        if (p[O] != 0) { return false; }
+    }
+    return 128 + (UINT64) CodeLen * 16 <= Len;                // the code section must fit within the file
+}
 static bool IsHex (UINT8 c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); }
 static bool DetectIeee695 (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0xE0; }                 // MB record
 static bool DetectSrec (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && p[0] == 'S' && p[1] >= '0' && p[1] <= '9' && IsHex (p[2]) && IsHex (p[3]); }
@@ -1420,6 +1443,7 @@ Registry ()
     static SignatureReader S_Mz (SymbolFormatMz, DetectMz);
     static OmfReader       S_Omf;
     static Pdp10SavReader  S_Pdp10Sav;
+    static SignatureReader S_DriCmd (SymbolFormatDriCmd, DetectDriCmd);
     static TbdReader       S_Tbd;
 
     static std::vector<FormatReader CONST *> List = {
@@ -1429,7 +1453,7 @@ Registry ()
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff,              // record-type / structural heuristics, last
+        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd,   // record-type / structural heuristics, last
         &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex   // ASCII / record formats, last
     };
     return List;

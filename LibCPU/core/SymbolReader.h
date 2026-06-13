@@ -75,7 +75,8 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatX68000,         // Sharp X68000 .X ("HU")
     SymbolFormatAif,            // ARM Image Format (AIF)
     SymbolFormatOs360,          // IBM OS/360 object deck (EBCDIC ESD/TXT/RLD/END)
-    SymbolFormatGoff            // IBM GOFF object (X'03' PTV records)
+    SymbolFormatGoff,           // IBM GOFF object (X'03' PTV records)
+    SymbolFormatDriCmd          // DRI CMD command file (CP/M-86 / FlexOS 186/286 group descriptors)
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).

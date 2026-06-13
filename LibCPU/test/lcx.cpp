@@ -865,7 +865,7 @@ CmdKlib (int argc, char **argv)
             }
         }
         std::printf ("%s: %u exported symbol(s)%s\n", pFmt, (UINT32) Reader.Symbols ().size (),
-                     Reader.Symbols ().empty () && Reader.Format () > SymbolFormatPeCoff
+                     Reader.Symbols ().empty () && !SymbolFormatHasExtractor (Reader.Format ())
                          ? " (format recognised; symbol extraction not yet implemented)" : "");
         if (pGrep != nullptr) {
             std::printf ("  (%u matched '%s')\n", Shown, pGrep);
