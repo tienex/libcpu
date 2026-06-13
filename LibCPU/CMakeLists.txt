@@ -462,9 +462,14 @@ if(TARGET interp_backend)
   set_tests_properties(symbols.installname PROPERTIES PASS_REGULAR_EXPRESSION "install-name:")
 endif()
 
-# Classic a.out symbol extraction from a crafted minimal fixture (one exported symbol).
+# Symbol extraction from crafted minimal fixtures (one exported symbol each), verifying
+# the a.out, ELF (section-header symtab), and PE/COFF (COFF symbol table) extractors.
 add_test(NAME symbols.aout COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.aout")
 set_tests_properties(symbols.aout PROPERTIES PASS_REGULAR_EXPRESSION "_aout_sym")
+add_test(NAME symbols.elf COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.elf")
+set_tests_properties(symbols.elf PROPERTIES PASS_REGULAR_EXPRESSION "_elf_sym")
+add_test(NAME symbols.pe COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pe")
+set_tests_properties(symbols.pe PROPERTIES PASS_REGULAR_EXPRESSION "_pe_sym")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).
