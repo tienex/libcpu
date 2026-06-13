@@ -92,6 +92,8 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
+        case SymbolFormatPalmPrc:    return "palm-prc";
+        case SymbolFormatPalmPdb:    return "palm-pdb";
         case SymbolFormatIeee695:    return "ieee-695";
         case SymbolFormatSrec:       return "srec";
         case SymbolFormatIntelHex:   return "intel-hex";
@@ -1068,6 +1070,45 @@ public:
 };
 
 // ===========================================================================
+//  Palm OS database/resource file (.pdb / .prc) -- the container Palm "PIM" applications and
+//  their data ship in (layout per PumpkinOS src/prcbuild/pdb.c). Big-endian; a 78-byte
+//  header: name[32] @0, fileAttributes @32 (bit 0 = dmHdrAttrResDB -> resource DB / .prc),
+//  type[4] @60, creator[4] @64, numberOfRecords @76; then the entry list (10-byte resource
+//  entries for .prc, 8-byte record entries for .pdb). There is no symbol-name table -- code
+//  lives in 'code' resources reached by ordinal -- so the database name is recovered as the
+//  install name. The type and creator are always printable 4-char codes, which (with a
+//  "the entry list fits the file" check) anchors detection of this otherwise magic-less file.
+// ===========================================================================
+
+static bool DetectPalm (UINT8 CONST *p, UINT64 Len, bool WantResDB) {
+    if (Len < 78) { return false; }
+    if (p[0] < 0x20 || p[0] > 0x7E) { return false; }         // database name begins with a printable char
+    for (UINT32 i = 60; i < 68; ++i) {                        // type[4] @60 and creator[4] @64
+        if (p[i] < 0x20 || p[i] > 0x7E) { return false; }
+    }
+    bool ResDB = (Be16 (p + 32) & 0x0001) != 0;               // dmHdrAttrResDB
+    if (ResDB != WantResDB) { return false; }
+    UINT16 NumRecs = Be16 (p + 76);
+    UINT64 EntrySize = ResDB ? 10 : 8;                        // PDB_RESHDR vs PDB_RECHDR
+    return 78 + (UINT64) NumRecs * EntrySize <= Len;          // the entry list must fit in the file
+}
+
+class PalmReader : public FormatReader {
+public:
+    PalmReader (SYMBOL_FORMAT Fmt, bool ResDB) : m_Fmt (Fmt), m_ResDB (ResDB) {}
+    SYMBOL_FORMAT Format () CONST override { return m_Fmt; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return DetectPalm (p, Len, m_ResDB); }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        (void) Len;
+        std::string Nm ((CHAR8 CONST *) p, strnlen ((CHAR8 CONST *) p, 32));   // name[32] @0
+        if (!Nm.empty ()) { pSink->SetInstallName (std::move (Nm)); }
+    }
+private:
+    SYMBOL_FORMAT m_Fmt;
+    bool          m_ResDB;
+};
+
+// ===========================================================================
 //  NASM RDOFF2: a record-based header; RDFREC_GLOBAL (type 3) records export symbols.
 // ===========================================================================
 
@@ -1446,6 +1487,8 @@ Registry ()
     static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
     static GeosReader      S_Geos;
     static SignatureReader S_GeosC64 (SymbolFormatGeosC64, DetectGeosC64);
+    static PalmReader      S_PalmPrc (SymbolFormatPalmPrc, true);
+    static PalmReader      S_PalmPdb (SymbolFormatPalmPdb, false);
     static AmigaHunkReader S_AmigaHunk;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
@@ -1484,7 +1527,7 @@ Registry ()
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd,   // record-type / structural heuristics, last
+        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd, &S_PalmPrc, &S_PalmPdb,   // record-type / structural heuristics, last
         &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex, &S_GeosC64   // ASCII / record formats, last
     };
     return List;

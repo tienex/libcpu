@@ -546,6 +546,12 @@ set_tests_properties(symbols.geo PROPERTIES PASS_REGULAR_EXPRESSION "GeoCalc")
 # Commodore 64 GEOS file: detection only.
 add_test(NAME symbols.geosc64 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.geosc64")
 set_tests_properties(symbols.geosc64 PROPERTIES PASS_REGULAR_EXPRESSION "geos-c64")
+# Palm OS resource database / application (.prc): detected; database name -> install name.
+add_test(NAME symbols.prc COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.prc")
+set_tests_properties(symbols.prc PROPERTIES PASS_REGULAR_EXPRESSION "AddressBook")
+# Palm OS record database (.pdb): detected; database name -> install name.
+add_test(NAME symbols.pdb COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pdb")
+set_tests_properties(symbols.pdb PROPERTIES PASS_REGULAR_EXPRESSION "MemoDB")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

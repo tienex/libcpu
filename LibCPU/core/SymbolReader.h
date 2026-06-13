@@ -78,7 +78,9 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatGoff,           // IBM GOFF object (X'03' PTV records)
     SymbolFormatDriCmd,         // DRI CMD command file (CP/M-86 / FlexOS 186/286 group descriptors)
     SymbolFormatGeos,           // GEOS geode (PC/GEOS & handheld, BE signature 0xC745C153)
-    SymbolFormatGeosC64         // Commodore 64 GEOS file ("PRG/SEQ formatted GEOS file")
+    SymbolFormatGeosC64,        // Commodore 64 GEOS file ("PRG/SEQ formatted GEOS file")
+    SymbolFormatPalmPrc,        // Palm OS resource database / application (.prc)
+    SymbolFormatPalmPdb         // Palm OS record database (.pdb)
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).
