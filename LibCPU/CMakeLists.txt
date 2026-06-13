@@ -528,6 +528,9 @@ set_tests_properties(symbols.vms PROPERTIES PASS_REGULAR_EXPRESSION "_VMS_SYM")
 # Intel i960 b.out (a.out variant).
 add_test(NAME symbols.bout COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.bout")
 set_tests_properties(symbols.bout PROPERTIES PASS_REGULAR_EXPRESSION "_bout_sym")
+# OSF/ROSE (OSF/1 "Mach-O", magic 0xbeefface): LDC_SYMBOLS/LDC_STRINGS, SI_EXPORT_F.
+add_test(NAME symbols.rose COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.rose")
+set_tests_properties(symbols.rose PROPERTIES PASS_REGULAR_EXPRESSION "_rose_sym")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

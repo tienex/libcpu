@@ -62,6 +62,7 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatGemdos,         // GEMDOS/DRI m68k (Atari ST/TT/Falcon, CP/M-68K) -- 0x601A
     SymbolFormatRdoff,          // NASM RDOFF2 ("RDOFF2") -- export records
     SymbolFormatBout,           // Intel i960 b.out (a.out variant, BMAGIC 0415)
+    SymbolFormatOsfRose,        // OSF/ROSE (OSF/1 "Mach-O", MOH_MAGIC 0xbeefface)
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

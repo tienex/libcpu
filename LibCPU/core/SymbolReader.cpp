@@ -87,6 +87,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatOs360:      return "os360-obj";
         case SymbolFormatGoff:       return "goff";
         case SymbolFormatBout:       return "b.out";
+        case SymbolFormatOsfRose:    return "osf-rose";
         case SymbolFormatIeee695:    return "ieee-695";
         case SymbolFormatSrec:       return "srec";
         case SymbolFormatIntelHex:   return "intel-hex";
@@ -1075,6 +1076,54 @@ public:
 };
 
 // ===========================================================================
+//  OSF/ROSE (OSF/1 "Mach-O", Tru64 mach_o_format.h). MOH_MAGIC 0xbeefface; a 56-byte
+//  mo_header, contiguous load commands (ldc_header_t = 16 bytes), with LDC_SYMBOLS (7)
+//  pointing at symbol_info_t records (20 bytes) and LDC_STRINGS (3) at the name strings.
+// ===========================================================================
+
+class OsfRoseReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatOsfRose; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 56 && (Le32 (p) == 0xBEEFFACEu || Be32 (p) == 0xBEEFFACEu);
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        bool Be = (Le32 (p) != 0xBEEFFACEu);
+        auto U16 = [&] (UINT64 o) -> UINT32 { return (o + 2 > Len) ? 0 : (Be ? Be16 (p + o) : Le16 (p + o)); };
+        auto U32 = [&] (UINT64 o) -> UINT32 { return (o + 4 > Len) ? 0 : (Be ? Be32 (p + o) : Le32 (p + o)); };
+        UINT32 FirstCmd = U32 (36);                          // moh_first_cmd_off
+        UINT32 NCmds    = U32 (44);                          // moh_n_load_cmds
+        UINT64 StrOff = 0, SymOff = 0;
+        UINT32 NSyms = 0;
+        UINT64 O = FirstCmd;
+        for (UINT32 I = 0; I < NCmds && O + 16 <= Len; I++) {
+            UINT32 CmdType = U32 (O);                         // ldci_cmd_type
+            UINT32 CmdSize = U32 (O + 4);                     // ldci_cmd_size
+            UINT32 SecOff  = U32 (O + 8);                     // ldci_section_off (from BOF)
+            if (CmdType == 3) { StrOff = SecOff; }            // LDC_STRINGS
+            else if (CmdType == 7) { SymOff = SecOff; NSyms = U32 (O + 20); }   // LDC_SYMBOLS: symc_nentries@20
+            if (CmdSize < 16) { break; }
+            O += CmdSize;
+        }
+        if (SymOff == 0 || NSyms == 0) { return; }
+        for (UINT32 I = 0; I < NSyms; I++) {
+            UINT64 E = SymOff + (UINT64) I * 20;              // symbol_info_t = 20 bytes
+            if (E + 20 > Len) { break; }
+            UINT32 NameRel = U32 (E + 0);                     // si_name (offset into strings)
+            UINT16 Flags   = (UINT16) U16 (E + 8);            // si_flags
+            if ((Flags & 0x1) != 0) {                         // SI_EXPORT_F -> exported
+                UINT64 Na = StrOff + NameRel;
+                if (Na < Len) {
+                    CHAR8 CONST *pName = (CHAR8 CONST *) (p + Na);
+                    size_t NameLen = strnlen (pName, (size_t) (Len - Na));
+                    if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+                }
+            }
+        }
+    }
+};
+
+// ===========================================================================
 //  IBM OS/360 object deck: 80-byte ESD records; SD/LD items are defined symbols,
 //  names are 8 EBCDIC characters.
 // ===========================================================================
@@ -1267,6 +1316,7 @@ static std::vector<FormatReader CONST *> CONST &
 Registry ()
 {
     static MachOReader     S_MachO;
+    static OsfRoseReader   S_OsfRose;
     static ElfReader       S_Elf;
     static RdoffReader     S_Rdoff;
     static GemdosReader    S_Gemdos;
@@ -1308,7 +1358,7 @@ Registry ()
 
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
-        &S_MachO, &S_Elf, &S_Rdoff, &S_Gemdos, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -1351,6 +1401,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatOs360:
         case SymbolFormatVms:
         case SymbolFormatBout:
+        case SymbolFormatOsfRose:
             return true;
         default:
             return false;
