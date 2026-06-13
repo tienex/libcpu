@@ -504,6 +504,12 @@ add_test(NAME symbols.nlm COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/
 set_tests_properties(symbols.nlm PROPERTIES PASS_REGULAR_EXPRESSION "_nlm_pub")
 add_test(NAME symbols.ecoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ecoff")
 set_tests_properties(symbols.ecoff PROPERTIES PASS_REGULAR_EXPRESSION "_ecoff_sym")
+# Plan 9 a.out (global text symbol, source-path entry skipped) and PDP-10 .SAV (RADIX-50
+# symbol reached via the JOBSYM pointer at 0o116).
+add_test(NAME symbols.plan9 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.plan9")
+set_tests_properties(symbols.plan9 PROPERTIES PASS_REGULAR_EXPRESSION "_plan9")
+add_test(NAME symbols.sav COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.sav")
+set_tests_properties(symbols.sav PROPERTIES PASS_REGULAR_EXPRESSION "PDP10S")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

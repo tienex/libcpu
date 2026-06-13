@@ -76,6 +76,8 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatAmigaHunk:  return "amiga-hunk";
         case SymbolFormatNlm:        return "nlm";
         case SymbolFormatVms:        return "vms";
+        case SymbolFormatPlan9:      return "plan9-a.out";
+        case SymbolFormatPdp10Sav:   return "pdp10-sav";
         default:                     return "unknown";
     }
 }
@@ -787,6 +789,105 @@ public:
 };
 
 // ===========================================================================
+//  Plan 9 a.out (big-endian; 32- and 64-bit)
+// ===========================================================================
+
+class Plan9Reader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatPlan9; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 32 && IsMagic (Be32 (p) & ~0x00008000u);
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 Magic = Be32 (p);
+        bool Is64 = (Magic & 0x00008000u) != 0;              // 64-bit images set the high-mag bit
+        UINT64 HdrSize = Is64 ? 40 : 32;                     // 64-bit entry widens the header
+        UINT32 ValSize = Is64 ? 8 : 4;
+        if (Len < HdrSize) { return; }
+        UINT64 SymOff = HdrSize + (UINT64) Be32 (p + 4) + Be32 (p + 8);   // after text + data
+        UINT32 Syms   = Be32 (p + 16);
+        if (SymOff > Len || Syms > Len - SymOff) { return; }
+        UINT64 End = SymOff + Syms;
+        UINT64 O = SymOff;
+        while (O + ValSize + 1 <= End) {
+            O += ValSize;                                    // symbol value
+            char Type = (char) (p[O++] & 0x7F);              // type byte has the high bit set
+            if (Type == 'z' || Type == 'Z') {                // source path: 16-bit numbers, 0-terminated
+                while (O + 2 <= End && Be16 (p + O) != 0) { O += 2; }
+                O += 2;
+                continue;
+            }
+            UINT64 Ns = O;                                   // other types: NUL-terminated name
+            while (O < End && p[O] != 0) { O++; }
+            size_t NameLen = (size_t) (O - Ns);
+            if (O < End) { O++; }
+            // Uppercase types are global (exported): text/data/bss/leaf-text.
+            if (NameLen > 0 && (Type == 'T' || Type == 'D' || Type == 'B' || Type == 'L')) {
+                pSink->Add (std::string ((CHAR8 CONST *) (p + Ns), NameLen));
+            }
+        }
+    }
+private:
+    static bool IsMagic (UINT32 B) {
+        static UINT32 CONST M[] = { 520, 921, 1386, 2184, 2808, 3784 };   // 68020/386/sparc/mips/mips4k/alpha
+        for (UINT32 V : M) { if (B == V) { return true; } }
+        return false;
+    }
+};
+
+// ===========================================================================
+//  PDP-10 .SAV core image (TOPS-10/20). No byte magic: a 36-bit core image, here in the
+//  "one word per 8 big-endian bytes, value in the low 36 bits" convention. Symbols are
+//  reached via JOBSYM (the AOBJN pointer at location 0o116) -> pairs of {RADIX-50 name,
+//  value} words. Best-effort for this convention; detection is a conservative structural
+//  heuristic (a valid AOBJN symbol pointer at 0o116) since the format carries no magic.
+// ===========================================================================
+
+// Decode a 32-bit PDP-10 SQUOZE / RADIX-50 code into up to six characters.
+static std::string
+Radix50 (UINT32 Code)
+{
+    static CHAR8 CONST *CS = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.$%";   // 40-char PDP-10 set
+    char Out[6];
+    for (int I = 5; I >= 0; I--) { Out[I] = CS[Code % 40]; Code /= 40; }
+    std::string S (Out, 6);
+    while (!S.empty () && S.back () == ' ') { S.pop_back (); }
+    return S;
+}
+
+class Pdp10SavReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatPdp10Sav; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < (0116 + 2) * 8 || (Len % 8) != 0) { return false; }
+        UINT64 Jw = Word (p, Len, 0116);
+        UINT32 Left = (UINT32) ((Jw >> 18) & 0777777);       // -count (18-bit two's complement)
+        UINT32 Right = (UINT32) (Jw & 0777777);              // symbol table word address
+        return (Left & 0400000) != 0 && Right > 0 && Right < (Len / 8);
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT64 Jw = Word (p, Len, 0116);
+        UINT32 Left = (UINT32) ((Jw >> 18) & 0777777);
+        UINT32 Base = (UINT32) (Jw & 0777777);
+        UINT32 Count = (0777777 + 1 - Left) & 0777777;       // word count (two words per symbol)
+        if (Count == 0 || Count > 200000) { return; }
+        for (UINT32 I = 0; I + 1 < Count; I += 2) {
+            UINT64 NameW = Word (p, Len, (UINT64) Base + I);
+            std::string Nm = Radix50 ((UINT32) (NameW & 0xFFFFFFFFu));   // low 32 bits = squoze code
+            if (!Nm.empty ()) { pSink->Add (Nm); }
+        }
+    }
+private:
+    static UINT64 Word (UINT8 CONST *p, UINT64 Len, UINT64 Idx) {
+        UINT64 O = Idx * 8;
+        if (O + 8 > Len) { return 0; }
+        UINT64 V = 0;
+        for (int I = 0; I < 8; I++) { V = (V << 8) | p[O + I]; }
+        return V & 0xFFFFFFFFFull;                           // low 36 bits
+    }
+};
+
+// ===========================================================================
 //  .tbd (Apple text-based dylib stub)
 // ===========================================================================
 
@@ -889,6 +990,7 @@ Registry ()
     static NlmReader       S_Nlm;
     static SignatureReader S_Vms (SymbolFormatVms, DetectVms);
     static AOutReader      S_AOut;
+    static Plan9Reader     S_Plan9;
     static SignatureReader S_MinixAOut (SymbolFormatMinixAOut, DetectMinixAOut);
     static SignatureReader S_XenixXOut (SymbolFormatXenixXOut, DetectXenixXOut);
     static BigObjReader    S_BigObj;
@@ -902,15 +1004,16 @@ Registry ()
     static LeLxReader      S_Lx (SymbolFormatLx, 'X');
     static SignatureReader S_Mz (SymbolFormatMz, DetectMz);
     static OmfReader       S_Omf;
+    static Pdp10SavReader  S_Pdp10Sav;
     static TbdReader       S_Tbd;
 
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_Elf, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef, &S_Nlm, &S_Vms,
-        &S_AOut, &S_MinixAOut, &S_XenixXOut,
+        &S_AOut, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf                                               // record-type heuristic, tried last
+        &S_Omf, &S_Pdp10Sav                                  // record-type / structural heuristics, last
     };
     return List;
 }
@@ -938,6 +1041,8 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatLx:
         case SymbolFormatNlm:
         case SymbolFormatEcoff:
+        case SymbolFormatPlan9:
+        case SymbolFormatPdp10Sav:
             return true;
         default:
             return false;

@@ -56,7 +56,9 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatSom,            // HP-UX SOM
     SymbolFormatAmigaHunk,      // AmigaOS Hunk executable/library
     SymbolFormatNlm,            // NetWare Loadable Module
-    SymbolFormatVms             // OpenVMS image (Alpha/Itanium EIHD)
+    SymbolFormatVms,            // OpenVMS image (Alpha/Itanium EIHD)
+    SymbolFormatPlan9,          // Plan 9 a.out (32/64-bit, big-endian)
+    SymbolFormatPdp10Sav        // PDP-10 .SAV core image (TOPS-10/20)
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).
