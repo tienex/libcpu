@@ -99,59 +99,54 @@ static UINT8  CONST N_EXT        = 0x01u;
 static UINT8  CONST N_TYPE_MASK  = 0x0Eu;
 static UINT8  CONST N_SECT       = 0x0Eu;
 
-typedef struct _MACHO_HEADER_64 {
-    UINT32 Magic, CpuType, CpuSubtype, FileType, NCmds, SizeOfCmds, Flags, Reserved;
-} MACHO_HEADER_64;
-typedef struct _MACHO_LOAD_COMMAND { UINT32 Cmd, CmdSize; } MACHO_LOAD_COMMAND;
-typedef struct _MACHO_SYMTAB_COMMAND { UINT32 Cmd, CmdSize, SymOff, NSyms, StrOff, StrSize; } MACHO_SYMTAB_COMMAND;
-typedef struct _MACHO_NLIST_64 { UINT32 StrX; UINT8 Type, Sect; UINT16 Desc; UINT64 Value; } MACHO_NLIST_64;
-
-// Parse one thin, host-endian 64-bit Mach-O image and harvest its defined external symbols
-// (and the install name from LC_ID_DYLIB). Offsets are image-relative, bounded by Len.
+// Parse one thin, host-endian Mach-O image (32- or 64-bit) and harvest its defined external
+// symbols (and the install name from LC_ID_DYLIB). The header (28 vs 32 bytes) and nlist
+// stride (12 vs 16) are the only differences; the fields we read (ncmds@16, nlist n_strx@0,
+// n_type@4) sit at the same offsets in both. Offsets are image-relative, bounded by Len.
 static void
-HarvestMachO64 (UINT8 CONST *pImage, UINT64 Len, SymbolSink *pSink)
+HarvestMachO (UINT8 CONST *pImage, UINT64 Len, bool Is64, SymbolSink *pSink)
 {
-    if (Len < sizeof (MACHO_HEADER_64)) {
+    UINT64 HdrSize   = Is64 ? 32 : 28;
+    UINT64 NlistSize = Is64 ? 16 : 12;
+    if (Len < HdrSize) {
         return;
     }
-    MACHO_HEADER_64 Hdr;
-    std::memcpy (&Hdr, pImage, sizeof (Hdr));
-    if (Hdr.Magic != MH_MAGIC_64) {
-        return;                                              // byte-swapped image: unsupported host pairing
-    }
-    UINT64 Off = sizeof (MACHO_HEADER_64);
-    for (UINT32 I = 0; I < Hdr.NCmds; I++) {
-        if (Off + sizeof (MACHO_LOAD_COMMAND) > Len) {
+    UINT32 NCmds = Le32 (pImage + 16);
+    UINT64 Off = HdrSize;
+    for (UINT32 I = 0; I < NCmds; I++) {
+        if (Off + 8 > Len) {
             return;
         }
-        MACHO_LOAD_COMMAND Lc;
-        std::memcpy (&Lc, pImage + Off, sizeof (Lc));
-        if (Lc.CmdSize < sizeof (MACHO_LOAD_COMMAND) || Off + Lc.CmdSize > Len) {
+        UINT32 Cmd     = Le32 (pImage + Off);
+        UINT32 CmdSize = Le32 (pImage + Off + 4);
+        if (CmdSize < 8 || Off + CmdSize > Len) {
             return;
         }
-        if (Lc.Cmd == LC_ID_DYLIB && Lc.CmdSize >= 16) {
-            UINT32 NameOff;
-            std::memcpy (&NameOff, pImage + Off + 8, 4);
-            if (NameOff < Lc.CmdSize && Off + NameOff < Len) {
+        if (Cmd == LC_ID_DYLIB && CmdSize >= 16) {
+            UINT32 NameOff = Le32 (pImage + Off + 8);
+            if (NameOff < CmdSize && Off + NameOff < Len) {
                 CHAR8 CONST *pName = (CHAR8 CONST *) (pImage + Off + NameOff);
-                pSink->SetInstallName (std::string (pName, strnlen (pName, (size_t) (Lc.CmdSize - NameOff))));
+                pSink->SetInstallName (std::string (pName, strnlen (pName, (size_t) (CmdSize - NameOff))));
             }
         }
-        if (Lc.Cmd == LC_SYMTAB && Lc.CmdSize >= sizeof (MACHO_SYMTAB_COMMAND)) {
-            MACHO_SYMTAB_COMMAND St;
-            std::memcpy (&St, pImage + Off, sizeof (St));
-            UINT64 SymBytes = (UINT64) St.NSyms * sizeof (MACHO_NLIST_64);
-            bool SymOk = St.SymOff <= Len && SymBytes <= Len - St.SymOff;
-            bool StrOk = St.StrOff <= Len && St.StrSize <= Len - St.StrOff;
+        if (Cmd == LC_SYMTAB && CmdSize >= 24) {
+            UINT32 SymOff = Le32 (pImage + Off + 8);
+            UINT32 NSyms  = Le32 (pImage + Off + 12);
+            UINT32 StrOff = Le32 (pImage + Off + 16);
+            UINT32 StrSize = Le32 (pImage + Off + 20);
+            UINT64 SymBytes = (UINT64) NSyms * NlistSize;
+            bool SymOk = SymOff <= Len && SymBytes <= Len - SymOff;
+            bool StrOk = StrOff <= Len && StrSize <= Len - StrOff;
             if (SymOk && StrOk) {
-                for (UINT32 N = 0; N < St.NSyms; N++) {
-                    MACHO_NLIST_64 Sym;
-                    std::memcpy (&Sym, pImage + St.SymOff + (UINT64) N * sizeof (Sym), sizeof (Sym));
-                    bool Exported = (Sym.Type & N_STAB) == 0 && (Sym.Type & N_EXT) != 0 &&
-                                    (Sym.Type & N_TYPE_MASK) == N_SECT;
-                    if (Exported && Sym.StrX < St.StrSize) {
-                        CHAR8 CONST *pName = (CHAR8 CONST *) (pImage + St.StrOff + Sym.StrX);
-                        size_t MaxLen = (size_t) (St.StrSize - Sym.StrX);
+                for (UINT32 N = 0; N < NSyms; N++) {
+                    UINT64 E = (UINT64) SymOff + (UINT64) N * NlistSize;
+                    UINT32 StrX = Le32 (pImage + E);
+                    UINT8  Type = pImage[E + 4];
+                    bool Exported = (Type & N_STAB) == 0 && (Type & N_EXT) != 0 &&
+                                    (Type & N_TYPE_MASK) == N_SECT;
+                    if (Exported && StrX < StrSize) {
+                        CHAR8 CONST *pName = (CHAR8 CONST *) (pImage + StrOff + StrX);
+                        size_t MaxLen = (size_t) (StrSize - StrX);
                         size_t NameLen = strnlen (pName, MaxLen);
                         if (NameLen > 0 && NameLen < MaxLen) {
                             pSink->Add (std::string (pName, NameLen));
@@ -160,7 +155,7 @@ HarvestMachO64 (UINT8 CONST *pImage, UINT64 Len, SymbolSink *pSink)
                 }
             }
         }
-        Off += Lc.CmdSize;
+        Off += CmdSize;
     }
 }
 
@@ -177,18 +172,16 @@ public:
     }
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
         UINT32 Magic = Le32 (p);
-        if (Magic == MH_MAGIC_64) {
-            HarvestMachO64 (p, Len, pSink);
-            return;
-        }
+        if (Magic == MH_MAGIC_64) { HarvestMachO (p, Len, /*Is64=*/ true, pSink); return; }
+        if (Magic == MH_MAGIC_32) { HarvestMachO (p, Len, /*Is64=*/ false, pSink); return; }
         if (Magic == FAT_MAGIC || Magic == FAT_CIGAM || Magic == FAT_MAGIC_64 || Magic == FAT_CIGAM_64) {
-            bool Is64 = (Magic == FAT_MAGIC_64 || Magic == FAT_CIGAM_64);
+            bool Fat64 = (Magic == FAT_MAGIC_64 || Magic == FAT_CIGAM_64);
             if (Len < 8) { return; }
             UINT32 NFat = Swap32 (Le32 (p + 4));             // fat header is big-endian
             UINT64 Off = 8;
             for (UINT32 I = 0; I < NFat; I++) {
                 UINT64 SliceOff, SliceSize;
-                if (!Is64) {
+                if (!Fat64) {
                     if (Off + 20 > Len) { break; }
                     SliceOff  = Swap32 (Le32 (p + Off + 8));
                     SliceSize = Swap32 (Le32 (p + Off + 12));
@@ -199,9 +192,10 @@ public:
                     SliceSize = ((UINT64) Swap32 (Le32 (p + Off + 16)) << 32) | Swap32 (Le32 (p + Off + 20));
                     Off += 32;
                 }
-                if (SliceOff <= Len && SliceSize <= Len - SliceOff && SliceSize >= 4 &&
-                    Le32 (p + SliceOff) == MH_MAGIC_64) {
-                    HarvestMachO64 (p + SliceOff, SliceSize, pSink);
+                if (SliceOff <= Len && SliceSize <= Len - SliceOff && SliceSize >= 4) {
+                    UINT32 SliceMagic = Le32 (p + SliceOff);
+                    if (SliceMagic == MH_MAGIC_64) { HarvestMachO (p + SliceOff, SliceSize, true, pSink); }
+                    else if (SliceMagic == MH_MAGIC_32) { HarvestMachO (p + SliceOff, SliceSize, false, pSink); }
                 }
             }
         }
@@ -472,11 +466,33 @@ public:
         return Len >= 2 && (Be16 (p) == 0x01DF || Be16 (p) == 0x01F7);
     }
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
-        if (Be16 (p) != 0x01DF || Len < 20) {               // 32-bit XCOFF; 64-bit (0x01F7) TODO
+        if (Len < 20) { return; }
+        if (Be16 (p) == 0x01DF) {                            // XCOFF32: standard COFF symtab, big-endian
+            UINT32 SymPtr = Be32 (p + 8), NSym = Be32 (p + 12);
+            if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, /*Be=*/ true, pSink); }
             return;
         }
-        UINT32 SymPtr = Be32 (p + 8), NSym = Be32 (p + 12);
-        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, /*Be=*/ true, pSink); }
+        if (Be16 (p) == 0x01F7 && Len >= 24) {               // XCOFF64: 24-byte header, 18-byte syments
+            UINT64 SymPtr = ((UINT64) Be32 (p + 8) << 32) | Be32 (p + 12);
+            UINT32 NSym   = Be32 (p + 16);
+            if (SymPtr == 0 || NSym == 0 || SymPtr > Len || (UINT64) NSym * 18 > Len - SymPtr) { return; }
+            UINT64 StrOff = SymPtr + (UINT64) NSym * 18;     // names are ALWAYS string-table offsets here
+            for (UINT32 I = 0; I < NSym; ) {
+                UINT64 E = SymPtr + (UINT64) I * 18;
+                INT16 Section = (INT16) Be16 (p + E + 12);   // n_value(8)@0, n_offset(4)@8, n_scnum(2)@12
+                UINT8 Class   = p[E + 16];
+                UINT8 Aux     = p[E + 17];
+                if (Class == 2 && Section > 0) {
+                    UINT32 So = Be32 (p + E + 8);
+                    if (StrOff + So < Len) {
+                        CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
+                        size_t NameLen = strnlen (pName, (size_t) (Len - (StrOff + So)));
+                        if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+                    }
+                }
+                I += 1 + Aux;
+            }
+        }
     }
 };
 
@@ -659,6 +675,22 @@ public:
 //  NE (16-bit Windows/OS2): resident + non-resident name tables
 // ===========================================================================
 
+// A length-prefixed name table { len(1), name[len], ordinal(2) } until len==0; entry 0 is
+// the module's own name (not an export). Shared by NE and LE/LX, which use the same format.
+static void
+ReadNameTable (UINT8 CONST *p, UINT64 Len, UINT64 Off, SymbolSink *pSink)
+{
+    bool First = true;
+    while (Off < Len) {
+        UINT8 NameLen = p[Off++];
+        if (NameLen == 0) { break; }
+        if (Off + NameLen + 2 > Len) { break; }
+        if (!First) { pSink->Add (std::string ((CHAR8 CONST *) (p + Off), NameLen)); }
+        First = false;
+        Off += NameLen + 2;
+    }
+}
+
 class NeReader : public FormatReader {
 public:
     SYMBOL_FORMAT Format () CONST override { return SymbolFormatNe; }
@@ -666,22 +698,90 @@ public:
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
         UINT32 NeOff = Le32 (p + 0x3C);
         if ((UINT64) NeOff + 0x40 > Len || p[NeOff] != 'N' || p[NeOff + 1] != 'E') { return; }
-        UINT16 ResRva = Le16 (p + NeOff + 0x26);              // relative to the NE header
-        if (ResRva != 0) { NameTable (p, Len, (UINT64) NeOff + ResRva, pSink); }
-        UINT32 NonResOff = Le32 (p + NeOff + 0x2C);           // a file offset
-        if (NonResOff != 0 && NonResOff < Len) { NameTable (p, Len, NonResOff, pSink); }
+        UINT16 ResRva = Le16 (p + NeOff + 0x26);              // resident table, relative to NE header
+        if (ResRva != 0) { ReadNameTable (p, Len, (UINT64) NeOff + ResRva, pSink); }
+        UINT32 NonResOff = Le32 (p + NeOff + 0x2C);           // non-resident table, a file offset
+        if (NonResOff != 0 && NonResOff < Len) { ReadNameTable (p, Len, NonResOff, pSink); }
+    }
+};
+
+// LE (VxD/OS2 16-bit) and LX (OS/2 32-bit) linear executables share a header whose resident
+// name table offset is at +0x58 (relative to the LE/LX header) and non-resident at +0x88 (a
+// file offset). Both use the same length-prefixed name-table format as NE.
+class LeLxReader : public FormatReader {
+public:
+    LeLxReader (SYMBOL_FORMAT Fmt, char Sig1) : m_Fmt (Fmt), m_Sig1 (Sig1) {}
+    SYMBOL_FORMAT Format () CONST override { return m_Fmt; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return PeReader::MzSig (p, Len, 'L', m_Sig1); }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 He = Le32 (p + 0x3C);
+        if ((UINT64) He + 0x90 > Len || p[He] != 'L' || p[He + 1] != (UINT8) m_Sig1) { return; }
+        UINT32 ResOff = Le32 (p + He + 0x58);                 // relative to the LE/LX header
+        if (ResOff != 0 && (UINT64) He + ResOff < Len) { ReadNameTable (p, Len, (UINT64) He + ResOff, pSink); }
+        UINT32 NonResOff = Le32 (p + He + 0x88);              // a file offset
+        if (NonResOff != 0 && NonResOff < Len) { ReadNameTable (p, Len, NonResOff, pSink); }
     }
 private:
-    // { len(1), name[len], ordinal(2) } until len==0; entry 0 is the module name, not export.
-    static void NameTable (UINT8 CONST *p, UINT64 Len, UINT64 Off, SymbolSink *pSink) {
-        bool First = true;
-        while (Off < Len) {
+    SYMBOL_FORMAT m_Fmt;
+    char          m_Sig1;
+};
+
+// NLM (NetWare Loadable Module): a "publics" table of length-prefixed name + 4-byte address.
+class NlmReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatNlm; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 24 && std::memcmp (p, "NetWare Loadable Module\032", 24) == 0;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        // Fixed header: signature(24) version(4) moduleName(14) then code/data/... offsets;
+        // publicsOffset@94, numberOfPublics@98 (little-endian).
+        if (Len < 102) { return; }
+        UINT32 PubOff = Le32 (p + 94);
+        UINT32 NPub   = Le32 (p + 98);
+        UINT64 Off = PubOff;
+        for (UINT32 I = 0; I < NPub && Off < Len; I++) {
             UINT8 NameLen = p[Off++];
-            if (NameLen == 0) { break; }
-            if (Off + NameLen + 2 > Len) { break; }
-            if (!First) { pSink->Add (std::string ((CHAR8 CONST *) (p + Off), NameLen)); }
-            First = false;
-            Off += NameLen + 2;
+            if (Off + NameLen + 4 > Len) { break; }
+            pSink->Add (std::string ((CHAR8 CONST *) (p + Off), NameLen));
+            Off += (UINT64) NameLen + 4;                      // name + 4-byte address
+        }
+    }
+};
+
+// ECOFF (MIPS/Alpha): external symbols live behind the symbolic header (HDRR). 32-bit
+// little-endian MIPS is implemented; big-endian MIPS and 64-bit Alpha (different HDRR/SYMR
+// widths and bit order) are detected but not yet extracted.
+class EcoffReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatEcoff; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 2) { return false; }
+        UINT16 M = Le16 (p);
+        return M == 0x0162 || M == 0x0166 || M == 0x0140 || M == 0x0184;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        if (Len < 20) { return; }
+        UINT16 Magic = Le16 (p);
+        if (Magic != 0x0162 && Magic != 0x0166) { return; }  // 32-bit little-endian MIPS only
+        UINT64 H = Le32 (p + 8);                              // f_symptr -> HDRR (symbolic header)
+        if (H + 96 > Len) { return; }
+        UINT32 SsExtOff = Le32 (p + H + 68);                  // external string table
+        UINT32 IextMax  = Le32 (p + H + 88);                  // external symbol count
+        UINT32 ExtOff   = Le32 (p + H + 92);                  // external symbol table
+        for (UINT32 I = 0; I < IextMax; I++) {
+            UINT64 B = (UINT64) ExtOff + (UINT64) I * 16;     // EXTR = flags(2) ifd(2) SYMR(12)
+            if (B + 16 > Len) { break; }
+            UINT32 Iss  = Le32 (p + B + 4);                   // SYMR.iss (into the external strings)
+            UINT32 Bits = Le32 (p + B + 12);                  // little-endian: st:6 | sc:5 | ... | index:20
+            UINT32 Sc   = (Bits >> 6) & 0x1F;                 // storage class
+            bool Defined = (Sc >= 1 && Sc <= 6);              // text/data/bss/sdata/sbss/rdata
+            UINT64 Na = (UINT64) SsExtOff + Iss;
+            if (Defined && Na < Len) {
+                CHAR8 CONST *pName = (CHAR8 CONST *) (p + Na);
+                size_t NameLen = strnlen (pName, (size_t) (Len - Na));
+                if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+            }
         }
     }
 };
@@ -752,7 +852,6 @@ private:
     PredicateFn   m_Pred;
 };
 
-static bool DetectNlm (UINT8 CONST *p, UINT64 Len) { return Len >= 24 && std::memcmp (p, "NetWare Loadable Module", 23) == 0; }
 static bool DetectVms (UINT8 CONST *p, UINT64 Len) {
     if (Len < 20 || Le32 (p + 8) != 3 || Le32 (p + 12) != 0) { return false; }
     UINT32 Size = Le32 (p);
@@ -770,8 +869,6 @@ static bool DetectSom (UINT8 CONST *p, UINT64 Len) {
     UINT16 M = Be16 (p);
     return M == 0x0210 || M == 0x020B || M == 0x0211;
 }
-static bool DetectLe (UINT8 CONST *p, UINT64 Len) { return PeReader::MzSig (p, Len, 'L', 'E'); }
-static bool DetectLx (UINT8 CONST *p, UINT64 Len) { return PeReader::MzSig (p, Len, 'L', 'X'); }
 static bool DetectMz (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'M' && p[1] == 'Z'; }
 
 } // anonymous namespace
@@ -789,20 +886,20 @@ Registry ()
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
-    static SignatureReader S_Nlm (SymbolFormatNlm, DetectNlm);
+    static NlmReader       S_Nlm;
     static SignatureReader S_Vms (SymbolFormatVms, DetectVms);
     static AOutReader      S_AOut;
     static SignatureReader S_MinixAOut (SymbolFormatMinixAOut, DetectMinixAOut);
     static SignatureReader S_XenixXOut (SymbolFormatXenixXOut, DetectXenixXOut);
     static BigObjReader    S_BigObj;
     static WinCoffReader   S_WinCoff;
-    static SignatureReader S_Ecoff (SymbolFormatEcoff, DetectEcoff);
+    static EcoffReader     S_Ecoff;
     static XcoffReader     S_Xcoff;
     static SignatureReader S_Som (SymbolFormatSom, DetectSom);
     static PeReader        S_Pe;
     static NeReader        S_Ne;
-    static SignatureReader S_Le (SymbolFormatLe, DetectLe);
-    static SignatureReader S_Lx (SymbolFormatLx, DetectLx);
+    static LeLxReader      S_Le (SymbolFormatLe, 'E');
+    static LeLxReader      S_Lx (SymbolFormatLx, 'X');
     static SignatureReader S_Mz (SymbolFormatMz, DetectMz);
     static OmfReader       S_Omf;
     static TbdReader       S_Tbd;
@@ -837,6 +934,10 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatPef:
         case SymbolFormatCfm68k:
         case SymbolFormatCfmPpc:
+        case SymbolFormatLe:
+        case SymbolFormatLx:
+        case SymbolFormatNlm:
+        case SymbolFormatEcoff:
             return true;
         default:
             return false;

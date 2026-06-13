@@ -491,6 +491,19 @@ add_test(NAME symbols.hunk COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}
 set_tests_properties(symbols.hunk PROPERTIES PASS_REGULAR_EXPRESSION "_hunk_def")
 add_test(NAME symbols.pef COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pef")
 set_tests_properties(symbols.pef PROPERTIES PASS_REGULAR_EXPRESSION "_pef_sym")
+# 32/64-bit variants and more legacy formats: Mach-O 32-bit, XCOFF64, LE, LX, NLM, ECOFF.
+add_test(NAME symbols.macho32 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.macho32")
+set_tests_properties(symbols.macho32 PROPERTIES PASS_REGULAR_EXPRESSION "_macho32")
+add_test(NAME symbols.xcoff64 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.xcoff64")
+set_tests_properties(symbols.xcoff64 PROPERTIES PASS_REGULAR_EXPRESSION "_xcoff64")
+add_test(NAME symbols.le COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.le")
+set_tests_properties(symbols.le PROPERTIES PASS_REGULAR_EXPRESSION "_le_export")
+add_test(NAME symbols.lx COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.lx")
+set_tests_properties(symbols.lx PROPERTIES PASS_REGULAR_EXPRESSION "_lx_export")
+add_test(NAME symbols.nlm COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.nlm")
+set_tests_properties(symbols.nlm PROPERTIES PASS_REGULAR_EXPRESSION "_nlm_pub")
+add_test(NAME symbols.ecoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ecoff")
+set_tests_properties(symbols.ecoff PROPERTIES PASS_REGULAR_EXPRESSION "_ecoff_sym")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).
