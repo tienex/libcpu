@@ -510,6 +510,11 @@ add_test(NAME symbols.plan9 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR
 set_tests_properties(symbols.plan9 PROPERTIES PASS_REGULAR_EXPRESSION "_plan9")
 add_test(NAME symbols.sav COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.sav")
 set_tests_properties(symbols.sav PROPERTIES PASS_REGULAR_EXPRESSION "PDP10S")
+# HP-UX SOM (universal symbols) and MINIX a.out (external nlist).
+add_test(NAME symbols.som COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.som")
+set_tests_properties(symbols.som PROPERTIES PASS_REGULAR_EXPRESSION "_som_sym")
+add_test(NAME symbols.minix COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.minix")
+set_tests_properties(symbols.minix PROPERTIES PASS_REGULAR_EXPRESSION "_minix")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

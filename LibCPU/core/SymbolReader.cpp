@@ -888,6 +888,76 @@ private:
 };
 
 // ===========================================================================
+//  HP-UX SOM (PA-RISC), big-endian. Universal (exported) symbols in the symbol
+//  dictionary; names in the symbol string table. (binutils struct header / record.)
+// ===========================================================================
+
+class SomReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatSom; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 128) { return false; }
+        UINT16 Sid = Be16 (p);                               // system_id (PA-RISC version)
+        UINT16 Am  = Be16 (p + 2);                           // a_magic
+        bool SidOk = (Sid == 0x020B || Sid == 0x0210 || Sid == 0x0214);
+        bool AmOk  = (Am == 0x0104 || Am == 0x0106 || Am == 0x0107 || Am == 0x0108 ||
+                      Am == 0x010B || Am == 0x020B || Am == 0x0210 || Am == 0x0211);
+        return SidOk && AmOk;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 SymLoc = Be32 (p + 92);                       // symbol_location
+        UINT32 SymTot = Be32 (p + 96);                       // symbol_total
+        UINT32 StrLoc = Be32 (p + 108);                      // symbol_strings_location
+        for (UINT32 I = 0; I < SymTot; I++) {
+            UINT64 Rec = (UINT64) SymLoc + (UINT64) I * 20;  // symbol_dictionary_record = 20 bytes
+            if (Rec + 20 > Len) { break; }
+            UINT32 W = Be32 (p + Rec);                        // symbol_type:8 | symbol_scope:4 | ...
+            UINT32 Scope = (W >> 20) & 0xF;
+            UINT32 NameOff = Be32 (p + Rec + 4);              // offset into the symbol string table
+            if (Scope == 3) {                                 // SS_UNIVERSAL -> exported
+                UINT64 Na = (UINT64) StrLoc + NameOff;
+                if (Na < Len) {
+                    CHAR8 CONST *pName = (CHAR8 CONST *) (p + Na);
+                    size_t NameLen = strnlen (pName, (size_t) (Len - Na));
+                    if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+                }
+            }
+        }
+    }
+};
+
+// ===========================================================================
+//  MINIX a.out: 16-byte nlist with an inline 8-char name; external defined symbols
+//  (n_sclass class bits == C_EXT, section bits == TEXT/DATA/BSS).
+// ===========================================================================
+
+class MinixReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatMinixAOut; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 32 && p[0] == 0x01 && p[1] == 0x03;    // a_magic bytes
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT8  HdrLen = p[4];                                // a_hdrlen
+        UINT32 Text = Le32 (p + 8), Data = Le32 (p + 12), Syms = Le32 (p + 28);
+        UINT64 SymOff = (UINT64) HdrLen + Text + Data;       // short header: no relocations
+        if (SymOff > Len || Syms > Len - SymOff) { return; }
+        for (UINT64 O = 0; O + 16 <= Syms; O += 16) {        // struct nlist = 16 bytes
+            UINT64 E = SymOff + O;
+            UINT8 SClass = p[E + 12];                         // n_name[8], n_value@8, n_sclass@12
+            UINT8 Section = SClass & 0007;
+            if ((SClass & 0370) == 0020 && Section >= 2 && Section <= 4) {  // C_EXT + TEXT/DATA/BSS
+                char Buf[9];
+                std::memcpy (Buf, p + E, 8);
+                Buf[8] = '\0';
+                std::string Nm (Buf, strnlen (Buf, 8));
+                if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+            }
+        }
+    }
+};
+
+// ===========================================================================
 //  .tbd (Apple text-based dylib stub)
 // ===========================================================================
 
@@ -958,17 +1028,11 @@ static bool DetectVms (UINT8 CONST *p, UINT64 Len) {
     UINT32 Size = Le32 (p);
     return Size >= 0x20 && Size <= 0x4000;
 }
-static bool DetectMinixAOut (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && (Be16 (p) == 0x0301 || Le16 (p) == 0x0301); }
 static bool DetectXenixXOut (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && (Le16 (p) == 0x0206 || Be16 (p) == 0x0206); }
 static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
     if (Len < 2) { return false; }
     UINT16 M = Le16 (p);
     return M == 0x0162 || M == 0x0166 || M == 0x0140 || M == 0x0184;
-}
-static bool DetectSom (UINT8 CONST *p, UINT64 Len) {
-    if (Len < 2) { return false; }
-    UINT16 M = Be16 (p);
-    return M == 0x0210 || M == 0x020B || M == 0x0211;
 }
 static bool DetectMz (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'M' && p[1] == 'Z'; }
 
@@ -991,13 +1055,13 @@ Registry ()
     static SignatureReader S_Vms (SymbolFormatVms, DetectVms);
     static AOutReader      S_AOut;
     static Plan9Reader     S_Plan9;
-    static SignatureReader S_MinixAOut (SymbolFormatMinixAOut, DetectMinixAOut);
+    static MinixReader     S_MinixAOut;
     static SignatureReader S_XenixXOut (SymbolFormatXenixXOut, DetectXenixXOut);
     static BigObjReader    S_BigObj;
     static WinCoffReader   S_WinCoff;
     static EcoffReader     S_Ecoff;
     static XcoffReader     S_Xcoff;
-    static SignatureReader S_Som (SymbolFormatSom, DetectSom);
+    static SomReader       S_Som;
     static PeReader        S_Pe;
     static NeReader        S_Ne;
     static LeLxReader      S_Le (SymbolFormatLe, 'E');
@@ -1043,6 +1107,8 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatEcoff:
         case SymbolFormatPlan9:
         case SymbolFormatPdp10Sav:
+        case SymbolFormatSom:
+        case SymbolFormatMinixAOut:
             return true;
         default:
             return false;
