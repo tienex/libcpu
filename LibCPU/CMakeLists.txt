@@ -484,6 +484,13 @@ add_test(NAME symbols.wincoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_D
 set_tests_properties(symbols.wincoff PROPERTIES PASS_REGULAR_EXPRESSION "_wincoff")
 add_test(NAME symbols.bigobj COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.bigobj")
 set_tests_properties(symbols.bigobj PROPERTIES PASS_REGULAR_EXPRESSION "_bigobj")
+# XCOFF (big-endian COFF symtab), AmigaOS hunk (HUNK_EXT defs), and PEF (loader exports).
+add_test(NAME symbols.xcoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.xcoff")
+set_tests_properties(symbols.xcoff PROPERTIES PASS_REGULAR_EXPRESSION "_xcoff_s")
+add_test(NAME symbols.hunk COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.hunk")
+set_tests_properties(symbols.hunk PROPERTIES PASS_REGULAR_EXPRESSION "_hunk_def")
+add_test(NAME symbols.pef COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pef")
+set_tests_properties(symbols.pef PROPERTIES PASS_REGULAR_EXPRESSION "_pef_sym")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

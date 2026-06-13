@@ -318,10 +318,13 @@ public:
 // ===========================================================================
 
 // Harvest external defined symbols from a COFF symbol table. BigObj selects the 20-byte
-// record layout (32-bit section number) used by Microsoft /bigobj, vs the normal 18-byte.
+// record layout (32-bit section number) used by Microsoft /bigobj vs the normal 18-byte;
+// Be selects big-endian field reads (XCOFF). The same C_EXT/defined-section test applies.
 static void
-HarvestCoff (UINT8 CONST *p, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj, SymbolSink *pSink)
+HarvestCoff (UINT8 CONST *p, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj, bool Be, SymbolSink *pSink)
 {
+    auto W16 = [&] (UINT64 o) -> UINT16 { return Be ? Be16 (p + o) : Le16 (p + o); };
+    auto W32 = [&] (UINT64 o) -> UINT32 { return Be ? Be32 (p + o) : Le32 (p + o); };
     UINT32 RecSize = BigObj ? 20 : 18;
     if (SymOff > Len || (UINT64) NSym * RecSize > Len - SymOff) { return; }
     UINT64 StrOff = SymOff + (UINT64) NSym * RecSize;
@@ -330,18 +333,18 @@ HarvestCoff (UINT8 CONST *p, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj
         INT32 Section;
         UINT8 Class, Aux;
         if (BigObj) {
-            Section = (INT32) Le32 (p + E + 12);
+            Section = (INT32) Le32 (p + E + 12);             // /bigobj is little-endian
             Class   = p[E + 18];
             Aux     = p[E + 19];
         } else {
-            Section = (INT16) Le16 (p + E + 12);
+            Section = (INT16) W16 (E + 12);
             Class   = p[E + 16];
             Aux     = p[E + 17];
         }
-        if (Class == 2 && Section > 0) {                     // IMAGE_SYM_CLASS_EXTERNAL, defined
+        if (Class == 2 && Section > 0) {                     // C_EXT / IMAGE_SYM_CLASS_EXTERNAL, defined
             std::string Name;
-            if (Le32 (p + E) == 0) {                         // long name: string-table offset
-                UINT32 So = Le32 (p + E + 4);
+            if (W32 (E) == 0) {                              // long name: string-table offset
+                UINT32 So = W32 (E + 4);
                 if (StrOff + So < Len) {
                     CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
                     Name.assign (pName, strnlen (pName, (size_t) (Len - (StrOff + So))));
@@ -373,7 +376,7 @@ public:
         UINT16 OptSize = Le16 (p + Coff + 16);
 
         if (SymPtr != 0 && NSym != 0) {                      // (1) COFF symbol table
-            HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, pSink);
+            HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, /*Be=*/ false, pSink);
         }
 
         // (2) export directory -- stripped images / DLLs. Its fields are RVAs, translated
@@ -437,7 +440,7 @@ public:
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
         if (Len < 20) { return; }
         UINT32 SymPtr = Le32 (p + 8), NSym = Le32 (p + 12);
-        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, pSink); }
+        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, /*Be=*/ false, pSink); }
     }
 };
 
@@ -456,8 +459,150 @@ public:
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
         if (Len < 56) { return; }
         UINT32 SymPtr = Le32 (p + 48), NSym = Le32 (p + 52);
-        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ true, pSink); }
+        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ true, /*Be=*/ false, pSink); }
     }
+};
+
+// XCOFF (AIX): COFF layout but big-endian. f_symptr@8, f_nsyms@12; C_EXT symbols, 18-byte
+// records, names inline or via the trailing string table.
+class XcoffReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatXcoff; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 2 && (Be16 (p) == 0x01DF || Be16 (p) == 0x01F7);
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        if (Be16 (p) != 0x01DF || Len < 20) {               // 32-bit XCOFF; 64-bit (0x01F7) TODO
+            return;
+        }
+        UINT32 SymPtr = Be32 (p + 8), NSym = Be32 (p + 12);
+        if (SymPtr != 0 && NSym != 0) { HarvestCoff (p, Len, SymPtr, NSym, /*BigObj=*/ false, /*Be=*/ true, pSink); }
+    }
+};
+
+// ===========================================================================
+//  AmigaOS Hunk: HUNK_EXT blocks carry EXT_DEF exported definitions
+// ===========================================================================
+
+class AmigaHunkReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatAmigaHunk; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return Len >= 4 && Be32 (p) == 0x000003F3u; }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        auto R = [&] (UINT64 o) -> UINT32 { return o + 4 <= Len ? Be32 (p + o) : 0; };
+        UINT64 o = 0;
+        if (R (o) != 0x3F3) { return; }                      // HUNK_HEADER
+        o += 4;
+        for (;;) {                                           // resident library name list
+            UINT32 n = R (o); o += 4;
+            if (n == 0) { break; }
+            o += (UINT64) n * 4;
+            if (o > Len) { return; }
+        }
+        o += 4;                                              // table_size
+        UINT32 First = R (o); o += 4;
+        UINT32 Last  = R (o); o += 4;
+        UINT32 NHunks = (Last >= First) ? (Last - First + 1) : 0;
+        o += (UINT64) NHunks * 4;                            // hunk size table
+
+        while (o + 4 <= Len) {
+            UINT32 T = R (o) & 0x3FFFFFFFu; o += 4;          // strip memory-flag bits 30/31
+            if (T == 0x3E9 || T == 0x3EA) {                  // HUNK_CODE / HUNK_DATA
+                UINT32 N = R (o); o += 4; o += (UINT64) N * 4;
+            } else if (T == 0x3EB) {                         // HUNK_BSS
+                o += 4;
+            } else if (T == 0x3EC) {                         // HUNK_RELOC32
+                for (;;) {
+                    UINT32 C = R (o); o += 4;
+                    if (C == 0) { break; }
+                    o += 4 + (UINT64) C * 4;                 // hunk number + offsets
+                    if (o > Len) { return; }
+                }
+            } else if (T == 0x3EF) {                         // HUNK_EXT
+                for (;;) {
+                    UINT32 W = R (o); o += 4;
+                    if (W == 0) { break; }
+                    UINT32 Type = W >> 24;
+                    UINT64 NameBytes = (UINT64) (W & 0xFFFFFFu) * 4;   // name length in longwords
+                    if (o + NameBytes > Len) { return; }
+                    if (Type < 128) {                        // a definition (value longword follows)
+                        if (Type == 1) {                     // EXT_DEF -> exported
+                            CHAR8 CONST *pName = (CHAR8 CONST *) (p + o);
+                            pSink->Add (std::string (pName, strnlen (pName, (size_t) NameBytes)));
+                        }
+                        o += NameBytes + 4;
+                    } else {                                 // a reference
+                        o += NameBytes;
+                        if (Type == 130) { o += 4; }         // EXT_COMMON: leading size longword
+                        UINT32 C = R (o); o += 4;
+                        o += (UINT64) C * 4;
+                    }
+                    if (o > Len) { return; }
+                }
+            } else if (T == 0x3F0) {                         // HUNK_SYMBOL (debug names)
+                for (;;) {
+                    UINT32 N = R (o); o += 4;
+                    if (N == 0) { break; }
+                    o += (UINT64) N * 4 + 4;                 // name + value
+                    if (o > Len) { return; }
+                }
+            } else if (T == 0x3F2) {                         // HUNK_END
+                continue;
+            } else {
+                break;                                       // unknown hunk -> stop
+            }
+        }
+    }
+};
+
+// ===========================================================================
+//  PEF (classic Mac OS) -- exports live in the loader section's export tables.
+//  Shared by plain PEF and the CFM-68k / CFM-PPC architecture variants.
+// ===========================================================================
+
+class PefReader : public FormatReader {
+public:
+    PefReader (SYMBOL_FORMAT Fmt, CHAR8 CONST *pArch) : m_Fmt (Fmt), m_pArch (pArch) {}
+    SYMBOL_FORMAT Format () CONST override { return m_Fmt; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 12 || std::memcmp (p, "Joy!", 4) != 0 || std::memcmp (p + 4, "peff", 4) != 0) { return false; }
+        return m_pArch == nullptr || std::memcmp (p + 8, m_pArch, 4) == 0;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        if (Len < 40) { return; }
+        UINT16 SectionCount = Be16 (p + 32);
+        for (UINT16 I = 0; I < SectionCount; I++) {
+            UINT64 Sh = 40 + (UINT64) I * 28;
+            if (Sh + 28 > Len) { return; }
+            if (p[Sh + 24] != 4) { continue; }               // PEF loader section kind
+            UINT64 L = Be32 (p + Sh + 20);                   // container offset of the loader section
+            if (L + 56 > Len) { return; }
+            UINT32 StringsOff  = Be32 (p + L + 40);
+            UINT32 HashOff     = Be32 (p + L + 44);
+            UINT32 HashPower   = Be32 (p + L + 48);
+            UINT32 ExportCount = Be32 (p + L + 52);
+            if (HashPower > 31 || ExportCount > (1u << 20)) { return; }
+            // Loader layout: hash slot table (2^power * 4) | key table (count*4) | symbol table (count*10).
+            UINT64 KeyOff = L + HashOff + (((UINT64) 1 << HashPower) * 4);
+            UINT64 SymOff = KeyOff + (UINT64) ExportCount * 4;
+            UINT64 StrBase = L + StringsOff;
+            for (UINT32 S = 0; S < ExportCount; S++) {
+                UINT64 Ke = KeyOff + (UINT64) S * 4;
+                UINT64 Se = SymOff + (UINT64) S * 10;
+                if (Ke + 4 > Len || Se + 4 > Len) { break; }
+                UINT32 NameLen = Be32 (p + Ke) >> 16;        // PEF hash word: length<<16 | hash
+                UINT32 NameOff = Be32 (p + Se) & 0xFFFFFFu;  // classAndName: class<<24 | name offset
+                UINT64 Na = StrBase + NameOff;
+                if (NameLen > 0 && Na + NameLen <= Len) {
+                    pSink->Add (std::string ((CHAR8 CONST *) (p + Na), NameLen));
+                }
+            }
+            return;
+        }
+    }
+private:
+    SYMBOL_FORMAT m_Fmt;
+    CHAR8 CONST  *m_pArch;
 };
 
 // ===========================================================================
@@ -607,10 +752,6 @@ private:
     PredicateFn   m_Pred;
 };
 
-static bool DetectAmigaHunk (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && Be32 (p) == 0x000003F3u; }
-static bool DetectCfmPpc (UINT8 CONST *p, UINT64 Len) { return Len >= 12 && std::memcmp (p, "Joy!", 4) == 0 && std::memcmp (p + 8, "pwpc", 4) == 0; }
-static bool DetectCfm68k (UINT8 CONST *p, UINT64 Len) { return Len >= 12 && std::memcmp (p, "Joy!", 4) == 0 && std::memcmp (p + 8, "m68k", 4) == 0; }
-static bool DetectPef (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && std::memcmp (p, "Joy!", 4) == 0; }
 static bool DetectNlm (UINT8 CONST *p, UINT64 Len) { return Len >= 24 && std::memcmp (p, "NetWare Loadable Module", 23) == 0; }
 static bool DetectVms (UINT8 CONST *p, UINT64 Len) {
     if (Len < 20 || Le32 (p + 8) != 3 || Le32 (p + 12) != 0) { return false; }
@@ -624,7 +765,6 @@ static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
     UINT16 M = Le16 (p);
     return M == 0x0162 || M == 0x0166 || M == 0x0140 || M == 0x0184;
 }
-static bool DetectXcoff (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && (Be16 (p) == 0x01DF || Be16 (p) == 0x01F7); }
 static bool DetectSom (UINT8 CONST *p, UINT64 Len) {
     if (Len < 2) { return false; }
     UINT16 M = Be16 (p);
@@ -645,10 +785,10 @@ Registry ()
 {
     static MachOReader     S_MachO;
     static ElfReader       S_Elf;
-    static SignatureReader S_AmigaHunk (SymbolFormatAmigaHunk, DetectAmigaHunk);
-    static SignatureReader S_CfmPpc (SymbolFormatCfmPpc, DetectCfmPpc);
-    static SignatureReader S_Cfm68k (SymbolFormatCfm68k, DetectCfm68k);
-    static SignatureReader S_Pef (SymbolFormatPef, DetectPef);
+    static AmigaHunkReader S_AmigaHunk;
+    static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
+    static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
+    static PefReader       S_Pef (SymbolFormatPef, nullptr);
     static SignatureReader S_Nlm (SymbolFormatNlm, DetectNlm);
     static SignatureReader S_Vms (SymbolFormatVms, DetectVms);
     static AOutReader      S_AOut;
@@ -657,7 +797,7 @@ Registry ()
     static BigObjReader    S_BigObj;
     static WinCoffReader   S_WinCoff;
     static SignatureReader S_Ecoff (SymbolFormatEcoff, DetectEcoff);
-    static SignatureReader S_Xcoff (SymbolFormatXcoff, DetectXcoff);
+    static XcoffReader     S_Xcoff;
     static SignatureReader S_Som (SymbolFormatSom, DetectSom);
     static PeReader        S_Pe;
     static NeReader        S_Ne;
@@ -692,6 +832,11 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatBigObjCoff:
         case SymbolFormatOmf:
         case SymbolFormatNe:
+        case SymbolFormatXcoff:
+        case SymbolFormatAmigaHunk:
+        case SymbolFormatPef:
+        case SymbolFormatCfm68k:
+        case SymbolFormatCfmPpc:
             return true;
         default:
             return false;
