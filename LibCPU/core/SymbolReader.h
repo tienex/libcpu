@@ -2,19 +2,17 @@
   SymbolReader -- derive a library's exported-symbol set from a real toolchain artifact.
 
   Knowledge libraries (v2) are auto-derived from what the host and target toolchains
-  actually ship, rather than hand-written. This reader supplies one half of that: the
-  set of symbols a library exports, read from either
+  actually ship. This reader supplies one half of that: the set of symbols a library
+  exports, read from a .tbd text stub or any of a range of object/executable formats.
 
-    - a **.tbd** text stub (Apple "text-based dylib"/tapi-tbd, what the macOS SDK ships
-      in place of the real dylib, which lives in the dyld shared cache), or
-    - a **Mach-O** binary (a real .dylib / bundle / executable on disk).
+  The reader is a thin facade over a registry of per-format FormatReader objects: Read()
+  slurps the file and asks each reader, in priority order, whether the bytes are its format;
+  the first match extracts symbols into a SymbolSink. Adding a format is adding one reader
+  to the registry -- the facade does not change.
 
-  The exported names, joined later with header signatures (the other half), yield the
-  syscall->native and struct-conversion entities a knowledge library holds.
-
-  Mach-O structures are declared inline here (not via the Apple <mach-o/...> headers) so
-  the reader still compiles on toolchains without them (MSVC, OpenWatcom); it simply
-  reports no symbols for formats it does not understand on those hosts.
+  Binary-format structures are parsed inline (no Apple/ELF/PE headers) so the reader builds
+  on toolchains without them (MSVC, OpenWatcom); it reports no symbols for formats it does
+  not understand on those hosts.
 
   Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
 **/
@@ -29,9 +27,9 @@
 namespace LibCPU {
 
 //
-// The artifact format a SymbolReader recognised. Formats up to and including PeCoff have
-// symbol extraction; the rest are detected (by magic) and reported, with extraction not
-// yet implemented -- the reader names the format rather than failing or guessing.
+// The artifact format a SymbolReader recognised. Formats whose reader implements Extract()
+// yield symbols; the rest are detected (by magic) and reported with extraction not yet
+// implemented -- the reader names the format rather than failing or guessing.
 //
 typedef enum _SYMBOL_FORMAT {
     SymbolFormatUnknown = 0,
@@ -64,41 +62,55 @@ typedef enum _SYMBOL_FORMAT {
 // Human-readable name of a format (for listings / diagnostics).
 CHAR8 CONST *SymbolFormatName (SYMBOL_FORMAT Format);
 
-// Whether the reader extracts symbols for a format (vs. detection only).
+// Whether any registered reader extracts symbols for a format (vs. detection only).
 bool SymbolFormatHasExtractor (SYMBOL_FORMAT Format);
+
+//
+// Accumulates the parsed result; handed to each format reader's Extract().
+//
+class SymbolSink {
+public:
+    void Add (std::string Name);                                       // de-duplicating append
+    void SetInstallName (std::string Name) { if (m_InstallName.empty ()) { m_InstallName = std::move (Name); } }
+    bool Has (std::string CONST &Name) CONST;
+
+    std::string CONST              &InstallName () CONST { return m_InstallName; }
+    std::vector<std::string> CONST &Symbols () CONST { return m_Symbols; }
+
+private:
+    std::string              m_InstallName;
+    std::vector<std::string> m_Symbols;
+};
+
+//
+// One object/executable format. Detect() recognises it by content; Extract() (optional --
+// detection-only readers do not override it) harvests exported symbols into the sink.
+//
+class FormatReader {
+public:
+    virtual ~FormatReader () = default;
+    virtual SYMBOL_FORMAT Format () CONST = 0;
+    virtual bool          Detect (UINT8 CONST *pData, UINT64 Len) CONST = 0;
+    virtual void          Extract (UINT8 CONST *pData, UINT64 Len, SymbolSink *pSink) CONST { (void) pData; (void) Len; (void) pSink; }
+};
 
 //
 // Reads the exported-symbol set (and install name, when present) of one library artifact.
 //
 class SymbolReader {
 public:
-    // Read exported symbols from a file, auto-detecting .tbd (text) vs Mach-O (binary).
-    // Returns false (and fills *pError) when the file is neither or cannot be read.
+    // Read exported symbols from a file. Returns false (and fills *pError) when the file
+    // cannot be read or no registered reader recognises it.
     bool Read (CHAR8 CONST *pPath, std::string *pError);
 
     SYMBOL_FORMAT                   Format () CONST { return m_Format; }
-    std::string CONST              &InstallName () CONST { return m_InstallName; }
-    std::vector<std::string> CONST &Symbols () CONST { return m_Symbols; }
-    bool                            Has (std::string CONST &Name) CONST;
+    std::string CONST              &InstallName () CONST { return m_Sink.InstallName (); }
+    std::vector<std::string> CONST &Symbols () CONST { return m_Sink.Symbols (); }
+    bool                            Has (std::string CONST &Name) CONST { return m_Sink.Has (Name); }
 
 private:
-    bool ReadTbd (std::string CONST &Text);
-    bool ReadMachO (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadElf (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadAOut (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadPeCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadOmf (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadNe (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadWinCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    bool ReadBigObjCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
-    // Harvest external defined symbols from a COFF symbol table. BigObj selects the 20-byte
-    // record layout (32-bit section number) used by Microsoft /bigobj, vs the normal 18-byte.
-    void HarvestCoff (UINT8 CONST *pData, UINT64 Len, UINT64 SymOff, UINT32 NSym, bool BigObj);
-    void AddSymbol (std::string Name);          // de-duplicating append
-
-    SYMBOL_FORMAT            m_Format = SymbolFormatUnknown;
-    std::string             m_InstallName;
-    std::vector<std::string> m_Symbols;
+    SYMBOL_FORMAT m_Format = SymbolFormatUnknown;
+    SymbolSink    m_Sink;
 };
 
 } // namespace LibCPU
