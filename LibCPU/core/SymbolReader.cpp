@@ -574,42 +574,109 @@ SymbolReader::ReadPeCoff (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
         return true;
     }
     UINT64 Coff = (UINT64) Pe + 4;                           // past "PE\0\0"
+    UINT16 NumSec = Le16 (p + Coff + 2);
     UINT32 SymPtr = Le32 (p + Coff + 8);
     UINT32 NSym   = Le32 (p + Coff + 12);
-    if (SymPtr == 0 || NSym == 0) {
-        return true;                                         // linked image: exports live in the
-                                                             // export directory (extraction TODO)
-    }
-    UINT64 SymOff = SymPtr;
-    UINT64 StrOff = SymOff + (UINT64) NSym * 18;
-    if (SymOff > Len || (UINT64) NSym * 18 > Len - SymOff || StrOff > Len) {
-        return true;
-    }
-    for (UINT32 I = 0; I < NSym; ) {
-        UINT64 E = SymOff + (UINT64) I * 18;                 // COFF symbol = 18 bytes
-        INT16  Section = (INT16) Le16 (p + E + 12);
-        UINT8  Class   = p[E + 16];
-        UINT8  Aux     = p[E + 17];
-        if (Class == 2 && Section > 0) {                     // IMAGE_SYM_CLASS_EXTERNAL, defined
-            std::string Name;
-            if (Le32 (p + E) == 0) {                         // long name: offset into string table
-                UINT32 So = Le32 (p + E + 4);
-                if (StrOff + So < Len) {
-                    CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
-                    size_t Max = (size_t) (Len - (StrOff + So));
-                    Name.assign (pName, strnlen (pName, Max));
+    UINT16 OptSize = Le16 (p + Coff + 16);
+
+    // (1) COFF symbol table -- present in object files and unstripped images.
+    if (SymPtr != 0 && NSym != 0) {
+        UINT64 SymOff = SymPtr;
+        UINT64 StrOff = SymOff + (UINT64) NSym * 18;
+        if (SymOff <= Len && (UINT64) NSym * 18 <= Len - SymOff && StrOff <= Len) {
+            for (UINT32 I = 0; I < NSym; ) {
+                UINT64 E = SymOff + (UINT64) I * 18;          // COFF symbol = 18 bytes
+                INT16  Section = (INT16) Le16 (p + E + 12);
+                UINT8  Class   = p[E + 16];
+                UINT8  Aux     = p[E + 17];
+                if (Class == 2 && Section > 0) {              // IMAGE_SYM_CLASS_EXTERNAL, defined
+                    std::string Name;
+                    if (Le32 (p + E) == 0) {                  // long name: offset into string table
+                        UINT32 So = Le32 (p + E + 4);
+                        if (StrOff + So < Len) {
+                            CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + So);
+                            size_t Max = (size_t) (Len - (StrOff + So));
+                            Name.assign (pName, strnlen (pName, Max));
+                        }
+                    } else {                                  // inline 8-byte name (NUL-padded)
+                        char Buf[9];
+                        std::memcpy (Buf, p + E, 8);
+                        Buf[8] = '\0';
+                        Name = Buf;
+                    }
+                    if (!Name.empty ()) {
+                        AddSymbol (std::move (Name));
+                    }
                 }
-            } else {                                         // inline 8-byte name (NUL-padded)
-                char Buf[9];
-                std::memcpy (Buf, p + E, 8);
-                Buf[8] = '\0';
-                Name = Buf;
-            }
-            if (!Name.empty ()) {
-                AddSymbol (std::move (Name));
+                I += 1 + Aux;                                 // skip auxiliary records
             }
         }
-        I += 1 + Aux;                                        // skip auxiliary records
+    }
+
+    // (2) PE export directory -- where stripped images / DLLs publish their exports. The
+    // directory's fields are RVAs (virtual addresses), so each must be translated to a file
+    // offset through the section table.
+    UINT64 Opt = Coff + 20;
+    if (Opt + 2 > Len || OptSize < 96) {
+        return true;
+    }
+    UINT16 Magic = Le16 (p + Opt);
+    UINT64 DDOff = 0;
+    UINT32 NRva = 0;
+    if (Magic == 0x10B) {                                    // PE32
+        NRva = Le32 (p + Opt + 92);
+        DDOff = Opt + 96;
+    } else if (Magic == 0x20B) {                             // PE32+
+        NRva = (Opt + 108 + 4 <= Len) ? Le32 (p + Opt + 108) : 0;
+        DDOff = Opt + 112;
+    } else {
+        return true;
+    }
+    if (NRva < 1 || DDOff + 8 > Len) {
+        return true;
+    }
+    UINT32 ExpRva = Le32 (p + DDOff + 0);                    // data directory entry 0 = export table
+    if (ExpRva == 0) {
+        return true;
+    }
+    UINT64 SecOff = Opt + OptSize;                           // section headers follow the opt header
+    auto Rva2Off = [&] (UINT32 Rva) -> UINT64 {
+        for (UINT32 I = 0; I < NumSec; I++) {
+            UINT64 Sh = SecOff + (UINT64) I * 40;            // section header = 40 bytes
+            if (Sh + 40 > Len) { break; }
+            UINT32 VSize = Le32 (p + Sh + 8);
+            UINT32 VAddr = Le32 (p + Sh + 12);
+            UINT32 RawSz = Le32 (p + Sh + 16);
+            UINT32 PRaw  = Le32 (p + Sh + 20);
+            UINT32 Span  = VSize > RawSz ? VSize : RawSz;
+            if (Rva >= VAddr && (UINT64) Rva < (UINT64) VAddr + Span) {
+                return (UINT64) PRaw + (Rva - VAddr);
+            }
+        }
+        return (UINT64) -1;
+    };
+    UINT64 ExpOff = Rva2Off (ExpRva);
+    if (ExpOff == (UINT64) -1 || ExpOff + 40 > Len) {
+        return true;
+    }
+    UINT32 NNames   = Le32 (p + ExpOff + 24);                // IMAGE_EXPORT_DIRECTORY.NumberOfNames
+    UINT32 NamesRva = Le32 (p + ExpOff + 32);                // .AddressOfNames (RVA of RVA array)
+    UINT64 NamesOff = Rva2Off (NamesRva);
+    if (NamesOff == (UINT64) -1 || NNames > (1u << 20)) {
+        return true;                                         // missing / implausible name table
+    }
+    for (UINT32 I = 0; I < NNames; I++) {
+        UINT64 E = NamesOff + (UINT64) I * 4;
+        if (E + 4 > Len) { break; }
+        UINT64 NmOff = Rva2Off (Le32 (p + E));
+        if (NmOff != (UINT64) -1 && NmOff < Len) {
+            CHAR8 CONST *pName = (CHAR8 CONST *) (p + NmOff);
+            size_t Max = (size_t) (Len - NmOff);
+            size_t NameLen = strnlen (pName, Max);
+            if (NameLen > 0 && NameLen < Max) {
+                AddSymbol (std::string (pName, NameLen));
+            }
+        }
     }
     return true;
 }

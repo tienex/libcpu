@@ -470,6 +470,10 @@ add_test(NAME symbols.elf COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/
 set_tests_properties(symbols.elf PROPERTIES PASS_REGULAR_EXPRESSION "_elf_sym")
 add_test(NAME symbols.pe COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pe")
 set_tests_properties(symbols.pe PROPERTIES PASS_REGULAR_EXPRESSION "_pe_sym")
+# Stripped image (no COFF symbol table): exports come from the PE export directory, with
+# RVA->file-offset translation through the section table.
+add_test(NAME symbols.pedll COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.dll")
+set_tests_properties(symbols.pedll PROPERTIES PASS_REGULAR_EXPRESSION "_dll_export")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).
