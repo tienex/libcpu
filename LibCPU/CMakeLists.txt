@@ -531,6 +531,9 @@ set_tests_properties(symbols.bout PROPERTIES PASS_REGULAR_EXPRESSION "_bout_sym"
 # OSF/ROSE (OSF/1 "Mach-O", magic 0xbeefface): LDC_SYMBOLS/LDC_STRINGS, SI_EXPORT_F.
 add_test(NAME symbols.rose COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.rose")
 set_tests_properties(symbols.rose PROPERTIES PASS_REGULAR_EXPRESSION "_rose_sym")
+# XENIX x.out (XR_SAOUT nlist form).
+add_test(NAME symbols.xout COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.xout")
+set_tests_properties(symbols.xout PROPERTIES PASS_REGULAR_EXPRESSION "_xenix")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

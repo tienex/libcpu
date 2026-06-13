@@ -1217,6 +1217,40 @@ public:
 };
 
 // ===========================================================================
+//  XENIX x.out: header (32 bytes), XSYMPOS = sizeof(xexec) + x_ext + x_text + x_data.
+//  x_relsym & 0x0f selects the symbol format; XR_SAOUT (2) is the nlist form -- a 16-byte
+//  record with an inline 8-char name, classic a.out n_type bits.
+// ===========================================================================
+
+class XenixReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatXenixXOut; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return Len >= 32 && Le16 (p) == 0x0206; }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT16 Ext  = Le16 (p + 2);                          // x_ext
+        UINT32 Text = Le32 (p + 4), Data = Le32 (p + 8), Syms = Le32 (p + 16);
+        UINT8  RelSym = p[29];                               // x_relsym
+        if ((RelSym & 0x0F) != 2) { return; }                // only XR_SAOUT (nlist) is implemented
+        UINT64 SymOff = 32 + (UINT64) Ext + Text + Data;     // sizeof(struct xexec) == 32
+        if (SymOff > Len || Syms > Len - SymOff) { return; }
+        for (UINT64 O = 0; O + 16 <= Syms; O += 16) {        // nlist: n_name[8], n_type(4), n_value(4)
+            UINT64 E = SymOff + O;
+            UINT32 Type = Le32 (p + E + 8);
+            bool   Ext_ = (Type & 0x01) != 0;                // N_EXT
+            UINT8  Ty   = Type & 0x1E;                       // N_TYPE
+            bool   Defined = (Ty == 0x04 || Ty == 0x06 || Ty == 0x08);   // TEXT/DATA/BSS
+            if (Ext_ && Defined) {
+                char Buf[9];
+                std::memcpy (Buf, p + E, 8);
+                Buf[8] = '\0';
+                std::string Nm (Buf, strnlen (Buf, 8));
+                if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+            }
+        }
+    }
+};
+
+// ===========================================================================
 //  .tbd (Apple text-based dylib stub)
 // ===========================================================================
 
@@ -1282,7 +1316,6 @@ private:
     PredicateFn   m_Pred;
 };
 
-static bool DetectXenixXOut (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && (Le16 (p) == 0x0206 || Be16 (p) == 0x0206); }
 static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
     if (Len < 2) { return false; }
     UINT16 M = Le16 (p);
@@ -1336,12 +1369,12 @@ Registry ()
     static BoutReader      S_Bout;
     static Plan9Reader     S_Plan9;
     static MinixReader     S_MinixAOut;
+    static XenixReader     S_XenixXOut;
     static SignatureReader S_Ieee695 (SymbolFormatIeee695, DetectIeee695);
     static SignatureReader S_Srec (SymbolFormatSrec, DetectSrec);
     static SignatureReader S_IntelHex (SymbolFormatIntelHex, DetectIntelHex);
     static SignatureReader S_TekHex (SymbolFormatTekHex, DetectTekHex);
     static SignatureReader S_VerilogHex (SymbolFormatVerilogHex, DetectVerilogHex);
-    static SignatureReader S_XenixXOut (SymbolFormatXenixXOut, DetectXenixXOut);
     static BigObjReader    S_BigObj;
     static WinCoffReader   S_WinCoff;
     static EcoffReader     S_Ecoff;
@@ -1402,6 +1435,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatVms:
         case SymbolFormatBout:
         case SymbolFormatOsfRose:
+        case SymbolFormatXenixXOut:
             return true;
         default:
             return false;
