@@ -88,6 +88,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatGoff:       return "goff";
         case SymbolFormatBout:       return "b.out";
         case SymbolFormatOsfRose:    return "osf-rose";
+        case SymbolFormatCpmZ8000:   return "cpm-z8000";
         case SymbolFormatIeee695:    return "ieee-695";
         case SymbolFormatSrec:       return "srec";
         case SymbolFormatIntelHex:   return "intel-hex";
@@ -1011,6 +1012,37 @@ public:
 };
 
 // ===========================================================================
+//  CP/M-8000 (Zilog Z8000) command file (DRI). Big-endian; magic EE00..EE0B. The symbol
+//  table is the LAST file section, so it starts at filelen - symtab_len; each entry is
+//  12 bytes (seg/type/value + inline 8-char name); type 3 = Global Definition (exported).
+// ===========================================================================
+
+class CpmZ8000Reader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatCpmZ8000; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 16) { return false; }
+        UINT16 M = Be16 (p);
+        return M == 0xEE00 || M == 0xEE01 || M == 0xEE02 || M == 0xEE03 || M == 0xEE07 || M == 0xEE0B;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 SymLen = Be32 (p + 0x0C);                     // length of symbol table; 0 = stripped
+        if (SymLen == 0 || SymLen > Len) { return; }
+        UINT64 SymOff = Len - SymLen;                        // symbol table is the last section
+        for (UINT64 O = 0; O + 12 <= SymLen; O += 12) {      // entry = seg(1) type(1) value(2) name(8)
+            UINT64 E = SymOff + O;
+            if (p[E + 1] == 3) {                             // type 3 = Global Definition
+                char Buf[9];
+                std::memcpy (Buf, p + E + 4, 8);
+                Buf[8] = '\0';
+                std::string Nm (Buf, strnlen (Buf, 8));
+                if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+            }
+        }
+    }
+};
+
+// ===========================================================================
 //  NASM RDOFF2: a record-based header; RDFREC_GLOBAL (type 3) records export symbols.
 // ===========================================================================
 
@@ -1353,6 +1385,7 @@ Registry ()
     static ElfReader       S_Elf;
     static RdoffReader     S_Rdoff;
     static GemdosReader    S_Gemdos;
+    static CpmZ8000Reader  S_CpmZ8000;
     static SignatureReader S_UefiTe (SymbolFormatUefiTe, DetectUefiTe);
     static SignatureReader S_PharLap (SymbolFormatPharLap, DetectPharLap);
     static SignatureReader S_X68000 (SymbolFormatX68000, DetectX68000);
@@ -1391,7 +1424,7 @@ Registry ()
 
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
-        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -1436,6 +1469,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatBout:
         case SymbolFormatOsfRose:
         case SymbolFormatXenixXOut:
+        case SymbolFormatCpmZ8000:
             return true;
         default:
             return false;
