@@ -78,6 +78,14 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatVms:        return "vms";
         case SymbolFormatPlan9:      return "plan9-a.out";
         case SymbolFormatPdp10Sav:   return "pdp10-sav";
+        case SymbolFormatGemdos:     return "gemdos-68k (atari/cpm68k)";
+        case SymbolFormatRdoff:      return "rdoff";
+        case SymbolFormatUefiTe:     return "uefi-te";
+        case SymbolFormatPharLap:    return "phar-lap";
+        case SymbolFormatX68000:     return "x68000";
+        case SymbolFormatAif:        return "arm-aif";
+        case SymbolFormatOs360:      return "os360-obj";
+        case SymbolFormatGoff:       return "goff";
         default:                     return "unknown";
     }
 }
@@ -958,6 +966,74 @@ public:
 };
 
 // ===========================================================================
+//  GEMDOS / DRI m68k executable (Atari ST/TT/Falcon, CP/M-68K). Big-endian; the DRI
+//  symbol table is 14-byte entries with an inline 8-char name (extended by a_lname
+//  continuations), a 16-bit type, and a 32-bit value.
+// ===========================================================================
+
+class GemdosReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatGemdos; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 28) { return false; }
+        UINT16 M = Be16 (p);
+        return M == 0x601A || M == 0x601B;                   // PRG / CMD (contiguous / not)
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 TSize = Be32 (p + 2), DSize = Be32 (p + 6), SSize = Be32 (p + 14);
+        UINT64 SymOff = 28 + (UINT64) TSize + DSize;
+        if (SymOff > Len || SSize > Len - SymOff) { return; }
+        UINT64 End = SymOff + SSize;
+        for (UINT64 O = SymOff; O + 14 <= End; ) {
+            UINT16 Type = Be16 (p + O + 8);
+            char Buf[9];
+            std::memcpy (Buf, p + O, 8);
+            Buf[8] = '\0';
+            std::string Nm (Buf, strnlen (Buf, 8));
+            O += 14;
+            // GST long names (a_lname, 0x0048): the next entry holds 14 more name chars.
+            if ((Type & 0x0048) == 0x0048 && O + 14 <= End) {
+                Nm.append ((CHAR8 CONST *) (p + O), strnlen ((CHAR8 CONST *) (p + O), 14));
+                O += 14;
+            }
+            if (!Nm.empty () && (Type & 0x2000) != 0) {       // a_global -> exported
+                pSink->Add (std::move (Nm));
+            }
+        }
+    }
+};
+
+// ===========================================================================
+//  NASM RDOFF2: a record-based header; RDFREC_GLOBAL (type 3) records export symbols.
+// ===========================================================================
+
+class RdoffReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatRdoff; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 10 && std::memcmp (p, "RDOFF2", 6) == 0;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 HdrLen = Le32 (p + 6);                        // header records follow the length
+        UINT64 O = 10;
+        UINT64 HdrEnd = O + HdrLen;
+        if (HdrEnd > Len) { HdrEnd = Len; }
+        while (O + 2 <= HdrEnd) {
+            UINT8 Type = p[O];
+            UINT8 RecLen = p[O + 1];
+            UINT64 Data = O + 2;
+            if (Data + RecLen > HdrEnd) { break; }
+            if (Type == 3 && RecLen > 6) {                   // RDFREC_GLOBAL: flags,seg,offset,label
+                CHAR8 CONST *pName = (CHAR8 CONST *) (p + Data + 6);
+                size_t NameLen = strnlen (pName, (size_t) (RecLen - 6));
+                if (NameLen > 0) { pSink->Add (std::string (pName, NameLen)); }
+            }
+            O = Data + RecLen;
+        }
+    }
+};
+
+// ===========================================================================
 //  .tbd (Apple text-based dylib stub)
 // ===========================================================================
 
@@ -1035,6 +1111,16 @@ static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
     return M == 0x0162 || M == 0x0166 || M == 0x0140 || M == 0x0184;
 }
 static bool DetectMz (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'M' && p[1] == 'Z'; }
+static bool DetectUefiTe (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'V' && p[1] == 'Z'; }
+static bool DetectPharLap (UINT8 CONST *p, UINT64 Len) {
+    return Len >= 2 && ((p[0] == 'M' && p[1] == 'P') || (p[0] == 'P' && (p[1] == '2' || p[1] == '3')));
+}
+static bool DetectX68000 (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'H' && p[1] == 'U'; }
+static bool DetectAif (UINT8 CONST *p, UINT64 Len) { return Len >= 0x14 && Le32 (p + 0x10) == 0xEF000011u; }
+static bool DetectOs360 (UINT8 CONST *p, UINT64 Len) {     // X'02' + EBCDIC "ESD"
+    return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;
+}
+static bool DetectGoff (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0x03 && p[1] == 0xF0; }   // PTV + HDR
 
 } // anonymous namespace
 
@@ -1047,6 +1133,14 @@ Registry ()
 {
     static MachOReader     S_MachO;
     static ElfReader       S_Elf;
+    static RdoffReader     S_Rdoff;
+    static GemdosReader    S_Gemdos;
+    static SignatureReader S_UefiTe (SymbolFormatUefiTe, DetectUefiTe);
+    static SignatureReader S_PharLap (SymbolFormatPharLap, DetectPharLap);
+    static SignatureReader S_X68000 (SymbolFormatX68000, DetectX68000);
+    static SignatureReader S_Aif (SymbolFormatAif, DetectAif);
+    static SignatureReader S_Os360 (SymbolFormatOs360, DetectOs360);
+    static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
     static AmigaHunkReader S_AmigaHunk;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
@@ -1073,11 +1167,12 @@ Registry ()
 
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
-        &S_MachO, &S_Elf, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef, &S_Nlm, &S_Vms,
+        &S_MachO, &S_Elf, &S_Rdoff, &S_Gemdos, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_Nlm, &S_Vms, &S_Aif,
         &S_AOut, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
-        &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_Pdp10Sav                                  // record-type / structural heuristics, last
+        &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
+        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff               // record-type / structural heuristics, last
     };
     return List;
 }
@@ -1109,6 +1204,8 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatPdp10Sav:
         case SymbolFormatSom:
         case SymbolFormatMinixAOut:
+        case SymbolFormatGemdos:
+        case SymbolFormatRdoff:
             return true;
         default:
             return false;

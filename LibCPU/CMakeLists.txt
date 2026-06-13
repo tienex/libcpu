@@ -515,6 +515,11 @@ add_test(NAME symbols.som COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/
 set_tests_properties(symbols.som PROPERTIES PASS_REGULAR_EXPRESSION "_som_sym")
 add_test(NAME symbols.minix COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.minix")
 set_tests_properties(symbols.minix PROPERTIES PASS_REGULAR_EXPRESSION "_minix")
+# GEMDOS/DRI (Atari ST/TT/Falcon, CP/M-68K) and NASM RDOFF2.
+add_test(NAME symbols.gemdos COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.gemdos")
+set_tests_properties(symbols.gemdos PROPERTIES PASS_REGULAR_EXPRESSION "_gemdos")
+add_test(NAME symbols.rdoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.rdoff")
+set_tests_properties(symbols.rdoff PROPERTIES PASS_REGULAR_EXPRESSION "_rdoff")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).

@@ -58,7 +58,16 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatNlm,            // NetWare Loadable Module
     SymbolFormatVms,            // OpenVMS image (Alpha/Itanium EIHD)
     SymbolFormatPlan9,          // Plan 9 a.out (32/64-bit, big-endian)
-    SymbolFormatPdp10Sav        // PDP-10 .SAV core image (TOPS-10/20)
+    SymbolFormatPdp10Sav,       // PDP-10 .SAV core image (TOPS-10/20)
+    SymbolFormatGemdos,         // GEMDOS/DRI m68k (Atari ST/TT/Falcon, CP/M-68K) -- 0x601A
+    SymbolFormatRdoff,          // NASM RDOFF2 ("RDOFF2") -- export records
+    // --- detection only ---
+    SymbolFormatUefiTe,         // UEFI Terse Executable ("VZ")
+    SymbolFormatPharLap,        // Phar-Lap DOS-extender ("MP"/"P2"/"P3")
+    SymbolFormatX68000,         // Sharp X68000 .X ("HU")
+    SymbolFormatAif,            // ARM Image Format (AIF)
+    SymbolFormatOs360,          // IBM OS/360 object deck (EBCDIC ESD/TXT/RLD/END)
+    SymbolFormatGoff            // IBM GOFF object (X'03' PTV records)
 } SYMBOL_FORMAT;
 
 // Human-readable name of a format (for listings / diagnostics).
