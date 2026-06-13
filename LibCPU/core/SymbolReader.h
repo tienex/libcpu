@@ -83,6 +83,8 @@ private:
     bool ReadElf (UINT8 CONST *pData, UINT64 Len, std::string *pError);
     bool ReadAOut (UINT8 CONST *pData, UINT64 Len, std::string *pError);
     bool ReadPeCoff (UINT8 CONST *pData, UINT64 Len, std::string *pError);
+    bool ReadOmf (UINT8 CONST *pData, UINT64 Len, std::string *pError);
+    bool ReadNe (UINT8 CONST *pData, UINT64 Len, std::string *pError);
     void AddSymbol (std::string Name);          // de-duplicating append
 
     SYMBOL_FORMAT            m_Format = SymbolFormatUnknown;

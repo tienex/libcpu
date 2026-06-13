@@ -258,6 +258,8 @@ SymbolReader::Read (CHAR8 CONST *pPath, std::string *pError)
         case SymbolFormatElf:    return ReadElf (Data.data (), Data.size (), pError);
         case SymbolFormatAOut:   return ReadAOut (Data.data (), Data.size (), pError);
         case SymbolFormatPeCoff: return ReadPeCoff (Data.data (), Data.size (), pError);
+        case SymbolFormatOmf:    return ReadOmf (Data.data (), Data.size (), pError);
+        case SymbolFormatNe:     return ReadNe (Data.data (), Data.size (), pError);
         case SymbolFormatUnknown:
             if (pError) { *pError = std::string ("'") + pPath + "': unrecognised object/executable format"; }
             return false;
@@ -677,6 +679,97 @@ SymbolReader::ReadPeCoff (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
                 AddSymbol (std::string (pName, NameLen));
             }
         }
+    }
+    return true;
+}
+
+// --- OMF (object/library): PUBDEF records list public (exported) names ------
+
+bool
+SymbolReader::ReadOmf (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
+{
+    // OMF index: 1 byte if < 0x80, else two bytes ((b & 0x7F) << 8 | next). Advances *pOff.
+    auto Index = [&] (UINT64 *pOff) -> UINT32 {
+        if (*pOff >= Len) { return 0; }
+        UINT8 B = p[*pOff];
+        if (B < 0x80) { (*pOff)++; return B; }
+        if (*pOff + 1 >= Len) { (*pOff) += 1; return 0; }
+        UINT32 V = ((UINT32) (B & 0x7F) << 8) | p[*pOff + 1];
+        (*pOff) += 2;
+        return V;
+    };
+
+    UINT64 Off = 0;
+    while (Off + 3 <= Len) {
+        UINT8  Type = p[Off];
+        UINT16 RecLen = Le16 (p + Off + 1);                  // data length incl. 1 checksum byte
+        UINT64 Data = Off + 3;
+        UINT64 End  = Data + RecLen;                         // points just past the checksum
+        if (RecLen < 1 || End > Len) {
+            break;                                           // malformed / truncated
+        }
+        UINT64 DataEnd = End - 1;                            // exclude the checksum byte
+        if (Type == 0x90 || Type == 0x91) {                 // PUBDEF (16-bit / 32-bit)
+            bool Wide = (Type == 0x91);
+            UINT64 Q = Data;
+            Index (&Q);                                      // base group index
+            UINT32 Seg = Index (&Q);                         // base segment index
+            if (Seg == 0) { Q += 2; }                        // base frame present when seg == 0
+            while (Q < DataEnd) {
+                UINT8 NameLen = p[Q++];
+                if (Q + NameLen > DataEnd) { break; }
+                if (NameLen > 0) {
+                    AddSymbol (std::string ((CHAR8 CONST *) (p + Q), NameLen));
+                }
+                Q += NameLen;
+                Q += Wide ? 4 : 2;                           // public offset
+                Index (&Q);                                  // type index
+            }
+        }
+        Off = End;
+    }
+    return true;
+}
+
+// --- NE (16-bit Windows/OS2): resident + non-resident name tables -----------
+
+// Read a length-prefixed name table { len(1), name[len], ordinal(2) } terminated by len==0,
+// adding every entry except the first (entry 0 is the module's own name, not an export).
+void
+ReadNeNameTable (SymbolReader *pSelf, void (*Add) (SymbolReader *, std::string),
+                 UINT8 CONST *p, UINT64 Len, UINT64 Off)
+{
+    bool First = true;
+    while (Off < Len) {
+        UINT8 NameLen = p[Off++];
+        if (NameLen == 0) { break; }                         // end of table
+        if (Off + NameLen + 2 > Len) { break; }
+        if (!First) {                                        // skip the module name (entry 0)
+            Add (pSelf, std::string ((CHAR8 CONST *) (p + Off), NameLen));
+        }
+        First = false;
+        Off += NameLen + 2;                                  // name + 2-byte ordinal
+    }
+}
+
+bool
+SymbolReader::ReadNe (UINT8 CONST *p, UINT64 Len, std::string * /*pError*/)
+{
+    UINT32 NeOff = Le32 (p + 0x3C);                          // e_lfanew -> NE header
+    if ((UINT64) NeOff + 0x40 > Len || p[NeOff] != 'N' || p[NeOff + 1] != 'E') {
+        return true;
+    }
+    auto Add = [] (SymbolReader *pSelf, std::string Name) { pSelf->AddSymbol (std::move (Name)); };
+
+    // Resident name table: offset is relative to the NE header.
+    UINT16 ResRva = Le16 (p + NeOff + 0x26);
+    if (ResRva != 0) {
+        ReadNeNameTable (this, Add, p, Len, (UINT64) NeOff + ResRva);
+    }
+    // Non-resident name table: a file offset, with its length at ne+0x30.
+    UINT32 NonResOff = Le32 (p + NeOff + 0x2C);
+    if (NonResOff != 0 && NonResOff < Len) {
+        ReadNeNameTable (this, Add, p, Len, NonResOff);
     }
     return true;
 }

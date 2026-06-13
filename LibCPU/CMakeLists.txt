@@ -474,6 +474,11 @@ set_tests_properties(symbols.pe PROPERTIES PASS_REGULAR_EXPRESSION "_pe_sym")
 # RVA->file-offset translation through the section table.
 add_test(NAME symbols.pedll COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.dll")
 set_tests_properties(symbols.pedll PROPERTIES PASS_REGULAR_EXPRESSION "_dll_export")
+# OMF PUBDEF records and the NE resident-name table (16-bit Windows/OS2 exports).
+add_test(NAME symbols.omf COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.omf")
+set_tests_properties(symbols.omf PROPERTIES PASS_REGULAR_EXPRESSION "_omf_pub")
+add_test(NAME symbols.ne COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ne")
+set_tests_properties(symbols.ne PROPERTIES PASS_REGULAR_EXPRESSION "_ne_export")
 
 # Format detection sweep: craft each format's magic and assert the reader names it. Proves
 # the detection registry across the object/executable format family (extraction varies).
