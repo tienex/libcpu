@@ -555,9 +555,11 @@ set_tests_properties(symbols.lbr PROPERTIES PASS_REGULAR_EXPRESSION "HELLO.COM")
 # AmigaOS link library (HUNK_UNIT modules): EXT_DEF symbols from every unit.
 add_test(NAME symbols.amigalib COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.amigalib")
 set_tests_properties(symbols.amigalib PROPERTIES PASS_REGULAR_EXPRESSION "_amigaB")
-# Metrowerks CodeWarrior MWOB: detection (magic 'MWOB' + arch).
+# Metrowerks CodeWarrior MWOB: library -> object -> Global* hunk names via the name table.
 add_test(NAME symbols.mwob COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.mwob")
-set_tests_properties(symbols.mwob PROPERTIES PASS_REGULAR_EXPRESSION "metrowerks-mwob")
+set_tests_properties(symbols.mwob PROPERTIES
+    PASS_REGULAR_EXPRESSION "_gentry"
+    FAIL_REGULAR_EXPRESSION "_local|_import")
 # MPW object/library: extern module + entry-point names via the dictionary; locals excluded.
 add_test(NAME symbols.mpwobj COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.mpwobj")
 set_tests_properties(symbols.mpwobj PROPERTIES

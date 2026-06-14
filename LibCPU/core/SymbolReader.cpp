@@ -810,17 +810,104 @@ public:
     }
 };
 
-// Metrowerks CodeWarrior object/library: a big-endian "MWOB" magic followed by a 4-character
-// architecture tag ("M68K" / "PPC "). The object records carry a "SYMH" symbol table whose
-// names are reached through a separate name table (name_id indirection), so for now the format
-// is recognised by magic; full symbol extraction is a larger, separate effort.
+// Parse one Metrowerks CodeWarrior object (magic 0xFEEDBEAD) occupying [base, base+olen).
+// The 64-byte header gives the name table (nametable_offset @12, count @16) and the hunk
+// stream length (obj_size @8); the hunk stream itself starts at object offset 64. Names are a
+// table of [2-byte prefix][NUL-terminated string] entries with ids 1.., and the exported
+// symbols are the name ids referenced by the Global* code/data hunks and Global entry points.
+// Tags and per-hunk sizes follow libmetro's reverse-engineered m68k/PPC hunk format.
+static void HarvestMwobObject (UINT8 CONST *p, UINT64 base, UINT64 olen, SymbolSink *pSink) {
+    auto B32 = [&] (UINT64 o) -> UINT32 { return o + 4 <= olen ? Be32 (p + base + o) : 0; };
+    auto B16 = [&] (UINT64 o) -> UINT16 { return o + 2 <= olen ? Be16 (p + base + o) : 0; };
+    if (olen < 64 || B32 (0) != 0xFEEDBEADu) { return; }      // object magic
+    UINT32 NameOff = B32 (12), NameCnt = B32 (16), ObjSize = B32 (8);
+
+    // Name table: id 1.., each entry = 2-byte prefix + NUL-terminated string (count-1 names).
+    std::map<UINT32, std::string> Names;
+    if (NameOff != 0 && NameOff < olen && NameCnt >= 1) {
+        UINT64 Q = NameOff;
+        UINT32 Id = 1;
+        for (UINT32 Remaining = NameCnt - 1; Remaining > 0 && Q + 2 < olen; --Remaining) {
+            Q += 2;                                           // skip the 2-byte prefix (a hash)
+            UINT64 S = Q;
+            while (Q < olen && p[base + Q] != 0) { ++Q; }
+            Names[Id++] = std::string ((CHAR8 CONST *) (p + base + S), (size_t) (Q - S));
+            if (Q < olen) { ++Q; }                            // skip the NUL terminator
+        }
+    }
+
+    // Walk the hunk stream (object offset 64) and collect the Global* / Global-entry name ids.
+    std::vector<UINT32> Exported;
+    UINT64 HunkEnd = (ObjSize != 0 && 64 + (UINT64) ObjSize <= olen) ? 64 + (UINT64) ObjSize : olen;
+    UINT64 O = 64;
+    while (O + 2 <= HunkEnd) {
+        UINT16 Tag = B16 (O); O += 2;
+        switch (Tag) {
+            case 0x4568: O = HunkEnd; break;                  // HUNK_END
+            case 0x4567: case 0x4576: case 0x4579: case 0x457A: case 0x457B:   // START / LIB_BREAK / DIFF*
+            case 0x457E: case 0x457F: case 0x4580: case 0x4583:                // DEINIT / MULTIDEF / OVERLOAD / FORCE
+            case 0x4588: case 0x4589: case 0x458A: case 0x4592: break;         // ILLEGAL* / CFM_EXPORT / CFM_INTERNAL
+            case 0x4569: case 0x456A:                         // LOCAL_CODE / GLOBAL_CODE: name,size,off,off + size
+            case 0x456D: case 0x456E: case 0x4571: case 0x4572: {   // (FAR)IDATA: same, + size data bytes
+                if (Tag == 0x456A || Tag == 0x456E || Tag == 0x4572) { Exported.push_back (B32 (O)); }
+                O += 16 + (UINT64) B32 (O + 4);
+                break;
+            }
+            case 0x456B: case 0x456C: case 0x456F: case 0x4570:     // (FAR)UDATA: header only, no data bytes
+                if (Tag == 0x456C || Tag == 0x4570) { Exported.push_back (B32 (O)); }
+                O += 16;
+                break;
+            case 0x4577: case 0x4578:                         // GLOBAL_ENTRY / LOCAL_ENTRY: name + offset
+                if (Tag == 0x4577) { Exported.push_back (B32 (O)); }
+                O += 8;
+                break;
+            case 0x4573: case 0x4574: case 0x4575:            // XREF_* (imports): name + npairs + npairs*8
+            case 0x4581: case 0x4582: case 0x4587: case 0x4595:
+                O += 6 + (UINT64) B16 (O + 4) * 8;
+                break;
+            case 0x457D: case 0x4591: O += 4 + (UINT64) B32 (O); break;        // INIT_CODE / EXCEPTION_INFO: size + data
+            case 0x457C: case 0x458B: O += 4; break;          // SEGMENT / CFM_IMPORT: name id
+            case 0x4584: case 0x4585: case 0x4586: case 0x458D:                // GLOBAL data/x ptr/vec / SRC_BREAK
+            case 0x458E: case 0x458F: case 0x4590: case 0x4593: O += 8; break; // LOCAL ptrs / METHOD_REF
+            case 0x458C: case 0x4596: O += 16; break;         // CFM / WEAK import container
+            case 0x4594: O += 8 + (UINT64) B16 (O + 6) * 8; break;             // METHOD_CLASS_DEF: + npairs*8
+            default: O = HunkEnd; break;                      // unknown hunk -> stop this object
+        }
+    }
+    for (UINT32 Id : Exported) {
+        auto It = Names.find (Id);
+        if (It != Names.end () && !It->second.empty ()) { pSink->Add (It->second); }
+    }
+}
+
+// Metrowerks CodeWarrior object/library. A standalone object opens with magic 0xFEEDBEAD; a
+// library opens with "MWOB" + a 4-character architecture ("M68K" / "PPC ") and indexes its
+// member objects (num_files @24, then 20-byte file entries with data_start @12 / data_size @16,
+// both relative to the library start). Either way the exported symbols are harvested from each
+// object's Global* hunks against its name table.
 class MwobReader : public FormatReader {
 public:
     SYMBOL_FORMAT Format () CONST override { return SymbolFormatMwob; }
     bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
-        if (Len < 8 || Be32 (p) != 0x4D574F42u) { return false; }       // 'MWOB'
+        if (Len < 8) { return false; }
+        UINT32 M = Be32 (p);
+        if (M == 0xFEEDBEADu) { return true; }                          // standalone object
+        if (M != 0x4D574F42u) { return false; }                         // 'MWOB' library
         UINT32 Arch = Be32 (p + 4);
         return Arch == 0x4D36384Bu || Arch == 0x50504320u;              // 'M68K' / 'PPC '
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        if (Be32 (p) == 0xFEEDBEADu) { HarvestMwobObject (p, 0, Len, pSink); return; }
+        if (Len < 28) { return; }
+        UINT32 NumFiles = Be32 (p + 24);
+        UINT64 E = 28;
+        for (UINT32 i = 0; i < NumFiles && E + 20 <= Len; ++i, E += 20) {
+            UINT32 DataStart = Be32 (p + E + 12);
+            UINT32 DataSize  = Be32 (p + E + 16);
+            if (DataStart != 0 && (UINT64) DataStart + DataSize <= Len) {
+                HarvestMwobObject (p, DataStart, DataSize, pSink);
+            }
+        }
     }
 };
 
@@ -1878,6 +1965,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatCpmLbr:
         case SymbolFormatAmigaLib:
         case SymbolFormatMpw:
+        case SymbolFormatMwob:
             return true;
         default:
             return false;
