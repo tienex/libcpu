@@ -99,6 +99,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatMpw:        return "mpw-object";
         case SymbolFormatAof:        return "arm-aof";
         case SymbolFormatAlf:        return "arm-alf";
+        case SymbolFormatWasm:       return "wasm";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1867,6 +1868,51 @@ public:
     }
 };
 
+// WebAssembly module: magic "\0asm" then a 4-byte version, followed by sections. Each section
+// is a 1-byte id, a LEB128 byte size, then its contents. The export section (id 7) is a vector
+// of exports, each a name (LEB128 length + UTF-8 bytes), a 1-byte kind (func/table/mem/global)
+// and a LEB128 index. The export names are the module's exported symbols. (Imports, in section
+// 2, are external references and are not reported.)
+class WasmReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatWasm; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 8 && p[0] == 0x00 && p[1] == 0x61 && p[2] == 0x73 && p[3] == 0x6D;   // "\0asm"
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT64 O = 8;                                         // skip magic (4) + version (4)
+        auto Leb = [&] (UINT64 Limit) -> UINT64 {             // unsigned LEB128
+            UINT64 V = 0; UINT32 Shift = 0;
+            while (O < Limit) {
+                UINT8 B = p[O++];
+                if (Shift < 64) { V |= (UINT64) (B & 0x7F) << Shift; }
+                if ((B & 0x80) == 0) { break; }
+                Shift += 7;
+            }
+            return V;
+        };
+        while (O < Len) {
+            UINT8 Id = p[O++];
+            UINT64 Size = Leb (Len);
+            UINT64 SecEnd = O + Size;
+            if (SecEnd > Len || SecEnd < O) { break; }
+            if (Id == 7) {                                    // export section
+                UINT64 Count = Leb (SecEnd);
+                for (UINT64 I = 0; I < Count && O < SecEnd; ++I) {
+                    UINT64 NameLen = Leb (SecEnd);
+                    if (NameLen > (UINT64) (SecEnd - O)) { break; }
+                    std::string Nm ((CHAR8 CONST *) (p + O), (size_t) NameLen);
+                    O += NameLen;
+                    if (O < SecEnd) { O += 1; }               // export kind byte
+                    Leb (SecEnd);                             // export index
+                    if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+                }
+            }
+            O = SecEnd;                                       // advance to the next section
+        }
+    }
+};
+
 // ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
@@ -2133,6 +2179,7 @@ Registry ()
     static MwobReader      S_Mwob;
     static AlfReader       S_Alf;
     static AofReader       S_Aof;
+    static WasmReader      S_Wasm;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -2172,7 +2219,7 @@ Registry ()
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
-        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -2231,6 +2278,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatIeee695:
         case SymbolFormatAof:
         case SymbolFormatAlf:
+        case SymbolFormatWasm:
             return true;
         default:
             return false;

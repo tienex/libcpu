@@ -591,6 +591,11 @@ set_tests_properties(symbols.aof PROPERTIES
 # Acorn Library Format: LIB_DATA members recursed back through the AOF reader.
 add_test(NAME symbols.alf COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.alf")
 set_tests_properties(symbols.alf PROPERTIES PASS_REGULAR_EXPRESSION "_alfmemberB")
+# WebAssembly: export-section names; imports (section 2) are excluded.
+add_test(NAME symbols.wasm COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.wasm")
+set_tests_properties(symbols.wasm PROPERTIES
+    PASS_REGULAR_EXPRESSION "mem"
+    FAIL_REGULAR_EXPRESSION "_imported")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")
