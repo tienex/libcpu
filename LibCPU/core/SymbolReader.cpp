@@ -297,7 +297,11 @@ public:
             UINT8  Info  = Is64 ? p[E + 4] : p[E + 12];
             UINT16 Shndx = Is64 ? U16 (E + 6) : U16 (E + 14);
             UINT32 Bind  = Info >> 4;                         // STB_GLOBAL=1, STB_WEAK=2
-            bool   Defined = Shndx != 0 && Shndx < 0xFF00;
+            // Defined in a real section, or a common symbol (SHN_COMMON = 0xFFF2): a tentative
+            // definition the linker allocates, which nm reports as defined -- mirroring the
+            // Mach-O common-symbol (N_UNDF with nonzero n_value) case. SHN_UNDEF (0) and the
+            // other reserved indices (0xFF00..0xFFFF, e.g. SHN_ABS) stay excluded.
+            bool   Defined = (Shndx != 0 && Shndx < 0xFF00) || Shndx == 0xFFF2;
             if ((Bind == 1 || Bind == 2) && Defined && NameX != 0 && StrOff + NameX < Len) {
                 CHAR8 CONST *pName = (CHAR8 CONST *) (p + StrOff + NameX);
                 size_t Max = (size_t) (StrSize - NameX);

@@ -543,6 +543,9 @@ set_tests_properties(symbols.cpmvax PROPERTIES PASS_REGULAR_EXPRESSION "_vaxsym"
 # Unix ar static library: member objects are harvested by recursing through the registry.
 add_test(NAME symbols.ar COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.a")
 set_tests_properties(symbols.ar PROPERTIES PASS_REGULAR_EXPRESSION "_arsym")
+# ELF common symbol (SHN_COMMON): a tentative definition must be reported as exported.
+add_test(NAME symbols.elfcommon COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.elfcommon")
+set_tests_properties(symbols.elfcommon PROPERTIES PASS_REGULAR_EXPRESSION "_elfcommon")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")
