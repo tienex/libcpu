@@ -66,6 +66,10 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatCpmZ8000,       // CP/M-8000 (Zilog Z8000) command file (DRI, magic EE00..EE0B)
     SymbolFormatCpmVax,         // CP/M-VAX command file (CP/M-68K layout, little-endian 0x601A)
     SymbolFormatArchive,        // Unix ar archive / static library (.a) -- members harvested recursively
+    SymbolFormatOmfLib,         // OMF library (.lib) -- LIBHDR 0xF0, PUBDEF across modules
+    SymbolFormatCpmLbr,         // CP/M LU/LBR library archive (.lbr) -- 32-byte directory entries
+    SymbolFormatAmigaLib,       // AmigaOS Hunk object/link library (HUNK_UNIT 0x3E7 / HUNK_LIB 0x3FA)
+    SymbolFormatMwob,           // Metrowerks CodeWarrior object/library ("MWOB", 68K/PPC)
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

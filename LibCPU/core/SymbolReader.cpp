@@ -91,6 +91,10 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatCpmZ8000:   return "cpm-z8000";
         case SymbolFormatCpmVax:     return "cpm-vax";
         case SymbolFormatArchive:    return "ar (static library)";
+        case SymbolFormatOmfLib:     return "omf-lib";
+        case SymbolFormatCpmLbr:     return "cpm-lbr";
+        case SymbolFormatAmigaLib:   return "amiga-lib";
+        case SymbolFormatMwob:       return "metrowerks-mwob";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -545,6 +549,75 @@ public:
 //  AmigaOS Hunk: HUNK_EXT blocks carry EXT_DEF exported definitions
 // ===========================================================================
 
+// Walk an AmigaOS Hunk stream from offset `o`, harvesting HUNK_EXT EXT_DEF (exported) symbols.
+// Handles the full hunk vocabulary so it can traverse the many units of an object file or link
+// library, not just a single executable's hunks. Shared by the executable and library readers.
+static void HunkWalk (UINT8 CONST *p, UINT64 Len, UINT64 o, SymbolSink *pSink) {
+    auto R = [&] (UINT64 q) -> UINT32 { return q + 4 <= Len ? Be32 (p + q) : 0; };
+    while (o + 4 <= Len) {
+        UINT32 T = R (o) & 0x3FFFFFFFu; o += 4;              // strip memory-flag bits 30/31
+        if (T == 0x3E7 || T == 0x3E8 || T == 0x3F1 || T == 0x3F5 || T == 0x3FB) {
+            UINT32 N = R (o); o += 4; o += (UINT64) N * 4;   // UNIT/NAME/DEBUG/OVERLAY/INDEX: count + longwords
+        } else if (T == 0x3E9 || T == 0x3EA) {              // HUNK_CODE / HUNK_DATA
+            UINT32 N = R (o); o += 4; o += (UINT64) N * 4;
+        } else if (T == 0x3EB) {                            // HUNK_BSS (size only)
+            o += 4;
+        } else if (T == 0x3EC || T == 0x3ED || T == 0x3EE ||
+                   T == 0x3F7 || T == 0x3F8 || T == 0x3F9 ||
+                   T == 0x3FD || T == 0x3FE) {              // RELOC32/16/8, DREL32/16/8, RELRELOC32, ABSRELOC16
+            for (;;) {
+                UINT32 C = R (o); o += 4;
+                if (C == 0) { break; }
+                o += 4 + (UINT64) C * 4;                     // hunk number + offset longwords
+                if (o > Len) { return; }
+            }
+        } else if (T == 0x3FC) {                            // HUNK_RELOC32SHORT: word-counted
+            UINT64 Start = o;
+            for (;;) {
+                UINT32 C = (o + 2 <= Len) ? Be16 (p + o) : 0; o += 2;
+                if (C == 0) { break; }
+                o += 2 + (UINT64) C * 2;                     // hunk number word + offset words
+                if (o > Len) { return; }
+            }
+            if (((o - Start) & 2) != 0) { o += 2; }          // pad the block to a longword
+        } else if (T == 0x3EF) {                            // HUNK_EXT
+            for (;;) {
+                UINT32 W = R (o); o += 4;
+                if (W == 0) { break; }
+                UINT32 Type = W >> 24;
+                UINT64 NameBytes = (UINT64) (W & 0xFFFFFFu) * 4;   // name length in longwords
+                if (o + NameBytes > Len) { return; }
+                if (Type < 128) {                            // a definition (value longword follows)
+                    if (Type == 1) {                         // EXT_DEF -> exported
+                        CHAR8 CONST *pName = (CHAR8 CONST *) (p + o);
+                        pSink->Add (std::string (pName, strnlen (pName, (size_t) NameBytes)));
+                    }
+                    o += NameBytes + 4;
+                } else {                                     // a reference
+                    o += NameBytes;
+                    if (Type == 130) { o += 4; }             // EXT_ABSCOMMON: leading size longword
+                    UINT32 C = R (o); o += 4;
+                    o += (UINT64) C * 4;
+                }
+                if (o > Len) { return; }
+            }
+        } else if (T == 0x3F0) {                            // HUNK_SYMBOL (debug names)
+            for (;;) {
+                UINT32 N = R (o); o += 4;
+                if (N == 0) { break; }
+                o += (UINT64) N * 4 + 4;                     // name + value
+                if (o > Len) { return; }
+            }
+        } else if (T == 0x3FA) {                            // HUNK_LIB: length longword, then a body of hunks
+            o += 4;                                          // consume the length; walk the body inline
+        } else if (T == 0x3F2 || T == 0x3F6) {              // HUNK_END / HUNK_BREAK
+            continue;
+        } else {
+            break;                                           // unknown hunk -> stop
+        }
+    }
+}
+
 class AmigaHunkReader : public FormatReader {
 public:
     SYMBOL_FORMAT Format () CONST override { return SymbolFormatAmigaHunk; }
@@ -565,55 +638,22 @@ public:
         UINT32 Last  = R (o); o += 4;
         UINT32 NHunks = (Last >= First) ? (Last - First + 1) : 0;
         o += (UINT64) NHunks * 4;                            // hunk size table
-
-        while (o + 4 <= Len) {
-            UINT32 T = R (o) & 0x3FFFFFFFu; o += 4;          // strip memory-flag bits 30/31
-            if (T == 0x3E9 || T == 0x3EA) {                  // HUNK_CODE / HUNK_DATA
-                UINT32 N = R (o); o += 4; o += (UINT64) N * 4;
-            } else if (T == 0x3EB) {                         // HUNK_BSS
-                o += 4;
-            } else if (T == 0x3EC) {                         // HUNK_RELOC32
-                for (;;) {
-                    UINT32 C = R (o); o += 4;
-                    if (C == 0) { break; }
-                    o += 4 + (UINT64) C * 4;                 // hunk number + offsets
-                    if (o > Len) { return; }
-                }
-            } else if (T == 0x3EF) {                         // HUNK_EXT
-                for (;;) {
-                    UINT32 W = R (o); o += 4;
-                    if (W == 0) { break; }
-                    UINT32 Type = W >> 24;
-                    UINT64 NameBytes = (UINT64) (W & 0xFFFFFFu) * 4;   // name length in longwords
-                    if (o + NameBytes > Len) { return; }
-                    if (Type < 128) {                        // a definition (value longword follows)
-                        if (Type == 1) {                     // EXT_DEF -> exported
-                            CHAR8 CONST *pName = (CHAR8 CONST *) (p + o);
-                            pSink->Add (std::string (pName, strnlen (pName, (size_t) NameBytes)));
-                        }
-                        o += NameBytes + 4;
-                    } else {                                 // a reference
-                        o += NameBytes;
-                        if (Type == 130) { o += 4; }         // EXT_COMMON: leading size longword
-                        UINT32 C = R (o); o += 4;
-                        o += (UINT64) C * 4;
-                    }
-                    if (o > Len) { return; }
-                }
-            } else if (T == 0x3F0) {                         // HUNK_SYMBOL (debug names)
-                for (;;) {
-                    UINT32 N = R (o); o += 4;
-                    if (N == 0) { break; }
-                    o += (UINT64) N * 4 + 4;                 // name + value
-                    if (o > Len) { return; }
-                }
-            } else if (T == 0x3F2) {                         // HUNK_END
-                continue;
-            } else {
-                break;                                       // unknown hunk -> stop
-            }
-        }
+        HunkWalk (p, Len, o, pSink);
     }
+};
+
+// AmigaOS object file / link library. Both begin with HUNK_UNIT (0x3E7); an indexed library
+// begins with HUNK_LIB (0x3FA). Either way the body is a sequence of hunks whose HUNK_EXT
+// records carry the exported (EXT_DEF) symbols, harvested by the shared walk.
+class AmigaLibReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatAmigaLib; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 4) { return false; }
+        UINT32 M = Be32 (p);
+        return M == 0x000003E7u || M == 0x000003FAu;         // HUNK_UNIT / HUNK_LIB
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override { HunkWalk (p, Len, 0, pSink); }
 };
 
 // ===========================================================================
@@ -670,49 +710,115 @@ private:
 //  OMF (object/library): PUBDEF records list public (exported) names
 // ===========================================================================
 
+// Walk a stream of OMF records (an object module, or a whole .lib of concatenated modules)
+// and harvest PUBDEF (public-definition) symbol names. Shared by the object and library readers.
+static void HarvestOmf (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) {
+    auto Index = [&] (UINT64 *pOff) -> UINT32 {              // OMF index: 1 or 2 bytes
+        if (*pOff >= Len) { return 0; }
+        UINT8 B = p[*pOff];
+        if (B < 0x80) { (*pOff)++; return B; }
+        if (*pOff + 1 >= Len) { (*pOff) += 1; return 0; }
+        UINT32 V = ((UINT32) (B & 0x7F) << 8) | p[*pOff + 1];
+        (*pOff) += 2;
+        return V;
+    };
+    UINT64 Off = 0;
+    while (Off + 3 <= Len) {
+        UINT8  Type = p[Off];
+        UINT16 RecLen = Le16 (p + Off + 1);
+        UINT64 Data = Off + 3;
+        UINT64 End  = Data + RecLen;
+        if (RecLen < 1 || End > Len) { break; }
+        UINT64 DataEnd = End - 1;                             // exclude the checksum byte
+        if (Type == 0x90 || Type == 0x91) {                  // PUBDEF (16-bit / 32-bit)
+            bool Wide = (Type == 0x91);
+            UINT64 Q = Data;
+            Index (&Q);                                       // base group index
+            UINT32 Seg = Index (&Q);                          // base segment index
+            if (Seg == 0) { Q += 2; }                         // base frame present when seg == 0
+            while (Q < DataEnd) {
+                UINT8 NameLen = p[Q++];
+                if (Q + NameLen > DataEnd) { break; }
+                if (NameLen > 0) { pSink->Add (std::string ((CHAR8 CONST *) (p + Q), NameLen)); }
+                Q += NameLen;
+                Q += Wide ? 4 : 2;                            // public offset
+                Index (&Q);                                   // type index
+            }
+        }
+        Off = End;
+    }
+}
+
 class OmfReader : public FormatReader {
 public:
     SYMBOL_FORMAT Format () CONST override { return SymbolFormatOmf; }
     bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
-        if (Len < 3 || !(p[0] == 0x80 || p[0] == 0x82 || p[0] == 0xF0)) { return false; }
+        if (Len < 3 || !(p[0] == 0x80 || p[0] == 0x82)) { return false; }   // THEADR / LHEADR
         UINT16 RecLen = Le16 (p + 1);
         return (UINT64) RecLen + 3 <= Len + 8;               // plausible record length
     }
-    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
-        auto Index = [&] (UINT64 *pOff) -> UINT32 {          // OMF index: 1 or 2 bytes
-            if (*pOff >= Len) { return 0; }
-            UINT8 B = p[*pOff];
-            if (B < 0x80) { (*pOff)++; return B; }
-            if (*pOff + 1 >= Len) { (*pOff) += 1; return 0; }
-            UINT32 V = ((UINT32) (B & 0x7F) << 8) | p[*pOff + 1];
-            (*pOff) += 2;
-            return V;
-        };
-        UINT64 Off = 0;
-        while (Off + 3 <= Len) {
-            UINT8  Type = p[Off];
-            UINT16 RecLen = Le16 (p + Off + 1);
-            UINT64 Data = Off + 3;
-            UINT64 End  = Data + RecLen;
-            if (RecLen < 1 || End > Len) { break; }
-            UINT64 DataEnd = End - 1;                         // exclude the checksum byte
-            if (Type == 0x90 || Type == 0x91) {              // PUBDEF (16-bit / 32-bit)
-                bool Wide = (Type == 0x91);
-                UINT64 Q = Data;
-                Index (&Q);                                   // base group index
-                UINT32 Seg = Index (&Q);                      // base segment index
-                if (Seg == 0) { Q += 2; }                     // base frame present when seg == 0
-                while (Q < DataEnd) {
-                    UINT8 NameLen = p[Q++];
-                    if (Q + NameLen > DataEnd) { break; }
-                    if (NameLen > 0) { pSink->Add (std::string ((CHAR8 CONST *) (p + Q), NameLen)); }
-                    Q += NameLen;
-                    Q += Wide ? 4 : 2;                        // public offset
-                    Index (&Q);                               // type index
-                }
-            }
-            Off = End;
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override { HarvestOmf (p, Len, pSink); }
+};
+
+// OMF library (.lib): a LIBRARY-HEADER record (0xF0, giving the page size) followed by the
+// member object modules and a dictionary. PUBDEF records appear in each module, so the same
+// record walk harvests the library's whole exported-symbol set.
+class OmfLibReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatOmfLib; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 3 || p[0] != 0xF0) { return false; }       // LIBHDR
+        UINT16 RecLen = Le16 (p + 1);
+        return (UINT64) RecLen + 3 <= Len + 8;               // page size - 3
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override { HarvestOmf (p, Len, pSink); }
+};
+
+// CP/M LU/LBR archive (.lbr): the library is a sequence of 128-byte sectors; the first member
+// is the directory, a list of 32-byte entries (status @0: 00 active / FE deleted / FF unused;
+// name[8] @1; ext[3] @9; index @12 = first sector LE; length @14 = sectors LE). The first
+// entry describes the directory itself. There is no magic, so detection validates that first
+// (control) entry. Members are named CP/M files; their names are reported as the contents.
+class CpmLbrReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatCpmLbr; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 32) { return false; }
+        if (p[0] != 0x00) { return false; }                  // control entry is active
+        for (UINT32 i = 1; i <= 11; ++i) {                   // its name+ext are all spaces
+            if (p[i] != 0x20) { return false; }
         }
+        return Le16 (p + 12) == 0;                           // the directory starts at sector 0
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT16 DirSectors = Le16 (p + 14);                   // length of the directory member
+        UINT64 DirEnd = (UINT64) DirSectors * 128;
+        if (DirEnd == 0 || DirEnd > Len) { DirEnd = Len; }
+        for (UINT64 O = 32; O + 32 <= DirEnd; O += 32) {     // entry 0 is the directory itself
+            UINT8 Status = p[O];
+            if (Status == 0xFF) { break; }                   // unused entries end the directory
+            if (Status != 0x00) { continue; }                // skip deleted (FE) and others
+            std::string Name ((CHAR8 CONST *) (p + O + 1), strnlen ((CHAR8 CONST *) (p + O + 1), 8));
+            while (!Name.empty () && Name.back () == ' ') { Name.pop_back (); }
+            std::string Ext ((CHAR8 CONST *) (p + O + 9), strnlen ((CHAR8 CONST *) (p + O + 9), 3));
+            while (!Ext.empty () && Ext.back () == ' ') { Ext.pop_back (); }
+            if (!Ext.empty ()) { Name += '.'; Name += Ext; }
+            if (!Name.empty ()) { pSink->Add (std::move (Name)); }
+        }
+    }
+};
+
+// Metrowerks CodeWarrior object/library: a big-endian "MWOB" magic followed by a 4-character
+// architecture tag ("M68K" / "PPC "). The object records carry a "SYMH" symbol table whose
+// names are reached through a separate name table (name_id indirection), so for now the format
+// is recognised by magic; full symbol extraction is a larger, separate effort.
+class MwobReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatMwob; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len < 8 || Be32 (p) != 0x4D574F42u) { return false; }       // 'MWOB'
+        UINT32 Arch = Be32 (p + 4);
+        return Arch == 0x4D36384Bu || Arch == 0x50504320u;              // 'M68K' / 'PPC '
     }
 };
 
@@ -1613,6 +1719,8 @@ Registry ()
     static PalmReader      S_PalmPrc (SymbolFormatPalmPrc, true);
     static PalmReader      S_PalmPdb (SymbolFormatPalmPdb, false);
     static AmigaHunkReader S_AmigaHunk;
+    static AmigaLibReader  S_AmigaLib;
+    static MwobReader      S_Mwob;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -1639,6 +1747,8 @@ Registry ()
     static LeLxReader      S_Lx (SymbolFormatLx, 'X');
     static SignatureReader S_Mz (SymbolFormatMz, DetectMz);
     static OmfReader       S_Omf;
+    static OmfLibReader    S_OmfLib;
+    static CpmLbrReader    S_CpmLbr;
     static Pdp10SavReader  S_Pdp10Sav;
     static SignatureReader S_DriCmd (SymbolFormatDriCmd, DetectDriCmd);
     static TbdReader       S_Tbd;
@@ -1648,12 +1758,13 @@ Registry ()
     static std::vector<FormatReader CONST *> List = {
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
-        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd, &S_PalmPrc, &S_PalmPdb,   // record-type / structural heuristics, last
+        &S_Omf, &S_OmfLib, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd, &S_CpmLbr, &S_PalmPrc, &S_PalmPdb,   // record-type / structural heuristics, last
         &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex, &S_GeosC64   // ASCII / record formats, last
     };
     return List;
@@ -1697,6 +1808,9 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatCpmVax:
         case SymbolFormatPalmPrc:
         case SymbolFormatArchive:
+        case SymbolFormatOmfLib:
+        case SymbolFormatCpmLbr:
+        case SymbolFormatAmigaLib:
             return true;
         default:
             return false;

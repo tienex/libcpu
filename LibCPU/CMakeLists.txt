@@ -546,6 +546,18 @@ set_tests_properties(symbols.ar PROPERTIES PASS_REGULAR_EXPRESSION "_arsym")
 # ELF common symbol (SHN_COMMON): a tentative definition must be reported as exported.
 add_test(NAME symbols.elfcommon COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.elfcommon")
 set_tests_properties(symbols.elfcommon PROPERTIES PASS_REGULAR_EXPRESSION "_elfcommon")
+# OMF library (.lib): PUBDEF symbols are harvested across member modules.
+add_test(NAME symbols.omflib COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.omflib")
+set_tests_properties(symbols.omflib PROPERTIES PASS_REGULAR_EXPRESSION "_omflib")
+# CP/M LBR archive: member filenames are listed from the directory.
+add_test(NAME symbols.lbr COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.lbr")
+set_tests_properties(symbols.lbr PROPERTIES PASS_REGULAR_EXPRESSION "HELLO.COM")
+# AmigaOS link library (HUNK_UNIT modules): EXT_DEF symbols from every unit.
+add_test(NAME symbols.amigalib COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.amigalib")
+set_tests_properties(symbols.amigalib PROPERTIES PASS_REGULAR_EXPRESSION "_amigaB")
+# Metrowerks CodeWarrior MWOB: detection (magic 'MWOB' + arch).
+add_test(NAME symbols.mwob COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.mwob")
+set_tests_properties(symbols.mwob PROPERTIES PASS_REGULAR_EXPRESSION "metrowerks-mwob")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")
