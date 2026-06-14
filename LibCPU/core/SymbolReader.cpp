@@ -100,6 +100,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatAof:        return "arm-aof";
         case SymbolFormatAlf:        return "arm-alf";
         case SymbolFormatWasm:       return "wasm";
+        case SymbolFormatDex:        return "dex";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1913,6 +1914,78 @@ public:
     }
 };
 
+// Dalvik executable (.dex, Android). Little-endian; a 0x70-byte header points to the id/def
+// tables: string_ids (@56 size, @60 off; each a u32 offset to ULEB128-length-prefixed MUTF-8),
+// type_ids (@64/68; each a string index = descriptor), method_ids (@88/92; class u16, proto
+// u16, name u32), and class_defs (@96/100; 32-byte entries: class_idx @0, class_data_off @24).
+// Each class_data lists ULEB128-counted fields then direct and virtual methods (method index as
+// a running difference). The defined symbols are the defined classes' methods, reported as
+// "ClassDescriptor->method". Layout per the Android dex format reference.
+class DexReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatDex; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 0x70 && p[0] == 'd' && p[1] == 'e' && p[2] == 'x' && p[3] == '\n' && p[7] == 0x00;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 StrSize = Le32 (p + 56), StrOff = Le32 (p + 60);
+        UINT32 TypeSize = Le32 (p + 64), TypeOff = Le32 (p + 68);
+        UINT32 MethSize = Le32 (p + 88), MethOff = Le32 (p + 92);
+        UINT32 ClsSize = Le32 (p + 96), ClsOff = Le32 (p + 100);
+        auto Str = [&] (UINT32 Idx) -> std::string {          // resolve a string id
+            if (Idx >= StrSize) { return std::string (); }
+            UINT64 E = (UINT64) StrOff + (UINT64) Idx * 4;
+            if (E + 4 > Len) { return std::string (); }
+            UINT64 So = Le32 (p + E);
+            if (So >= Len) { return std::string (); }
+            while (So < Len && (p[So] & 0x80) != 0) { ++So; }   // skip the ULEB128 length
+            if (So < Len) { ++So; }
+            UINT64 S = So;
+            while (So < Len && p[So] != 0) { ++So; }
+            return std::string ((CHAR8 CONST *) (p + S), (size_t) (So - S));
+        };
+        auto TypeName = [&] (UINT32 TypeIdx) -> std::string {
+            if (TypeIdx >= TypeSize) { return std::string (); }
+            UINT64 E = (UINT64) TypeOff + (UINT64) TypeIdx * 4;
+            return (E + 4 > Len) ? std::string () : Str (Le32 (p + E));
+        };
+        auto MethName = [&] (UINT32 MethIdx) -> std::string {   // method_id.name_idx @ +4
+            if (MethIdx >= MethSize) { return std::string (); }
+            UINT64 E = (UINT64) MethOff + (UINT64) MethIdx * 8;
+            return (E + 8 > Len) ? std::string () : Str (Le32 (p + E + 4));
+        };
+        for (UINT32 C = 0; C < ClsSize; ++C) {
+            UINT64 Cd = (UINT64) ClsOff + (UINT64) C * 32;
+            if (Cd + 32 > Len) { break; }
+            std::string Cls = TypeName (Le32 (p + Cd));         // class_idx @0
+            UINT32 DataOff = Le32 (p + Cd + 24);                // class_data_off @24
+            if (DataOff == 0 || DataOff >= Len) {
+                if (!Cls.empty ()) { pSink->Add (Cls); }        // class without data: just the name
+                continue;
+            }
+            UINT64 O = DataOff;
+            auto Uleb = [&] () -> UINT64 {
+                UINT64 V = 0; UINT32 S = 0;
+                while (O < Len) { UINT8 B = p[O++]; if (S < 64) { V |= (UINT64) (B & 0x7F) << S; } if ((B & 0x80) == 0) { break; } S += 7; }
+                return V;
+            };
+            UINT64 NStatic = Uleb (), NInstance = Uleb (), NDirect = Uleb (), NVirtual = Uleb ();
+            for (UINT64 I = 0; I < NStatic + NInstance && O < Len; ++I) { Uleb (); Uleb (); }   // skip fields
+            for (UINT32 Pass = 0; Pass < 2; ++Pass) {           // direct then virtual methods
+                UINT32 MIdx = 0;
+                UINT64 Count = (Pass == 0) ? NDirect : NVirtual;
+                for (UINT64 I = 0; I < Count && O < Len; ++I) {
+                    MIdx += (UINT32) Uleb ();                   // method_idx_diff (cumulative per list)
+                    Uleb ();                                    // access_flags
+                    Uleb ();                                    // code_off
+                    std::string Nm = MethName (MIdx);
+                    if (!Nm.empty ()) { pSink->Add (Cls.empty () ? Nm : Cls + "->" + Nm); }
+                }
+            }
+        }
+    }
+};
+
 // ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
@@ -2180,6 +2253,7 @@ Registry ()
     static AlfReader       S_Alf;
     static AofReader       S_Aof;
     static WasmReader      S_Wasm;
+    static DexReader       S_Dex;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -2219,7 +2293,7 @@ Registry ()
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
-        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_Dex, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -2279,6 +2353,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatAof:
         case SymbolFormatAlf:
         case SymbolFormatWasm:
+        case SymbolFormatDex:
             return true;
         default:
             return false;
