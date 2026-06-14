@@ -76,6 +76,7 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatWasm,           // WebAssembly module (\0asm) -- export section names
     SymbolFormatDex,            // Dalvik executable (Android "dex\n") -- defined class methods
     SymbolFormatJavaClass,      // Java class file (0xCAFEBABE) -- declared methods and fields
+    SymbolFormatLlvmBc,         // LLVM bitcode (BC\xC0\xDE bitstream) -- module function/global names
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

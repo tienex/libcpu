@@ -102,6 +102,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatWasm:       return "wasm";
         case SymbolFormatDex:        return "dex";
         case SymbolFormatJavaClass:  return "java-class";
+        case SymbolFormatLlvmBc:     return "llvm-bitcode";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -2046,6 +2047,152 @@ public:
     }
 };
 
+// LLVM bitcode bitstream decoder. The format is a stream of bits read LSB-first; abbreviation
+// IDs (initially 2 bits wide) select builtin operations (END_BLOCK/ENTER_SUBBLOCK/DEFINE_ABBREV/
+// UNABBREV_RECORD) or, from 4 up, a defined abbreviation. The module's symbol names live in the
+// STRTAB block (id 23) as one concatenated blob; the MODULE block (id 8) FUNCTION/GLOBALVAR/
+// ALIAS/IFUNC records carry the (offset, size) of each name within that blob. Abbreviations may
+// be registered globally by a BLOCKINFO block (id 0). Encodings per the LLVM BitCodeFormat doc.
+namespace bc {
+    struct Op { bool Lit; UINT64 Val; UINT8 Enc; UINT64 Data; };   // Enc 1=Fixed 2=VBR 3=Array 4=Char6 5=Blob
+
+    struct Parser {
+        UINT8 CONST *P; UINT64 Len; UINT64 Bit;
+        std::map<UINT32, std::vector<std::vector<Op>>> Info;       // BLOCKINFO abbrevs by block id
+        std::string StrTab;
+        std::vector<std::pair<UINT64, UINT64>> Names;              // (offset, size) into StrTab
+        UINT32 Depth;
+
+        UINT32 Read (UINT32 N) {
+            UINT32 R = 0;
+            for (UINT32 I = 0; I < N; ++I, ++Bit) {
+                UINT64 By = Bit >> 3;
+                if (By < Len && ((P[By] >> (Bit & 7)) & 1)) { R |= (UINT32) 1 << I; }
+            }
+            return R;
+        }
+        UINT64 Vbr (UINT32 N) {
+            UINT64 Hi = (UINT64) 1 << (N - 1), V = Read (N);
+            if (!(V & Hi)) { return V; }
+            UINT64 R = V & (Hi - 1); UINT32 Sh = N - 1;
+            for (;;) {
+                V = Read (N);
+                R |= (V & (Hi - 1)) << Sh;
+                if (!(V & Hi) || Sh > 60) { break; }
+                Sh += N - 1;
+            }
+            return R;
+        }
+        void Align32 () { Bit = (Bit + 31) & ~(UINT64) 31; }
+        bool Eof () { return (Bit >> 3) >= Len; }
+
+        std::vector<Op> ReadAbbrevDef () {
+            std::vector<Op> Ops;
+            UINT64 N = Vbr (5);
+            for (UINT64 I = 0; I < N && !Eof (); ++I) {
+                Op O {}; O.Lit = Read (1) != 0;
+                if (O.Lit) { O.Val = Vbr (8); }
+                else { O.Enc = (UINT8) Read (3); if (O.Enc == 1 || O.Enc == 2) { O.Data = Vbr (5); } }
+                Ops.push_back (O);
+            }
+            return Ops;
+        }
+        UINT64 Scalar (Op CONST &O) {
+            if (O.Lit) { return O.Val; }
+            if (O.Enc == 1) { return Read ((UINT32) O.Data); }     // Fixed
+            if (O.Enc == 2) { return Vbr ((UINT32) O.Data); }      // VBR
+            if (O.Enc == 4) { return Read (6); }                   // Char6
+            return 0;
+        }
+        void ReadRecord (std::vector<Op> CONST &Ops, UINT64 &Code, std::vector<UINT64> &F, std::string &Blob) {
+            bool First = true;
+            for (size_t I = 0; I < Ops.size (); ++I) {
+                Op CONST &O = Ops[I];
+                if (!O.Lit && O.Enc == 3) {                        // Array: count + elements (next op = elt type)
+                    UINT64 Cnt = Vbr (6);
+                    if (I + 1 >= Ops.size ()) { return; }
+                    Op CONST &Elt = Ops[++I];
+                    for (UINT64 K = 0; K < Cnt && !Eof (); ++K) { F.push_back (Scalar (Elt)); }
+                } else if (!O.Lit && O.Enc == 5) {                 // Blob
+                    UINT64 Cnt = Vbr (6); Align32 ();
+                    for (UINT64 K = 0; K < Cnt && !Eof (); ++K) { Blob.push_back ((char) P[Bit >> 3]); Bit += 8; }
+                    Align32 ();
+                } else {
+                    UINT64 V = Scalar (O);
+                    if (First) { Code = V; First = false; } else { F.push_back (V); }
+                }
+            }
+        }
+        void Handle (UINT32 Bid, UINT64 Code, std::vector<UINT64> CONST &F, std::string CONST &Blob, bool InInfo, UINT32 &BiCur) {
+            if (InInfo) { if (Code == 1 && !F.empty ()) { BiCur = (UINT32) F[0]; } return; }   // SETBID
+            if (Bid == 23 && !Blob.empty () && StrTab.empty ()) { StrTab = Blob; return; }     // STRTAB blob
+            if (Bid == 8 && (Code == 7 || Code == 8 || Code == 14 || Code == 18)) {            // GLOBALVAR/FUNCTION/ALIAS/IFUNC
+                bool Decl = (Code == 8 && F.size () > 4 && F[4] != 0);                         // a function declaration (import)
+                if (!Decl && F.size () >= 2 && F[1] > 0) { Names.push_back ({ F[0], F[1] }); }
+            }
+        }
+        void Block (UINT32 Width, UINT32 Bid) {
+            if (++Depth > 32) { --Depth; return; }                 // guard against pathological nesting
+            std::vector<std::vector<Op>> Local;
+            bool InInfo = (Bid == 0); UINT32 BiCur = 0;
+            while (!Eof ()) {
+                UINT32 Ab = Read (Width);
+                if (Ab == 0) { Align32 (); break; }                // END_BLOCK
+                if (Ab == 1) {                                     // ENTER_SUBBLOCK
+                    UINT32 Sub = (UINT32) Vbr (8), NewW = (UINT32) Vbr (4);
+                    Align32 (); Read (32);                         // block length in words (we parse instead of skip)
+                    if (NewW == 0 || NewW > 32) { break; }
+                    Block (NewW, Sub);
+                } else if (Ab == 2) {                              // DEFINE_ABBREV
+                    std::vector<Op> Def = ReadAbbrevDef ();
+                    if (InInfo) { Info[BiCur].push_back (Def); } else { Local.push_back (Def); }
+                } else if (Ab == 3) {                              // UNABBREV_RECORD
+                    UINT64 Code = Vbr (6), NumOps = Vbr (6);
+                    std::vector<UINT64> F;
+                    for (UINT64 I = 0; I < NumOps && !Eof (); ++I) { F.push_back (Vbr (6)); }
+                    Handle (Bid, Code, F, std::string (), InInfo, BiCur);
+                } else {                                           // abbreviated record (BLOCKINFO abbrevs, then local)
+                    UINT32 Idx = Ab - 4;
+                    std::vector<std::vector<Op>> CONST *Bi = nullptr;
+                    auto It = Info.find (Bid);
+                    if (It != Info.end ()) { Bi = &It->second; }
+                    std::vector<Op> CONST *Use = nullptr;
+                    UINT32 NBi = Bi ? (UINT32) Bi->size () : 0;
+                    if (Idx < NBi) { Use = &(*Bi)[Idx]; }
+                    else if (Idx - NBi < Local.size ()) { Use = &Local[Idx - NBi]; }
+                    if (Use == nullptr) { break; }                 // unknown abbrev -> stop this block
+                    UINT64 Code = 0; std::vector<UINT64> F; std::string Blob;
+                    ReadRecord (*Use, Code, F, Blob);
+                    Handle (Bid, Code, F, Blob, InInfo, BiCur);
+                }
+            }
+            --Depth;
+        }
+    };
+}
+
+class LlvmBcReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatLlvmBc; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        if (Len >= 4 && p[0] == 0x42 && p[1] == 0x43 && p[2] == 0xC0 && p[3] == 0xDE) { return true; }   // 'BC\xC0\xDE'
+        return Len >= 4 && Le32 (p) == 0x0B17C0DEu;                                                      // bitcode wrapper
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT64 Start = 0;
+        if (Len >= 20 && Le32 (p) == 0x0B17C0DEu) { Start = Le32 (p + 8); }   // wrapper: BC offset @8
+        if (Start + 4 > Len || p[Start] != 0x42 || p[Start + 1] != 0x43 || p[Start + 2] != 0xC0 || p[Start + 3] != 0xDE) { return; }
+        bc::Parser Bc; Bc.P = p; Bc.Len = Len; Bc.Bit = (Start + 4) * 8; Bc.Depth = 0;   // skip the 4 magic bytes
+        Bc.Block (2, 0xFFFFFFFFu);                                            // top level: abbrev width 2
+        for (auto CONST &Nm : Bc.Names) {
+            if (Nm.first + Nm.second <= Bc.StrTab.size ()) {
+                std::string S = Bc.StrTab.substr ((size_t) Nm.first, (size_t) Nm.second);
+                if (!S.empty ()) { pSink->Add (std::move (S)); }
+            }
+        }
+    }
+};
+
 // ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
@@ -2315,6 +2462,7 @@ Registry ()
     static WasmReader      S_Wasm;
     static DexReader       S_Dex;
     static JavaClassReader S_JavaClass;
+    static LlvmBcReader    S_LlvmBc;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -2355,7 +2503,7 @@ Registry ()
         &S_Tbd,                                              // text stub, tried first
         &S_JavaClass,                                        // 0xCAFEBABE + major>=45, before Mach-O fat
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
-        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_Dex, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_Dex, &S_LlvmBc, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -2417,6 +2565,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatWasm:
         case SymbolFormatDex:
         case SymbolFormatJavaClass:
+        case SymbolFormatLlvmBc:
             return true;
         default:
             return false;
