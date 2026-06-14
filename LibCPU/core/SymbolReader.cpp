@@ -1804,7 +1804,36 @@ static bool DetectUefiTe (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] 
 static bool DetectPharLap (UINT8 CONST *p, UINT64 Len) {
     return Len >= 2 && ((p[0] == 'M' && p[1] == 'P') || (p[0] == 'P' && (p[1] == '2' || p[1] == '3')));
 }
-static bool DetectX68000 (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'H' && p[1] == 'U'; }
+// Sharp X68000 Human68k .X executable. 64-byte big-endian header: 'HU' (0x4855) @0 with the
+// load mode in the low byte of the first longword (0/1/2); textSize @0x0C, dataSize @0x10,
+// relocSize @0x18, symbolSize @0x1C. The symbol table follows text+data+reloc; each entry is
+// a 2-byte type (high byte 0x02 = defined, 0x01 = external reference; low byte = section),
+// a 4-byte value, a NUL-terminated name, then a pad byte to a word boundary. Defined symbols
+// are reported. Layout per the erique/ghidra-human68k loader.
+class X68kReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatX68000; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 0x40 && p[0] == 'H' && p[1] == 'U' && p[2] == 0x00 && p[3] <= 0x02;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 TextSize = Be32 (p + 0x0C), DataSize = Be32 (p + 0x10);
+        UINT32 RelocSize = Be32 (p + 0x18), SymSize = Be32 (p + 0x1C);
+        UINT64 SymOff = 0x40 + (UINT64) TextSize + DataSize + RelocSize;
+        if (SymSize == 0 || SymOff > Len || SymSize > Len - SymOff) { return; }
+        UINT64 End = SymOff + SymSize;
+        for (UINT64 O = SymOff; O + 6 <= End; ) {
+            UINT16 Type = Be16 (p + O);                       // high byte: scope; low byte: section
+            O += 6;                                           // skip type (2) + value (4)
+            UINT64 S = O;
+            while (O < End && p[O] != 0) { ++O; }
+            std::string Name ((CHAR8 CONST *) (p + S), (size_t) (O - S));
+            if (O < End) { ++O; }                             // skip the NUL
+            if (((O - SymOff) & 1) != 0 && O < End) { ++O; }  // pad to a word boundary
+            if (!Name.empty () && (Type >> 8) == 0x02) { pSink->Add (std::move (Name)); }   // defined
+        }
+    }
+};
 static bool DetectAif (UINT8 CONST *p, UINT64 Len) { return Len >= 0x14 && Le32 (p + 0x10) == 0xEF000011u; }
 static bool DetectOs360 (UINT8 CONST *p, UINT64 Len) {     // X'02' + EBCDIC "ESD"
     return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;
@@ -1862,7 +1891,7 @@ Registry ()
     static CpmVaxReader    S_CpmVax;
     static SignatureReader S_UefiTe (SymbolFormatUefiTe, DetectUefiTe);
     static SignatureReader S_PharLap (SymbolFormatPharLap, DetectPharLap);
-    static SignatureReader S_X68000 (SymbolFormatX68000, DetectX68000);
+    static X68kReader      S_X68000;
     static SignatureReader S_Aif (SymbolFormatAif, DetectAif);
     static Os360Reader     S_Os360;
     static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
@@ -1966,6 +1995,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatAmigaLib:
         case SymbolFormatMpw:
         case SymbolFormatMwob:
+        case SymbolFormatX68000:
             return true;
         default:
             return false;

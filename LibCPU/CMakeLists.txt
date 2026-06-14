@@ -565,6 +565,11 @@ add_test(NAME symbols.mpwobj COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DI
 set_tests_properties(symbols.mpwobj PROPERTIES
     PASS_REGULAR_EXPRESSION "_mpwhelper"
     FAIL_REGULAR_EXPRESSION "_local0")
+# X68000 .X (Human68k): defined symbols from the symbol table; external references excluded.
+add_test(NAME symbols.xfile COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.xfile")
+set_tests_properties(symbols.xfile PROPERTIES
+    PASS_REGULAR_EXPRESSION "_xmain"
+    FAIL_REGULAR_EXPRESSION "_ximport")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

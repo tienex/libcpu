@@ -24,7 +24,8 @@ printf '\140\000\000\000\001\000\000\000\003\000\000\000\000\000\000\000\001\000
   printf '\100\000\000\000'; printf 'PE\000\000'; } > "$d/pe"
 printf 'VZ\000\000'                                              > "$d/uefite"   # UEFI TE
 printf 'MP\000\000'                                              > "$d/pharlap"  # Phar-Lap
-printf 'HU\000\000'                                              > "$d/x68000"   # X68000 .X
+# X68000 .X: 'HU' + reserved + loadmode, then a full 0x40-byte header.
+{ printf 'HU\000\000'; dd if=/dev/zero bs=1 count=60 2>/dev/null; } > "$d/x68000"
 { dd if=/dev/zero bs=1 count=16 2>/dev/null; printf '\021\000\000\357'; } > "$d/aif"  # AIF: 0xEF000011 @0x10
 printf '\002\305\342\304'                                        > "$d/os360"    # X'02' + EBCDIC ESD
 printf '\003\360\000\000'                                        > "$d/goff"     # PTV X'03' + HDR
