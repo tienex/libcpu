@@ -578,6 +578,11 @@ add_test(NAME symbols.goff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}
 set_tests_properties(symbols.goff PROPERTIES
     PASS_REGULAR_EXPRESSION "GOFFLONGNAME12345"
     FAIL_REGULAR_EXPRESSION "GOFFER")
+# IEEE-695 (MUFOM): NI (defined) names from the external part; NX references excluded.
+add_test(NAME symbols.ieee COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ieee")
+set_tests_properties(symbols.ieee PROPERTIES
+    PASS_REGULAR_EXPRESSION "_ieeedef"
+    FAIL_REGULAR_EXPRESSION "_ieeeundef")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

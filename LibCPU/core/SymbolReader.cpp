@@ -1901,7 +1901,111 @@ static bool DetectDriCmd (UINT8 CONST *p, UINT64 Len) {
     return 128 + (UINT64) CodeLen * 16 <= Len;                // the code section must fit within the file
 }
 static bool IsHex (UINT8 c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); }
-static bool DetectIeee695 (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0xE0; }                 // MB record
+// IEEE-695 (MUFOM) object module. The file opens with an MB (module-begin) record (0xE0)
+// carrying the processor and module-name identifiers, an AD (address-descriptor) record, then
+// a table of eight W-variable assignments (ASW = 0xE2 0xD7 <n> <offset>) giving the file
+// offsets of the module's parts. W[2] is the external-symbol part: a run of NN/NI/NX name
+// records interleaved with AS value and AT attribute records. NI (0xE8) declares a defined
+// (public) symbol -- those are the exports; NX (0xE9) is an external reference (import). The
+// value/attribute records are walked and skipped so every NI is reached. MUFOM numbers are a
+// literal 0x00-0x7F or 0x80+n followed by n big-endian bytes; identifiers are a length byte
+// (0xDE/0xDF extend it) then the characters. Encodings/record tags per binutils bfd/ieee.c.
+class Ieee695Reader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatIeee695; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return Len >= 2 && p[0] == 0xE0; }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT64 O = 0;
+        auto Num = [&] () -> UINT64 {                         // MUFOM number; advances O
+            if (O >= Len) { return 0; }
+            UINT8 B = p[O];
+            if (B <= 0x7F) { O += 1; return B; }
+            if (B >= 0x80 && B <= 0x88) {
+                UINT32 C = B & 0x0F; O += 1; UINT64 V = 0;
+                while (C-- && O < Len) { V = (V << 8) | p[O++]; }
+                return V;
+            }
+            O += 1;
+            return 0;
+        };
+        auto IdLen = [&] () -> UINT64 {                       // identifier length prefix; advances O
+            if (O >= Len) { return 0; }
+            UINT8 B = p[O++];
+            if (B <= 0x7F) { return B; }
+            if (B == 0xDE) { return O < Len ? p[O++] : 0; }
+            if (B == 0xDF) { UINT64 N = (O + 1 < Len) ? (((UINT64) p[O] << 8) | p[O + 1]) : 0; O += 2; return N; }
+            return 0;
+        };
+        auto SkipExpr = [&] () {                              // value expression (binutils parse_expression)
+            while (O < Len) {
+                UINT8 B = p[O];
+                if (B == 0xD0 || B == 0xCC || B == 0xD2 || B == 0xD3 || B == 0xC9 || B == 0xD8) { O += 1; Num (); }
+                else if (B == 0xA5 || B == 0xA6 || B == 0x90) { O += 1; }   // +, -, comma
+                else if (B <= 0x88) { Num (); }              // a numeric literal term
+                else { break; }
+            }
+        };
+
+        // --- MB header: walk to the W-variable table and capture the part offsets. ---
+        if (p[O] != 0xE0) { return; }
+        O += 1;
+        O += IdLen ();                                        // processor identifier
+        O += IdLen ();                                        // module-name identifier
+        if (O >= Len || p[O] != 0xEC) { return; }            // AD (address descriptor)
+        O += 1;
+        Num (); Num ();                                       // bits/MAU, MAUs/address
+        if (O < Len && (p[O] == 0xCC || p[O] == 0xCD)) { O += 1; }   // optional byte-order (L/M)
+        UINT64 Parts[8] = { 0 };
+        for (UINT32 I = 0; I < 8; ++I) {
+            if (O + 3 > Len || p[O] != 0xE2 || p[O + 1] != 0xD7 || p[O + 2] != I) { return; }   // ASW <I>
+            O += 3;
+            Parts[I] = Num ();
+        }
+        UINT64 ExtPart = Parts[2];                            // the external (symbol) part
+        if (ExtPart == 0 || ExtPart >= Len) { return; }
+        UINT64 End = Len;                                     // bound by the next part that follows it
+        for (UINT32 I = 3; I <= 6; ++I) {
+            if (Parts[I] > ExtPart && Parts[I] < End) { End = Parts[I]; }
+        }
+
+        // --- External part: emit NI (defined) names; skip NX/NN and the value/attribute records. ---
+        O = ExtPart;
+        while (O < End) {
+            UINT8 B = p[O];
+            if (B == 0xE8 || B == 0xE9 || B == 0xF0) {        // NI / NX / NN: tag, index, name
+                O += 1;
+                Num ();
+                UINT64 N = IdLen ();
+                if (O + N > Len) { N = Len - O; }
+                std::string Nm ((CHAR8 CONST *) (p + O), (size_t) N);
+                O += N;
+                if (B == 0xE8 && !Nm.empty ()) { pSink->Add (std::move (Nm)); }   // NI = defined/exported
+            } else if (B == 0xE2 && O + 2 <= End && p[O + 1] == 0xC9) {   // AS value record: index + expression
+                O += 2;
+                Num ();
+                SkipExpr ();
+            } else if (B == 0xF1 && O + 2 <= End) {           // AT attribute record (2-byte tag)
+                UINT8 T = p[O + 1];
+                O += 2;
+                if (T == 0xC9) {                              // ATI: name, type, attr [, value]
+                    Num (); Num ();
+                    UINT64 Attr = Num ();
+                    if (Attr == 8 || Attr == 19) { Num (); }
+                } else if (T == 0xD8) {                       // ATX: four numbers
+                    Num (); Num (); Num (); Num ();
+                } else if (T == 0xCE) {                       // ATN: header numbers, then a run of ASN pairs
+                    Num (); Num (); Num (); Num ();
+                    UINT64 Cnt = Num ();
+                    while (Cnt-- && O + 2 <= End && p[O] == 0xE2 && p[O + 1] == 0xCE) { O += 2; Num (); Num (); }
+                } else {
+                    break;
+                }
+            } else {
+                break;                                        // unrecognised record -> end of the symbol part
+            }
+        }
+    }
+};
 static bool DetectSrec (UINT8 CONST *p, UINT64 Len) { return Len >= 4 && p[0] == 'S' && p[1] >= '0' && p[1] <= '9' && IsHex (p[2]) && IsHex (p[3]); }
 static bool DetectIntelHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && p[0] == ':' && IsHex (p[1]) && IsHex (p[2]); }
 static bool DetectTekHex (UINT8 CONST *p, UINT64 Len) { return Len >= 3 && (p[0] == '/' || p[0] == '%') && IsHex (p[1]) && IsHex (p[2]); }
@@ -1951,7 +2055,7 @@ Registry ()
     static Plan9Reader     S_Plan9;
     static MinixReader     S_MinixAOut;
     static XenixReader     S_XenixXOut;
-    static SignatureReader S_Ieee695 (SymbolFormatIeee695, DetectIeee695);
+    static Ieee695Reader   S_Ieee695;
     static SignatureReader S_Srec (SymbolFormatSrec, DetectSrec);
     static SignatureReader S_IntelHex (SymbolFormatIntelHex, DetectIntelHex);
     static SignatureReader S_TekHex (SymbolFormatTekHex, DetectTekHex);
@@ -2036,6 +2140,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatMwob:
         case SymbolFormatX68000:
         case SymbolFormatGoff:
+        case SymbolFormatIeee695:
             return true;
         default:
             return false;
