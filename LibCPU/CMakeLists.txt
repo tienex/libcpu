@@ -540,6 +540,9 @@ set_tests_properties(symbols.cpmz8k PROPERTIES PASS_REGULAR_EXPRESSION "_z8ksym"
 # CP/M-VAX: little-endian 0x601A header (byte-distinct from big-endian GEMDOS); LE symbol table.
 add_test(NAME symbols.cpmvax COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cpmvax")
 set_tests_properties(symbols.cpmvax PROPERTIES PASS_REGULAR_EXPRESSION "_vaxsym")
+# Unix ar static library: member objects are harvested by recursing through the registry.
+add_test(NAME symbols.ar COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.a")
+set_tests_properties(symbols.ar PROPERTIES PASS_REGULAR_EXPRESSION "_arsym")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

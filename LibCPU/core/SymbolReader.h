@@ -65,6 +65,7 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatOsfRose,        // OSF/ROSE (OSF/1 "Mach-O", MOH_MAGIC 0xbeefface)
     SymbolFormatCpmZ8000,       // CP/M-8000 (Zilog Z8000) command file (DRI, magic EE00..EE0B)
     SymbolFormatCpmVax,         // CP/M-VAX command file (CP/M-68K layout, little-endian 0x601A)
+    SymbolFormatArchive,        // Unix ar archive / static library (.a) -- members harvested recursively
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

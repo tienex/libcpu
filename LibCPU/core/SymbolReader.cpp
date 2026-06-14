@@ -90,6 +90,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatOsfRose:    return "osf-rose";
         case SymbolFormatCpmZ8000:   return "cpm-z8000";
         case SymbolFormatCpmVax:     return "cpm-vax";
+        case SymbolFormatArchive:    return "ar (static library)";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -122,6 +123,7 @@ static UINT8  CONST N_STAB       = 0xE0u;
 static UINT8  CONST N_EXT        = 0x01u;
 static UINT8  CONST N_TYPE_MASK  = 0x0Eu;
 static UINT8  CONST N_SECT       = 0x0Eu;
+static UINT8  CONST N_UNDF       = 0x00u;
 
 // Parse one thin, host-endian Mach-O image (32- or 64-bit) and harvest its defined external
 // symbols (and the install name from LC_ID_DYLIB). The header (28 vs 32 bytes) and nlist
@@ -166,8 +168,18 @@ HarvestMachO (UINT8 CONST *pImage, UINT64 Len, bool Is64, SymbolSink *pSink)
                     UINT64 E = (UINT64) SymOff + (UINT64) N * NlistSize;
                     UINT32 StrX = Le32 (pImage + E);
                     UINT8  Type = pImage[E + 4];
-                    bool Exported = (Type & N_STAB) == 0 && (Type & N_EXT) != 0 &&
-                                    (Type & N_TYPE_MASK) == N_SECT;
+                    // Defined in a section (N_SECT), or a common symbol -- a tentative
+                    // definition (N_UNDF with a nonzero n_value, i.e. its size) which the
+                    // linker allocates, and which nm reports as defined. n_value is the
+                    // 8-byte (64) / 4-byte (32) field at E+8; test it without a Le64 helper.
+                    bool Defined = (Type & N_TYPE_MASK) == N_SECT;
+                    if (!Defined && (Type & N_TYPE_MASK) == N_UNDF) {
+                        UINT32 VLen = Is64 ? 8 : 4;
+                        for (UINT32 B = 0; B < VLen; B++) {
+                            if (pImage[E + 8 + B] != 0) { Defined = true; break; }
+                        }
+                    }
+                    bool Exported = (Type & N_STAB) == 0 && (Type & N_EXT) != 0 && Defined;
                     if (Exported && StrX < StrSize) {
                         CHAR8 CONST *pName = (CHAR8 CONST *) (pImage + StrOff + StrX);
                         size_t MaxLen = (size_t) (StrSize - StrX);
@@ -182,6 +194,11 @@ HarvestMachO (UINT8 CONST *pImage, UINT64 Len, bool Is64, SymbolSink *pSink)
         Off += CmdSize;
     }
 }
+
+// The reader registry (defined after the reader classes). Forward-declared at file scope so
+// ArReader, inside the anonymous namespace below, can dispatch each archive member to every
+// other reader without an ambiguous second declaration.
+static std::vector<FormatReader CONST *> CONST &Registry ();
 
 namespace {
 
@@ -1452,6 +1469,55 @@ public:
 };
 
 // ===========================================================================
+//  Unix "ar" archive (static library, .a). Magic "!<arch>\n", then a sequence of members,
+//  each a 60-byte header (name[16], mtime[12], uid[6], gid[6], mode[8], size[10], "`\n")
+//  followed by `size` bytes of member data padded to a 2-byte boundary. Members are object
+//  files, so symbols are harvested by recursing each member back through the registry; the
+//  ranlib index (__.SYMDEF, GNU "/"/"//") simply matches no reader and is skipped. macOS
+//  archives use BSD extended names ("#1/NN"), where the real filename occupies the first NN
+//  bytes of the member data and the object begins after it.
+// ===========================================================================
+
+static UINT64 ArDecimal (UINT8 CONST *p, UINT32 n) {          // space-padded ASCII decimal field
+    UINT64 v = 0;
+    for (UINT32 i = 0; i < n; ++i) {
+        if (p[i] < '0' || p[i] > '9') { break; }
+        v = v * 10 + (UINT64) (p[i] - '0');
+    }
+    return v;
+}
+
+class ArReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatArchive; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 8 && std::memcmp (p, "!<arch>\n", 8) == 0;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        for (UINT64 O = 8; O + 60 <= Len; ) {
+            UINT8 CONST *H = p + O;
+            if (H[58] != 0x60 || H[59] != 0x0A) { break; }    // member header terminator "`\n"
+            UINT64 Size = ArDecimal (H + 48, 10);
+            UINT64 Data = O + 60;
+            if (Size > Len - Data) { break; }
+            UINT64 ObjOff = Data, ObjLen = Size;
+            if (H[0] == '#' && H[1] == '1' && H[2] == '/') {  // BSD extended name precedes the object
+                UINT64 NameLen = ArDecimal (H + 3, 13);
+                if (NameLen <= ObjLen) { ObjOff += NameLen; ObjLen -= NameLen; }
+            }
+            for (FormatReader CONST *pReader : Registry ()) {
+                if (pReader->Format () == SymbolFormatArchive) { continue; }   // never recurse into ourselves
+                if (pReader->Detect (p + ObjOff, ObjLen)) {
+                    pReader->Extract (p + ObjOff, ObjLen, pSink);
+                    break;
+                }
+            }
+            O = Data + Size + (Size & 1);                     // members are aligned to 2 bytes
+        }
+    }
+};
+
+// ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
 
@@ -1573,7 +1639,10 @@ Registry ()
     static SignatureReader S_DriCmd (SymbolFormatDriCmd, DetectDriCmd);
     static TbdReader       S_Tbd;
 
+    static ArReader        S_Ar;
+
     static std::vector<FormatReader CONST *> List = {
+        &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
@@ -1623,6 +1692,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatCpmZ8000:
         case SymbolFormatCpmVax:
         case SymbolFormatPalmPrc:
+        case SymbolFormatArchive:
             return true;
         default:
             return false;
