@@ -98,6 +98,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatMwob:       return "metrowerks-mwob";
         case SymbolFormatMpw:        return "mpw-object";
         case SymbolFormatAof:        return "arm-aof";
+        case SymbolFormatAlf:        return "arm-alf";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1789,11 +1790,25 @@ public:
 // name index @12); the OBJ_STRT chunk is a length word then NUL-terminated strings. A symbol
 // is exported when its attribute bits 1,0 == 11 (a global definition). Layout per the RISC OS
 // PRM; the chunk file is little-endian.
+// True if the chunk file (ChunkFileId 0xC3CBC6C5) has a chunk whose id begins with the given
+// four characters. AOF uses "OBJ_" chunks, ALF (libraries) uses "LIB_" chunks, so the prefix
+// distinguishes the two otherwise identically-headed formats.
+static bool AofHasChunkPrefix (UINT8 CONST *p, UINT64 Len, CHAR8 CONST *Prefix) {
+    if (Len < 12 || Le32 (p) != 0xC3CBC6C5u) { return false; }
+    UINT32 MaxChunks = Le32 (p + 4);
+    for (UINT32 I = 0; I < MaxChunks; ++I) {
+        UINT64 E = 12 + (UINT64) I * 16;
+        if (E + 16 > Len) { break; }
+        if (Le32 (p + E + 8) != 0 && std::memcmp (p + E, Prefix, 4) == 0) { return true; }
+    }
+    return false;
+}
+
 class AofReader : public FormatReader {
 public:
     SYMBOL_FORMAT Format () CONST override { return SymbolFormatAof; }
     bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
-        return Len >= 12 && Le32 (p) == 0xC3CBC6C5u;
+        return AofHasChunkPrefix (p, Len, "OBJ_");
     }
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
         UINT32 MaxChunks = Le32 (p + 4);
@@ -1819,6 +1834,35 @@ public:
             size_t Max = (size_t) (Len - Na);
             size_t NameLen = strnlen (pName, Max);
             if (NameLen > 0 && NameLen < Max) { pSink->Add (std::string (pName, NameLen)); }
+        }
+    }
+};
+
+// Acorn Library Format (ALF) -- a chunk file (same ChunkFileId as AOF) of LIB_ chunks. Each
+// LIB_DATA chunk holds one library member, itself an AOF object; the LIB_DIRY chunk indexes
+// them. The library's exported symbols are the union of its members', so every LIB_DATA chunk
+// is recursed back through the registry (which routes it to the AOF reader). Per the RISC OS PRM.
+class AlfReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatAlf; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return AofHasChunkPrefix (p, Len, "LIB_");
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 MaxChunks = Le32 (p + 4);
+        for (UINT32 I = 0; I < MaxChunks; ++I) {
+            UINT64 E = 12 + (UINT64) I * 16;
+            if (E + 16 > Len) { break; }
+            UINT64 Off = Le32 (p + E + 8), Size = Le32 (p + E + 12);
+            if (Off == 0 || Off + Size > Len) { continue; }
+            if (std::memcmp (p + E, "LIB_DATA", 8) != 0) { continue; }   // each LIB_DATA is one member
+            for (FormatReader CONST *pReader : Registry ()) {
+                if (pReader->Format () == SymbolFormatAlf) { continue; }  // never recurse into ourselves
+                if (pReader->Detect (p + Off, Size)) {
+                    pReader->Extract (p + Off, Size, pSink);
+                    break;
+                }
+            }
         }
     }
 };
@@ -2087,6 +2131,7 @@ Registry ()
     static AmigaHunkReader S_AmigaHunk;
     static AmigaLibReader  S_AmigaLib;
     static MwobReader      S_Mwob;
+    static AlfReader       S_Alf;
     static AofReader       S_Aof;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
@@ -2127,7 +2172,7 @@ Registry ()
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
-        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Aof, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -2185,6 +2230,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatGoff:
         case SymbolFormatIeee695:
         case SymbolFormatAof:
+        case SymbolFormatAlf:
             return true;
         default:
             return false;
