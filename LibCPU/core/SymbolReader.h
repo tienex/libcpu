@@ -70,6 +70,7 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatCpmLbr,         // CP/M LU/LBR library archive (.lbr) -- 32-byte directory entries
     SymbolFormatAmigaLib,       // AmigaOS Hunk object/link library (HUNK_UNIT 0x3E7 / HUNK_LIB 0x3FA)
     SymbolFormatMwob,           // Metrowerks CodeWarrior object/library ("MWOB", 68K/PPC)
+    SymbolFormatMpw,            // MPW object/library (classic Mac, kFirst record + dictionary)
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

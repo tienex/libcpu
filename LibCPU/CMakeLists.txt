@@ -558,6 +558,11 @@ set_tests_properties(symbols.amigalib PROPERTIES PASS_REGULAR_EXPRESSION "_amiga
 # Metrowerks CodeWarrior MWOB: detection (magic 'MWOB' + arch).
 add_test(NAME symbols.mwob COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.mwob")
 set_tests_properties(symbols.mwob PROPERTIES PASS_REGULAR_EXPRESSION "metrowerks-mwob")
+# MPW object/library: extern module + entry-point names via the dictionary; locals excluded.
+add_test(NAME symbols.mpwobj COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.mpwobj")
+set_tests_properties(symbols.mpwobj PROPERTIES
+    PASS_REGULAR_EXPRESSION "_mpwhelper"
+    FAIL_REGULAR_EXPRESSION "_local0")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

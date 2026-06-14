@@ -7,6 +7,7 @@
 #include "SymbolReader.h"
 #include <cstdio>
 #include <cstring>
+#include <map>
 
 namespace LibCPU {
 
@@ -95,6 +96,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatCpmLbr:     return "cpm-lbr";
         case SymbolFormatAmigaLib:   return "amiga-lib";
         case SymbolFormatMwob:       return "metrowerks-mwob";
+        case SymbolFormatMpw:        return "mpw-object";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -819,6 +821,69 @@ public:
         if (Len < 8 || Be32 (p) != 0x4D574F42u) { return false; }       // 'MWOB'
         UINT32 Arch = Be32 (p + 4);
         return Arch == 0x4D36384Bu || Arch == 0x50504320u;              // 'M68K' / 'PPC '
+    }
+};
+
+// MPW (Macintosh Programmer's Workshop) object file and library (classic Mac, big-endian).
+// A record stream opening with a kFirst record (type 1, flags, 2-byte version 1..3). Names
+// live in kDictionary (4) records (string-id -> name); kModule (5) and kEntryPoint (6) carry
+// a kExtern (0x08) flag and a name string-id, so the exported symbols are the names of the
+// extern modules and entry points, resolved against the dictionary. A library built by the
+// MPW Lib tool is just more modules in the same stream, so one walk covers objects and
+// libraries. Record layout per Retro68's ConvertObj. Names are resolved after the full walk
+// so that forward references (module before its dictionary block) still resolve.
+class MpwReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatMpw; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 4 && p[0] == 1 && p[2] == 0 && p[3] >= 1 && p[3] <= 3;   // kFirst + version 1..3
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        std::map<UINT32, std::string> Dict;
+        std::vector<UINT32> Exported;
+        UINT64 O = 0;
+        while (O < Len) {
+            UINT8 Rec = p[O];
+            if (Rec == 0) { O += 1; }                         // kPad
+            else if (Rec == 1) { O += 4; }                    // kFirst (header)
+            else if (Rec == 2) { O += 2; }                    // kLast (a stream may concatenate objects)
+            else if (Rec == 7) { O += 6; }                    // kSize (flags + long)
+            else if (Rec == 11) { O += 8; }                   // kFilename (flags + word + long)
+            else if (Rec == 5) {                              // kModule: flags, name, segment
+                if (O + 6 > Len) { return; }
+                if (p[O + 1] & 0x08) { Exported.push_back (Be16 (p + O + 2)); }   // kExtern
+                O += 6;
+            } else if (Rec == 6) {                            // kEntryPoint: flags, name, offset
+                if (O + 8 > Len) { return; }
+                if (p[O + 1] & 0x08) { Exported.push_back (Be16 (p + O + 2)); }
+                O += 8;
+            } else if (Rec == 4) {                            // kDictionary: flags, size, first-id, names
+                if (O + 6 > Len) { return; }
+                UINT32 Sz = Be16 (p + O + 2);
+                UINT32 Id = Be16 (p + O + 4);
+                if (Sz < 6 || O + Sz > Len) { return; }
+                UINT64 Q = O + 6, End = O + Sz;
+                while (Q < End) {
+                    UINT8 N = p[Q++];
+                    if (Q + N > End) { break; }
+                    Dict[Id++] = std::string ((CHAR8 CONST *) (p + Q), N);
+                    Q += N;
+                }
+                O += Sz;
+            } else if (Rec == 3 || Rec == 8 || Rec == 9 || Rec == 10) {
+                // kComment / kContent / kReference / kComputedRef: a size word gives the record length.
+                if (O + 4 > Len) { return; }
+                UINT32 Sz = Be16 (p + O + 2);
+                if (Sz < 4 || O + Sz > Len) { return; }
+                O += Sz;
+            } else {
+                return;                                       // unknown record -> stop
+            }
+        }
+        for (UINT32 Id : Exported) {
+            auto It = Dict.find (Id);
+            if (It != Dict.end () && !It->second.empty ()) { pSink->Add (It->second); }
+        }
     }
 };
 
@@ -1749,6 +1814,7 @@ Registry ()
     static OmfReader       S_Omf;
     static OmfLibReader    S_OmfLib;
     static CpmLbrReader    S_CpmLbr;
+    static MpwReader       S_Mpw;
     static Pdp10SavReader  S_Pdp10Sav;
     static SignatureReader S_DriCmd (SymbolFormatDriCmd, DetectDriCmd);
     static TbdReader       S_Tbd;
@@ -1764,7 +1830,7 @@ Registry ()
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
         &S_UefiTe, &S_PharLap, &S_X68000, &S_Pe, &S_Ne, &S_Le, &S_Lx, &S_Mz,
-        &S_Omf, &S_OmfLib, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd, &S_CpmLbr, &S_PalmPrc, &S_PalmPdb,   // record-type / structural heuristics, last
+        &S_Omf, &S_OmfLib, &S_Pdp10Sav, &S_Os360, &S_Goff, &S_DriCmd, &S_CpmLbr, &S_Mpw, &S_PalmPrc, &S_PalmPdb,   // record-type / structural heuristics, last
         &S_Ieee695, &S_Srec, &S_IntelHex, &S_TekHex, &S_VerilogHex, &S_GeosC64   // ASCII / record formats, last
     };
     return List;
@@ -1811,6 +1877,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatOmfLib:
         case SymbolFormatCpmLbr:
         case SymbolFormatAmigaLib:
+        case SymbolFormatMpw:
             return true;
         default:
             return false;
