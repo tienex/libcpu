@@ -599,6 +599,9 @@ set_tests_properties(symbols.wasm PROPERTIES
 # Dalvik .dex: defined classes' methods (ClassDescriptor->method) via the class_data tables.
 add_test(NAME symbols.dex COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.dex")
 set_tests_properties(symbols.dex PROPERTIES PASS_REGULAR_EXPRESSION "LMyClass;->myMethod")
+# Java class: declared methods/fields via the constant pool (real javac output).
+add_test(NAME symbols.class COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.class")
+set_tests_properties(symbols.class PROPERTIES PASS_REGULAR_EXPRESSION "Foo.add")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

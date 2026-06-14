@@ -75,6 +75,7 @@ typedef enum _SYMBOL_FORMAT {
     SymbolFormatAlf,            // Acorn Library Format (chunk file of LIB_DATA AOF members)
     SymbolFormatWasm,           // WebAssembly module (\0asm) -- export section names
     SymbolFormatDex,            // Dalvik executable (Android "dex\n") -- defined class methods
+    SymbolFormatJavaClass,      // Java class file (0xCAFEBABE) -- declared methods and fields
     // --- detection only ---
     SymbolFormatIeee695,        // IEEE-695 object (record stream, MB record 0xE0)
     SymbolFormatSrec,           // Motorola S-records (ASCII)

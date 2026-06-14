@@ -101,6 +101,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatAlf:        return "arm-alf";
         case SymbolFormatWasm:       return "wasm";
         case SymbolFormatDex:        return "dex";
+        case SymbolFormatJavaClass:  return "java-class";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1986,6 +1987,65 @@ public:
     }
 };
 
+// Java class file. Big-endian; magic 0xCAFEBABE, then minor/major version. (The magic equals
+// Mach-O's fat magic, so detection also requires major_version >= 45 -- the lowest real class
+// version -- which no Mach-O fat header's arch count ever reaches; this reader is tried before
+// the Mach-O reader.) A constant pool of variable-size entries follows; tag 1 is a UTF-8 string
+// and tag 7 a Class (name index). After the pool come access flags, this/super class, the
+// interface list, then the field and method tables -- each member is access_flags, name index,
+// descriptor index and an attribute list. The declared methods and fields (and the class name)
+// are reported, qualified by the class name.
+class JavaClassReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatJavaClass; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 10 && Be32 (p) == 0xCAFEBABEu && Be16 (p + 6) >= 45;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 CpCount = Be16 (p + 8);
+        std::vector<std::string> Utf8 (CpCount);
+        std::vector<UINT32> ClassName (CpCount, 0);          // for tag-7 (Class) entries: their name index
+        UINT64 O = 10;
+        for (UINT32 I = 1; I < CpCount && O < Len; ) {
+            UINT8 Tag = p[O++];
+            if (Tag == 1) {                                  // CONSTANT_Utf8
+                if (O + 2 > Len) { return; }
+                UINT32 N = Be16 (p + O); O += 2;
+                if (O + N > Len) { return; }
+                Utf8[I].assign ((CHAR8 CONST *) (p + O), N); O += N; ++I;
+            } else if (Tag == 7) {                           // CONSTANT_Class
+                if (O + 2 > Len) { return; }
+                ClassName[I] = Be16 (p + O); O += 2; ++I;
+            } else if (Tag == 8 || Tag == 16 || Tag == 19 || Tag == 20) { O += 2; ++I; }   // String/MethodType/Module/Package
+            else if (Tag == 15) { O += 3; ++I; }             // MethodHandle
+            else if (Tag == 3 || Tag == 4 || Tag == 9 || Tag == 10 || Tag == 11 || Tag == 12 || Tag == 17 || Tag == 18) { O += 4; ++I; }
+            else if (Tag == 5 || Tag == 6) { O += 8; I += 2; }   // Long/Double occupy two pool slots
+            else { return; }                                 // unknown tag -> stop
+        }
+        if (O + 6 > Len) { return; }
+        UINT32 ThisClass = Be16 (p + O + 2);                 // access_flags(2), this_class(2)
+        std::string Cls;
+        if (ThisClass < CpCount && ClassName[ThisClass] < CpCount) { Cls = Utf8[ClassName[ThisClass]]; }
+        O += 6;                                              // access_flags, this_class, super_class
+        if (O + 2 > Len) { return; }
+        O += 2 + (UINT64) Be16 (p + O) * 2;                  // interface count + entries
+        for (UINT32 Section = 0; Section < 2; ++Section) {   // fields, then methods (same member layout)
+            if (O + 2 > Len) { return; }
+            UINT32 Count = Be16 (p + O); O += 2;
+            for (UINT32 M = 0; M < Count && O + 8 <= Len; ++M) {
+                UINT32 NameIdx = Be16 (p + O + 2);           // access(2), name(2), descriptor(2), attrs(2)
+                UINT32 AttrCount = Be16 (p + O + 6);
+                O += 8;
+                for (UINT32 A = 0; A < AttrCount && O + 6 <= Len; ++A) { O += 6 + (UINT64) Be32 (p + O + 2); }
+                if (NameIdx < CpCount && !Utf8[NameIdx].empty ()) {
+                    pSink->Add (Cls.empty () ? Utf8[NameIdx] : Cls + "." + Utf8[NameIdx]);
+                }
+            }
+        }
+        if (!Cls.empty ()) { pSink->Add (Cls); }             // the class name itself
+    }
+};
+
 // ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
@@ -2254,6 +2314,7 @@ Registry ()
     static AofReader       S_Aof;
     static WasmReader      S_Wasm;
     static DexReader       S_Dex;
+    static JavaClassReader S_JavaClass;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -2292,6 +2353,7 @@ Registry ()
     static std::vector<FormatReader CONST *> List = {
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
+        &S_JavaClass,                                        // 0xCAFEBABE + major>=45, before Mach-O fat
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
         &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Alf, &S_Aof, &S_Wasm, &S_Dex, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
@@ -2354,6 +2416,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatAlf:
         case SymbolFormatWasm:
         case SymbolFormatDex:
+        case SymbolFormatJavaClass:
             return true;
         default:
             return false;
