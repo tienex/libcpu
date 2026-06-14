@@ -583,6 +583,11 @@ add_test(NAME symbols.ieee COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}
 set_tests_properties(symbols.ieee PROPERTIES
     PASS_REGULAR_EXPRESSION "_ieeedef"
     FAIL_REGULAR_EXPRESSION "_ieeeundef")
+# ARM AOF: global-definition symbols from OBJ_SYMT; local defs and references excluded.
+add_test(NAME symbols.aof COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.aof")
+set_tests_properties(symbols.aof PROPERTIES
+    PASS_REGULAR_EXPRESSION "_aofglobal"
+    FAIL_REGULAR_EXPRESSION "_aoflocal|_aofref")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

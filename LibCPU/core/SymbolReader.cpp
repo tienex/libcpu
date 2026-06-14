@@ -97,6 +97,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatAmigaLib:   return "amiga-lib";
         case SymbolFormatMwob:       return "metrowerks-mwob";
         case SymbolFormatMpw:        return "mpw-object";
+        case SymbolFormatAof:        return "arm-aof";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1781,6 +1782,47 @@ public:
     }
 };
 
+// ARM Object Format (AOF) -- the Acorn/RISC OS chunk file an ARM assembler/C compiler emits.
+// A chunk-file header (ChunkFileId 0xC3CBC6C5 @0, maxChunks @4, numChunks @8) is followed by
+// 16-byte chunk entries (8-byte chunkId, then file offset and size words). The OBJ_SYMT chunk
+// holds 16-byte symbol entries (name index @0 into OBJ_STRT, attributes @4, value @8, area
+// name index @12); the OBJ_STRT chunk is a length word then NUL-terminated strings. A symbol
+// is exported when its attribute bits 1,0 == 11 (a global definition). Layout per the RISC OS
+// PRM; the chunk file is little-endian.
+class AofReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatAof; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 12 && Le32 (p) == 0xC3CBC6C5u;
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 MaxChunks = Le32 (p + 4);
+        UINT64 SymtOff = 0, SymtSize = 0, StrtOff = 0, StrtSize = 0;
+        for (UINT32 I = 0; I < MaxChunks; ++I) {
+            UINT64 E = 12 + (UINT64) I * 16;
+            if (E + 16 > Len) { break; }
+            UINT64 Off = Le32 (p + E + 8), Size = Le32 (p + E + 12);
+            if (Off == 0) { continue; }                       // an unused chunk entry
+            if (std::memcmp (p + E, "OBJ_SYMT", 8) == 0) { SymtOff = Off; SymtSize = Size; }
+            else if (std::memcmp (p + E, "OBJ_STRT", 8) == 0) { StrtOff = Off; StrtSize = Size; }
+        }
+        if (SymtOff == 0 || StrtOff == 0) { return; }
+        if (SymtOff + SymtSize > Len || StrtOff + StrtSize > Len) { return; }
+        for (UINT64 O = 0; O + 16 <= SymtSize; O += 16) {     // entry = name, AT, value, area name
+            UINT64 E = SymtOff + O;
+            UINT32 NameIdx = Le32 (p + E);
+            UINT32 At      = Le32 (p + E + 4);
+            if ((At & 0x3) != 0x3) { continue; }              // only global definitions (bits 1,0 = 11)
+            if (NameIdx >= StrtSize) { continue; }
+            UINT64 Na = StrtOff + NameIdx;
+            CHAR8 CONST *pName = (CHAR8 CONST *) (p + Na);
+            size_t Max = (size_t) (Len - Na);
+            size_t NameLen = strnlen (pName, Max);
+            if (NameLen > 0 && NameLen < Max) { pSink->Add (std::string (pName, NameLen)); }
+        }
+    }
+};
+
 // ===========================================================================
 //  detection-only formats -- one reader instance per format, sharing a predicate
 // ===========================================================================
@@ -2045,6 +2087,7 @@ Registry ()
     static AmigaHunkReader S_AmigaHunk;
     static AmigaLibReader  S_AmigaLib;
     static MwobReader      S_Mwob;
+    static AofReader       S_Aof;
     static PefReader       S_CfmPpc (SymbolFormatCfmPpc, "pwpc");
     static PefReader       S_Cfm68k (SymbolFormatCfm68k, "m68k");
     static PefReader       S_Pef (SymbolFormatPef, nullptr);
@@ -2084,7 +2127,7 @@ Registry ()
         &S_Ar,                                               // static-library container, unwrapped first
         &S_Tbd,                                              // text stub, tried first
         &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax,
-        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_AmigaHunk, &S_AmigaLib, &S_Mwob, &S_Aof, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -2141,6 +2184,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatX68000:
         case SymbolFormatGoff:
         case SymbolFormatIeee695:
+        case SymbolFormatAof:
             return true;
         default:
             return false;
