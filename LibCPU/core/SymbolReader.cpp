@@ -1078,7 +1078,9 @@ public:
             UINT32 Iss  = Le32 (p + B + 4);                   // SYMR.iss (into the external strings)
             UINT32 Bits = Le32 (p + B + 12);                  // little-endian: st:6 | sc:5 | ... | index:20
             UINT32 Sc   = (Bits >> 6) & 0x1F;                 // storage class
-            bool Defined = (Sc >= 1 && Sc <= 6);              // text/data/bss/sdata/sbss/rdata
+            // Defined external -- any storage class except scNil (0) and scUndefined (6, an
+            // import). This keeps text/data/bss/sdata/sbss/rdata/abs/common, drops references.
+            bool Defined = (Sc != 0 && Sc != 6);
             UINT64 Na = (UINT64) SsExtOff + Iss;
             if (Defined && Na < Len) {
                 CHAR8 CONST *pName = (CHAR8 CONST *) (p + Na);
@@ -1794,11 +1796,6 @@ private:
     PredicateFn   m_Pred;
 };
 
-static bool DetectEcoff (UINT8 CONST *p, UINT64 Len) {
-    if (Len < 2) { return false; }
-    UINT16 M = Le16 (p);
-    return M == 0x0162 || M == 0x0166 || M == 0x0140 || M == 0x0184;
-}
 static bool DetectMz (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'M' && p[1] == 'Z'; }
 static bool DetectUefiTe (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 'V' && p[1] == 'Z'; }
 static bool DetectPharLap (UINT8 CONST *p, UINT64 Len) {
@@ -1838,7 +1835,49 @@ static bool DetectAif (UINT8 CONST *p, UINT64 Len) { return Len >= 0x14 && Le32 
 static bool DetectOs360 (UINT8 CONST *p, UINT64 Len) {     // X'02' + EBCDIC "ESD"
     return Len >= 4 && p[0] == 0x02 && p[1] == 0xC5 && p[2] == 0xE2 && p[3] == 0xC4;
 }
-static bool DetectGoff (UINT8 CONST *p, UINT64 Len) { return Len >= 2 && p[0] == 0x03 && p[1] == 0xF0; }   // PTV + HDR
+// IBM GOFF (Generalized Object File Format, z/OS): a stream of 80-byte records, each prefixed
+// with X'03' then a byte whose high nibble is the record type (0=ESD, 1=TXT, 2=RLD, 3=LEN,
+// 4=END, F=HDR) and whose bit 7 (0x01) marks a continuation record. An ESD record names a
+// symbol: symbol type @3 (0=SD section, 1=ED element, 2=LD label, 3=PR part, 4=ER external
+// reference), name length @70 (big-endian) and name @72 in EBCDIC. The symbols a module
+// exports are the SD (section) and LD (label) names; ER references (imports) are skipped.
+// A name longer than the 8 bytes left in the first record continues in the following
+// continuation records, after each record's 3-byte prefix.
+class GoffReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatGoff; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 3 && p[0] == 0x03 && p[1] == 0xF0 && p[2] == 0x00;   // HDR record, version 0
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        for (UINT64 O = 0; O + 80 <= Len; O += 80) {
+            if (p[O] != 0x03) { break; }                      // not a GOFF record
+            if ((p[O + 1] & 0x01) != 0) { continue; }         // continuation of a prior record
+            if (((p[O + 1] >> 4) & 0x0F) != 0x00) { continue; }   // only ESD records name symbols
+            UINT8 SymType = p[O + 3];
+            if (SymType != 0x00 && SymType != 0x02) { continue; }   // SD (section) / LD (label) = defined
+            UINT32 NameLen = Be16 (p + O + 70);
+            if (NameLen == 0) { continue; }
+            std::string Nm;
+            UINT64 Pos = O + 72, Avail = 8;                   // 80 - 72 bytes left in the first record
+            UINT64 Rec = O, Remain = NameLen;
+            while (Remain > 0 && Pos < Len) {
+                UINT64 Take = Remain < Avail ? Remain : Avail;
+                if (Pos + Take > Len) { Take = Len - Pos; }
+                for (UINT64 K = 0; K < Take; K++) { Nm.push_back (EbcdicToAscii (p[Pos + K])); }
+                Remain -= Take;
+                Pos += Take;
+                if (Remain > 0) {                             // continue in the next record, past its prefix
+                    Rec += 80;
+                    if (Rec + 3 > Len || p[Rec] != 0x03) { break; }
+                    Pos = Rec + 3;
+                    Avail = 77;
+                }
+            }
+            if (!Nm.empty ()) { pSink->Add (std::move (Nm)); }
+        }
+    }
+};
 // DRI CMD command file (CP/M-86 / Concurrent CP/M / DOS Plus / FlexOS 186/286): a 128-byte
 // header of up to eight 9-byte group descriptors (g_type, g_length, a_base, g_min, g_max),
 // then the section contents. The .286 and .CMD command files share this layout; symbols are
@@ -1894,7 +1933,7 @@ Registry ()
     static X68kReader      S_X68000;
     static SignatureReader S_Aif (SymbolFormatAif, DetectAif);
     static Os360Reader     S_Os360;
-    static SignatureReader S_Goff (SymbolFormatGoff, DetectGoff);
+    static GoffReader      S_Goff;
     static GeosReader      S_Geos;
     static SignatureReader S_GeosC64 (SymbolFormatGeosC64, DetectGeosC64);
     static PalmReader      S_PalmPrc (SymbolFormatPalmPrc, true);
@@ -1996,6 +2035,7 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatMpw:
         case SymbolFormatMwob:
         case SymbolFormatX68000:
+        case SymbolFormatGoff:
             return true;
         default:
             return false;

@@ -502,8 +502,6 @@ add_test(NAME symbols.lx COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/t
 set_tests_properties(symbols.lx PROPERTIES PASS_REGULAR_EXPRESSION "_lx_export")
 add_test(NAME symbols.nlm COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.nlm")
 set_tests_properties(symbols.nlm PROPERTIES PASS_REGULAR_EXPRESSION "_nlm_pub")
-add_test(NAME symbols.ecoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ecoff")
-set_tests_properties(symbols.ecoff PROPERTIES PASS_REGULAR_EXPRESSION "_ecoff_sym")
 # Plan 9 a.out (global text symbol, source-path entry skipped) and PDP-10 .SAV (RADIX-50
 # symbol reached via the JOBSYM pointer at 0o116).
 add_test(NAME symbols.plan9 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.plan9")
@@ -570,6 +568,16 @@ add_test(NAME symbols.xfile COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR
 set_tests_properties(symbols.xfile PROPERTIES
     PASS_REGULAR_EXPRESSION "_xmain"
     FAIL_REGULAR_EXPRESSION "_ximport")
+# ECOFF (32-bit MIPS): defined external symbols via the symbolic header; undefined excluded.
+add_test(NAME symbols.ecoff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.ecoff")
+set_tests_properties(symbols.ecoff PROPERTIES
+    PASS_REGULAR_EXPRESSION "_ecoffdef"
+    FAIL_REGULAR_EXPRESSION "_ecoffundef")
+# GOFF (IBM z/OS): SD/LD names from ESD records (EBCDIC, continuation-spanning); ER excluded.
+add_test(NAME symbols.goff COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.goff")
+set_tests_properties(symbols.goff PROPERTIES
+    PASS_REGULAR_EXPRESSION "GOFFLONGNAME12345"
+    FAIL_REGULAR_EXPRESSION "GOFFER")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")
