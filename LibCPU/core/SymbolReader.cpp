@@ -89,6 +89,7 @@ SymbolFormatName (SYMBOL_FORMAT Format)
         case SymbolFormatBout:       return "b.out";
         case SymbolFormatOsfRose:    return "osf-rose";
         case SymbolFormatCpmZ8000:   return "cpm-z8000";
+        case SymbolFormatCpmVax:     return "cpm-vax";
         case SymbolFormatDriCmd:     return "dri-cmd (cp/m-86 / flexos)";
         case SymbolFormatGeos:       return "geos-geode";
         case SymbolFormatGeosC64:    return "geos-c64";
@@ -1099,13 +1100,64 @@ public:
     SYMBOL_FORMAT Format () CONST override { return m_Fmt; }
     bool Detect (UINT8 CONST *p, UINT64 Len) CONST override { return DetectPalm (p, Len, m_ResDB); }
     void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
-        (void) Len;
         std::string Nm ((CHAR8 CONST *) p, strnlen ((CHAR8 CONST *) p, 32));   // name[32] @0
         if (!Nm.empty ()) { pSink->SetInstallName (std::move (Nm)); }
+        if (!m_ResDB) { return; }                              // record DBs (.pdb) hold no resource table
+        // Resource list: each 10-byte entry is type[4], id (UInt16), localChunkID (UInt32),
+        // starting at PDB_HEADER (78). Report every resource as "type #id".
+        UINT16 NumRecs = Be16 (p + 76);
+        for (UINT32 i = 0; i < NumRecs; ++i) {
+            UINT64 E = 78 + (UINT64) i * 10;
+            if (E + 10 > Len) { break; }
+            std::string Line ((CHAR8 CONST *) (p + E), 4);     // 4-char resource type
+            Line += " #";
+            Line += std::to_string (Be16 (p + E + 4));         // resource id
+            pSink->Add (std::move (Line));
+        }
     }
 private:
     SYMBOL_FORMAT m_Fmt;
     bool          m_ResDB;
+};
+
+// ===========================================================================
+//  CP/M-VAX command file. CP/M-VAX (Roger Ivie's CP/M-68K port to the VAX) reuses the DRI
+//  CP/M-68K command-file layout, but on the little-endian VAX the fields -- including the
+//  0x601A branch magic -- are stored little-endian, so the file opens with 1A 60 rather than
+//  the 60 1A of big-endian GEMDOS/CP/M-68K, making the two byte-distinct. Header (28 bytes):
+//  magic @0, text size @2, data size @6, bss @10, symbol-table size @14. The symbol table
+//  follows text+data; each entry is 14 bytes (name[8], type, value), and type & 0x2000 marks
+//  a global (exported) symbol -- mirroring CP/M-68K, little-endian throughout.
+// ===========================================================================
+
+class CpmVaxReader : public FormatReader {
+public:
+    SYMBOL_FORMAT Format () CONST override { return SymbolFormatCpmVax; }
+    bool Detect (UINT8 CONST *p, UINT64 Len) CONST override {
+        return Len >= 28 && p[0] == 0x1A && p[1] == 0x60;     // 0x601A little-endian (vs 60 1A big-endian GEMDOS)
+    }
+    void Extract (UINT8 CONST *p, UINT64 Len, SymbolSink *pSink) CONST override {
+        UINT32 TSize = Le32 (p + 2), DSize = Le32 (p + 6), SSize = Le32 (p + 14);
+        UINT64 SymOff = 28 + (UINT64) TSize + DSize;
+        if (SymOff > Len || SSize > Len - SymOff) { return; }
+        UINT64 End = SymOff + SSize;
+        for (UINT64 O = SymOff; O + 14 <= End; ) {
+            UINT16 Type = Le16 (p + O + 8);
+            char Buf[9];
+            std::memcpy (Buf, p + O, 8);
+            Buf[8] = '\0';
+            std::string Nm (Buf, strnlen (Buf, 8));
+            O += 14;
+            // GST long names (a_lname, 0x0048): the next entry holds 14 more name chars.
+            if ((Type & 0x0048) == 0x0048 && O + 14 <= End) {
+                Nm.append ((CHAR8 CONST *) (p + O), strnlen ((CHAR8 CONST *) (p + O), 14));
+                O += 14;
+            }
+            if (!Nm.empty () && (Type & 0x2000) != 0) {       // a_global -> exported
+                pSink->Add (std::move (Nm));
+            }
+        }
+    }
 };
 
 // ===========================================================================
@@ -1479,6 +1531,7 @@ Registry ()
     static RdoffReader     S_Rdoff;
     static GemdosReader    S_Gemdos;
     static CpmZ8000Reader  S_CpmZ8000;
+    static CpmVaxReader    S_CpmVax;
     static SignatureReader S_UefiTe (SymbolFormatUefiTe, DetectUefiTe);
     static SignatureReader S_PharLap (SymbolFormatPharLap, DetectPharLap);
     static SignatureReader S_X68000 (SymbolFormatX68000, DetectX68000);
@@ -1522,7 +1575,7 @@ Registry ()
 
     static std::vector<FormatReader CONST *> List = {
         &S_Tbd,                                              // text stub, tried first
-        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
+        &S_MachO, &S_OsfRose, &S_Elf, &S_Rdoff, &S_Gemdos, &S_CpmZ8000, &S_CpmVax, &S_AmigaHunk, &S_CfmPpc, &S_Cfm68k, &S_Pef,
         &S_Nlm, &S_Vms, &S_Aif, &S_Geos,
         &S_AOut, &S_Bout, &S_Plan9, &S_MinixAOut, &S_XenixXOut,
         &S_BigObj, &S_WinCoff, &S_Ecoff, &S_Xcoff, &S_Som,
@@ -1568,6 +1621,8 @@ SymbolFormatHasExtractor (SYMBOL_FORMAT Format)
         case SymbolFormatOsfRose:
         case SymbolFormatXenixXOut:
         case SymbolFormatCpmZ8000:
+        case SymbolFormatCpmVax:
+        case SymbolFormatPalmPrc:
             return true;
         default:
             return false;

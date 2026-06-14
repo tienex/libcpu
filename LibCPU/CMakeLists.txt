@@ -537,6 +537,9 @@ set_tests_properties(symbols.xout PROPERTIES PASS_REGULAR_EXPRESSION "_xenix")
 # CP/M-8000 (Z8000) command file: type-3 (global) symbols, table is the last section.
 add_test(NAME symbols.cpmz8k COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cpmz8k")
 set_tests_properties(symbols.cpmz8k PROPERTIES PASS_REGULAR_EXPRESSION "_z8ksym")
+# CP/M-VAX: little-endian 0x601A header (byte-distinct from big-endian GEMDOS); LE symbol table.
+add_test(NAME symbols.cpmvax COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cpmvax")
+set_tests_properties(symbols.cpmvax PROPERTIES PASS_REGULAR_EXPRESSION "_vaxsym")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")
@@ -546,9 +549,9 @@ set_tests_properties(symbols.geo PROPERTIES PASS_REGULAR_EXPRESSION "GeoCalc")
 # Commodore 64 GEOS file: detection only.
 add_test(NAME symbols.geosc64 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.geosc64")
 set_tests_properties(symbols.geosc64 PROPERTIES PASS_REGULAR_EXPRESSION "geos-c64")
-# Palm OS resource database / application (.prc): detected; database name -> install name.
+# Palm OS resource database / application (.prc): install name + full resource-type listing.
 add_test(NAME symbols.prc COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.prc")
-set_tests_properties(symbols.prc PROPERTIES PASS_REGULAR_EXPRESSION "AddressBook")
+set_tests_properties(symbols.prc PROPERTIES PASS_REGULAR_EXPRESSION "tAIB #1000")
 # Palm OS record database (.pdb): detected; database name -> install name.
 add_test(NAME symbols.pdb COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.pdb")
 set_tests_properties(symbols.pdb PROPERTIES PASS_REGULAR_EXPRESSION "MemoDB")
