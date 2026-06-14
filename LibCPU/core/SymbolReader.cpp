@@ -2618,4 +2618,230 @@ SymbolReader::Read (CHAR8 CONST *pPath, std::string *pError)
     return false;
 }
 
+// --- C++ (Itanium ABI) demangler ---------------------------------------------
+//
+// A practical recursive-descent demangler: it renders the common forms (nested names, free
+// functions, constructors/destructors, builtin-type parameters, pointers/references/const,
+// simple templates) and, for anything it cannot fully consume (deeply substituted STL types,
+// expression template arguments, ...), leaves the symbol untouched. It never emits a partial
+// result -- DemangleSymbol returns the original string unless the whole encoding parsed.
+
+namespace {
+
+struct ItaniumDemangler {
+    CHAR8 CONST *S, *E;
+    std::vector<std::string> Subs;                           // substitution table (S_, S0_, ...)
+    std::string Cv;                                          // trailing member-function qualifiers
+    std::string LastUnqual;                                  // last unqualified name (for ctor/dtor)
+    bool LastTemplate = false;                               // was the final name component a template-id?
+    bool Fail = false;
+
+    bool AtEnd () { return S >= E; }
+    char Cur () { return AtEnd () ? '\0' : *S; }
+
+    long Number () {
+        long N = 0; bool Any = false;
+        while (!AtEnd () && *S >= '0' && *S <= '9') { N = N * 10 + (*S - '0'); ++S; Any = true; }
+        if (!Any) { Fail = true; }
+        return N;
+    }
+    std::string SourceName () {
+        long N = Number ();
+        if (Fail || N <= 0 || S + N > E) { Fail = true; return std::string (); }
+        std::string R (S, (size_t) N); S += N; return R;
+    }
+    long SeqId () {                                          // base-36 substitution id (before '_')
+        long V = 0;
+        while (!AtEnd () && *S != '_') {
+            char C = *S++;
+            if (C >= '0' && C <= '9') { V = V * 36 + (C - '0'); }
+            else if (C >= 'A' && C <= 'Z') { V = V * 36 + (C - 'A' + 10); }
+            else { Fail = true; return 0; }
+        }
+        return V;
+    }
+    bool Builtin (std::string &Out) {
+        switch (Cur ()) {
+            case 'v': Out = "void"; break;             case 'b': Out = "bool"; break;
+            case 'c': Out = "char"; break;             case 'a': Out = "signed char"; break;
+            case 'h': Out = "unsigned char"; break;    case 's': Out = "short"; break;
+            case 't': Out = "unsigned short"; break;   case 'i': Out = "int"; break;
+            case 'j': Out = "unsigned int"; break;     case 'l': Out = "long"; break;
+            case 'm': Out = "unsigned long"; break;    case 'x': Out = "long long"; break;
+            case 'y': Out = "unsigned long long"; break; case 'f': Out = "float"; break;
+            case 'd': Out = "double"; break;           case 'e': Out = "long double"; break;
+            case 'w': Out = "wchar_t"; break;          case 'z': Out = "..."; break;
+            default: return false;
+        }
+        ++S; return true;
+    }
+    bool StdAbbrev (std::string &Out) {                      // St, Sa, Sb, Ss, Si, So, Sd
+        if (Cur () != 'S' || S + 1 >= E) { return false; }
+        switch (S[1]) {
+            case 't': Out = "std"; break;              case 'a': Out = "std::allocator"; break;
+            case 'b': Out = "std::basic_string"; break; case 's': Out = "std::string"; break;
+            case 'i': Out = "std::istream"; break;     case 'o': Out = "std::ostream"; break;
+            case 'd': Out = "std::iostream"; break;
+            default: return false;
+        }
+        S += 2; return true;
+    }
+    bool SubRef (std::string &Out) {                         // S_, S<seq>_
+        if (Cur () != 'S' || S + 1 >= E) { return false; }
+        char N = S[1];
+        if (N != '_' && !(N >= '0' && N <= '9') && !(N >= 'A' && N <= 'Z')) { return false; }
+        ++S;
+        long Idx;
+        if (Cur () == '_') { Idx = 0; ++S; }
+        else { long V = SeqId (); if (Fail || Cur () != '_') { Fail = true; return false; } ++S; Idx = V + 1; }
+        if (Idx < 0 || (size_t) Idx >= Subs.size ()) { Fail = true; return false; }
+        Out = Subs[(size_t) Idx]; return true;
+    }
+    std::string TemplateArgs () {                            // I <arg>+ E  -> "<a, b>"
+        ++S;                                                 // 'I'
+        std::string R = "<"; bool First = true;
+        while (!AtEnd () && Cur () != 'E') {
+            std::string A;
+            if (Cur () == 'L') { ++S; Type (); A = std::to_string (Number ()); if (Cur () == 'E') { ++S; } }
+            else { A = Type (); }
+            if (Fail) { return std::string (); }
+            if (!First) { R += ", "; }
+            R += A; First = false;
+        }
+        if (Cur () != 'E') { Fail = true; return std::string (); }
+        ++S; R += ">"; return R;
+    }
+    std::string Type () {
+        if (Fail || AtEnd ()) { Fail = true; return std::string (); }
+        std::string B;
+        if (Builtin (B)) { return B; }
+        char C = Cur ();
+        if (C == 'P' || C == 'R' || C == 'O' || C == 'K' || C == 'V') {
+            ++S;
+            std::string T = Type ();
+            std::string R = (C == 'P') ? T + "*" : (C == 'R') ? T + "&" : (C == 'O') ? T + "&&"
+                          : (C == 'K') ? T + " const" : T + " volatile";
+            Subs.push_back (R); return R;
+        }
+        if (C == 'N' || C == 'S' || (C >= '0' && C <= '9')) { return Name (); }
+        Fail = true; return std::string ();
+    }
+    std::string LastComponent (std::string CONST &Full) {
+        size_t Pos = Full.rfind ("::");
+        std::string Last = (Pos == std::string::npos) ? Full : Full.substr (Pos + 2);
+        size_t Lt = Last.find ('<');
+        return (Lt == std::string::npos) ? Last : Last.substr (0, Lt);
+    }
+    std::string NestedName () {
+        ++S;                                                 // 'N'
+        while (Cur () == 'r' || Cur () == 'V' || Cur () == 'K') {
+            if (Cur () == 'K') { Cv += " const"; } else if (Cur () == 'V') { Cv += " volatile"; }
+            ++S;
+        }
+        std::string Full; bool First = true;
+        while (!AtEnd () && Cur () != 'E') {
+            char C = Cur ();
+            if (C == 'I') {                                  // template args attach to the prior component
+                std::string Saved = LastUnqual;              // inner arg types must not change the class name
+                std::string Ta = TemplateArgs ();
+                if (Fail) { return std::string (); }
+                LastUnqual = Saved;
+                Full += Ta; Subs.push_back (Full); LastTemplate = true; continue;
+            }
+            std::string Comp;
+            bool Predefined = false;                          // a built-in std abbrev is not added to the table
+            if (C == 'S') {
+                std::string Sub;
+                if (StdAbbrev (Sub)) { Comp = Sub; Predefined = true; }
+                else if (SubRef (Sub)) { Comp = Sub; }
+                else { Fail = true; return std::string (); }
+                LastUnqual = LastComponent (Comp);
+            } else if (C == 'C') { S += 2; Comp = LastUnqual; }                  // constructor
+            else if (C == 'D') { S += 2; Comp = "~" + LastUnqual; }             // destructor
+            else if (C >= '0' && C <= '9') { Comp = SourceName (); LastUnqual = Comp; }
+            else { Fail = true; return std::string (); }
+            if (Fail) { return std::string (); }
+            LastTemplate = false;
+            if (!First) { Full += "::"; }
+            Full += Comp; First = false;
+            if (!Predefined) { Subs.push_back (Full); }
+        }
+        if (Cur () != 'E') { Fail = true; return std::string (); }
+        ++S; return Full;
+    }
+    std::string Name (bool TopLevel = false) {
+        char C = Cur ();
+        if (C == 'N') { return NestedName (); }
+        if (C == 'S' && S + 1 < E && S[1] == 't') {          // "St" = the ::std:: shorthand prefix
+            S += 2;
+            std::string Nm = "std";
+            if (Cur () >= '0' && Cur () <= '9') {            // std::<name> [<template-args>]
+                std::string Comp = SourceName ();
+                if (Fail) { return std::string (); }
+                Nm += "::" + Comp; Subs.push_back (Nm);
+                if (Cur () == 'I') { Nm += TemplateArgs (); if (!Fail) { Subs.push_back (Nm); } }
+            }
+            return Nm;
+        }
+        std::string Sub;
+        if (C == 'S') {
+            if (StdAbbrev (Sub) || SubRef (Sub)) {
+                std::string R = Sub;
+                if (Cur () == 'I') { R += TemplateArgs (); if (!Fail) { Subs.push_back (R); } }
+                return R;
+            }
+            Fail = true; return std::string ();
+        }
+        std::string Nm = SourceName ();
+        if (Fail) { return std::string (); }
+        if (!TopLevel) { Subs.push_back (Nm); }              // the top-level function name is not substitutable
+        LastUnqual = Nm; LastTemplate = false;
+        if (Cur () == 'I') { std::string Ta = TemplateArgs (); if (Fail) { return std::string (); } Nm += Ta; Subs.push_back (Nm); LastTemplate = true; }
+        return Nm;
+    }
+    std::string Encoding () {
+        LastTemplate = false;
+        std::string Nm = Name (true);                        // top-level function/data name
+        if (Fail) { return std::string (); }
+        // A function whose own name is a template-id encodes its return type before the params.
+        bool Templated = LastTemplate;
+        if (!AtEnd ()) {
+            std::string Ret;
+            if (Templated) { Ret = Type (); if (Fail) { return std::string (); } }   // return type, rendered as a prefix
+            std::string Params = "("; bool First = true; bool Void = false;
+            while (!AtEnd ()) {
+                std::string T = Type ();
+                if (Fail) { return std::string (); }
+                if (First && T == "void" && AtEnd ()) { Void = true; break; }
+                if (!First) { Params += ", "; }
+                Params += T; First = false;
+            }
+            (void) Void;
+            Params += ")";
+            Nm += Params;
+            if (!Ret.empty ()) { Nm = Ret + " " + Nm; }
+        }
+        Nm += Cv;
+        return Nm;
+    }
+};
+
+} // anonymous namespace
+
+std::string
+DemangleSymbol (std::string CONST &Name)
+{
+    CHAR8 CONST *s = Name.c_str ();
+    size_t Off;
+    if (Name.size () >= 2 && s[0] == '_' && s[1] == 'Z') { Off = 2; }
+    else if (Name.size () >= 3 && s[0] == '_' && s[1] == '_' && s[2] == 'Z') { Off = 3; }   // Mach-O leading '_'
+    else { return Name; }
+    ItaniumDemangler D;
+    D.S = s + Off;
+    D.E = s + Name.size ();
+    std::string R = D.Encoding ();
+    if (D.Fail || D.S != D.E || R.empty ()) { return Name; }   // partial / failed -> leave untouched
+    return R;
+}
+
 } // namespace LibCPU

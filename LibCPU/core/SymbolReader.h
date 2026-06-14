@@ -102,6 +102,11 @@ CHAR8 CONST *SymbolFormatName (SYMBOL_FORMAT Format);
 // Whether any registered reader extracts symbols for a format (vs. detection only).
 bool SymbolFormatHasExtractor (SYMBOL_FORMAT Format);
 
+// Demangle a C++ (Itanium ABI) symbol name into its human-readable form (e.g. "_ZN2ns3fooEi"
+// -> "ns::foo(int)"). Returns the name unchanged if it is not a mangled name or cannot be
+// fully parsed, so the result is always safe to display.
+std::string DemangleSymbol (std::string CONST &Name);
+
 //
 // Accumulates the parsed result; handed to each format reader's Extract().
 //

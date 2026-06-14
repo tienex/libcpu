@@ -605,6 +605,9 @@ set_tests_properties(symbols.class PROPERTIES PASS_REGULAR_EXPRESSION "Foo.add")
 # LLVM bitcode: module function/global names via the bitstream + STRTAB (real clang output).
 add_test(NAME symbols.bc COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.bc")
 set_tests_properties(symbols.bc PROPERTIES PASS_REGULAR_EXPRESSION "add")
+# C++ (Itanium) demangling: nested name + member const, and a non-mangled name passes through.
+add_test(NAME symbols.demangle COMMAND lcx klib demangle _ZNK2ns6Widget4areaEii _Z6freefnim plain_c)
+set_tests_properties(symbols.demangle PROPERTIES PASS_REGULAR_EXPRESSION "ns::Widget::area.int, int. const")
 # DRI CMD command file (CP/M-86 / FlexOS 186/286): no inline symbols -> detection only.
 add_test(NAME symbols.cmd286 COMMAND lcx klib symbols "${CMAKE_CURRENT_SOURCE_DIR}/test/sample.cmd286")
 set_tests_properties(symbols.cmd286 PROPERTIES PASS_REGULAR_EXPRESSION "dri-cmd")

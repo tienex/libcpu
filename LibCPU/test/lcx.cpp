@@ -858,9 +858,11 @@ CmdKlib (int argc, char **argv)
         }
         CHAR8 CONST *pGrep = Opt (argc, argv, "--grep", nullptr);
         UINT32 Shown = 0;
+        bool Raw = Flag (argc, argv, "--raw");               // --raw keeps the mangled form
         for (std::string CONST &S : Reader.Symbols ()) {
-            if (pGrep == nullptr || S.find (pGrep) != std::string::npos) {
-                std::printf ("  %s\n", S.c_str ());
+            std::string Disp = Raw ? S : DemangleSymbol (S);
+            if (pGrep == nullptr || Disp.find (pGrep) != std::string::npos || S.find (pGrep) != std::string::npos) {
+                std::printf ("  %s\n", Disp.c_str ());
                 Shown++;
             }
         }
@@ -869,6 +871,17 @@ CmdKlib (int argc, char **argv)
                          ? " (format recognised; symbol extraction not yet implemented)" : "");
         if (pGrep != nullptr) {
             std::printf ("  (%u matched '%s')\n", Shown, pGrep);
+        }
+        return 0;
+    }
+
+    if (std::strcmp (pVerb, "demangle") == 0) {
+        // Demangle each positional argument (a C++ Itanium symbol) and print the result.
+        for (int K = 1;; K++) {
+            CHAR8 CONST *pArg = Positional (argc, argv, K);
+            if (pArg == nullptr) { break; }
+            std::string M = pArg;
+            std::printf ("%s\n", DemangleSymbol (M).c_str ());
         }
         return 0;
     }
