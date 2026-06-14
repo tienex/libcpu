@@ -17,6 +17,8 @@ printf '\000\000\377\377\002\000\000\000\000\000\000\000\307\241\272\321\356\272
 printf '\001\337\000\000'                                        > "$d/xcoff"   # 0x01DF big-endian
 # OpenVMS EIHD: size=0x60@+0, hdrblkcnt=1@+4, majorid=3@+8, minorid=0@+12, imgtype=1@+16.
 printf '\140\000\000\000\001\000\000\000\003\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000' > "$d/vms"
+# CP/M-VAX: 0x601A branch magic stored little-endian (1A 60), distinct from big-endian GEMDOS.
+{ printf '\032\140'; dd if=/dev/zero bs=1 count=26 2>/dev/null; } > "$d/cpmvax"
 # MZ + PE: 'MZ', e_lfanew=0x40 at offset 0x3C, 'PE\0\0' at 0x40.
 { printf 'MZ'; dd if=/dev/zero bs=1 count=58 2>/dev/null; \
   printf '\100\000\000\000'; printf 'PE\000\000'; } > "$d/pe"
@@ -50,6 +52,7 @@ check bigobj  "bigobj-coff:"
 check xcoff  "xcoff:"
 check pe     "pe/coff:"
 check vms    "vms:"
+check cpmvax "cpm-vax:"
 check uefite "uefi-te:"
 check pharlap "phar-lap:"
 check x68000 "x68000:"
