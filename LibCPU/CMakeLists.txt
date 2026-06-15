@@ -727,6 +727,11 @@ if(TARGET interp_backend)
   add_test(NAME run.nec.set1 COMMAND sh -c
     "printf '\\xb8\\x00\\x00\\xb9\\x04\\x00\\x0f\\x14\\xc0\\xf4' > '${CMAKE_BINARY_DIR}/set1.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/set1.bin' --arch v20 | grep -q 'AX =0010'")
+
+  # 8-bit operand forms: MOV AL,5 ; MOV BL,3 ; ADD AL,BL -> AL = 8 (the byte r/m machinery).
+  add_test(NAME run.byte8086 COMMAND sh -c
+    "printf '\\xb0\\x05\\xb3\\x03\\x00\\xd8\\xf4' > '${CMAKE_BINARY_DIR}/byte8086.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/byte8086.bin' --arch v20 | grep -q 'AX =0008'")
 endif()
 
 # The NEC V20/V30-specific instruction set disassembles (bit ops, BCD-string, nibble, bit-field).

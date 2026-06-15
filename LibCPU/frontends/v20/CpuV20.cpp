@@ -169,6 +169,64 @@ EmitAlu16 (ICpuEmitter *pE, UINT32 AluOp, ICpuValue *pDst, ICpuValue *pSrc, ICpu
     EmitZSF (pE, Res);
 }
 
+// Z (zero), S (bit 7) and P (parity) for an 8-bit result.
+static VOID
+EmitZSF8 (ICpuEmitter *pE, ICpuValue *pRes)
+{
+    ComPtr<ICpuValue> Zero; pE->ConstInt (8, 0, &Zero);
+    ComPtr<ICpuValue> ZF;   pE->Compare (CmpEq, pRes, Zero, &ZF); pE->SetFlag (FlagZero, ZF);
+    ComPtr<ICpuValue> B7;   pE->ConstInt (8, 0x80, &B7);
+    ComPtr<ICpuValue> M;    pE->BinaryOp (BinAnd, pRes, B7, &M);
+    ComPtr<ICpuValue> SF;   pE->Compare (CmpNe, M, Zero, &SF); pE->SetFlag (FlagNegative, SF);
+    ComPtr<ICpuValue> R16;  pE->Cast (CastZExt, pRes, 16, &R16);
+    EmitParity (pE, R16);
+}
+
+// 8-bit ALU: Res = Dst <op> Src with full flags (op encoding as for EmitAlu16). Result owned in
+// *ppRes; caller writes it back except for CMP (7).
+static VOID
+EmitAlu8 (ICpuEmitter *pE, UINT32 AluOp, ICpuValue *pDst, ICpuValue *pSrc, ICpuValue **ppRes)
+{
+    if (AluOp == 1 || AluOp == 4 || AluOp == 6) {                  // OR / AND / XOR
+        CPU_BINOP B = (AluOp == 4) ? BinAnd : (AluOp == 6) ? BinXor : BinOr;
+        pE->BinaryOp (B, pDst, pSrc, ppRes);
+        ComPtr<ICpuValue> Z1; pE->ConstInt (1, 0, &Z1); pE->SetFlag (FlagCarry, Z1);
+        ComPtr<ICpuValue> Z2; pE->ConstInt (1, 0, &Z2); pE->SetFlag (FlagOverflow, Z2);
+        EmitZSF8 (pE, *ppRes);
+        return;
+    }
+    bool Sub = (AluOp == 3 || AluOp == 5 || AluOp == 7);
+    bool Cin = (AluOp == 2 || AluOp == 3);
+    ComPtr<ICpuValue> D16; pE->Cast (CastZExt, pDst, 16, &D16);
+    ComPtr<ICpuValue> S16; pE->Cast (CastZExt, pSrc, 16, &S16);
+    ComPtr<ICpuValue> Acc; pE->BinaryOp (Sub ? BinSub : BinAdd, D16, S16, &Acc);
+    ComPtr<ICpuValue> Carried;
+    ICpuValue *Wide = Acc;
+    if (Cin) {
+        ComPtr<ICpuValue> C;   pE->GetFlag (FlagCarry, &C);
+        ComPtr<ICpuValue> C16; pE->Cast (CastZExt, C, 16, &C16);
+        pE->BinaryOp (Sub ? BinSub : BinAdd, Acc, C16, &Carried);
+        Wide = Carried;
+    }
+    pE->Cast (CastTrunc, Wide, 8, ppRes);
+    ICpuValue *Res = *ppRes;
+    ComPtr<ICpuValue> Sh; pE->ConstInt (16, 8, &Sh);
+    ComPtr<ICpuValue> Hi; pE->BinaryOp (BinLShr, Wide, Sh, &Hi);
+    ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Hi, 1, &CF);
+    pE->SetFlag (FlagCarry, CF);
+    ComPtr<ICpuValue> DxS; pE->BinaryOp (BinXor, pDst, pSrc, &DxS);
+    ComPtr<ICpuValue> DxR; pE->BinaryOp (BinXor, pDst, Res, &DxR);
+    ComPtr<ICpuValue> T1;
+    if (Sub) { pE->BinaryOp (BinAnd, DxS, DxR, &T1); }
+    else { ComPtr<ICpuValue> N; pE->UnaryOp (UnCom, DxS, &N); pE->BinaryOp (BinAnd, N, DxR, &T1); }
+    ComPtr<ICpuValue> B7;   pE->ConstInt (8, 0x80, &B7);
+    ComPtr<ICpuValue> T2;   pE->BinaryOp (BinAnd, T1, B7, &T2);
+    ComPtr<ICpuValue> Zero; pE->ConstInt (8, 0, &Zero);
+    ComPtr<ICpuValue> OF;   pE->Compare (CmpNe, T2, Zero, &OF);
+    pE->SetFlag (FlagOverflow, OF);
+    EmitZSF8 (pE, Res);
+}
+
 class CpuV20 final : public ComObject<ICpuArchitecture> {
 public:
     explicit CpuV20 (UINT16 CodeSeg, bool IsV30 = false)
@@ -239,15 +297,16 @@ public:
             Len = 1;
         } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
             Len = 1;
-        } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) ||
-                   Op == 0x85 || Op == 0x89 || Op == 0x8B || Op == 0x8E || Op == 0x8C) {
-            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV r/m16,r16 (+disp)
-        } else if (Op == 0x81) {                                 // grp1: <alu> r/m16, imm16
-            Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
-        } else if (Op == 0x83) {                                 // grp1: <alu> r/m16, imm8 (sign-extended)
+        } else if ((Op < 0x40 && (Op & 7) <= 3) ||              // ALU r/m,r (8- and 16-bit, both dirs)
+                   Op == 0x84 || Op == 0x85 || Op == 0x88 || Op == 0x89 ||
+                   Op == 0x8A || Op == 0x8B || Op == 0x8E || Op == 0x8C) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV r/m,r (+disp)
+        } else if (Op == 0x80 || Op == 0x83 || Op == 0xC6) {     // grp1 r/m8,imm8 / r/m16,imm8 / MOV r/m8,imm8
             Len = 1 + RmLen (m_pCode[Pc + 1]) + 1;
-        } else if (Op == 0xC7) {                                 // MOV r/m16, imm16
+        } else if (Op == 0x81 || Op == 0xC7) {                   // grp1 r/m16,imm16 / MOV r/m16,imm16
             Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
+        } else if ((Op < 0x40 && (Op & 7) == 4) || Op == 0xA8) {
+            Len = 2;                                             // ALU AL,imm8 / TEST AL,imm8
         } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA1 || Op == 0xA3 || Op == 0xA9) {
             Len = 3;                                             // acc,imm16 / MOV AX,[addr16] / TEST AX,imm16
         } else if (Op == 0xEB) {                                 // JMP rel8
@@ -356,12 +415,30 @@ public:
             static CHAR8 CONST *kJ[16] = { "jo","jno","jb","jnb","jz","jnz","jbe","ja",
                                            "js","jns","jp","jnp","jl","jge","jle","jg" };
             std::snprintf (pLine, MaxLine, "%s 0x%04x", kJ[Op - 0x70], (unsigned) (Pc + 2 + (INT8) m_pCode[Pc + 1]));
+        } else if ((Op < 0x40 && ((Op & 7) == 0 || (Op & 7) == 2)) || Op == 0x84 || Op == 0x88 || Op == 0x8A) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Mn = (Op == 0x84) ? "test" : (Op == 0x88 || Op == 0x8A) ? "mov" : kAluName ((Op >> 3) & 7);
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? Reg8Name (M & 7) : "[mem]";
+            if (Op & 2) { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Reg8Name ((M >> 3) & 7), Rm); }
+            else        { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Rm, Reg8Name ((M >> 3) & 7)); }
         } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) || Op == 0x85) {
             UINT8 M = m_pCode[Pc + 1];
             CHAR8 CONST *Mn = (Op == 0x85) ? "test" : kAluName ((Op >> 3) & 7);
             CHAR8 CONST *Rm = ((M >> 6) == 3) ? RegName (M & 7) : "[mem]";
             if (Op & 2) { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, RegName ((M >> 3) & 7), Rm); }
             else        { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Rm, RegName ((M >> 3) & 7)); }
+        } else if (Op < 0x40 && (Op & 7) == 4) {
+            std::snprintf (pLine, MaxLine, "%s al,0x%02x", kAluName ((Op >> 3) & 7), m_pCode[Pc + 1]);
+        } else if (Op == 0xA8) {
+            std::snprintf (pLine, MaxLine, "test al,0x%02x", m_pCode[Pc + 1]);
+        } else if (Op == 0x80) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? Reg8Name (M & 7) : "[mem]";
+            std::snprintf (pLine, MaxLine, "%s %s,0x%02x", kAluName ((M >> 3) & 7), Rm, m_pCode[Pc + 1 + RmLen (M)]);
+        } else if (Op == 0xC6) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? Reg8Name (M & 7) : "[mem]";
+            std::snprintf (pLine, MaxLine, "mov %s,0x%02x", Rm, m_pCode[Pc + 1 + RmLen (M)]);
         } else if (Op < 0x40 && (Op & 7) == 5) {
             std::snprintf (pLine, MaxLine, "%s ax,0x%04x", kAluName ((Op >> 3) & 7), Imm16At (m_pCode, Pc + 1));
         } else if (Op == 0x81 || Op == 0x83) {
@@ -489,6 +566,53 @@ public:
             ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            return S_OK;
+        }
+
+        // ---- 8-bit operand forms -------------------------------------------------------------
+        // ALU r/m8 (alu*8 + 0 = r/m8,r8 ; +2 = r8,r/m8), MOV r/m8 (0x88/0x8A), TEST r/m8 (0x84).
+        if ((Op < 0x40 && ((Op & 7) == 0 || (Op & 7) == 2)) || Op == 0x88 || Op == 0x8A || Op == 0x84) {
+            UINT8  M       = m_pCode[Pc + 1];
+            UINT32 Reg     = (M >> 3) & 7;
+            bool   RegDest = (Op & 2) != 0;
+            ComPtr<ICpuValue> RegV; EmitReg8Read (pE, (UINT8) Reg, &RegV);
+            ComPtr<ICpuValue> RmV;  EmitRmRead8 (pE, M, Pc + 1, &RmV);
+            if (Op == 0x88) { EmitRmWrite8 (pE, M, Pc + 1, RegV); return S_OK; }   // MOV r/m8, r8
+            if (Op == 0x8A) { EmitReg8Write (pE, (UINT8) Reg, RmV); return S_OK; } // MOV r8, r/m8
+            UINT32 Alu = (Op == 0x84) ? 4 /*AND for TEST*/ : (Op >> 3) & 7;
+            ICpuValue *pDst = RegDest ? (ICpuValue *) RegV : (ICpuValue *) RmV;
+            ICpuValue *pSrc = RegDest ? (ICpuValue *) RmV : (ICpuValue *) RegV;
+            ComPtr<ICpuValue> Res; EmitAlu8 (pE, Alu, pDst, pSrc, &Res);
+            if (Op != 0x84 && Alu != 7) {                                         // TEST/CMP: no writeback
+                if (RegDest) { EmitReg8Write (pE, (UINT8) Reg, Res); }
+                else         { EmitRmWrite8 (pE, M, Pc + 1, Res); }
+            }
+            return S_OK;
+        }
+        // ALU AL, imm8 (alu*8 + 4) and TEST AL, imm8 (0xA8).
+        if ((Op < 0x40 && (Op & 7) == 4) || Op == 0xA8) {
+            ComPtr<ICpuValue> Al;  EmitReg8Read (pE, 0, &Al);
+            ComPtr<ICpuValue> Imm; pE->ConstInt (8, m_pCode[Pc + 1], &Imm);
+            UINT32 Alu = (Op == 0xA8) ? 4 : (Op >> 3) & 7;
+            ComPtr<ICpuValue> Res; EmitAlu8 (pE, Alu, Al, Imm, &Res);
+            if (Op != 0xA8 && Alu != 7) { EmitReg8Write (pE, 0, Res); }
+            return S_OK;
+        }
+        // grp1 8-bit: 0x80 <alu> r/m8, imm8.
+        if (Op == 0x80) {
+            UINT8  M   = m_pCode[Pc + 1];
+            UINT32 Alu = (M >> 3) & 7;
+            ComPtr<ICpuValue> Rm;  EmitRmRead8 (pE, M, Pc + 1, &Rm);
+            ComPtr<ICpuValue> Imm; pE->ConstInt (8, m_pCode[Pc + 1 + RmLen (M)], &Imm);
+            ComPtr<ICpuValue> Res; EmitAlu8 (pE, Alu, Rm, Imm, &Res);
+            if (Alu != 7) { EmitRmWrite8 (pE, M, Pc + 1, Res); }
+            return S_OK;
+        }
+        // MOV r/m8, imm8 (0xC6).
+        if (Op == 0xC6) {
+            UINT8 M = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> V; pE->ConstInt (8, m_pCode[Pc + 1 + RmLen (M)], &V);
+            EmitRmWrite8 (pE, M, Pc + 1, V);
             return S_OK;
         }
 
@@ -959,6 +1083,56 @@ private:
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
             ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
             pE->Store (pValue, Lin, 16);
+        }
+    }
+
+    // 8-bit register access. The byte encoding is AL,CL,DL,BL,AH,CH,DH,BH: index & 3 selects the
+    // GPR (AX..BX), index >= 4 selects its high byte. The register file holds 16-bit GPRs.
+    VOID EmitReg8Read (ICpuEmitter *pE, UINT8 Reg, ICpuValue **ppVal) {
+        ComPtr<ICpuValue> Full; pE->GetRegister ((UINT32) (Reg & 3), 16, &Full);
+        if (Reg >= 4) {
+            ComPtr<ICpuValue> Sh; pE->ConstInt (16, 8, &Sh);
+            ComPtr<ICpuValue> Hi; pE->BinaryOp (BinLShr, Full, Sh, &Hi);
+            pE->Cast (CastTrunc, Hi, 8, ppVal);
+        } else {
+            pE->Cast (CastTrunc, Full, 8, ppVal);
+        }
+    }
+    VOID EmitReg8Write (ICpuEmitter *pE, UINT8 Reg, ICpuValue *pVal) {
+        UINT32 Gpr  = Reg & 3;
+        bool   High = Reg >= 4;
+        ComPtr<ICpuValue> Cur;  pE->GetRegister (Gpr, 16, &Cur);
+        ComPtr<ICpuValue> Mask; pE->ConstInt (16, High ? 0x00FF : 0xFF00, &Mask);
+        ComPtr<ICpuValue> Kept; pE->BinaryOp (BinAnd, Cur, Mask, &Kept);
+        ComPtr<ICpuValue> V16;     pE->Cast (CastZExt, pVal, 16, &V16);
+        ComPtr<ICpuValue> Shifted;
+        ICpuValue *Placed = V16;                                   // low byte: the value as-is
+        if (High) {
+            ComPtr<ICpuValue> Sh; pE->ConstInt (16, 8, &Sh);
+            pE->BinaryOp (BinShl, V16, Sh, &Shifted);
+            Placed = Shifted;                                      // high byte: shifted into place
+        }
+        ComPtr<ICpuValue> Res; pE->BinaryOp (BinOr, Kept, Placed, &Res);
+        pE->PutRegister (Gpr, Res, 16, FALSE);
+    }
+
+    // 8-bit r/m: a byte register (mod=11) or DS-relative memory byte at the EA.
+    VOID EmitRmRead8 (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue **ppVal) {
+        if ((M >> 6) == 3) {
+            EmitReg8Read (pE, (UINT8) (M & 7), ppVal);
+        } else {
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            pE->Load (Lin, 8, ppVal);
+        }
+    }
+    VOID EmitRmWrite8 (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue *pVal) {
+        if ((M >> 6) == 3) {
+            EmitReg8Write (pE, (UINT8) (M & 7), pVal);
+        } else {
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            pE->Store (pVal, Lin, 8);
         }
     }
 
