@@ -500,12 +500,35 @@ CmdSystem (int argc, char **argv, CHAR8 CONST *pArgv0)
     return Rc;
 }
 
-// Collect the -I/-D/-std=/-isysroot/--target args to forward to libclang (shared by the
-// `headers` and `know derive` paths).
-static std::vector<CHAR8 CONST *>
-CollectClangArgs (int argc, char **argv)
+// Whether a header should be parsed as C++: a C++ header extension, or C++ markers in the
+// text (so a C++ library shipping a ".h" is still handled). C headers stay C, unchanged.
+static bool
+HeaderLooksCpp (CHAR8 CONST *pPath)
 {
-    std::vector<CHAR8 CONST *> Out = { "-x", "c" };
+    std::string P = pPath;
+    for (CHAR8 CONST *pExt : { ".hpp", ".hh", ".hxx", ".h++", ".ipp", ".tcc", ".cpp", ".cc", ".cxx", ".C", ".H" }) {
+        size_t L = std::strlen (pExt);
+        if (P.size () >= L && P.compare (P.size () - L, L, pExt) == 0) { return true; }
+    }
+    std::FILE *pf = std::fopen (pPath, "rb");
+    if (pf == nullptr) { return false; }
+    char Buf[65536];
+    size_t N = std::fread (Buf, 1, sizeof (Buf) - 1, pf);
+    std::fclose (pf);
+    Buf[N] = '\0';
+    std::string S (Buf, N);
+    return S.find ("namespace") != std::string::npos || S.find ("template") != std::string::npos ||
+           S.find ("class ") != std::string::npos || S.find ("extern \"C\"") != std::string::npos ||
+           S.find ("public:") != std::string::npos;
+}
+
+// Collect the -I/-D/-std=/-isysroot/--target args to forward to libclang (shared by the
+// `headers` and `know derive` paths). The input language is C, or C++ when the header
+// looks like C++ -- enabling namespace / extern "C" / class parsing.
+static std::vector<CHAR8 CONST *>
+CollectClangArgs (int argc, char **argv, CHAR8 CONST *pHeader)
+{
+    std::vector<CHAR8 CONST *> Out = { "-x", HeaderLooksCpp (pHeader) ? "c++" : "c" };
     for (int I = 0; I < argc; I++) {
         if (argv[I][0] == '-' && (argv[I][1] == 'I' || argv[I][1] == 'D' ||
             std::strncmp (argv[I], "-std", 4) == 0 || std::strcmp (argv[I], "-isysroot") == 0 ||
@@ -534,7 +557,7 @@ CmdKnowDerive (int argc, char **argv)
     HeaderParser Parser;
     SymbolReader Reader;
     std::string Error;
-    std::vector<CHAR8 CONST *> Args = CollectClangArgs (argc, argv);
+    std::vector<CHAR8 CONST *> Args = CollectClangArgs (argc, argv, pHeader);
     if (!Parser.Parse (pHeader, Args.data (), (UINT32) Args.size (), &Error)) {
         std::printf ("lcx know: %s\n", Error.c_str ());
         return 2;
@@ -900,18 +923,7 @@ CmdKlib (int argc, char **argv)
             std::printf ("usage: lcx klib headers <file.h> [-I dir] [-D macro] [-std=...] ...\n");
             return 2;
         }
-        std::vector<CHAR8 CONST *> ClangArgs = { "-x", "c" };
-        for (int I = 0; I < argc; I++) {
-            if (argv[I][0] == '-' && (argv[I][1] == 'I' || argv[I][1] == 'D' ||
-                std::strncmp (argv[I], "-std", 4) == 0 || std::strcmp (argv[I], "-isysroot") == 0 ||
-                std::strncmp (argv[I], "--target", 8) == 0)) {
-                ClangArgs.push_back (argv[I]);
-                if ((std::strcmp (argv[I], "-isysroot") == 0 || std::strcmp (argv[I], "-I") == 0 ||
-                     std::strcmp (argv[I], "-D") == 0) && I + 1 < argc) {
-                    ClangArgs.push_back (argv[++I]);            // flag takes a separate value
-                }
-            }
-        }
+        std::vector<CHAR8 CONST *> ClangArgs = CollectClangArgs (argc, argv, pHdr);
         HeaderParser Parser;
         std::string Error;
         if (!Parser.Parse (pHdr, ClangArgs.data (), (UINT32) ClangArgs.size (), &Error)) {

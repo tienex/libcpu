@@ -5,5 +5,5 @@ install-name:    '/usr/lib/libcppmatch.dylib'
 current-version: 1.0
 exports:
   - targets:         [ x86_64-macos, arm64-macos ]
-    symbols:         [ '__Z6helperd' ]
+    symbols:         [ '_c_init', '__ZN3gfx4drawEii', '__Z6helperd' ]
 ...

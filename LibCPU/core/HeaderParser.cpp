@@ -30,7 +30,9 @@ enum {
     CXCursor_StructDecl   = 2,
     CXCursor_FieldDecl    = 6,
     CXCursor_FunctionDecl = 8,
-    CXCursor_ParmDecl     = 10
+    CXCursor_ParmDecl     = 10,
+    CXCursor_Namespace    = 22,
+    CXCursor_LinkageSpec  = 23     // extern "C" { ... }
 };
 // CXChildVisitResult
 enum { CXChildVisit_Break = 0, CXChildVisit_Continue = 1, CXChildVisit_Recurse = 2 };
@@ -59,6 +61,7 @@ typedef struct _CLANG_API {
     long long         (*cursorGetOffsetOfField) (CXCursor);
     CXSourceLocation  (*getCursorLocation) (CXCursor);
     unsigned          (*locationIsFromMainFile) (CXSourceLocation);
+    CXCursor          (*getCursorSemanticParent) (CXCursor);
     void             *Handle;       // dlopen handle
 } CLANG_API;
 
@@ -114,6 +117,7 @@ LoadClang (CLANG_API *pApi)
     Ok &= Bind (pH, "clang_Cursor_getOffsetOfField", (void **) &pApi->cursorGetOffsetOfField);
     Ok &= Bind (pH, "clang_getCursorLocation", (void **) &pApi->getCursorLocation);
     Ok &= Bind (pH, "clang_Location_isFromMainFile", (void **) &pApi->locationIsFromMainFile);
+    Ok &= Bind (pH, "clang_getCursorSemanticParent", (void **) &pApi->getCursorSemanticParent);
     if (!Ok) {
         dlclose (pH);
         return false;
@@ -155,6 +159,23 @@ FieldVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
 
 typedef struct _TOP_CTX { CLANG_API *Api; HeaderParser *Self; std::vector<HEADER_FUNCTION> *Funcs; std::vector<HEADER_STRUCT> *Structs; } TOP_CTX;
 
+// The fully-qualified name of a declaration: its own spelling with each enclosing namespace
+// prepended ("gfx::draw"). extern "C" blocks contribute no scope (the function keeps C
+// linkage and an unqualified name), so only Namespace parents are walked. This is what the
+// catalog matches a C++ export's demangled name against.
+static std::string
+QualifiedName (CLANG_API *Api, CXCursor C)
+{
+    std::string Name = TakeString (Api, Api->getCursorSpelling (C));
+    for (CXCursor P = Api->getCursorSemanticParent (C);
+         Api->getCursorKind (P) == CXCursor_Namespace;
+         P = Api->getCursorSemanticParent (P)) {
+        std::string Ns = TakeString (Api, Api->getCursorSpelling (P));
+        if (!Ns.empty ()) { Name = Ns + "::" + Name; }
+    }
+    return Name;
+}
+
 static int
 TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
 {
@@ -166,10 +187,14 @@ TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
         return CXChildVisit_Continue;
     }
     int Kind = Api->getCursorKind (C);
+    if (Kind == CXCursor_Namespace || Kind == CXCursor_LinkageSpec) {
+        Api->visitChildren (C, TopVisitor, pCtx);            // descend into namespace / extern "C"
+        return CXChildVisit_Continue;
+    }
     if (Kind == CXCursor_FunctionDecl) {
         HEADER_FUNCTION Fn;
         CXType FnTy = Api->getCursorType (C);
-        Fn.Name       = TakeString (Api, Api->getCursorSpelling (C));
+        Fn.Name       = QualifiedName (Api, C);
         Fn.ReturnType = TakeString (Api, Api->getTypeSpelling (Api->getResultType (FnTy)));
         Fn.Variadic   = Api->isFunctionTypeVariadic (FnTy) != 0;
         int N = Api->cursorGetNumArguments (C);
@@ -210,9 +235,20 @@ HeaderParser::ParseWithClang (CHAR8 CONST *pPath, CHAR8 CONST *CONST *ppArgs, UI
         return false;                                           // libclang absent -> caller falls back
     }
     CXIndex Index = Api.createIndex (0, 0);
+
+    // Unlike the clang driver, clang_parseTranslationUnit defaults an unknown/.hpp file to C,
+    // which mis-parses namespaces and extern "C". If the caller did not force a language with
+    // -x, parse as C++ -- a superset that handles C headers too -- so those decls are seen.
+    std::vector<CHAR8 CONST *> Args (ppArgs, ppArgs + ArgCount);
+    bool HasLang = false;
+    for (UINT32 I = 0; I < ArgCount; I++) {
+        if (std::strcmp (ppArgs[I], "-x") == 0) { HasLang = true; break; }
+    }
+    if (!HasLang) { Args.push_back ("-x"); Args.push_back ("c++"); }
+
     // CXTranslationUnit_DetailedPreprocessingRecord(0x01)|SkipFunctionBodies(0x40) keep it light.
     unsigned Options = 0x40;
-    CXTranslationUnit Tu = Api.parseTU (Index, pPath, (CONST char *CONST *) ppArgs, (int) ArgCount,
+    CXTranslationUnit Tu = Api.parseTU (Index, pPath, (CONST char *CONST *) Args.data (), (int) Args.size (),
                                         nullptr, 0, Options);
     if (Tu == nullptr) {
         Api.disposeIndex (Index);

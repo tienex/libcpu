@@ -1,6 +1,10 @@
-/* C++ symbol-matching fixture for the derivation engine. The companion stub exports the
-   mangled symbol __Z6helperd; the catalog must demangle it to "helper(double)" and match
-   this prototype by its qualified name. No #includes, so the header parser needs no search
-   paths. */
+/* C++ derivation fixture: a namespaced function, an extern "C" function, and a free function.
+   The header parser must descend into namespace / extern "C" and produce qualified names, and
+   the catalog must demangle the companion stub's exports to match them. No #includes, so the
+   parser needs no search paths. (Has C++ markers, so it is parsed as C++.) */
+
+extern "C" int c_init(int n);
+
+namespace gfx { int draw(int x, int y); }
 
 int helper(double d);
