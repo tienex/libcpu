@@ -16,6 +16,7 @@
   (sign), OF=FlagOverflow.
 **/
 #include "CpuV20.h"
+#include "CpuI8080.h"
 #include "LibCPU/CpuState.h"
 #include <cstdio>
 
@@ -88,15 +89,19 @@ EmitSubFlags (ICpuEmitter *pE, ICpuValue *pA, ICpuValue *pB, ICpuValue *pRes)
 
 class CpuV20 final : public ComObject<ICpuArchitecture> {
 public:
-    explicit CpuV20 (UINT16 CodeSeg) : m_CodeSeg (CodeSeg) {}
+    explicit CpuV20 (UINT16 CodeSeg, bool IsV30 = false)
+        : m_CodeSeg (CodeSeg), m_IsV30 (IsV30), m_pEmu (CreateI8080 ()) {}
+    ~CpuV20 () override { if (m_pEmu != nullptr) { m_pEmu->Release (); } }
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);
     }
 
     HRESULT STDMETHODCALLTYPE GetInfo (CPU_ARCH_INFO *pInfo) override {
-        pInfo->pName       = "v20";
-        pInfo->pFullName   = "NEC V20/V30 (uPD70108/uPD70116)";
+        // The V20 (uPD70108) and V30 (uPD70116) share the instruction set; they differ only in
+        // external bus width (8-bit vs 16-bit), which is invisible at this translation layer.
+        pInfo->pName       = m_IsV30 ? "v30" : "v20";
+        pInfo->pFullName   = m_IsV30 ? "NEC V30 (uPD70116)" : "NEC V20 (uPD70108)";
         pInfo->ByteSize    = 8;
         pInfo->WordSize    = 16;
         pInfo->AddressSize = 16;
@@ -114,6 +119,7 @@ public:
         m_pBase    = pBase;
         m_pCode    = pBase + ((UINT64) m_CodeSeg << 4);
         m_CodeSize = Size;
+        if (m_pEmu != nullptr) { m_pEmu->SetCodeMemory (pBase, Size); }   // shared RAM for 8080 mode
         return S_OK;
     }
 
@@ -131,6 +137,17 @@ public:
         UINT32   Len;
         UINT32   Tag  = TagContinue;
         CPU_ADDR NewPc = (CPU_ADDR) -1;
+
+        // In 8080 emulation mode the instruction stream is 8080 code: RETEM (ED FD) returns to
+        // native mode, everything else is decoded by the shared 8080 core.
+        if (m_In8080 && Pc != m_BrkemPc) {
+            if (Op == 0xED && m_pCode[Pc + 1] == 0xFD) {
+                m_In8080 = false;
+                *pNextPc = Pc + 2; *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;
+                return S_OK;
+            }
+            return m_pEmu->TagInstr (Pc, pTag, pNewPc, pNextPc);
+        }
 
         if (Op >= 0xB8 && Op <= 0xBF) {                          // MOV reg16,imm16
             Len = 3;
@@ -172,8 +189,15 @@ public:
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE2) {                                 // LOOP rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
-        } else if (Op == 0x0F) {                                 // NEC bit op: 0F xx modrm ib
-            Len = 4;
+        } else if (Op == 0x0F) {                                 // NEC 0F-prefixed instructions
+            UINT8 Sub = m_pCode[Pc + 1];
+            if (Sub == 0xFF) {                                   // BRKEM imm8: enter 8080 emulation mode
+                Len = 3; m_In8080 = true; m_BrkemPc = Pc;
+            } else if (Sub == 0xED) {                            // CALLN imm8: native call from 8080 mode
+                Len = 3;
+            } else {
+                Len = 4;                                         // bit op: 0F xx modrm ib
+            }
         } else {
             Len = 1;                                             // unknown: treat as 1-byte, continue
         }
@@ -185,6 +209,12 @@ public:
 
     HRESULT STDMETHODCALLTYPE Disassemble (CPU_ADDR Pc, CHAR8 *pLine, UINT32 MaxLine) override {
         UINT8 Op = m_pCode[Pc];
+        if (m_In8080 && Pc != m_BrkemPc) {                        // 8080 emulation mode: defer to the core
+            if (Op == 0xED && m_pCode[Pc + 1] == 0xFD) { std::snprintf (pLine, MaxLine, "retem"); return S_OK; }
+            return m_pEmu->Disassemble (Pc, pLine, MaxLine);
+        }
+        if (Op == 0x0F && m_pCode[Pc + 1] == 0xFF) { std::snprintf (pLine, MaxLine, "brkem 0x%02x", m_pCode[Pc + 2]); return S_OK; }
+        if (Op == 0x0F && m_pCode[Pc + 1] == 0xED) { std::snprintf (pLine, MaxLine, "calln 0x%02x", m_pCode[Pc + 2]); return S_OK; }
         if (Op >= 0xB8 && Op <= 0xBF) {
             std::snprintf (pLine, MaxLine, "mov %s,0x%04x", RegName (Op - 0xB8), Imm16At (m_pCode, Pc + 1));
         } else if (Op >= 0xB0 && Op <= 0xB7) {
@@ -243,6 +273,16 @@ public:
 
     HRESULT STDMETHODCALLTYPE TranslateInstr (CPU_ADDR Pc, ICpuEmitter *pE) override {
         UINT8 Op = m_pCode[Pc];
+
+        // 8080 emulation mode: the boundary ops (BRKEM/RETEM) only flip mode (handled in
+        // TagInstr); the body is translated by the shared 8080 core.
+        if (m_In8080 && Pc != m_BrkemPc) {
+            if (Op == 0xED && m_pCode[Pc + 1] == 0xFD) { return S_OK; }   // RETEM: mode change only
+            return m_pEmu->TranslateInstr (Pc, pE);
+        }
+        if (Op == 0x0F && (m_pCode[Pc + 1] == 0xFF || m_pCode[Pc + 1] == 0xED)) {
+            return S_OK;                            // BRKEM / CALLN: emulation-mode switch, no data effect
+        }
 
         if (Op >= 0xB8 && Op <= 0xBF) {            // MOV reg16, imm16
             ComPtr<ICpuValue> V; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &V);
@@ -543,6 +583,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE TranslateCond (CPU_ADDR Pc, ICpuEmitter *pE, ICpuValue **ppCond) override {
         *ppCond = nullptr;
+        if (m_In8080 && Pc != m_BrkemPc) { return m_pEmu->TranslateCond (Pc, pE, ppCond); }
         UINT8 Op = m_pCode[Pc];
         switch (Op) {
         case 0x74:                                  // JZ/JE: taken if ZF == 1
@@ -688,6 +729,13 @@ private:
     UINT8 CONST *m_pCode    = nullptr;   // = m_pBase + m_CodeSeg * 16
     UINT64       m_CodeSize = 0;
     UINT16       m_CodeSeg  = 0;   // CS: code is fetched from m_CodeSeg * 16 + IP
+    bool         m_IsV30    = false;
+
+    // 8080 emulation mode (NEC V20/V30 BRKEM/RETEM): while active, decoding/translation is
+    // delegated to a shared Intel 8080 core, so the 8080 instruction set is implemented once.
+    ICpuArchitecture *m_pEmu    = nullptr;
+    bool              m_In8080  = false;
+    CPU_ADDR          m_BrkemPc = (CPU_ADDR) -1;   // address of the BRKEM that entered 8080 mode
 };
 
 } // anonymous namespace
@@ -702,6 +750,18 @@ ICpuArchitecture *
 CreateV20 (VOID)
 {
     return new CpuV20 (0);
+}
+
+ICpuArchitecture *
+CreateV30 (UINT16 CodeSeg)
+{
+    return new CpuV20 (CodeSeg, /*IsV30=*/ true);
+}
+
+ICpuArchitecture *
+CreateV30 (VOID)
+{
+    return new CpuV20 (0, /*IsV30=*/ true);
 }
 
 VOID

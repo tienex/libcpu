@@ -233,13 +233,13 @@ add_executable(aotsmc6502 test/aotsmc6502.cpp aot/AotGenerator.cpp frontends/m65
 target_include_directories(aotsmc6502 PRIVATE frontends/m6502 test aot)
 target_link_libraries(aotsmc6502 PRIVATE LibCPU)
 
-add_executable(aotv20 test/aotv20.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(aotv20 PRIVATE frontends/v20 test aot)
+add_executable(aotv20 test/aotv20.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(aotv20 PRIVATE frontends/v20 frontends/i8080 test aot)
 target_link_libraries(aotv20 PRIVATE LibCPU)
 
 find_package(Threads REQUIRED)
-add_executable(tiered test/tiered.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(tiered PRIVATE frontends/v20 test aot core)
+add_executable(tiered test/tiered.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(tiered PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(tiered PRIVATE LibCPU Threads::Threads)
 
 # Same tiered / PGO suite, driven through the 6502 frontend (frontend-agnosticism).
@@ -248,28 +248,28 @@ target_include_directories(tiered6502 PRIVATE frontends/m6502 test aot core)
 target_link_libraries(tiered6502 PRIVATE LibCPU Threads::Threads)
 
 # Knowledge-library demo: a DOS program's in-line INT 21h calls become host libc calls.
-add_executable(dossys test/dossys.cpp aot/AotGenerator.cpp core/KnowledgeLibrary.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(dossys PRIVATE frontends/v20 test aot core)
+add_executable(dossys test/dossys.cpp aot/AotGenerator.cpp core/KnowledgeLibrary.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(dossys PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(dossys PRIVATE LibCPU)
 
 # Single-step debugger (line editor + gdb-like commands + dual disassembly).
-add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp)
-target_include_directories(lcdbg PRIVATE frontends/v20 frontends/m6502 test core)
+add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.cpp)
+target_include_directories(lcdbg PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test core)
 target_link_libraries(lcdbg PRIVATE LibCPU)
 
 # Disk-cached translation: translate once, reload the serialised artifact thereafter.
-add_executable(cachedemo test/cachedemo.cpp core/TranslationCache.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(cachedemo PRIVATE frontends/v20 test aot core)
+add_executable(cachedemo test/cachedemo.cpp core/TranslationCache.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(cachedemo PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(cachedemo PRIVATE LibCPU)
 
 # System-level emulation: an 8086 machine with a device bus and timer interrupts.
-add_executable(sysdemo test/sysdemo.cpp core/System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(sysdemo PRIVATE frontends/v20 test aot core)
+add_executable(sysdemo test/sysdemo.cpp core/System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(sysdemo PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(sysdemo PRIVATE LibCPU)
 
 # Native AOT: compile a guest program to a standalone host executable.
-add_executable(nativedemo test/nativedemo.cpp core/NativeAot.cpp frontends/v20/CpuV20.cpp)
-target_include_directories(nativedemo PRIVATE frontends/v20 test core)
+add_executable(nativedemo test/nativedemo.cpp core/NativeAot.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(nativedemo PRIVATE frontends/v20 frontends/i8080 test core)
 target_link_libraries(nativedemo PRIVATE LibCPU)
 
 # lcx -- the unified machine driver tying every subsystem together.
@@ -304,9 +304,9 @@ add_executable(lcx test/lcx.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp core/ZooArchive.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   core/DeviceNode.cpp core/MachineBuilder.cpp
-  frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp
+  frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.cpp
   third_party/zstd/zstd.c)
-target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core third_party/zstd)
+target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core third_party/zstd)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl ${CMAKE_DL_LIBS})   # dl for HeaderParser's dlopen(libclang)
 if(APPLE)
@@ -711,6 +711,27 @@ add_test(NAME know.cppmethods COMMAND sh -c
 # such moves (incl. the high-byte forms ah/bh) must disassemble correctly.
 add_test(NAME disasm.mov8 COMMAND lcx disasm "${CMAKE_CURRENT_SOURCE_DIR}/test/mov8.v20.bin" --arch v20 --count 4)
 set_tests_properties(disasm.mov8 PROPERTIES PASS_REGULAR_EXPRESSION "mov ah,0x80")
+
+# Intel 8080 frontend, executed through the JIT: MVI A,5 ; MVI B,3 ; ADD B ; HLT -> A = 8.
+if(TARGET interp_backend)
+  add_test(NAME run.8080 COMMAND sh -c
+    "printf '\\x3e\\x05\\x06\\x03\\x80\\x76' > '${CMAKE_BINARY_DIR}/add8080.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/add8080.bin' --arch 8080 | grep -q 'A  =08'")
+endif()
+
+# NEC V20 8080 emulation mode: BRKEM drops into 8080 code decoded by the SAME shared i8080 core,
+# RETEM returns to native V20. One core, reused -- not a parallel implementation.
+add_test(NAME disasm.brkem COMMAND sh -c
+  "printf '\\x0f\\xff\\x00\\x3e\\x05\\x80\\xed\\xfd\\xf4' > '${CMAKE_BINARY_DIR}/brkem.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/brkem.bin' --arch v20 --count 5 > '${CMAKE_BINARY_DIR}/brkem.out' && \
+   grep -q 'brkem' '${CMAKE_BINARY_DIR}/brkem.out' && \
+   grep -q 'mvi a,0x05' '${CMAKE_BINARY_DIR}/brkem.out' && \
+   grep -q 'retem' '${CMAKE_BINARY_DIR}/brkem.out'")
+
+# The V30 is the V20's instruction-set twin; it disassembles 8086 code under the v30 arch name.
+add_test(NAME disasm.v30 COMMAND sh -c
+  "printf '\\xb8\\x34\\x12\\xf4' > '${CMAKE_BINARY_DIR}/v30.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/v30.bin' --arch v30 --count 2 | grep -q 'mov ax,0x1234'")
 
 # Device tree: compile a machine .dts to a blob and decompile it back. The "&uart0"
 # reference must materialize -- the target node gets an auto-assigned phandle and the

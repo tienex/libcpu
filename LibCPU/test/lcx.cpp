@@ -15,6 +15,7 @@
   with --backend <path> or $LCX_BACKEND).
 **/
 #include "CpuV20.h"
+#include "CpuI8080.h"
 #include "Cpu6502.h"
 #include "LibCPU/CpuState.h"
 #include "LibCPU/Loader.h"
@@ -161,6 +162,14 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
         A.Regs = { "A", "X", "Y", "S" };
         A.RegBytes = 1;
         pState->Reg[Reg6502S] = 0xFF;
+    } else if (std::strcmp (pName, "8080") == 0 || std::strcmp (pName, "8085") == 0) {
+        A.pArch = CreateI8080 ();
+        A.Regs = { "A", "B", "C", "D", "E", "H", "L", "SP" };
+        A.RegBytes = 1;
+    } else if (std::strcmp (pName, "v30") == 0) {
+        A.pArch = CreateV30 ();
+        A.Regs = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI", "ES", "CS", "SS", "DS" };
+        A.RegBytes = 2;
     } else {
         A.pArch = CreateV20 ();
         A.Regs = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI", "ES", "CS", "SS", "DS" };

@@ -45,6 +45,11 @@ enum {
 ICpuArchitecture *CreateV20 (UINT16 CodeSeg);
 ICpuArchitecture *CreateV20 (VOID);
 
+// The V30 (uPD70116) is instruction-set-identical to the V20, differing only in external bus
+// width; it uses the same frontend and reports under the "v30" name.
+ICpuArchitecture *CreateV30 (UINT16 CodeSeg);
+ICpuArchitecture *CreateV30 (VOID);
+
 // Re-point a V20 frontend's code segment (CS), used by the host's far-JMP/CALL resume
 // loop after the guest reloads CS:IP.
 VOID SetV20CodeSegment (ICpuArchitecture *pArch, UINT16 Cs);
