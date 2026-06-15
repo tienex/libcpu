@@ -29,7 +29,28 @@ Imm16At (UINT8 CONST *pCode, CPU_ADDR Pc)
     return (UINT16) (pCode[Pc] | (pCode[Pc + 1] << 8));
 }
 
-// Z (FlagZero) and S (FlagNegative = bit 15) for a 16-bit result.
+// Parity flag: even parity of the low 8 bits of the result.
+static VOID
+EmitParity (ICpuEmitter *pE, ICpuValue *pRes)
+{
+    ComPtr<ICpuValue> Low;  pE->Cast (CastTrunc, pRes, 8, &Low);
+    ComPtr<ICpuValue> S4;   pE->ConstInt (8, 4, &S4);
+    ComPtr<ICpuValue> R4;   pE->BinaryOp (BinLShr, Low, S4, &R4);
+    ComPtr<ICpuValue> X1;   pE->BinaryOp (BinXor, Low, R4, &X1);
+    ComPtr<ICpuValue> S2;   pE->ConstInt (8, 2, &S2);
+    ComPtr<ICpuValue> R2;   pE->BinaryOp (BinLShr, X1, S2, &R2);
+    ComPtr<ICpuValue> X2;   pE->BinaryOp (BinXor, X1, R2, &X2);
+    ComPtr<ICpuValue> S1;   pE->ConstInt (8, 1, &S1);
+    ComPtr<ICpuValue> R1;   pE->BinaryOp (BinLShr, X2, S1, &R1);
+    ComPtr<ICpuValue> X3;   pE->BinaryOp (BinXor, X2, R1, &X3);
+    ComPtr<ICpuValue> One;  pE->ConstInt (8, 1, &One);
+    ComPtr<ICpuValue> Lo;   pE->BinaryOp (BinAnd, X3, One, &Lo);
+    ComPtr<ICpuValue> Zero; pE->ConstInt (8, 0, &Zero);
+    ComPtr<ICpuValue> PF;   pE->Compare (CmpEq, Lo, Zero, &PF);
+    pE->SetFlag (FlagParity, PF);                                       // even -> set
+}
+
+// Z (FlagZero), S (FlagNegative = bit 15) and P (parity) for a 16-bit result.
 static VOID
 EmitZSF (ICpuEmitter *pE, ICpuValue *pRes)
 {
@@ -42,6 +63,19 @@ EmitZSF (ICpuEmitter *pE, ICpuValue *pRes)
     ComPtr<ICpuValue> Zero2; pE->ConstInt (16, 0, &Zero2);
     ComPtr<ICpuValue> SF;    pE->Compare (CmpNe, Masked, Zero2, &SF);
     pE->SetFlag (FlagNegative, SF);
+
+    EmitParity (pE, pRes);
+}
+
+// Logical ops (AND/OR/XOR/TEST): CF and OF cleared, then Z/S/P from the result.
+static VOID
+EmitLogicFlags (ICpuEmitter *pE, ICpuValue *pRes)
+{
+    ComPtr<ICpuValue> Zero1; pE->ConstInt (1, 0, &Zero1);
+    pE->SetFlag (FlagCarry, Zero1);
+    ComPtr<ICpuValue> Zero1b; pE->ConstInt (1, 0, &Zero1b);
+    pE->SetFlag (FlagOverflow, Zero1b);
+    EmitZSF (pE, pRes);
 }
 
 // CF/OF/ZF/SF for Res = A + B (16-bit).
@@ -85,6 +119,54 @@ EmitSubFlags (ICpuEmitter *pE, ICpuValue *pA, ICpuValue *pB, ICpuValue *pRes)
     pE->SetFlag (FlagOverflow, OF);
 
     EmitZSF (pE, pRes);
+}
+
+// 16-bit ALU: Res = Dst <op> Src, with full flags. op: 0 ADD,1 OR,2 ADC,3 SBB,4 AND,5 SUB,
+// 6 XOR,7 CMP. The result is returned (owned) in *ppRes; the caller writes it back except for
+// CMP (7), which only sets flags.
+static VOID
+EmitAlu16 (ICpuEmitter *pE, UINT32 AluOp, ICpuValue *pDst, ICpuValue *pSrc, ICpuValue **ppRes)
+{
+    if (AluOp == 1 || AluOp == 4 || AluOp == 6) {                  // OR / AND / XOR
+        CPU_BINOP B = (AluOp == 4) ? BinAnd : (AluOp == 6) ? BinXor : BinOr;
+        pE->BinaryOp (B, pDst, pSrc, ppRes);
+        EmitLogicFlags (pE, *ppRes);
+        return;
+    }
+    bool Sub = (AluOp == 3 || AluOp == 5 || AluOp == 7);           // SBB / SUB / CMP
+    bool Cin = (AluOp == 2 || AluOp == 3);                         // ADC / SBB carry-in
+    ComPtr<ICpuValue> D32; pE->Cast (CastZExt, pDst, 32, &D32);
+    ComPtr<ICpuValue> S32; pE->Cast (CastZExt, pSrc, 32, &S32);
+    ComPtr<ICpuValue> Acc; pE->BinaryOp (Sub ? BinSub : BinAdd, D32, S32, &Acc);
+    ComPtr<ICpuValue> Carried;
+    ICpuValue *Wide = Acc;
+    if (Cin) {
+        ComPtr<ICpuValue> C;   pE->GetFlag (FlagCarry, &C);
+        ComPtr<ICpuValue> C32; pE->Cast (CastZExt, C, 32, &C32);
+        pE->BinaryOp (Sub ? BinSub : BinAdd, Acc, C32, &Carried);
+        Wide = Carried;
+    }
+    pE->Cast (CastTrunc, Wide, 16, ppRes);                         // *ppRes = 16-bit result (owned)
+    ICpuValue *Res = *ppRes;                                       // borrow for flag computation
+    ComPtr<ICpuValue> Sh; pE->ConstInt (32, 16, &Sh);
+    ComPtr<ICpuValue> Hi; pE->BinaryOp (BinLShr, Wide, Sh, &Hi);
+    ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Hi, 1, &CF);
+    pE->SetFlag (FlagCarry, CF);                                   // carry-out / borrow
+    ComPtr<ICpuValue> DxS; pE->BinaryOp (BinXor, pDst, pSrc, &DxS);
+    ComPtr<ICpuValue> DxR; pE->BinaryOp (BinXor, pDst, Res, &DxR);
+    ComPtr<ICpuValue> T1;
+    if (Sub) {
+        pE->BinaryOp (BinAnd, DxS, DxR, &T1);                      // sub OF: (D^S)&(D^Res)
+    } else {
+        ComPtr<ICpuValue> NotDxS; pE->UnaryOp (UnCom, DxS, &NotDxS);
+        pE->BinaryOp (BinAnd, NotDxS, DxR, &T1);                   // add OF: ~(D^S)&(D^Res)
+    }
+    ComPtr<ICpuValue> B15;  pE->ConstInt (16, 0x8000, &B15);
+    ComPtr<ICpuValue> T2;   pE->BinaryOp (BinAnd, T1, B15, &T2);
+    ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+    ComPtr<ICpuValue> OF;   pE->Compare (CmpNe, T2, Zero, &OF);
+    pE->SetFlag (FlagOverflow, OF);
+    EmitZSF (pE, Res);
 }
 
 class CpuV20 final : public ComObject<ICpuArchitecture> {
@@ -157,12 +239,17 @@ public:
             Len = 1;
         } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
             Len = 1;
-        } else if (Op == 0x01 || Op == 0x03 || Op == 0x29 || Op == 0x2B ||
-                   Op == 0x39 || Op == 0x3B || Op == 0x89 || Op == 0x8B ||
-                   Op == 0x8E || Op == 0x8C) {
-            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // <alu>/MOV sreg with ModR/M (+disp)
-        } else if (Op == 0x05 || Op == 0x2D || Op == 0x3D || Op == 0xA1 || Op == 0xA3) {
-            Len = 3;                                             // acc,imm16 / MOV AX,[addr16]
+        } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) ||
+                   Op == 0x85 || Op == 0x89 || Op == 0x8B || Op == 0x8E || Op == 0x8C) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV r/m16,r16 (+disp)
+        } else if (Op == 0x81) {                                 // grp1: <alu> r/m16, imm16
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
+        } else if (Op == 0x83) {                                 // grp1: <alu> r/m16, imm8 (sign-extended)
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 1;
+        } else if (Op == 0xC7) {                                 // MOV r/m16, imm16
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
+        } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA1 || Op == 0xA3 || Op == 0xA9) {
+            Len = 3;                                             // acc,imm16 / MOV AX,[addr16] / TEST AX,imm16
         } else if (Op == 0xEB) {                                 // JMP rel8
             Len = 2; Tag = TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE9) {                                 // JMP rel16
@@ -256,6 +343,38 @@ public:
             std::snprintf (pLine, MaxLine, "cli");
         } else if (Op == 0xFB) {
             std::snprintf (pLine, MaxLine, "sti");
+        } else if (Op >= 0x70 && Op <= 0x7F) {
+            static CHAR8 CONST *kJ[16] = { "jo","jno","jb","jnb","jz","jnz","jbe","ja",
+                                           "js","jns","jp","jnp","jl","jge","jle","jg" };
+            std::snprintf (pLine, MaxLine, "%s 0x%04x", kJ[Op - 0x70], (unsigned) (Pc + 2 + (INT8) m_pCode[Pc + 1]));
+        } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) || Op == 0x85) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Mn = (Op == 0x85) ? "test" : kAluName ((Op >> 3) & 7);
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? RegName (M & 7) : "[mem]";
+            if (Op & 2) { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, RegName ((M >> 3) & 7), Rm); }
+            else        { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Rm, RegName ((M >> 3) & 7)); }
+        } else if (Op < 0x40 && (Op & 7) == 5) {
+            std::snprintf (pLine, MaxLine, "%s ax,0x%04x", kAluName ((Op >> 3) & 7), Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0x81 || Op == 0x83) {
+            UINT8 M = m_pCode[Pc + 1];
+            UINT16 Imm = (Op == 0x81) ? Imm16At (m_pCode, Pc + 1 + RmLen (M))
+                                      : (UINT16) (INT16) (INT8) m_pCode[Pc + 1 + RmLen (M)];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? RegName (M & 7) : "[mem]";
+            std::snprintf (pLine, MaxLine, "%s %s,0x%04x", kAluName ((M >> 3) & 7), Rm, Imm);
+        } else if (Op == 0xC7) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? RegName (M & 7) : "[mem]";
+            std::snprintf (pLine, MaxLine, "mov %s,0x%04x", Rm, Imm16At (m_pCode, Pc + 1 + RmLen (M)));
+        } else if (Op == 0xA9) {
+            std::snprintf (pLine, MaxLine, "test ax,0x%04x", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0x90) { std::snprintf (pLine, MaxLine, "nop");
+        } else if (Op == 0xF5) { std::snprintf (pLine, MaxLine, "cmc");
+        } else if (Op == 0xF8) { std::snprintf (pLine, MaxLine, "clc");
+        } else if (Op == 0xF9) { std::snprintf (pLine, MaxLine, "stc");
+        } else if (Op == 0xFC) { std::snprintf (pLine, MaxLine, "cld");
+        } else if (Op == 0xFD) { std::snprintf (pLine, MaxLine, "std");
+        } else if (Op == 0x98) { std::snprintf (pLine, MaxLine, "cbw");
+        } else if (Op == 0x99) { std::snprintf (pLine, MaxLine, "cwd");
         } else if (Op == 0x0F) {
             CHAR8 CONST *pMnem = "?1";
             switch (m_pCode[Pc + 1]) {
@@ -350,38 +469,89 @@ public:
         }
 
         switch (Op) {
-        case 0x01: case 0x03: case 0x29: case 0x2B:                // <alu>/MOV with ModR/M
-        case 0x39: case 0x3B: case 0x89: case 0x8B: {
+        // The eight ALU ops (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) in their r/m16,r16 and r16,r/m16
+        // forms, plus MOV (0x89/0x8B). The op is the reg field of the opcode: (Op >> 3) & 7.
+        case 0x01: case 0x03: case 0x09: case 0x0B: case 0x11: case 0x13:
+        case 0x19: case 0x1B: case 0x21: case 0x23: case 0x29: case 0x2B:
+        case 0x31: case 0x33: case 0x39: case 0x3B: case 0x89: case 0x8B: {
             UINT8  M       = m_pCode[Pc + 1];
             UINT32 Reg     = (M >> 3) & 7;
             bool   RegDest = (Op & 2) != 0;                        // direction bit
             ComPtr<ICpuValue> RegV; pE->GetRegister (Reg, 16, &RegV);
             ComPtr<ICpuValue> RmV;  EmitRmRead (pE, M, Pc + 1, &RmV);
 
-            if (Op == 0x89) { EmitRmWrite (pE, M, Pc + 1, RegV); break; }   // MOV r/m, r
+            if (Op == 0x89) { EmitRmWrite (pE, M, Pc + 1, RegV); break; }     // MOV r/m, r
             if (Op == 0x8B) { pE->PutRegister (Reg, RmV, 16, FALSE); break; } // MOV r, r/m
 
             ICpuValue *pDst = RegDest ? (ICpuValue *) RegV : (ICpuValue *) RmV;
             ICpuValue *pSrc = RegDest ? (ICpuValue *) RmV : (ICpuValue *) RegV;
-            CPU_BINOP  BOp  = (Op == 0x01 || Op == 0x03) ? BinAdd : BinSub;
-            bool       IsCmp = (Op == 0x39 || Op == 0x3B);
-            ComPtr<ICpuValue> Res; pE->BinaryOp (BOp, pDst, pSrc, &Res);
-            if (!IsCmp) {
+            UINT32 Alu = (Op >> 3) & 7;
+            ComPtr<ICpuValue> Res; EmitAlu16 (pE, Alu, pDst, pSrc, &Res);
+            if (Alu != 7) {                                        // CMP writes no result
                 if (RegDest) { pE->PutRegister (Reg, Res, 16, FALSE); }
                 else         { EmitRmWrite (pE, M, Pc + 1, Res); }
             }
-            if (BOp == BinAdd) { EmitAddFlags (pE, pDst, pSrc, Res); } else { EmitSubFlags (pE, pDst, pSrc, Res); }
             break;
         }
-        case 0x05: case 0x2D: case 0x3D: {                         // <alu> AX, imm16
+        case 0x05: case 0x0D: case 0x15: case 0x1D:                // <alu> AX, imm16
+        case 0x25: case 0x2D: case 0x35: case 0x3D: {
             ComPtr<ICpuValue> A; pE->GetRegister (RegV20AX, 16, &A);
             ComPtr<ICpuValue> B; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &B);
-            ComPtr<ICpuValue> Res;
-            pE->BinaryOp (Op == 0x05 ? BinAdd : BinSub, A, B, &Res);
-            if (Op != 0x3D) {
-                pE->PutRegister (RegV20AX, Res, 16, FALSE);
-            }
-            if (Op == 0x05) { EmitAddFlags (pE, A, B, Res); } else { EmitSubFlags (pE, A, B, Res); }
+            UINT32 Alu = (Op >> 3) & 7;
+            ComPtr<ICpuValue> Res; EmitAlu16 (pE, Alu, A, B, &Res);
+            if (Alu != 7) { pE->PutRegister (RegV20AX, Res, 16, FALSE); }
+            break;
+        }
+        case 0x81: case 0x83: {                                    // grp1: <alu> r/m16, imm
+            UINT8  M   = m_pCode[Pc + 1];
+            UINT32 Alu = (M >> 3) & 7;
+            ComPtr<ICpuValue> Rm; EmitRmRead (pE, M, Pc + 1, &Rm);
+            UINT16 Imm = (Op == 0x81) ? Imm16At (m_pCode, Pc + 1 + RmLen (M))
+                                      : (UINT16) (INT16) (INT8) m_pCode[Pc + 1 + RmLen (M)];   // 0x83: sign-extend imm8
+            ComPtr<ICpuValue> B; pE->ConstInt (16, Imm, &B);
+            ComPtr<ICpuValue> Res; EmitAlu16 (pE, Alu, Rm, B, &Res);
+            if (Alu != 7) { EmitRmWrite (pE, M, Pc + 1, Res); }
+            break;
+        }
+        case 0xC7: {                                               // MOV r/m16, imm16
+            UINT8  M   = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> V; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1 + RmLen (M)), &V);
+            EmitRmWrite (pE, M, Pc + 1, V);
+            break;
+        }
+        case 0x85: {                                               // TEST r/m16, r16 (no writeback)
+            UINT8 M = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> RegV; pE->GetRegister ((M >> 3) & 7, 16, &RegV);
+            ComPtr<ICpuValue> RmV;  EmitRmRead (pE, M, Pc + 1, &RmV);
+            ComPtr<ICpuValue> Res;  EmitAlu16 (pE, 4 /*AND*/, RmV, RegV, &Res);
+            break;
+        }
+        case 0xA9: {                                               // TEST AX, imm16
+            ComPtr<ICpuValue> A; pE->GetRegister (RegV20AX, 16, &A);
+            ComPtr<ICpuValue> B; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &B);
+            ComPtr<ICpuValue> Res; EmitAlu16 (pE, 4 /*AND*/, A, B, &Res);
+            break;
+        }
+        case 0x90: break;                                          // NOP
+        case 0xF8: { ComPtr<ICpuValue> Z; pE->ConstInt (1, 0, &Z); pE->SetFlag (FlagCarry, Z); break; }   // CLC
+        case 0xF9: { ComPtr<ICpuValue> O; pE->ConstInt (1, 1, &O); pE->SetFlag (FlagCarry, O); break; }   // STC
+        case 0xF5: { ComPtr<ICpuValue> C; pE->GetFlag (FlagCarry, &C);                                    // CMC
+                     ComPtr<ICpuValue> N; pE->UnaryOp (UnNot, C, &N); pE->SetFlag (FlagCarry, N); break; }
+        case 0xFC: case 0xFD: break;                               // CLD/STD: no direction flag modelled yet
+        case 0x98: {                                               // CBW: AX = sign-extend AL
+            ComPtr<ICpuValue> Ax; pE->GetRegister (RegV20AX, 16, &Ax);
+            ComPtr<ICpuValue> Al; pE->Cast (CastTrunc, Ax, 8, &Al);
+            ComPtr<ICpuValue> Sx; pE->Cast (CastSExt, Al, 16, &Sx);
+            pE->PutRegister (RegV20AX, Sx, 16, FALSE);
+            break;
+        }
+        case 0x99: {                                               // CWD: DX = sign of AX (0 or 0xFFFF)
+            ComPtr<ICpuValue> Ax;  pE->GetRegister (RegV20AX, 16, &Ax);
+            ComPtr<ICpuValue> Sx;  pE->Cast (CastSExt, Ax, 32, &Sx);
+            ComPtr<ICpuValue> Sh;  pE->ConstInt (32, 16, &Sh);
+            ComPtr<ICpuValue> HiV; pE->BinaryOp (BinLShr, Sx, Sh, &HiV);
+            ComPtr<ICpuValue> Dx;  pE->Cast (CastTrunc, HiV, 16, &Dx);
+            pE->PutRegister (RegV20DX, Dx, 16, FALSE);
             break;
         }
         case 0xA1: {                                               // MOV AX, [addr16] (DS-relative)
@@ -598,6 +768,35 @@ public:
             ComPtr<ICpuValue> C; pE->GetFlag (FlagCarry, &C);
             return pE->UnaryOp (UnNot, C, ppCond);
         }
+        case 0x70:                                  // JO: OF == 1
+            return pE->GetFlag (FlagOverflow, ppCond);
+        case 0x71: {                                // JNO: OF == 0
+            ComPtr<ICpuValue> O; pE->GetFlag (FlagOverflow, &O);
+            return pE->UnaryOp (UnNot, O, ppCond);
+        }
+        case 0x78:                                  // JS: SF == 1
+            return pE->GetFlag (FlagNegative, ppCond);
+        case 0x79: {                                // JNS: SF == 0
+            ComPtr<ICpuValue> S; pE->GetFlag (FlagNegative, &S);
+            return pE->UnaryOp (UnNot, S, ppCond);
+        }
+        case 0x7A:                                  // JP/JPE: PF == 1
+            return pE->GetFlag (FlagParity, ppCond);
+        case 0x7B: {                                // JNP/JPO: PF == 0
+            ComPtr<ICpuValue> P; pE->GetFlag (FlagParity, &P);
+            return pE->UnaryOp (UnNot, P, ppCond);
+        }
+        case 0x76: {                                // JBE/JNA: CF || ZF
+            ComPtr<ICpuValue> C; pE->GetFlag (FlagCarry, &C);
+            ComPtr<ICpuValue> Z; pE->GetFlag (FlagZero, &Z);
+            return pE->BinaryOp (BinOr, C, Z, ppCond);
+        }
+        case 0x77: {                                // JA/JNBE: !CF && !ZF
+            ComPtr<ICpuValue> C; pE->GetFlag (FlagCarry, &C);
+            ComPtr<ICpuValue> Z; pE->GetFlag (FlagZero, &Z);
+            ComPtr<ICpuValue> Or; pE->BinaryOp (BinOr, C, Z, &Or);
+            return pE->UnaryOp (UnNot, Or, ppCond);
+        }
         case 0x7C: {                                // JL: SF != OF
             ComPtr<ICpuValue> S; pE->GetFlag (FlagNegative, &S);
             ComPtr<ICpuValue> O; pE->GetFlag (FlagOverflow, &O);
@@ -714,6 +913,11 @@ private:
 
     static CHAR8 CONST *RegName (UINT32 Index) {
         static CHAR8 CONST *kNames[8] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
+        return kNames[Index & 7];
+    }
+
+    static CHAR8 CONST *kAluName (UINT32 Index) {
+        static CHAR8 CONST *kNames[8] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
         return kNames[Index & 7];
     }
 

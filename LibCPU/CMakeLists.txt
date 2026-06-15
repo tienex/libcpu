@@ -717,6 +717,11 @@ if(TARGET interp_backend)
   add_test(NAME run.8080 COMMAND sh -c
     "printf '\\x3e\\x05\\x06\\x03\\x80\\x76' > '${CMAKE_BINARY_DIR}/add8080.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/add8080.bin' --arch 8080 | grep -q 'A  =08'")
+
+  # 8086 ALU group + grp1 immediates: MOV AX,0x0F ; AND AX,6 (83/4) ; OR AX,0x30 (83/1) -> 0x36.
+  add_test(NAME run.alu8086 COMMAND sh -c
+    "printf '\\xb8\\x0f\\x00\\x83\\xe0\\x06\\x83\\xc8\\x30\\xf4' > '${CMAKE_BINARY_DIR}/alu8086.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/alu8086.bin' --arch v20 | grep -q 'AX =0036'")
 endif()
 
 # NEC V20 8080 emulation mode: BRKEM drops into 8080 code decoded by the SAME shared i8080 core,
