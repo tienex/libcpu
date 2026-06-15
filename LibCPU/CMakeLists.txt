@@ -710,6 +710,15 @@ add_test(NAME dt.apple COMMAND sh -c
    '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-machine.adt' | grep -q 'serial@10000000' && \
    '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-machine.adt' | grep -q 'phandle = <0x1>'")
 
+# Open Firmware textual dump: decompile a blob to the OF ".properties" form (hex words, no
+# ';') and parse it back. The phandle emitted as the hex word 00000001 must read back as the
+# cell <0x1>, proving the OF emitter and parser both work through the shared model.
+add_test(NAME dt.openfirmware COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' dt compile '${CMAKE_CURRENT_SOURCE_DIR}/test/dt-machine.dts' -o '${CMAKE_BINARY_DIR}/dt-of.dtb' && \
+   '$<TARGET_FILE:lcx>' dt decompile '${CMAKE_BINARY_DIR}/dt-of.dtb' -o '${CMAKE_BINARY_DIR}/dt-of.ofd' && \
+   grep -q 'phandle = 00000001' '${CMAKE_BINARY_DIR}/dt-of.ofd' && \
+   '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-of.ofd' | grep -q 'phandle = <0x1>'")
+
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets
 # AL='a'; after the run AL must be 'A', proving native call + argument/result marshalling.

@@ -534,6 +534,82 @@ EmitDts (DeviceTree CONST &Tree, std::string *pOut)
 }
 
 // ===========================================================================
+//  Open Firmware -- the IEEE-1275 tree. Its portable binary form is the flattened tree
+//  (handled by the FDT path above, since DTB is literally a flattened OF tree); this is an
+//  OF-style TEXTUAL dump, in the OpenBoot ".properties" idiom: values are quoted strings or
+//  space-separated 32-bit hex words, there are no ';' terminators, and Forth "\" begins a
+//  line comment (which is also how this format is told apart from DTS). Phandles appear as
+//  plain integer cells, as they do in a live OF tree.
+// ===========================================================================
+
+static void
+EmitOfProp (DT_PROP CONST &P, std::string *pOut)
+{
+    *pOut += P.Name;
+    if (P.Value.empty ()) {
+        *pOut += "\n";
+        return;
+    }
+    *pOut += " = ";
+    if (LooksLikeStrings (P.Value)) {
+        bool First = true;
+        size_t I = 0;
+        while (I < P.Value.size ()) {
+            std::string S ((CHAR8 CONST *) &P.Value[I]);
+            if (!First) { *pOut += " "; }
+            *pOut += "\"";
+            AppendEscaped (pOut, S);
+            *pOut += "\"";
+            First = false;
+            I += S.size () + 1;
+        }
+    } else if (P.Value.size () % 4 == 0) {
+        for (size_t I = 0; I < P.Value.size (); I += 4) {
+            if (I != 0) { *pOut += " "; }
+            char Buf[16];
+            std::snprintf (Buf, sizeof (Buf), "%08x", Be32 (&P.Value[I]));   // OF hex words, no 0x
+            *pOut += Buf;
+        }
+    } else {
+        *pOut += "[";
+        for (size_t I = 0; I < P.Value.size (); I++) {
+            if (I != 0) { *pOut += " "; }
+            char Buf[8];
+            std::snprintf (Buf, sizeof (Buf), "%02x", P.Value[I]);
+            *pOut += Buf;
+        }
+        *pOut += "]";
+    }
+    *pOut += "\n";
+}
+
+static void
+EmitOfNode (DtNode CONST &Node, std::string *pOut, int Depth)
+{
+    std::string Indent (Depth * 4, ' ');
+    *pOut += Indent;
+    *pOut += Depth == 0 ? "/" : Node.Name;
+    *pOut += " {\n";
+    std::string Inner ((Depth + 1) * 4, ' ');
+    for (DT_PROP CONST &P : Node.Props) {
+        *pOut += Inner;
+        EmitOfProp (P, pOut);
+    }
+    for (DtNode CONST &C : Node.Children) {
+        EmitOfNode (C, pOut, Depth + 1);
+    }
+    *pOut += Indent;
+    *pOut += "}\n";
+}
+
+static void
+EmitOf (DeviceTree CONST &Tree, std::string *pOut)
+{
+    *pOut += "\\ OpenFirmware device tree (IEEE 1275)\n";
+    EmitOfNode (Tree.Root, pOut, 0);
+}
+
+// ===========================================================================
 //  DTS (textual) -- parse (compile), with label/&ref phandle resolution.
 // ===========================================================================
 
@@ -861,6 +937,120 @@ ParseDts (CHAR8 CONST *pText, size_t Len, DeviceTree *pTree, std::string *pError
 }
 
 // ===========================================================================
+//  Open Firmware textual dump -- parse.
+// ===========================================================================
+
+// Skip whitespace, Forth "\" line comments, and "/* */" block comments.
+static void
+SkipOfWs (CHAR8 CONST **pp, CHAR8 CONST *End)
+{
+    CHAR8 CONST *p = *pp;
+    for (;;) {
+        while (p < End && (unsigned char) *p <= ' ') { p++; }
+        if (p < End && *p == '\\') {
+            while (p < End && *p != '\n') { p++; }
+            continue;
+        }
+        if (p + 1 < End && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < End && !(p[0] == '*' && p[1] == '/')) { p++; }
+            if (p + 1 < End) { p += 2; }
+            continue;
+        }
+        break;
+    }
+    *pp = p;
+}
+
+// Parse the value text of one OF property line (already isolated, no trailing newline) into
+// raw bytes: a run of quoted strings, a "[..]" byte string, or space-separated hex words.
+static void
+ParseOfValue (CHAR8 CONST *p, CHAR8 CONST *End, std::vector<UINT8> *pOut)
+{
+    while (p < End && (*p == ' ' || *p == '\t')) { p++; }
+    if (p < End && *p == '"') {
+        while (p < End) {
+            while (p < End && *p != '"') { p++; }
+            if (p >= End) { break; }
+            p++;                                             // opening quote
+            while (p < End && *p != '"') { pOut->push_back ((UINT8) *p++); }
+            if (p < End) { p++; }                            // closing quote
+            pOut->push_back (0);                             // NUL-terminate each string
+            while (p < End && (*p == ' ' || *p == '\t')) { p++; }
+            if (p >= End || *p != '"') { break; }
+        }
+        return;
+    }
+    if (p < End && *p == '[') {
+        p++;
+        for (;;) {
+            while (p < End && (*p == ' ' || *p == '\t')) { p++; }
+            if (p >= End || *p == ']') { break; }
+            char *pE = nullptr;
+            UINT64 B = (UINT64) std::strtoull (p, &pE, 16);
+            if (pE == p) { break; }
+            p = pE;
+            pOut->push_back ((UINT8) B);
+        }
+        return;
+    }
+    while (p < End) {                                        // space-separated 32-bit hex words
+        while (p < End && (*p == ' ' || *p == '\t')) { p++; }
+        if (p >= End) { break; }
+        char *pE = nullptr;
+        UINT32 W = (UINT32) std::strtoull (p, &pE, 16);
+        if (pE == p) { break; }
+        p = pE;
+        PushBe32 (pOut, W);
+    }
+}
+
+static bool
+ParseOfBody (CHAR8 CONST **pp, CHAR8 CONST *End, DtNode *pNode, std::string *pError)
+{
+    for (;;) {
+        SkipOfWs (pp, End);
+        if (*pp >= End) { *pError = "unterminated Open Firmware node"; return false; }
+        if (**pp == '}') { (*pp)++; return true; }
+
+        std::string Name;
+        while (*pp < End && IsNameChar (**pp)) { Name.push_back (*(*pp)++); }
+        if (Name.empty ()) { *pError = "expected a name in Open Firmware dump"; return false; }
+        while (*pp < End && (**pp == ' ' || **pp == '\t')) { (*pp)++; }
+
+        if (*pp < End && **pp == '{') {                      // child node
+            (*pp)++;
+            DtNode *pChild = pNode->AddChild (Name);
+            if (!ParseOfBody (pp, End, pChild, pError)) { return false; }
+        } else if (*pp < End && **pp == '=') {               // property with a value
+            (*pp)++;
+            CHAR8 CONST *pLineEnd = *pp;
+            while (pLineEnd < End && *pLineEnd != '\n') { pLineEnd++; }
+            std::vector<UINT8> Value;
+            ParseOfValue (*pp, pLineEnd, &Value);
+            pNode->SetProp (Name, Value);
+            *pp = pLineEnd;
+        } else {                                             // boolean (present-only) property
+            pNode->SetPropEmpty (Name);
+        }
+    }
+}
+
+static bool
+ParseOf (CHAR8 CONST *pText, size_t Len, DeviceTree *pTree, std::string *pError)
+{
+    CHAR8 CONST *p = pText;
+    CHAR8 CONST *End = pText + Len;
+    SkipOfWs (&p, End);
+    if (p >= End || *p != '/') { *pError = "Open Firmware dump has no root node"; return false; }
+    p++;
+    SkipOfWs (&p, End);
+    if (p >= End || *p != '{') { *pError = "expected '{' after Open Firmware root"; return false; }
+    p++;
+    return ParseOfBody (&p, End, &pTree->Root, pError);
+}
+
+// ===========================================================================
 //  Format detection, load, emit, overlay.
 // ===========================================================================
 
@@ -868,10 +1058,12 @@ DT_FORMAT
 DeviceTree::DetectFormat (UINT8 CONST *pData, size_t Len)
 {
     if (Len >= 4 && Be32 (pData) == FDT_MAGIC) { return DtFormatFdtBlob; }
-    // Textual DTS: a "/dts-v1/" tag or a leading "/" root, possibly after whitespace/comments.
+    // Textual: an OF dump opens with a Forth "\" comment; DTS has a "/dts-v1/" tag or a "/"
+    // root. Scan past leading whitespace and comments to the first meaningful character.
     for (size_t I = 0; I < Len && I < 256; I++) {
         UINT8 C = pData[I];
         if (C == ' ' || C == '\t' || C == '\r' || C == '\n') { continue; }
+        if (C == '\\') { return DtFormatOpenFirmware; }
         if (C == '/') {
             if (I + 8 <= Len && std::strncmp ((CHAR8 CONST *) pData + I, "/dts-v1/", 8) == 0) { return DtFormatFdtSource; }
             if (I + 2 <= Len && (pData[I + 1] == '*' || pData[I + 1] == '/')) { continue; }   // comment
@@ -889,9 +1081,9 @@ DeviceTree::LoadBytes (UINT8 CONST *pData, size_t Len, DT_FORMAT Fmt, std::strin
     switch (Fmt) {
         case DtFormatFdtBlob:     return ReadFdt (pData, Len, this, pError);
         case DtFormatFdtSource:   return ParseDts ((CHAR8 CONST *) pData, Len, this, pError);
-        case DtFormatAppleBinary: return ReadAppleDt (pData, Len, this, pError);
+        case DtFormatAppleBinary:   return ReadAppleDt (pData, Len, this, pError);
+        case DtFormatOpenFirmware:  return ParseOf ((CHAR8 CONST *) pData, Len, this, pError);
         case DtFormatAppleText:
-        case DtFormatOpenFirmware:
             *pError = "this device-tree format reader is not implemented yet";
             return false;
         default:
@@ -923,6 +1115,7 @@ DeviceTree::Load (CHAR8 CONST *pPath, std::string *pError)
         if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".adt") == 0) { Fmt = DtFormatAppleBinary; }
         else if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dtb") == 0) { Fmt = DtFormatFdtBlob; }
         else if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dts") == 0) { Fmt = DtFormatFdtSource; }
+        else if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".ofd") == 0) { Fmt = DtFormatOpenFirmware; }
     }
     return LoadBytes (Bytes.data (), Bytes.size (), Fmt, pError);
 }
@@ -947,6 +1140,10 @@ DeviceTree::EmitText (DT_FORMAT Fmt, std::string *pOut, std::string *pError) CON
 {
     if (Fmt == DtFormatFdtSource) {
         EmitDts (*this, pOut);
+        return true;
+    }
+    if (Fmt == DtFormatOpenFirmware) {
+        EmitOf (*this, pOut);
         return true;
     }
     *pError = "text emission for this format is not implemented yet";

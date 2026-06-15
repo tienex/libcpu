@@ -977,6 +977,7 @@ DtFormatForPath (CHAR8 CONST *pPath)
     std::string S = pPath != nullptr ? pPath : "";
     if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dtb") == 0) { return LibCPU::DtFormatFdtBlob; }
     if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".adt") == 0) { return LibCPU::DtFormatAppleBinary; }
+    if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".ofd") == 0) { return LibCPU::DtFormatOpenFirmware; }
     return LibCPU::DtFormatFdtSource;
 }
 
