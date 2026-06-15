@@ -718,6 +718,19 @@ if(TARGET interp_backend)
   set_tests_properties(know.invoke PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
   list(APPEND LIBCPU_CHECK_DEPS countercpp)
 
+  # C++ class-template instantiation: the parser captures the template's member shapes once,
+  # then expands cn::Holder<int> into a concrete catalog entity -- a real layout (T->int at its
+  # true offset) and methods whose template-id mangled symbols (__ZN2cn6HolderIiE...) the
+  # catalog matches. Asserts both the substituted field at its offset and the const-method bind.
+  add_library(tholdercpp SHARED test/tholder.cpp)
+  add_test(NAME know.template COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' know derive '${CMAKE_CURRENT_SOURCE_DIR}/test/tholder.hpp' \
+         '$<TARGET_FILE:tholdercpp>' -o '${CMAKE_BINARY_DIR}/tholder.klib' && \
+     '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/tholder.klib' | grep -q '+4    int item' && \
+     '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/tholder.klib' | grep -q 'value  -> __ZNK2cn6HolderIiE5valueEv'")
+  set_tests_properties(know.template PROPERTIES FAIL_REGULAR_EXPRESSION "lcx know:")
+  list(APPEND LIBCPU_CHECK_DEPS tholdercpp)
+
   # Derived target->host mapping: the DOS INT 21h mapping is generated from a target ABI
   # table (test/dos.abi) joined with a libc catalog -- no hand-authored <syscall> blocks --
   # then drives the canonical "Hello, LibCPU!" program. Proves derivation yields a working

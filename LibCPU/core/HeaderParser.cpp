@@ -5,6 +5,8 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <map>
+#include <utility>
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
@@ -37,7 +39,9 @@ enum {
     CXCursor_Namespace    = 22,
     CXCursor_LinkageSpec  = 23,    // extern "C" { ... }
     CXCursor_Constructor  = 24,
-    CXCursor_Destructor   = 25
+    CXCursor_Destructor   = 25,
+    CXCursor_TemplateTypeParameter = 27,   // the "T" in template<typename T>
+    CXCursor_ClassTemplate         = 31    // template<...> class Box { ... }
 };
 // CXChildVisitResult
 enum { CXChildVisit_Break = 0, CXChildVisit_Continue = 1, CXChildVisit_Recurse = 2 };
@@ -69,6 +73,10 @@ typedef struct _CLANG_API {
     CXCursor          (*getCursorSemanticParent) (CXCursor);
     unsigned          (*cxxMethodIsStatic) (CXCursor);
     unsigned          (*cxxMethodIsConst) (CXCursor);
+    CXCursor          (*getTypeDeclaration) (CXType);
+    int               (*typeGetNumTemplateArguments) (CXType);
+    CXType            (*typeGetTemplateArgumentAsType) (CXType, unsigned);
+    long long         (*typeGetOffsetOf) (CXType, CONST char *);
     void             *Handle;       // dlopen handle
 } CLANG_API;
 
@@ -127,6 +135,10 @@ LoadClang (CLANG_API *pApi)
     Ok &= Bind (pH, "clang_getCursorSemanticParent", (void **) &pApi->getCursorSemanticParent);
     Ok &= Bind (pH, "clang_CXXMethod_isStatic", (void **) &pApi->cxxMethodIsStatic);
     Ok &= Bind (pH, "clang_CXXMethod_isConst", (void **) &pApi->cxxMethodIsConst);
+    Ok &= Bind (pH, "clang_getTypeDeclaration", (void **) &pApi->getTypeDeclaration);
+    Ok &= Bind (pH, "clang_Type_getNumTemplateArguments", (void **) &pApi->typeGetNumTemplateArguments);
+    Ok &= Bind (pH, "clang_Type_getTemplateArgumentAsType", (void **) &pApi->typeGetTemplateArgumentAsType);
+    Ok &= Bind (pH, "clang_Type_getOffsetOf", (void **) &pApi->typeGetOffsetOf);
     if (!Ok) {
         dlclose (pH);
         return false;
@@ -162,6 +174,37 @@ QualifiedName (CLANG_API *Api, CXCursor C)
         P = Api->getCursorSemanticParent (P);
     }
     return Name;
+}
+
+// Replace every whole-word occurrence of Word in In with Repl. "Whole word" means the match is
+// not flanked by identifier characters, so substituting the template parameter "T" rewrites "T"
+// and "const T &" but leaves "Token" or "uT" untouched.
+static std::string
+SubstituteWord (std::string CONST &In, std::string CONST &Word, std::string CONST &Repl)
+{
+    if (Word.empty ()) { return In; }
+    std::string Out;
+    size_t I = 0;
+    while (I < In.size ()) {
+        if (In.compare (I, Word.size (), Word) == 0) {
+            size_t J = I + Word.size ();
+            bool LeftOk  = (I == 0) || !(std::isalnum ((unsigned char) In[I - 1]) || In[I - 1] == '_');
+            bool RightOk = (J >= In.size ()) || !(std::isalnum ((unsigned char) In[J]) || In[J] == '_');
+            if (LeftOk && RightOk) { Out += Repl; I = J; continue; }
+        }
+        Out += In[I++];
+    }
+    return Out;
+}
+
+// Apply a list of template-parameter -> argument substitutions to a dependent type spelling,
+// turning e.g. "const T &" into "const int &" for the instantiation Box<int>.
+static std::string
+ApplySubst (std::string CONST &Type, std::vector<std::pair<std::string, std::string>> CONST &Subst)
+{
+    std::string Out = Type;
+    for (std::pair<std::string, std::string> CONST &S : Subst) { Out = SubstituteWord (Out, S.first, S.second); }
+    return Out;
 }
 
 // Build a function/method entity. ClassForThis, when non-empty, is the enclosing class of a
@@ -222,7 +265,132 @@ ClassBodyVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
     return CXChildVisit_Continue;
 }
 
-typedef struct _TOP_CTX { CLANG_API *Api; HeaderParser *Self; std::vector<HEADER_FUNCTION> *Funcs; std::vector<HEADER_STRUCT> *Structs; } TOP_CTX;
+// A class template, captured once from its definition (CXCursor_ClassTemplate) so each later
+// instantiation can be expanded into a concrete catalog entity. The members carry DEPENDENT
+// types (e.g. "T"); the instantiation supplies the arguments to substitute. SimpleName is the
+// template's own name (e.g. "Box"), used to name the constructor/destructor of an instantiation.
+typedef struct _BP_METHOD {
+    std::string                Unqual;       // name relative to the class: "get", "Box" (ctor), "~Box" (dtor)
+    std::string                ReturnType;   // dependent
+    bool                       Static;
+    bool                       Const;
+    bool                       Variadic;
+    std::vector<HEADER_PARAM>  Params;       // dependent parameter types
+} BP_METHOD;
+
+typedef struct _TEMPLATE_BLUEPRINT {
+    std::string                SimpleName;   // "Box"
+    std::vector<std::string>   Params;       // template type-parameter names: ["T"]
+    std::vector<HEADER_FIELD>  Fields;       // data members, dependent types
+    std::vector<BP_METHOD>     Methods;
+} TEMPLATE_BLUEPRINT;
+
+typedef struct _BP_CTX { CLANG_API *Api; TEMPLATE_BLUEPRINT *Bp; } BP_CTX;
+
+// Capture a class template's members (with their dependent types) into the blueprint.
+static int
+BlueprintVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
+{
+    BP_CTX *pCtx = (BP_CTX *) pData;
+    CLANG_API *Api = pCtx->Api;
+    int Kind = Api->getCursorKind (C);
+    if (Kind == CXCursor_TemplateTypeParameter) {
+        pCtx->Bp->Params.push_back (TakeString (Api, Api->getCursorSpelling (C)));
+    } else if (Kind == CXCursor_FieldDecl) {
+        HEADER_FIELD F;
+        F.Name   = TakeString (Api, Api->getCursorSpelling (C));
+        F.Type   = TakeString (Api, Api->getTypeSpelling (Api->getCursorType (C)));
+        F.Offset = 0;
+        F.Size   = 0;                                        // resolved per instantiation
+        pCtx->Bp->Fields.push_back (std::move (F));
+    } else if (Kind == CXCursor_CXXMethod || Kind == CXCursor_Constructor || Kind == CXCursor_Destructor) {
+        BP_METHOD M;
+        if (Kind == CXCursor_Constructor)     { M.Unqual = pCtx->Bp->SimpleName; }
+        else if (Kind == CXCursor_Destructor) { M.Unqual = "~" + pCtx->Bp->SimpleName; }
+        else                                  { M.Unqual = TakeString (Api, Api->getCursorSpelling (C)); }
+        CXType FnTy   = Api->getCursorType (C);
+        M.ReturnType  = TakeString (Api, Api->getTypeSpelling (Api->getResultType (FnTy)));
+        M.Static      = Api->cxxMethodIsStatic (C) != 0;
+        M.Const       = Api->cxxMethodIsConst (C) != 0;
+        M.Variadic    = Api->isFunctionTypeVariadic (FnTy) != 0;
+        int N = Api->cursorGetNumArguments (C);
+        for (int I = 0; I < N; I++) {
+            CXCursor Arg = Api->cursorGetArgument (C, (unsigned) I);
+            HEADER_PARAM P;
+            P.Name = TakeString (Api, Api->getCursorSpelling (Arg));
+            P.Type = TakeString (Api, Api->getTypeSpelling (Api->getCursorType (Arg)));
+            M.Params.push_back (std::move (P));
+        }
+        pCtx->Bp->Methods.push_back (std::move (M));
+    }
+    return CXChildVisit_Continue;
+}
+
+// Expand a template instantiation (cursor C, type "Box<int>") into a concrete struct layout and
+// the concrete member-function entities, by substituting the instantiation's type arguments into
+// the blueprint. The instantiation cursor itself exposes no members (clang does not re-emit the
+// AST per instantiation), but it does give the real type -- hence the real sizeof and field
+// offsets -- which is exactly what marshalling needs.
+static void
+ExpandInstantiation (CLANG_API *Api, CXCursor C, TEMPLATE_BLUEPRINT CONST &Bp,
+                     std::vector<HEADER_FUNCTION> *Funcs, std::vector<HEADER_STRUCT> *Structs)
+{
+    CXType Ty = Api->getCursorType (C);
+    std::string Concrete = TakeString (Api, Api->getTypeSpelling (Ty));   // "Box<int>"
+    std::vector<std::pair<std::string, std::string>> Subst;
+    int NArgs = Api->typeGetNumTemplateArguments (Ty);
+    for (size_t I = 0; I < Bp.Params.size () && (int) I < NArgs; I++) {
+        std::string Arg = TakeString (Api, Api->getTypeSpelling (Api->typeGetTemplateArgumentAsType (Ty, (unsigned) I)));
+        Subst.push_back (std::make_pair (Bp.Params[I], Arg));
+    }
+
+    HEADER_STRUCT St;
+    St.Name = Concrete;
+    long long Size = Api->typeGetSizeOf (Ty);
+    St.Size = Size >= 0 ? (UINT64) Size : 0;
+    for (HEADER_FIELD CONST &BF : Bp.Fields) {
+        HEADER_FIELD F;
+        F.Name = BF.Name;
+        F.Type = ApplySubst (BF.Type, Subst);
+        long long Bits = Api->typeGetOffsetOf (Ty, BF.Name.c_str ());
+        F.Offset = Bits >= 0 ? (UINT64) (Bits / 8) : 0;      // real offset in the instantiated type
+        F.Size   = 0;
+        St.Fields.push_back (std::move (F));
+    }
+    for (size_t I = 0; I < St.Fields.size (); I++) {         // size = bytes to the next field (last: to end)
+        UINT64 Next = (I + 1 < St.Fields.size ()) ? St.Fields[I + 1].Offset : St.Size;
+        St.Fields[I].Size = Next >= St.Fields[I].Offset ? Next - St.Fields[I].Offset : 0;
+    }
+    Structs->push_back (std::move (St));
+
+    for (BP_METHOD CONST &M : Bp.Methods) {
+        HEADER_FUNCTION Fn;
+        Fn.Name       = Concrete + "::" + M.Unqual;          // "Box<int>::get" matches the demangled export
+        Fn.ReturnType = ApplySubst (M.ReturnType, Subst);
+        Fn.Variadic   = M.Variadic;
+        if (!M.Static) {
+            HEADER_PARAM This;
+            This.Name = "this";
+            This.Type = (M.Const ? std::string ("const ") : std::string ()) + Concrete + " *";
+            Fn.Params.push_back (std::move (This));
+        }
+        for (HEADER_PARAM CONST &P : M.Params) {
+            HEADER_PARAM Q;
+            Q.Name = P.Name;
+            Q.Type = ApplySubst (P.Type, Subst);
+            Fn.Params.push_back (std::move (Q));
+        }
+        Funcs->push_back (std::move (Fn));
+    }
+}
+
+typedef struct _TOP_CTX {
+    CLANG_API                                    *Api;
+    HeaderParser                                 *Self;
+    std::vector<HEADER_FUNCTION>                 *Funcs;
+    std::vector<HEADER_STRUCT>                   *Structs;
+    std::map<std::string, TEMPLATE_BLUEPRINT>    *Templates;
+} TOP_CTX;
 
 static int
 TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
@@ -242,9 +410,24 @@ TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
     if (Kind == CXCursor_FunctionDecl) {
         std::string NoThis;
         pCtx->Funcs->push_back (MakeFunction (Api, C, NoThis));   // free function: no implicit this
+    } else if (Kind == CXCursor_ClassTemplate) {
+        TEMPLATE_BLUEPRINT Bp;                               // remember it; instantiations expand below
+        Bp.SimpleName = TakeString (Api, Api->getCursorSpelling (C));
+        BP_CTX BpCtx{ Api, &Bp };
+        Api->visitChildren (C, BlueprintVisitor, &BpCtx);
+        (*pCtx->Templates)[QualifiedName (Api, C)] = std::move (Bp);
     } else if (Kind == CXCursor_StructDecl || Kind == CXCursor_ClassDecl || Kind == CXCursor_UnionDecl) {
+        std::string TypeSp = TakeString (Api, Api->getTypeSpelling (Api->getCursorType (C)));
+        std::string Qual   = QualifiedName (Api, C);
+        if (TypeSp.find ('<') != std::string::npos) {        // a template instantiation, not a plain class
+            auto It = pCtx->Templates->find (Qual);
+            if (It != pCtx->Templates->end ()) {
+                ExpandInstantiation (Api, C, It->second, pCtx->Funcs, pCtx->Structs);
+            }
+            return CXChildVisit_Continue;                    // no blueprint (e.g. template from another header): skip
+        }
         HEADER_STRUCT St;
-        St.Name = QualifiedName (Api, C);                    // qualified so it matches type spellings
+        St.Name = Qual;                                      // qualified so it matches type spellings
         long long Size = Api->typeGetSizeOf (Api->getCursorType (C));
         St.Size = Size >= 0 ? (UINT64) Size : 0;
         CLASS_CTX CCtx{ Api, &St, pCtx->Funcs, St.Name };    // data members -> layout, methods -> functions
@@ -291,7 +474,8 @@ HeaderParser::ParseWithClang (CHAR8 CONST *pPath, CHAR8 CONST *CONST *ppArgs, UI
         dlclose (Api.Handle);
         return false;
     }
-    TOP_CTX Ctx{ &Api, this, &m_Functions, &m_Structs };
+    std::map<std::string, TEMPLATE_BLUEPRINT> Templates;
+    TOP_CTX Ctx{ &Api, this, &m_Functions, &m_Structs, &Templates };
     Api.visitChildren (Api.getTUCursor (Tu), TopVisitor, &Ctx);
     Api.disposeTU (Tu);
     Api.disposeIndex (Index);
