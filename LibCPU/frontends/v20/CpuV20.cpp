@@ -301,8 +301,10 @@ public:
                    Op == 0x84 || Op == 0x85 || Op == 0x88 || Op == 0x89 ||
                    Op == 0x8A || Op == 0x8B || Op == 0x8E || Op == 0x8C) {
             Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV r/m,r (+disp)
-        } else if (Op == 0x80 || Op == 0x83 || Op == 0xC6) {     // grp1 r/m8,imm8 / r/m16,imm8 / MOV r/m8,imm8
-            Len = 1 + RmLen (m_pCode[Pc + 1]) + 1;
+        } else if (Op == 0xD0 || Op == 0xD1 || Op == 0xD2 || Op == 0xD3) {   // grp2 shift r/m,1 or r/m,CL
+            Len = 1 + RmLen (m_pCode[Pc + 1]);
+        } else if (Op == 0x80 || Op == 0x83 || Op == 0xC6 || Op == 0xC0 || Op == 0xC1) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 1;           // grp1 r/m,imm8 / MOV r/m8,imm8 / grp2 r/m,imm8
         } else if (Op == 0x81 || Op == 0xC7) {                   // grp1 r/m16,imm16 / MOV r/m16,imm16
             Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
         } else if ((Op < 0x40 && (Op & 7) == 4) || Op == 0xA8) {
@@ -461,6 +463,13 @@ public:
         } else if (Op == 0xFD) { std::snprintf (pLine, MaxLine, "std");
         } else if (Op == 0x98) { std::snprintf (pLine, MaxLine, "cbw");
         } else if (Op == 0x99) { std::snprintf (pLine, MaxLine, "cwd");
+        } else if (Op == 0xD0 || Op == 0xD1 || Op == 0xD2 || Op == 0xD3 || Op == 0xC0 || Op == 0xC1) {
+            static CHAR8 CONST *kSh[8] = { "rol","ror","rcl","rcr","shl","shr","sal","sar" };
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? ((Op & 1) ? RegName (M & 7) : Reg8Name (M & 7)) : "[mem]";
+            if (Op == 0xD0 || Op == 0xD1)      { std::snprintf (pLine, MaxLine, "%s %s,1", kSh[(M >> 3) & 7], Rm); }
+            else if (Op == 0xD2 || Op == 0xD3) { std::snprintf (pLine, MaxLine, "%s %s,cl", kSh[(M >> 3) & 7], Rm); }
+            else { std::snprintf (pLine, MaxLine, "%s %s,0x%02x", kSh[(M >> 3) & 7], Rm, m_pCode[Pc + 1 + RmLen (M)]); }
         } else if (Op == 0x0F) {
             UINT8 Sub = m_pCode[Pc + 1];
             CHAR8 CONST *pMnem = nullptr;
@@ -613,6 +622,25 @@ public:
             UINT8 M = m_pCode[Pc + 1];
             ComPtr<ICpuValue> V; pE->ConstInt (8, m_pCode[Pc + 1 + RmLen (M)], &V);
             EmitRmWrite8 (pE, M, Pc + 1, V);
+            return S_OK;
+        }
+        // grp2 shifts/rotates: D0/D1 (r/m,1), D2/D3 (r/m,CL), C0/C1 (r/m,imm8). Odd = 16-bit.
+        if (Op == 0xD0 || Op == 0xD1 || Op == 0xD2 || Op == 0xD3 || Op == 0xC0 || Op == 0xC1) {
+            UINT8  M    = m_pCode[Pc + 1];
+            UINT8  Sub  = (M >> 3) & 7;
+            bool   W16  = (Op & 1) != 0;
+            UINT32 W    = W16 ? 16 : 8;
+            ComPtr<ICpuValue> Val;   if (W16) { EmitRmRead (pE, M, Pc + 1, &Val); } else { EmitRmRead8 (pE, M, Pc + 1, &Val); }
+            ComPtr<ICpuValue> Count;
+            if (Op == 0xD0 || Op == 0xD1) {
+                pE->ConstInt (W, 1, &Count);
+            } else if (Op == 0xD2 || Op == 0xD3) {
+                ComPtr<ICpuValue> Cl; EmitReg8Read (pE, 1, &Cl); pE->Cast (CastZExt, Cl, W, &Count);   // CL
+            } else {
+                pE->ConstInt (W, m_pCode[Pc + 1 + RmLen (M)], &Count);                                 // imm8
+            }
+            ComPtr<ICpuValue> Res; EmitShift (pE, Sub, W, Val, Count, &Res);
+            if (W16) { EmitRmWrite (pE, M, Pc + 1, Res); } else { EmitRmWrite8 (pE, M, Pc + 1, Res); }
             return S_OK;
         }
 
@@ -1133,6 +1161,67 @@ private:
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
             ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
             pE->Store (pVal, Lin, 8);
+        }
+    }
+
+    // grp2 shift/rotate. Sub: 0 ROL,1 ROR,2 RCL,3 RCR,4/6 SHL,5 SHR,7 SAR. Width is 8 or 16.
+    // pCount is a Width-bit count, masked to 5 bits (V20/V30/186 behaviour); correct for counts
+    // 1..Width. CF is the last bit moved out; SHL/SHR/SAR also set Z/S/P. OF (only defined for a
+    // 1-bit count on real hardware) is left cleared.
+    VOID EmitShift (ICpuEmitter *pE, UINT8 Sub, UINT32 Width, ICpuValue *pVal, ICpuValue *pCountRaw, ICpuValue **ppRes) {
+        ComPtr<ICpuValue> M5;    pE->ConstInt (Width, 0x1F, &M5);
+        ComPtr<ICpuValue> Count; pE->BinaryOp (BinAnd, pCountRaw, M5, &Count);
+        ComPtr<ICpuValue> WidthV; pE->ConstInt (Width, Width, &WidthV);
+        ComPtr<ICpuValue> One;    pE->ConstInt (Width, 1, &One);
+        ComPtr<ICpuValue> WmC;    pE->BinaryOp (BinSub, WidthV, Count, &WmC);   // Width - Count
+        ComPtr<ICpuValue> Cm1;    pE->BinaryOp (BinSub, Count, One, &Cm1);      // Count - 1
+        bool Shift = (Sub >= 4);
+        if (Sub == 4 || Sub == 6) {                                            // SHL
+            pE->BinaryOp (BinShl, pVal, Count, ppRes);
+            ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, WmC, &Sh);
+            ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+        } else if (Sub == 5 || Sub == 7) {                                     // SHR / SAR
+            pE->BinaryOp (Sub == 5 ? BinLShr : BinAShr, pVal, Count, ppRes);
+            ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, Cm1, &Sh);
+            ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+        } else if (Sub == 0) {                                                 // ROL
+            ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, Count, &L);
+            ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, WmC, &R);
+            pE->BinaryOp (BinOr, L, R, ppRes);
+            ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, *ppRes, 1, &CF); pE->SetFlag (FlagCarry, CF);
+        } else if (Sub == 1) {                                                 // ROR
+            ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, Count, &R);
+            ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, WmC, &L);
+            pE->BinaryOp (BinOr, R, L, ppRes);
+            ComPtr<ICpuValue> ShM; pE->ConstInt (Width, Width - 1, &ShM);
+            ComPtr<ICpuValue> Hi;  pE->BinaryOp (BinLShr, *ppRes, ShM, &Hi);
+            ComPtr<ICpuValue> CF;  pE->Cast (CastTrunc, Hi, 1, &CF); pE->SetFlag (FlagCarry, CF);
+        } else {                                                               // RCL (2) / RCR (3) through carry
+            ComPtr<ICpuValue> CFin;  pE->GetFlag (FlagCarry, &CFin);
+            ComPtr<ICpuValue> CFinW; pE->Cast (CastZExt, CFin, Width, &CFinW);
+            ComPtr<ICpuValue> Wp1;   pE->ConstInt (Width, Width + 1, &Wp1);
+            ComPtr<ICpuValue> Wp1mC; pE->BinaryOp (BinSub, Wp1, Count, &Wp1mC);
+            if (Sub == 2) {                                                    // RCL: {CF,val} rotate left
+                ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, Count, &L);
+                ComPtr<ICpuValue> Cb; pE->BinaryOp (BinShl, CFinW, Cm1, &Cb);
+                ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, Wp1mC, &R);
+                ComPtr<ICpuValue> T; pE->BinaryOp (BinOr, L, Cb, &T);
+                pE->BinaryOp (BinOr, T, R, ppRes);
+                ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, WmC, &Sh);
+                ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            } else {                                                           // RCR
+                ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, Count, &R);
+                ComPtr<ICpuValue> Cb; pE->BinaryOp (BinShl, CFinW, WmC, &Cb);
+                ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, Wp1mC, &L);
+                ComPtr<ICpuValue> T; pE->BinaryOp (BinOr, R, Cb, &T);
+                pE->BinaryOp (BinOr, T, L, ppRes);
+                ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, Cm1, &Sh);
+                ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            }
+        }
+        ComPtr<ICpuValue> Zero1; pE->ConstInt (1, 0, &Zero1); pE->SetFlag (FlagOverflow, Zero1);
+        if (Shift) {
+            if (Width == 16) { EmitZSF (pE, *ppRes); } else { EmitZSF8 (pE, *ppRes); }
         }
     }
 
