@@ -702,6 +702,14 @@ add_test(NAME dt.overlay COMMAND sh -c
    '$<TARGET_FILE:lcx>' dt overlay '${CMAKE_BINARY_DIR}/dt-ovl-base.dtb' '${CMAKE_BINARY_DIR}/dt-ovl-frag.dtb' | grep -q 'clock-frequency' && \
    '$<TARGET_FILE:lcx>' dt overlay '${CMAKE_BINARY_DIR}/dt-ovl-base.dtb' '${CMAKE_BINARY_DIR}/dt-ovl-frag.dtb' | grep -q 'rtc@20000000'")
 
+# Cross-format via the shared model: compile the machine to an Apple device tree (.adt, the
+# distinct XNU/iBoot binary), then read it back. The node tree -- including the materialized
+# phandle -- must survive the DTS -> Apple-binary -> model -> DTS round trip.
+add_test(NAME dt.apple COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' dt compile '${CMAKE_CURRENT_SOURCE_DIR}/test/dt-machine.dts' -o '${CMAKE_BINARY_DIR}/dt-machine.adt' && \
+   '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-machine.adt' | grep -q 'serial@10000000' && \
+   '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-machine.adt' | grep -q 'phandle = <0x1>'")
+
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets
 # AL='a'; after the run AL must be 'A', proving native call + argument/result marshalling.

@@ -1024,7 +1024,13 @@ CmdDt (int argc, char **argv)
         DeviceTree Tree;
         if (!Tree.Load (pIn, &Error)) { std::printf ("lcx dt: %s\n", Error.c_str ()); return 2; }
         DT_FORMAT OutFmt = (Verb == "compile") ? DtFormatFdtBlob : DtFormatFdtSource;
-        if (Verb == "decompile" && pOut != nullptr) { OutFmt = DtFormatForPath (pOut); }
+        if (pOut != nullptr) {
+            DT_FORMAT ByExt = DtFormatForPath (pOut);
+            // compile produces a binary (a non-binary extension still means a blob); decompile
+            // produces text but an explicit binary extension is honoured.
+            if (Verb == "compile") { OutFmt = (ByExt == DtFormatFdtSource) ? DtFormatFdtBlob : ByExt; }
+            else                   { OutFmt = ByExt; }
+        }
         return DtEmit (Tree, pOut, OutFmt);
     }
     if (Verb == "overlay") {

@@ -47,6 +47,21 @@ AlignTo (std::vector<UINT8> *pOut, size_t Align)
     while (pOut->size () % Align != 0) { pOut->push_back (0); }
 }
 
+static UINT32
+Le32 (UINT8 CONST *p)
+{
+    return (UINT32) p[0] | ((UINT32) p[1] << 8) | ((UINT32) p[2] << 16) | ((UINT32) p[3] << 24);
+}
+
+static void
+PushLe32 (std::vector<UINT8> *pOut, UINT32 V)
+{
+    pOut->push_back ((UINT8) V);
+    pOut->push_back ((UINT8) (V >> 8));
+    pOut->push_back ((UINT8) (V >> 16));
+    pOut->push_back ((UINT8) (V >> 24));
+}
+
 // ===========================================================================
 //  DtNode -- property and child access.
 // ===========================================================================
@@ -311,6 +326,105 @@ WriteFdt (DeviceTree CONST &Tree, std::vector<UINT8> *pOut)
     AlignTo (pOut, 4);
     pOut->insert (pOut->end (), Struct.begin (), Struct.end ());
     pOut->insert (pOut->end (), Strings.Bytes.begin (), Strings.Bytes.end ());
+}
+
+// ===========================================================================
+//  Apple Device Tree -- the flattened tree XNU/iBoot consume (pexpert device_tree.h).
+//
+//  All little-endian. Each node is { uint32 nProperties; uint32 nChildren; } followed by
+//  nProperties properties then nChildren child nodes. A property is a fixed 32-byte NUL-
+//  padded name, a uint32 length (its top bit 0x80000000 is a "placeholder" flag, masked
+//  off here), then length value bytes padded to a 4-byte boundary. Unlike FDT a node has no
+//  inline name: the name is carried in a property literally called "name".
+// ===========================================================================
+
+enum { ADT_PROP_NAME_LEN = 32, ADT_PLACEHOLDER_FLAG = 0x80000000u };
+
+static bool
+ReadAppleNode (UINT8 CONST *pData, size_t Len, size_t *pOff, DtNode *pNode)
+{
+    if (*pOff + 8 > Len) { return false; }
+    UINT32 NProps    = Le32 (pData + *pOff);
+    UINT32 NChildren = Le32 (pData + *pOff + 4);
+    *pOff += 8;
+    for (UINT32 I = 0; I < NProps; I++) {
+        if (*pOff + ADT_PROP_NAME_LEN + 4 > Len) { return false; }
+        CHAR8 CONST *pName = (CHAR8 CONST *) pData + *pOff;
+        std::string Name (pName, strnlen (pName, ADT_PROP_NAME_LEN));
+        UINT32 PropLen = Le32 (pData + *pOff + ADT_PROP_NAME_LEN) & ~ADT_PLACEHOLDER_FLAG;
+        *pOff += ADT_PROP_NAME_LEN + 4;
+        if (*pOff + PropLen > Len) { return false; }
+        if (Name == "name") {                                // the node's name lives in a property
+            pNode->Name.assign ((CHAR8 CONST *) pData + *pOff, strnlen ((CHAR8 CONST *) pData + *pOff, PropLen));
+        } else {
+            DT_PROP P;
+            P.Name = Name;
+            P.Value.assign (pData + *pOff, pData + *pOff + PropLen);
+            pNode->Props.push_back (std::move (P));
+        }
+        *pOff += PropLen;
+        *pOff = (*pOff + 3) & ~(size_t) 3;
+    }
+    for (UINT32 I = 0; I < NChildren; I++) {
+        DtNode Child;
+        if (!ReadAppleNode (pData, Len, pOff, &Child)) { return false; }
+        pNode->Children.push_back (std::move (Child));
+    }
+    return true;
+}
+
+static bool
+ReadAppleDt (UINT8 CONST *pData, size_t Len, DeviceTree *pTree, std::string *pError)
+{
+    size_t Off = 0;
+    if (!ReadAppleNode (pData, Len, &Off, &pTree->Root)) {
+        *pError = "malformed Apple device tree";
+        return false;
+    }
+    return true;
+}
+
+static void
+WriteAppleProp (std::vector<UINT8> *pOut, std::string CONST &Name, UINT8 CONST *pValue, size_t ValueLen)
+{
+    UINT8 NameField[ADT_PROP_NAME_LEN];
+    std::memset (NameField, 0, sizeof (NameField));
+    std::memcpy (NameField, Name.data (), Name.size () < ADT_PROP_NAME_LEN ? Name.size () : ADT_PROP_NAME_LEN - 1);
+    pOut->insert (pOut->end (), NameField, NameField + ADT_PROP_NAME_LEN);
+    PushLe32 (pOut, (UINT32) ValueLen);
+    pOut->insert (pOut->end (), pValue, pValue + ValueLen);
+    AlignTo (pOut, 4);
+}
+
+static void
+WriteAppleNode (DtNode CONST &Node, std::vector<UINT8> *pOut)
+{
+    // The node name becomes a "name" property; the root's empty name maps to Apple's
+    // conventional "device-tree". An existing "name" property (if any) is used as-is.
+    std::string Key = "name";
+    bool HasName = Node.FindProp (Key) != nullptr;
+    UINT32 NProps = (UINT32) Node.Props.size () + (HasName ? 0 : 1);
+    PushLe32 (pOut, NProps);
+    PushLe32 (pOut, (UINT32) Node.Children.size ());
+    if (!HasName) {
+        std::string NodeName = Node.Name.empty () ? std::string ("device-tree") : Node.Name;
+        std::vector<UINT8> NameVal (NodeName.begin (), NodeName.end ());
+        NameVal.push_back (0);
+        WriteAppleProp (pOut, Key, NameVal.data (), NameVal.size ());
+    }
+    for (DT_PROP CONST &P : Node.Props) {
+        WriteAppleProp (pOut, P.Name, P.Value.data (), P.Value.size ());
+    }
+    for (DtNode CONST &C : Node.Children) {
+        WriteAppleNode (C, pOut);
+    }
+}
+
+static void
+WriteAppleDt (DeviceTree CONST &Tree, std::vector<UINT8> *pOut)
+{
+    pOut->clear ();
+    WriteAppleNode (Tree.Root, pOut);
 }
 
 // ===========================================================================
@@ -773,9 +887,9 @@ DeviceTree::LoadBytes (UINT8 CONST *pData, size_t Len, DT_FORMAT Fmt, std::strin
 {
     if (Fmt == DtFormatUnknown) { Fmt = DetectFormat (pData, Len); }
     switch (Fmt) {
-        case DtFormatFdtBlob:   return ReadFdt (pData, Len, this, pError);
-        case DtFormatFdtSource: return ParseDts ((CHAR8 CONST *) pData, Len, this, pError);
-        case DtFormatAppleBinary:
+        case DtFormatFdtBlob:     return ReadFdt (pData, Len, this, pError);
+        case DtFormatFdtSource:   return ParseDts ((CHAR8 CONST *) pData, Len, this, pError);
+        case DtFormatAppleBinary: return ReadAppleDt (pData, Len, this, pError);
         case DtFormatAppleText:
         case DtFormatOpenFirmware:
             *pError = "this device-tree format reader is not implemented yet";
@@ -801,7 +915,16 @@ DeviceTree::Load (CHAR8 CONST *pPath, std::string *pError)
         return false;
     }
     std::fclose (pF);
-    return LoadBytes (Bytes.data (), Bytes.size (), DtFormatUnknown, pError);
+    // The Apple binary tree carries no magic, so when content detection is inconclusive fall
+    // back to the file-name extension (.adt -> Apple, .dtb -> blob, .dts -> source).
+    DT_FORMAT Fmt = DetectFormat (Bytes.data (), Bytes.size ());
+    if (Fmt == DtFormatUnknown) {
+        std::string S = pPath;
+        if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".adt") == 0) { Fmt = DtFormatAppleBinary; }
+        else if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dtb") == 0) { Fmt = DtFormatFdtBlob; }
+        else if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dts") == 0) { Fmt = DtFormatFdtSource; }
+    }
+    return LoadBytes (Bytes.data (), Bytes.size (), Fmt, pError);
 }
 
 bool
@@ -809,6 +932,10 @@ DeviceTree::EmitBytes (DT_FORMAT Fmt, std::vector<UINT8> *pOut, std::string *pEr
 {
     if (Fmt == DtFormatFdtBlob) {
         WriteFdt (*this, pOut);
+        return true;
+    }
+    if (Fmt == DtFormatAppleBinary) {
+        WriteAppleDt (*this, pOut);
         return true;
     }
     *pError = "binary emission for this format is not implemented yet";
