@@ -722,7 +722,19 @@ if(TARGET interp_backend)
   add_test(NAME run.alu8086 COMMAND sh -c
     "printf '\\xb8\\x0f\\x00\\x83\\xe0\\x06\\x83\\xc8\\x30\\xf4' > '${CMAKE_BINARY_DIR}/alu8086.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/alu8086.bin' --arch v20 | grep -q 'AX =0036'")
+
+  # NEC V20/V30-specific bit instruction SET1 r/m,CL: MOV AX,0 ; MOV CX,4 ; SET1 AX,CL -> bit 4.
+  add_test(NAME run.nec.set1 COMMAND sh -c
+    "printf '\\xb8\\x00\\x00\\xb9\\x04\\x00\\x0f\\x14\\xc0\\xf4' > '${CMAKE_BINARY_DIR}/set1.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/set1.bin' --arch v20 | grep -q 'AX =0010'")
 endif()
+
+# The NEC V20/V30-specific instruction set disassembles (bit ops, BCD-string, nibble, bit-field).
+add_test(NAME disasm.nec COMMAND sh -c
+  "printf '\\x0f\\x14\\xc3\\x0f\\x28\\xc3\\x0f\\x20\\x0f\\x33\\xc1' > '${CMAKE_BINARY_DIR}/nec.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/nec.bin' --arch v20 --count 4 > '${CMAKE_BINARY_DIR}/nec.out' && \
+   grep -q 'set1' '${CMAKE_BINARY_DIR}/nec.out' && grep -q 'rol4' '${CMAKE_BINARY_DIR}/nec.out' && \
+   grep -q 'add4s' '${CMAKE_BINARY_DIR}/nec.out' && grep -q 'ext' '${CMAKE_BINARY_DIR}/nec.out'")
 
 # NEC V20 8080 emulation mode: BRKEM drops into 8080 code decoded by the SAME shared i8080 core,
 # RETEM returns to native V20. One core, reused -- not a parallel implementation.

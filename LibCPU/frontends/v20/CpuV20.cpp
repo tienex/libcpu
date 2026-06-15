@@ -278,12 +278,21 @@ public:
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0x0F) {                                 // NEC 0F-prefixed instructions
             UINT8 Sub = m_pCode[Pc + 1];
+            UINT8 Mrm = m_pCode[Pc + 2];
             if (Sub == 0xFF) {                                   // BRKEM imm8: enter 8080 emulation mode
                 Len = 3; m_In8080 = true; m_BrkemPc = Pc;
             } else if (Sub == 0xED) {                            // CALLN imm8: native call from 8080 mode
                 Len = 3;
+            } else if (Sub == 0x10 || Sub == 0x12 || Sub == 0x14 || Sub == 0x16 ||   // bit r/m,CL
+                       Sub == 0x28 || Sub == 0x2A || Sub == 0x31 || Sub == 0x33) {   // ROL4/ROR4, INS/EXT
+                Len = 2 + RmLen (Mrm);
+            } else if (Sub == 0x18 || Sub == 0x1A || Sub == 0x1C || Sub == 0x1E ||   // bit r/m,imm8
+                       Sub == 0x39 || Sub == 0x3B) {                                  // INS/EXT reg,imm
+                Len = 2 + RmLen (Mrm) + 1;
+            } else if (Sub == 0x20 || Sub == 0x22 || Sub == 0x26) {                  // ADD4S/SUB4S/CMP4S
+                Len = 2;
             } else {
-                Len = 4;                                         // bit op: 0F xx modrm ib
+                Len = 4;                                         // legacy bit op: 0F xx modrm ib
             }
         } else {
             Len = 1;                                             // unknown: treat as 1-byte, continue
@@ -376,14 +385,29 @@ public:
         } else if (Op == 0x98) { std::snprintf (pLine, MaxLine, "cbw");
         } else if (Op == 0x99) { std::snprintf (pLine, MaxLine, "cwd");
         } else if (Op == 0x0F) {
-            CHAR8 CONST *pMnem = "?1";
-            switch (m_pCode[Pc + 1]) {
-            case 0x19: pMnem = "test1"; break;
-            case 0x1B: pMnem = "clr1";  break;
-            case 0x1D: pMnem = "set1";  break;
-            case 0x1F: pMnem = "not1";  break;
+            UINT8 Sub = m_pCode[Pc + 1];
+            CHAR8 CONST *pMnem = nullptr;
+            switch (Sub) {
+            case 0x10: case 0x18: case 0x19: pMnem = "test1"; break;
+            case 0x12: case 0x1A: case 0x1B: pMnem = "clr1";  break;
+            case 0x14: case 0x1C: case 0x1D: pMnem = "set1";  break;
+            case 0x16: case 0x1E: case 0x1F: pMnem = "not1";  break;
+            case 0x20: pMnem = "add4s"; break;
+            case 0x22: pMnem = "sub4s"; break;
+            case 0x26: pMnem = "cmp4s"; break;
+            case 0x28: pMnem = "rol4";  break;
+            case 0x2A: pMnem = "ror4";  break;
+            case 0x31: case 0x39: pMnem = "ins"; break;
+            case 0x33: case 0x3B: pMnem = "ext"; break;
             }
-            std::snprintf (pLine, MaxLine, "%s %s,%u", pMnem, RegName (m_pCode[Pc + 2] & 7), m_pCode[Pc + 3] & 15);
+            if (pMnem == nullptr) {
+                std::snprintf (pLine, MaxLine, "db 0x0f,0x%02x", Sub);
+            } else if (Sub == 0x20 || Sub == 0x22 || Sub == 0x26) {
+                std::snprintf (pLine, MaxLine, "%s", pMnem);     // packed-BCD string op (implied SI/DI)
+            } else {
+                CHAR8 CONST *Rm = ((m_pCode[Pc + 2] >> 6) == 3) ? RegName (m_pCode[Pc + 2] & 7) : "[mem]";
+                std::snprintf (pLine, MaxLine, "%s %s", pMnem, Rm);
+            }
         } else {
             std::snprintf (pLine, MaxLine, "db 0x%02x", Op);
         }
@@ -717,30 +741,65 @@ public:
             pSysm->Release ();
             break;
         }
-        case 0x0F: {                                               // NEC SET1/CLR1/NOT1/TEST1 r/m16,imm8
-            UINT8  Op2 = m_pCode[Pc + 1];
-            UINT32 Rm  = m_pCode[Pc + 2] & 7;
-            UINT32 Bit = m_pCode[Pc + 3] & 15;
-            ComPtr<ICpuValue> R;    pE->GetRegister (Rm, 16, &R);
-            ComPtr<ICpuValue> Mask; pE->ConstInt (16, (UINT16) (1u << Bit), &Mask);
-            ComPtr<ICpuValue> Res;
-            switch (Op2) {
-            case 0x1D: pE->BinaryOp (BinOr,  R, Mask, &Res); pE->PutRegister (Rm, Res, 16, FALSE); break;  // SET1
-            case 0x1F: pE->BinaryOp (BinXor, R, Mask, &Res); pE->PutRegister (Rm, Res, 16, FALSE); break;  // NOT1
-            case 0x1B: {                                                                                   // CLR1
-                ComPtr<ICpuValue> NMask; pE->ConstInt (16, (UINT16) (~(1u << Bit)), &NMask);
-                pE->BinaryOp (BinAnd, R, NMask, &Res);
-                pE->PutRegister (Rm, Res, 16, FALSE);
+        case 0x0F: {                                               // NEC V20/V30-specific instructions
+            UINT8 Op2 = m_pCode[Pc + 1];
+
+            // Canonical bit instructions: TEST1/CLR1/SET1/NOT1 on r/m16, bit position from CL
+            // (0F 10/12/14/16) or an imm8 (0F 18/1A/1C/1E). modrm is at Pc+2.
+            if ((Op2 >= 0x10 && Op2 <= 0x16 && (Op2 & 1) == 0) ||
+                (Op2 >= 0x18 && Op2 <= 0x1E && (Op2 & 1) == 0)) {
+                UINT8 M = m_pCode[Pc + 2];
+                ComPtr<ICpuValue> Rm; EmitRmRead (pE, M, Pc + 2, &Rm);
+                ComPtr<ICpuValue> Mask;
+                if (Op2 & 0x08) {                                  // imm8 form
+                    UINT8 Bit = m_pCode[Pc + 2 + RmLen (M)] & 15;
+                    pE->ConstInt (16, (UINT16) (1u << Bit), &Mask);
+                } else {                                           // CL form
+                    ComPtr<ICpuValue> Cl; pE->GetRegister (RegV20CX, 16, &Cl);
+                    ComPtr<ICpuValue> F;  pE->ConstInt (16, 15, &F);
+                    ComPtr<ICpuValue> Sh; pE->BinaryOp (BinAnd, Cl, F, &Sh);
+                    ComPtr<ICpuValue> One;pE->ConstInt (16, 1, &One);
+                    pE->BinaryOp (BinShl, One, Sh, &Mask);
+                }
+                UINT8 Kind = Op2 & 0x06;                           // 0=TEST1,2=CLR1,4=SET1,6=NOT1
+                if (Kind == 0x04) {                                // SET1
+                    ComPtr<ICpuValue> R; pE->BinaryOp (BinOr, Rm, Mask, &R); EmitRmWrite (pE, M, Pc + 2, R);
+                } else if (Kind == 0x02) {                         // CLR1
+                    ComPtr<ICpuValue> NM; pE->UnaryOp (UnCom, Mask, &NM);
+                    ComPtr<ICpuValue> R;  pE->BinaryOp (BinAnd, Rm, NM, &R); EmitRmWrite (pE, M, Pc + 2, R);
+                } else if (Kind == 0x06) {                         // NOT1
+                    ComPtr<ICpuValue> R; pE->BinaryOp (BinXor, Rm, Mask, &R); EmitRmWrite (pE, M, Pc + 2, R);
+                } else {                                           // TEST1 -> ZF = (bit == 0)
+                    ComPtr<ICpuValue> T;    pE->BinaryOp (BinAnd, Rm, Mask, &T);
+                    ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+                    ComPtr<ICpuValue> ZF;   pE->Compare (CmpEq, T, Zero, &ZF);
+                    pE->SetFlag (FlagZero, ZF);
+                }
                 break;
             }
-            case 0x19: {                                                                                   // TEST1 -> ZF
-                ComPtr<ICpuValue> T;    pE->BinaryOp (BinAnd, R, Mask, &T);
-                ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
-                ComPtr<ICpuValue> ZF;   pE->Compare (CmpEq, T, Zero, &ZF);
-                pE->SetFlag (FlagZero, ZF);
+
+            // Legacy register-direct bit ops (0F 19/1B/1D/1F r,imm8) kept for back-compat.
+            if (Op2 == 0x19 || Op2 == 0x1B || Op2 == 0x1D || Op2 == 0x1F) {
+                UINT32 Rm  = m_pCode[Pc + 2] & 7;
+                UINT32 Bit = m_pCode[Pc + 3] & 15;
+                ComPtr<ICpuValue> R;    pE->GetRegister (Rm, 16, &R);
+                ComPtr<ICpuValue> Mask; pE->ConstInt (16, (UINT16) (1u << Bit), &Mask);
+                ComPtr<ICpuValue> Res;
+                if (Op2 == 0x1D)      { pE->BinaryOp (BinOr,  R, Mask, &Res); pE->PutRegister (Rm, Res, 16, FALSE); }
+                else if (Op2 == 0x1F) { pE->BinaryOp (BinXor, R, Mask, &Res); pE->PutRegister (Rm, Res, 16, FALSE); }
+                else if (Op2 == 0x1B) { ComPtr<ICpuValue> NM; pE->ConstInt (16, (UINT16) (~(1u << Bit)), &NM);
+                                        pE->BinaryOp (BinAnd, R, NM, &Res); pE->PutRegister (Rm, Res, 16, FALSE); }
+                else { ComPtr<ICpuValue> T; pE->BinaryOp (BinAnd, R, Mask, &T);
+                       ComPtr<ICpuValue> Z; pE->ConstInt (16, 0, &Z);
+                       ComPtr<ICpuValue> ZF; pE->Compare (CmpEq, T, Z, &ZF); pE->SetFlag (FlagZero, ZF); }
                 break;
             }
-            }
+
+            // ROL4/ROR4 (0F 28/2A, nibble rotate of a byte), ADD4S/SUB4S/CMP4S (0F 20/22/26,
+            // packed-BCD string ops on SI/DI), INS/EXT (0F 31/33/39/3B, bit-field insert/
+            // extract): recognized NEC instructions; their full semantics need the 8-bit r/m
+            // and string-loop machinery still to be added, so here they decode/disassemble but
+            // execute as no-ops.
             break;
         }
         default:
