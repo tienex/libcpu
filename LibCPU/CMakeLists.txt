@@ -737,7 +737,19 @@ if(TARGET interp_backend)
   add_test(NAME run.shift8086 COMMAND sh -c
     "printf '\\xb8\\x03\\x00\\xd1\\xe0\\xd1\\xe0\\xd1\\xe8\\xf4' > '${CMAKE_BINARY_DIR}/shift8086.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/shift8086.bin' --arch v20 | grep -q 'AX =0006'")
+
+  # grp3 division: MOV AX,100 ; MOV BL,7 ; DIV BL -> AL=14 (quotient), AH=2 (remainder) = 0x020E.
+  add_test(NAME run.grp3 COMMAND sh -c
+    "printf '\\xb8\\x64\\x00\\xb3\\x07\\xf6\\xf3\\xf4' > '${CMAKE_BINARY_DIR}/grp3.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/grp3.bin' --arch v20 | grep -q 'AX =020e'")
 endif()
+
+# grp3/grp5 disassemble (mul, neg, indirect call, inc r/m).
+add_test(NAME disasm.grp COMMAND sh -c
+  "printf '\\xf6\\xe3\\xf7\\xd8\\xff\\xd0\\xfe\\xc0' > '${CMAKE_BINARY_DIR}/grp.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/grp.bin' --arch v20 --count 4 > '${CMAKE_BINARY_DIR}/grp.out' && \
+   grep -q 'mul bl' '${CMAKE_BINARY_DIR}/grp.out' && grep -q 'neg ax' '${CMAKE_BINARY_DIR}/grp.out' && \
+   grep -q 'call ax' '${CMAKE_BINARY_DIR}/grp.out'")
 
 # The NEC V20/V30-specific instruction set disassembles (bit ops, BCD-string, nibble, bit-field).
 add_test(NAME disasm.nec COMMAND sh -c

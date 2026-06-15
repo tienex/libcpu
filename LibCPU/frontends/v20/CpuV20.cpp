@@ -309,6 +309,17 @@ public:
             Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
         } else if ((Op < 0x40 && (Op & 7) == 4) || Op == 0xA8) {
             Len = 2;                                             // ALU AL,imm8 / TEST AL,imm8
+        } else if (Op == 0xF6) {                                 // grp3 byte; /0,/1 carry an imm8
+            UINT8 M = m_pCode[Pc + 1]; Len = 1 + RmLen (M) + (((M >> 3) & 7) <= 1 ? 1 : 0);
+        } else if (Op == 0xF7) {                                 // grp3 word; /0,/1 carry an imm16
+            UINT8 M = m_pCode[Pc + 1]; Len = 1 + RmLen (M) + (((M >> 3) & 7) <= 1 ? 2 : 0);
+        } else if (Op == 0xFE) {                                 // grp4 INC/DEC r/m8
+            Len = 1 + RmLen (m_pCode[Pc + 1]);
+        } else if (Op == 0xFF) {                                 // grp5 INC/DEC/CALL/JMP/PUSH r/m16
+            UINT8 M = m_pCode[Pc + 1]; UINT8 Sub = (M >> 3) & 7;
+            Len = 1 + RmLen (M);
+            if (Sub == 2 || Sub == 4) { Tag = TagReturn; }       // near indirect CALL/JMP -> dispatcher
+            else if (Sub == 3 || Sub == 5) { Tag = TagTrap; }    // far indirect CALL/JMP
         } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA1 || Op == 0xA3 || Op == 0xA9) {
             Len = 3;                                             // acc,imm16 / MOV AX,[addr16] / TEST AX,imm16
         } else if (Op == 0xEB) {                                 // JMP rel8
@@ -463,6 +474,18 @@ public:
         } else if (Op == 0xFD) { std::snprintf (pLine, MaxLine, "std");
         } else if (Op == 0x98) { std::snprintf (pLine, MaxLine, "cbw");
         } else if (Op == 0x99) { std::snprintf (pLine, MaxLine, "cwd");
+        } else if (Op == 0xF6 || Op == 0xF7) {
+            static CHAR8 CONST *kG3[8] = { "test","test","not","neg","mul","imul","div","idiv" };
+            UINT8 M = m_pCode[Pc + 1]; UINT8 Sub = (M >> 3) & 7;
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? ((Op & 1) ? RegName (M & 7) : Reg8Name (M & 7)) : "[mem]";
+            if (Sub <= 1 && (Op & 1)) { std::snprintf (pLine, MaxLine, "test %s,0x%04x", Rm, Imm16At (m_pCode, Pc + 1 + RmLen (M))); }
+            else if (Sub <= 1)        { std::snprintf (pLine, MaxLine, "test %s,0x%02x", Rm, m_pCode[Pc + 1 + RmLen (M)]); }
+            else                      { std::snprintf (pLine, MaxLine, "%s %s", kG3[Sub], Rm); }
+        } else if (Op == 0xFE || Op == 0xFF) {
+            static CHAR8 CONST *kG5[8] = { "inc","dec","call","callf","jmp","jmpf","push","?" };
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? ((Op == 0xFF) ? RegName (M & 7) : Reg8Name (M & 7)) : "[mem]";
+            std::snprintf (pLine, MaxLine, "%s %s", kG5[(M >> 3) & 7], Rm);
         } else if (Op == 0xD0 || Op == 0xD1 || Op == 0xD2 || Op == 0xD3 || Op == 0xC0 || Op == 0xC1) {
             static CHAR8 CONST *kSh[8] = { "rol","ror","rcl","rcr","shl","shr","sal","sar" };
             UINT8 M = m_pCode[Pc + 1];
@@ -642,6 +665,114 @@ public:
             ComPtr<ICpuValue> Res; EmitShift (pE, Sub, W, Val, Count, &Res);
             if (W16) { EmitRmWrite (pE, M, Pc + 1, Res); } else { EmitRmWrite8 (pE, M, Pc + 1, Res); }
             return S_OK;
+        }
+        // grp3: F6 (byte) / F7 (word). /0,/1 TEST imm; /2 NOT; /3 NEG; /4 MUL; /5 IMUL; /6 DIV; /7 IDIV.
+        if (Op == 0xF6 || Op == 0xF7) {
+            UINT8  M    = m_pCode[Pc + 1];
+            UINT8  Sub  = (M >> 3) & 7;
+            bool   W16  = (Op & 1) != 0;
+            UINT32 W    = W16 ? 16 : 8;
+            ComPtr<ICpuValue> Rm; if (W16) { EmitRmRead (pE, M, Pc + 1, &Rm); } else { EmitRmRead8 (pE, M, Pc + 1, &Rm); }
+            if (Sub == 0 || Sub == 1) {                            // TEST r/m, imm (flags only)
+                CPU_ADDR IOff = Pc + 1 + RmLen (M);
+                ComPtr<ICpuValue> Imm; if (W16) { pE->ConstInt (16, Imm16At (m_pCode, IOff), &Imm); } else { pE->ConstInt (8, m_pCode[IOff], &Imm); }
+                ComPtr<ICpuValue> Res; if (W16) { EmitAlu16 (pE, 4, Rm, Imm, &Res); } else { EmitAlu8 (pE, 4, Rm, Imm, &Res); }
+            } else if (Sub == 2) {                                 // NOT (no flags)
+                ComPtr<ICpuValue> R; pE->UnaryOp (UnCom, Rm, &R);
+                if (W16) { EmitRmWrite (pE, M, Pc + 1, R); } else { EmitRmWrite8 (pE, M, Pc + 1, R); }
+            } else if (Sub == 3) {                                 // NEG: r/m = 0 - r/m
+                ComPtr<ICpuValue> Zero; pE->ConstInt (W, 0, &Zero);
+                ComPtr<ICpuValue> Res;  if (W16) { EmitAlu16 (pE, 5, Zero, Rm, &Res); } else { EmitAlu8 (pE, 5, Zero, Rm, &Res); }
+                if (W16) { EmitRmWrite (pE, M, Pc + 1, Res); } else { EmitRmWrite8 (pE, M, Pc + 1, Res); }
+            } else if (Sub == 4 || Sub == 5) {                     // MUL / IMUL
+                CPU_CAST Ext = (Sub == 5) ? CastSExt : CastZExt;
+                if (!W16) {                                        // AX = AL * r/m8
+                    ComPtr<ICpuValue> Al; EmitReg8Read (pE, 0, &Al);
+                    ComPtr<ICpuValue> A16; pE->Cast (Ext, Al, 16, &A16);
+                    ComPtr<ICpuValue> R16; pE->Cast (Ext, Rm, 16, &R16);
+                    ComPtr<ICpuValue> P;   pE->BinaryOp (BinMul, A16, R16, &P);
+                    pE->PutRegister (RegV20AX, P, 16, FALSE);
+                } else {                                           // DX:AX = AX * r/m16
+                    ComPtr<ICpuValue> Ax;  pE->GetRegister (RegV20AX, 16, &Ax);
+                    ComPtr<ICpuValue> A32; pE->Cast (Ext, Ax, 32, &A32);
+                    ComPtr<ICpuValue> R32; pE->Cast (Ext, Rm, 32, &R32);
+                    ComPtr<ICpuValue> P;   pE->BinaryOp (BinMul, A32, R32, &P);
+                    ComPtr<ICpuValue> Lo;  pE->Cast (CastTrunc, P, 16, &Lo); pE->PutRegister (RegV20AX, Lo, 16, FALSE);
+                    ComPtr<ICpuValue> Sh;  pE->ConstInt (32, 16, &Sh);
+                    ComPtr<ICpuValue> Hi;  pE->BinaryOp (BinLShr, P, Sh, &Hi);
+                    ComPtr<ICpuValue> Dx;  pE->Cast (CastTrunc, Hi, 16, &Dx); pE->PutRegister (RegV20DX, Dx, 16, FALSE);
+                }
+            } else {                                               // DIV (6) / IDIV (7)
+                bool Signed = (Sub == 7);
+                CPU_BINOP DivOp = Signed ? BinSDiv : BinUDiv;
+                CPU_BINOP RemOp = Signed ? BinSRem : BinURem;
+                CPU_CAST  Ext   = Signed ? CastSExt : CastZExt;
+                if (!W16) {                                        // AX / r/m8 -> AL=quo, AH=rem
+                    ComPtr<ICpuValue> Ax;  pE->GetRegister (RegV20AX, 16, &Ax);
+                    ComPtr<ICpuValue> R16; pE->Cast (Ext, Rm, 16, &R16);
+                    ComPtr<ICpuValue> Q;   pE->BinaryOp (DivOp, Ax, R16, &Q);
+                    ComPtr<ICpuValue> Rr;  pE->BinaryOp (RemOp, Ax, R16, &Rr);
+                    ComPtr<ICpuValue> Q8;  pE->Cast (CastTrunc, Q, 8, &Q8);  EmitReg8Write (pE, 0, Q8);
+                    ComPtr<ICpuValue> R8;  pE->Cast (CastTrunc, Rr, 8, &R8); EmitReg8Write (pE, 4, R8);
+                } else {                                           // DX:AX / r/m16 -> AX=quo, DX=rem
+                    ComPtr<ICpuValue> Dx;  pE->GetRegister (RegV20DX, 16, &Dx);
+                    ComPtr<ICpuValue> Ax;  pE->GetRegister (RegV20AX, 16, &Ax);
+                    ComPtr<ICpuValue> Dx32;pE->Cast (CastZExt, Dx, 32, &Dx32);
+                    ComPtr<ICpuValue> Ax32;pE->Cast (CastZExt, Ax, 32, &Ax32);
+                    ComPtr<ICpuValue> Sh;  pE->ConstInt (32, 16, &Sh);
+                    ComPtr<ICpuValue> HiS; pE->BinaryOp (BinShl, Dx32, Sh, &HiS);
+                    ComPtr<ICpuValue> Num; pE->BinaryOp (BinOr, HiS, Ax32, &Num);
+                    ComPtr<ICpuValue> R32; pE->Cast (Ext, Rm, 32, &R32);
+                    ComPtr<ICpuValue> Q;   pE->BinaryOp (DivOp, Num, R32, &Q);
+                    ComPtr<ICpuValue> Rr;  pE->BinaryOp (RemOp, Num, R32, &Rr);
+                    ComPtr<ICpuValue> Q16; pE->Cast (CastTrunc, Q, 16, &Q16);  pE->PutRegister (RegV20AX, Q16, 16, FALSE);
+                    ComPtr<ICpuValue> R16; pE->Cast (CastTrunc, Rr, 16, &R16); pE->PutRegister (RegV20DX, R16, 16, FALSE);
+                }
+            }
+            return S_OK;
+        }
+        // grp4 (FE) / grp5 (FF): INC/DEC/CALL/JMP/PUSH r/m.
+        if (Op == 0xFE || Op == 0xFF) {
+            UINT8  M   = m_pCode[Pc + 1];
+            UINT8  Sub = (M >> 3) & 7;
+            bool   W16 = (Op == 0xFF);
+            UINT32 Len = 1 + RmLen (M);
+            if (Sub == 0 || Sub == 1) {                            // INC / DEC r/m
+                ComPtr<ICpuValue> Rm;  if (W16) { EmitRmRead (pE, M, Pc + 1, &Rm); } else { EmitRmRead8 (pE, M, Pc + 1, &Rm); }
+                ComPtr<ICpuValue> One; pE->ConstInt (W16 ? 16 : 8, 1, &One);
+                ComPtr<ICpuValue> Res; pE->BinaryOp (Sub == 0 ? BinAdd : BinSub, Rm, One, &Res);
+                if (W16) { EmitRmWrite (pE, M, Pc + 1, Res); EmitIncDecOverflow (pE, Rm, Sub == 0 ? 0x7FFF : 0x8000); EmitZSF (pE, Res); }
+                else     { EmitRmWrite8 (pE, M, Pc + 1, Res); EmitZSF8 (pE, Res); }
+                return S_OK;
+            }
+            if (Sub == 6) {                                        // PUSH r/m16
+                ComPtr<ICpuValue> Rm; EmitRmRead (pE, M, Pc + 1, &Rm);
+                ComPtr<ICpuValue> SP; pE->GetRegister (RegV20SP, 16, &SP);
+                ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
+                ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
+                pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+                ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
+                pE->Store (Rm, Lin, 16);
+                return S_OK;
+            }
+            if (Sub == 2 || Sub == 4) {                            // CALL / JMP r/m16 (near indirect)
+                ComPtr<ICpuValue> Target; EmitRmRead (pE, M, Pc + 1, &Target);
+                if (Sub == 2) {                                    // push return address
+                    ComPtr<ICpuValue> SP; pE->GetRegister (RegV20SP, 16, &SP);
+                    ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
+                    ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
+                    pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+                    ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+                    ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
+                    pE->Store (Ret, Lin, 16);
+                }
+                ICpuSmcEmitter *pFlow = nullptr;                   // dispatch to the runtime target
+                if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                    pFlow->SetDispatchTarget (Target); pFlow->Release ();
+                }
+                return S_OK;
+            }
+            return S_OK;                                           // /3,/5 far indirect: handled as a trap
         }
 
         switch (Op) {
