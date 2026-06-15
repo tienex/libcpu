@@ -652,11 +652,14 @@ add_test(NAME know.derive COMMAND sh -c
    '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/know.klib'")
 set_tests_properties(know.derive PROPERTIES PASS_REGULAR_EXPRESSION "4 exported")
 
-# C++ export matching: the stub exports only the mangled __Z6helperd; the catalog must
-# demangle it to "helper" to mark the header's `helper` prototype exported (1 exported).
-add_test(NAME know.cppmatch COMMAND lcx know derive
-  "${CMAKE_CURRENT_SOURCE_DIR}/test/cppmatch.h" "${CMAKE_CURRENT_SOURCE_DIR}/test/cppmatch.tbd")
-set_tests_properties(know.cppmatch PROPERTIES PASS_REGULAR_EXPRESSION "1 exported")
+# C++ export matching + bindable symbol: the stub exports only the mangled __Z6helperd; the
+# catalog must demangle it to "helper" to mark the prototype exported AND record the mangled
+# symbol to bind to. Derive to an archive, reload it, and check both survive the round-trip.
+add_test(NAME know.cppmatch COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' know derive '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmatch.h' \
+       '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmatch.tbd' -o '${CMAKE_BINARY_DIR}/cppmatch.klib' && \
+   '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/cppmatch.klib'")
+set_tests_properties(know.cppmatch PROPERTIES PASS_REGULAR_EXPRESSION "helper  -> __Z6helperd")
 
 # 8-bit immediate moves (B0..B7, MOV reg8,imm8) on the V20 frontend: a fixture of four
 # such moves (incl. the high-byte forms ah/bh) must disassemble correctly.

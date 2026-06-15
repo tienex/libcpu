@@ -36,6 +36,7 @@ typedef struct _HOST_ENTITY {
     std::vector<HEADER_PARAM>  Params;
     bool                       Variadic;
     bool                       Exported;     // a matching symbol is present in the library
+    std::string               Symbol;       // the actual export symbol to bind (mangled, for C++)
 } HOST_ENTITY;
 
 //

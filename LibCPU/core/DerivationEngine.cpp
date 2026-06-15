@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <set>
+#include <map>
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
@@ -16,18 +16,23 @@ namespace LibCPU {
 // symbol minus a leading underscore (Mach-O C convention), and -- so C++ exports match their
 // header prototypes -- the qualified name of the demangled symbol (e.g. "_ZN3gfx4drawEii" ->
 // "gfx::draw"), which is the part before the parameter list.
+// Map each name a library makes callable to the actual export symbol that backs it. For each
+// export S the keys are: S itself, S minus a leading underscore (Mach-O C convention) and --
+// so C++ exports match their header prototypes -- the qualified name of the demangled symbol
+// (e.g. "_ZN3gfx4drawEii" -> "gfx::draw"). The value is always the raw symbol S, so a matched
+// prototype can be bound to the real (mangled) export. First writer wins on collisions.
 static void
-CollectCallable (SymbolReader CONST &Symbols, std::set<std::string> *pOut)
+CollectCallable (SymbolReader CONST &Symbols, std::map<std::string, std::string> *pOut)
 {
     for (std::string CONST &S : Symbols.Symbols ()) {
-        pOut->insert (S);
-        if (!S.empty () && S[0] == '_') { pOut->insert (S.substr (1)); }
+        pOut->emplace (S, S);
+        if (!S.empty () && S[0] == '_') { pOut->emplace (S.substr (1), S); }
         std::string D = DemangleSymbol (S);
         if (D != S) {
             size_t Paren = D.find ('(');                     // drop the parameter list, if any
             std::string Q = (Paren == std::string::npos) ? D : D.substr (0, Paren);
             while (!Q.empty () && Q.back () == ' ') { Q.pop_back (); }
-            if (!Q.empty ()) { pOut->insert (Q); }
+            if (!Q.empty ()) { pOut->emplace (Q, S); }
         }
     }
 }
@@ -38,7 +43,7 @@ KnowledgeCatalog::Derive (HeaderParser CONST &Headers, SymbolReader CONST &Symbo
     m_Library = Symbols.InstallName ();
     m_Structs = Headers.Structs ();
     m_Functions.clear ();
-    std::set<std::string> Callable;
+    std::map<std::string, std::string> Callable;
     CollectCallable (Symbols, &Callable);
     for (HEADER_FUNCTION CONST &Fn : Headers.Functions ()) {
         HOST_ENTITY E;
@@ -46,7 +51,10 @@ KnowledgeCatalog::Derive (HeaderParser CONST &Headers, SymbolReader CONST &Symbo
         E.ReturnType = Fn.ReturnType;
         E.Params     = Fn.Params;
         E.Variadic   = Fn.Variadic;
-        E.Exported   = Callable.count (Fn.Name) != 0 || Callable.count (std::string ("_") + Fn.Name) != 0;
+        auto It = Callable.find (Fn.Name);
+        if (It == Callable.end ()) { It = Callable.find (std::string ("_") + Fn.Name); }
+        E.Exported   = It != Callable.end ();
+        E.Symbol     = E.Exported ? It->second : Fn.Name;    // the real export symbol to bind
         m_Functions.push_back (std::move (E));
     }
 }
@@ -102,12 +110,12 @@ KnowledgeCatalog::Save (CHAR8 CONST *pPath, std::string *pError) CONST
     Manifest += "functions\t" + std::to_string (m_Functions.size ()) + "\n";
     Manifest += "structs\t" + std::to_string (m_Structs.size ()) + "\n";
 
-    // functions: <exported>\t<variadic>\t<returnType>\t<name>[\t<ptype>=<pname>]...
+    // functions: <exported>\t<variadic>\t<returnType>\t<name>\t<symbol>[\t<ptype>=<pname>]...
     std::string Funcs;
     for (HOST_ENTITY CONST &E : m_Functions) {
         Funcs += (E.Exported ? "1\t" : "0\t");
         Funcs += (E.Variadic ? "1\t" : "0\t");
-        Funcs += E.ReturnType + "\t" + E.Name;
+        Funcs += E.ReturnType + "\t" + E.Name + "\t" + E.Symbol;
         for (HEADER_PARAM CONST &P : E.Params) {
             Funcs += "\t" + P.Type + "=" + P.Name;
         }
@@ -145,13 +153,14 @@ ParseFuncLine (std::string CONST &Line, void *pCtx)
 {
     std::vector<HOST_ENTITY> *pFuncs = ((LoadCtx *) pCtx)->pFuncs;
     std::vector<std::string> F = SplitTabs (Line);
-    if (F.size () < 4) { return; }
+    if (F.size () < 5) { return; }
     HOST_ENTITY E;
     E.Exported   = F[0] == "1";
     E.Variadic   = F[1] == "1";
     E.ReturnType = F[2];
     E.Name       = F[3];
-    for (size_t I = 4; I < F.size (); I++) {
+    E.Symbol     = F[4];                                     // the export symbol to bind
+    for (size_t I = 5; I < F.size (); I++) {
         size_t Eq = F[I].find ('=');
         HEADER_PARAM P;
         P.Type = (Eq == std::string::npos) ? F[I] : F[I].substr (0, Eq);
@@ -221,22 +230,29 @@ CatalogBindHost (VOID *pCtx, CHAR8 CONST *pName)
     KnowledgeCatalog CONST *pCat = (KnowledgeCatalog CONST *) pCtx;
     // Bind only what the catalog knows AND the library actually exports -- the catalog is
     // the authority on what is callable.
-    bool Exported = false;
-    bool Known = false;
+    HOST_ENTITY CONST *pEnt = nullptr;
     for (HOST_ENTITY CONST &E : pCat->Functions ()) {
-        if (E.Name == pName) { Known = true; Exported = E.Exported; break; }
+        if (E.Name == pName) { pEnt = &E; break; }
     }
-    if (!Known || !Exported) {
+    if (pEnt == nullptr || !pEnt->Exported) {
         return nullptr;
     }
-    // Prefer an already-loaded definition (libc / libSystem live in the process image);
-    // otherwise dlopen the library the catalog was derived against.
-    if (VOID *p = dlsym (RTLD_DEFAULT, pName)) {
-        return p;
-    }
-    if (!pCat->Library ().empty ()) {
-        if (void *h = dlopen (pCat->Library ().c_str (), RTLD_NOW | RTLD_GLOBAL)) {
-            return dlsym (h, pName);
+    // The bind names to try, in order: the recorded export symbol (mangled for C++), the same
+    // with a leading underscore removed (dlsym omits the Mach-O '_'; harmless on ELF), and the
+    // plain entity name (legacy C). dlsym is tried in the process image first (libc / libSystem),
+    // then in the catalog's library, dlopen'd on demand.
+    std::string CONST &Sym = pEnt->Symbol.empty () ? pEnt->Name : pEnt->Symbol;
+    std::string Cands[3] = { Sym, (!Sym.empty () && Sym[0] == '_') ? Sym.substr (1) : Sym, pName };
+    void *Handle = nullptr;
+    for (int Pass = 0; Pass < 2; ++Pass) {
+        if (Pass == 1) {
+            if (pCat->Library ().empty ()) { break; }
+            Handle = dlopen (pCat->Library ().c_str (), RTLD_NOW | RTLD_GLOBAL);
+            if (Handle == nullptr) { break; }
+        }
+        for (std::string CONST &C : Cands) {
+            if (C.empty ()) { continue; }
+            if (VOID *p = dlsym (Pass == 0 ? RTLD_DEFAULT : Handle, C.c_str ())) { return p; }
         }
     }
     return nullptr;

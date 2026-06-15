@@ -589,7 +589,11 @@ CmdKnowCatalog (int argc, char **argv)
         }
     }
     for (HOST_ENTITY CONST &E : Catalog.Functions ()) {
-        std::printf ("  [%s] %s %s\n", E.Exported ? "x" : " ", E.ReturnType.c_str (), E.Name.c_str ());
+        std::printf ("  [%s] %s %s", E.Exported ? "x" : " ", E.ReturnType.c_str (), E.Name.c_str ());
+        if (E.Exported && !E.Symbol.empty () && E.Symbol != E.Name) {
+            std::printf ("  -> %s", E.Symbol.c_str ());     // the (mangled) export it binds to
+        }
+        std::printf ("\n");
     }
     std::printf ("%u entit(y/ies), %u exported, %u struct(s)\n",
                  (UINT32) Catalog.Functions ().size (), Catalog.ExportedCount (),
