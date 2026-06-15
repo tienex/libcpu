@@ -311,6 +311,10 @@ if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
 endif()
 
+# ---- device-tree public C API exercised from C (proves the LC surface is C-callable) ----
+add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
+target_include_directories(dtapi PRIVATE core)
+
 # ---- second frontend (CHIP-8) through any backend bundle ----
 add_executable(loadchip8 test/loadchip8.cpp frontends/chip8/Chip8.cpp)
 target_include_directories(loadchip8 PRIVATE frontends/chip8 test)
@@ -400,6 +404,7 @@ endif()
 add_test(NAME native.v20 COMMAND nativedemo "${CMAKE_BINARY_DIR}/native_demo_exe")
 set_tests_properties(native.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
 list(APPEND LIBCPU_CHECK_DEPS nativedemo)
+list(APPEND LIBCPU_CHECK_DEPS dtapi)
 if(TARGET interp_backend)
   add_test(NAME lcx.aot COMMAND sh -c
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
@@ -718,6 +723,11 @@ add_test(NAME dt.openfirmware COMMAND sh -c
    '$<TARGET_FILE:lcx>' dt decompile '${CMAKE_BINARY_DIR}/dt-of.dtb' -o '${CMAKE_BINARY_DIR}/dt-of.ofd' && \
    grep -q 'phandle = 00000001' '${CMAKE_BINARY_DIR}/dt-of.ofd' && \
    '$<TARGET_FILE:lcx>' dt dump '${CMAKE_BINARY_DIR}/dt-of.ofd' | grep -q 'phandle = <0x1>'")
+
+# Device-tree public C API, exercised from a C program: build/mutate/emit/parse/navigate
+# through the LC-prefixed surface. Proves the library is genuinely usable from C.
+add_test(NAME dt.capi COMMAND dtapi)
+set_tests_properties(dt.capi PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets

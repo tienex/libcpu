@@ -25,8 +25,8 @@
   Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
 **/
 
-#ifndef LIBCPU_DEVICETREE_H
-#define LIBCPU_DEVICETREE_H
+#ifndef LIBCPU_CORE_DEVICETREE_H
+#define LIBCPU_CORE_DEVICETREE_H
 
 #include "LibCPU/Base.h"
 #include <string>
@@ -110,4 +110,4 @@ public:
 
 } // namespace LibCPU
 
-#endif // LIBCPU_DEVICETREE_H
+#endif // LIBCPU_CORE_DEVICETREE_H
