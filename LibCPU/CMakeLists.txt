@@ -773,7 +773,8 @@ if(TARGET interp_backend)
      grep -q 'PC/XT OK' '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q '\\.\\.\\.\\.\\.' '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q 'System RAM' '${CMAKE_BINARY_DIR}/machine-run.out' && \
-     grep -q 'BIOS ROM' '${CMAKE_BINARY_DIR}/machine-run.out'")
+     grep -q 'BIOS ROM' '${CMAKE_BINARY_DIR}/machine-run.out' && \
+     grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-run.out'")
 endif()
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),

@@ -118,6 +118,22 @@ DECLARE_INTERFACE_ (IInterruptController, IUnknown)
 };
 
 //
+// Capability: the component is a text display backed by a character framebuffer in memory
+// (e.g. the MDA at 0xB0000, 80x25, char+attribute pairs). GetFramebufferBase/Size locate the
+// framebuffer in the address space; RenderText draws the given framebuffer bytes as a screen.
+//
+DECLARE_INTERFACE_ (IDisplayDevice, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD_ (UINT32, GetFramebufferBase)(THIS) PURE;
+    STDMETHOD_ (UINT32, GetFramebufferSize)(THIS) PURE;
+    STDMETHOD (RenderText)(THIS_ IN UINT8 CONST *pFrameBuffer, UINT32 Len) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -132,6 +148,8 @@ inline constexpr IID IID_IMemoryDevice =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05 } };
 inline constexpr IID IID_IInterruptController =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } };
+inline constexpr IID IID_IDisplayDevice =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } };
 
 } // namespace LibCPU
 

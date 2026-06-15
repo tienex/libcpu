@@ -177,6 +177,16 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         for (CHAR8 CONST *p = pMsg; *p != '\0'; ++p) {
             Prog.push_back (0xB0); Prog.push_back ((UINT8) *p); Prog.push_back (0xEE);
         }
+        // Sign-on banner to the MDA text framebuffer: DS = 0xB000, then write each char+attr
+        // word to DS:[col*2] -- a memory-mapped write that lands at physical 0xB0000.
+        Prog.push_back (0xB8); Prog.push_back (0x00); Prog.push_back (0xB0);   // mov ax, 0xB000
+        Prog.push_back (0x8E); Prog.push_back (0xD8);                          // mov ds, ax
+        CHAR8 CONST *pScreen = "LIBCPU PC/XT 5160";
+        for (UINT16 Off = 0; *pScreen != '\0'; ++pScreen, Off = (UINT16) (Off + 2)) {
+            Prog.push_back (0xB8); Prog.push_back ((UINT8) *pScreen); Prog.push_back (0x07);   // mov ax, 0x07<<8|ch
+            Prog.push_back (0x89); Prog.push_back (0x06);                      // mov [disp16], ax
+            Prog.push_back ((UINT8) (Off & 0xFF)); Prog.push_back ((UINT8) (Off >> 8));
+        }
         UINT8 const PitAndIdle[] = {
             0xB0, 0x36, 0xE6, 0x43,  // mov al,0x36 ; out 0x43,al   PIT ch0 mode 3
             0xB0, 0xFF, 0xE6, 0x40,  // count low
@@ -196,6 +206,17 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                  R.Reason == LC_SYS_RESULT::Shutdown   ? "shutdown" :
                  R.Reason == LC_SYS_RESULT::StepBudget ? "step-budget" : "fault",
                  (unsigned long long) R.Interrupts, (unsigned long long) R.PortWrites);
+
+    // Render any text display from its framebuffer in memory (memory-mapped video).
+    for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+        IDisplayDevice *pDisp = nullptr;
+        D.pDevice->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
+        if (pDisp == nullptr) { continue; }
+        UINT32 Base = pDisp->GetFramebufferBase (), Size = pDisp->GetFramebufferSize ();
+        std::printf ("   --- %s, framebuffer 0x%05x ---\n", D.pDevice->GetName (), Base);
+        if ((UINT64) Base + Size <= Ram.size ()) { pDisp->RenderText (&Ram[Base], Size); }
+        pDisp->Release ();
+    }
 
     pArch->Release ();
     return 0;
