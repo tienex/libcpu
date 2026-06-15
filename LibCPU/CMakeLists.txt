@@ -17,6 +17,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 include(LibCPUUniversal)    # LIBCPU_UNIVERSAL_ARCHS + libcpu_lib_arches()
 include(LibCPUAddBackend)   # libcpu_add_backend()
+include(LibCPUAddDevice)    # libcpu_add_device()
 
 # ---- core framework: LibCPU.framework ----
 add_library(LibCPU SHARED src/LibCPULoader.cpp)
@@ -302,6 +303,7 @@ add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp core/ZooArchive.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
+  core/DeviceNode.cpp core/MachineBuilder.cpp
   frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp
   third_party/zstd/zstd.c)
 target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core third_party/zstd)
@@ -309,7 +311,11 @@ target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl ${CMAKE_DL_LIBS})   # dl for HeaderParser's dlopen(libclang)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
+  target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
 endif()
+
+# ---- hardware-component bundles (.device): each a COM object the machine builder matches ----
+libcpu_add_device(i8259_device i8259 MATCH "intel,i8259;pic" SOURCES devices/i8259/Pic8259.cpp)
 
 # ---- device-tree public C API exercised from C (proves the LC surface is C-callable) ----
 add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
@@ -405,6 +411,7 @@ add_test(NAME native.v20 COMMAND nativedemo "${CMAKE_BINARY_DIR}/native_demo_exe
 set_tests_properties(native.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
 list(APPEND LIBCPU_CHECK_DEPS nativedemo)
 list(APPEND LIBCPU_CHECK_DEPS dtapi)
+list(APPEND LIBCPU_CHECK_DEPS i8259_device)
 if(TARGET interp_backend)
   add_test(NAME lcx.aot COMMAND sh -c
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
@@ -728,6 +735,13 @@ add_test(NAME dt.openfirmware COMMAND sh -c
 # through the LC-prefixed surface. Proves the library is genuinely usable from C.
 add_test(NAME dt.capi COMMAND dtapi)
 set_tests_properties(dt.capi PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
+
+# Machine assembly by bundle matching: the builder reads each .device bundle's Info.plist
+# (LCDeviceMatch) and binds it to the PC/XT device tree. The 8259 PIC bundle must match the
+# pic@20 node on its "intel,i8259" compatible and expose the port-device capability via COM.
+add_test(NAME machine.match COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' | grep -q 'pic@20 .* i8259 .*intel,i8259'")
+set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets

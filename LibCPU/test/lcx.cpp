@@ -28,6 +28,7 @@
 #include "../core/HeaderParser.h"
 #include "../core/DerivationEngine.h"
 #include "../core/DeviceTree.h"
+#include "../core/MachineBuilder.h"
 #ifdef LIBCPU_HAVE_ZSTD
 #include "../core/ZooArchive.h"
 #endif
@@ -1050,6 +1051,61 @@ CmdDt (int argc, char **argv)
     return 2;
 }
 
+// lcx machine -- assemble a machine from hardware-component bundles by matching a device tree
+// against the bundles' Info.plist personalities, then list the components COM made.
+static int
+CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
+{
+    using namespace LibCPU;
+    CHAR8 CONST *pDts = Positional (argc, argv, 0);
+    if (pDts == nullptr) {
+        std::printf ("usage: lcx machine <machine.dts> [--bundles <dir>]\n");
+        return 2;
+    }
+    CHAR8 CONST *pBundles = Opt (argc, argv, "--bundles", nullptr);
+    std::string BundlesDir;
+    if (pBundles != nullptr) {
+        BundlesDir = pBundles;
+    } else {
+        std::string Exe = pArgv0 != nullptr ? pArgv0 : ".";
+        size_t Slash = Exe.find_last_of ('/');
+        BundlesDir = (Slash == std::string::npos) ? std::string (".") : Exe.substr (0, Slash);
+    }
+
+    DeviceTree Tree;
+    std::string Error;
+    if (!Tree.Load (pDts, &Error)) { std::printf ("lcx machine: %s\n", Error.c_str ()); return 2; }
+
+    MachineBuilder Builder;
+    Builder.AddBundleDirectory (BundlesDir.c_str ());
+    if (!Builder.Build (Tree, &Error)) { std::printf ("lcx machine: %s\n", Error.c_str ()); return 2; }
+
+    std::string Model = "machine";
+    DT_PROP *pModel = Tree.Root.FindProp (Model = "model");
+    std::printf ("== %s\n", pModel != nullptr && !pModel->Value.empty () ?
+                 (CHAR8 CONST *) pModel->Value.data () : pDts);
+    std::printf ("   bundles: %s (%zu match rules)\n", BundlesDir.c_str (), Builder.MatchCount ());
+    std::printf ("   components: %zu matched, %zu unmatched\n\n",
+                 Builder.Devices ().size (), Builder.Unmatched ().size ());
+
+    for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+        IPortDevice      *pPort = nullptr;
+        IInterruptSource *pIrq  = nullptr;
+        D.pDevice->QueryInterface (IID_IPortDevice, (VOID **) &pPort);
+        D.pDevice->QueryInterface (IID_IInterruptSource, (VOID **) &pIrq);
+        std::printf ("  %-16s -> %-8s  %-20s [%s%s]  (matched \"%s\")\n",
+                     D.NodeName.c_str (), D.BundleName.c_str (), D.pDevice->GetName (),
+                     pPort != nullptr ? "ports " : "", pIrq != nullptr ? "irq-source" : "",
+                     D.MatchedOn.c_str ());
+        if (pPort != nullptr) { pPort->Release (); }
+        if (pIrq != nullptr) { pIrq->Release (); }
+    }
+    for (std::string CONST &U : Builder.Unmatched ()) {
+        std::printf ("  (no bundle) %s\n", U.c_str ());
+    }
+    return 0;
+}
+
 static int
 CmdHelp ()
 {
@@ -1074,6 +1130,7 @@ CmdHelp ()
 #endif
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
+        "  lcx machine <machine.dts> [--bundles <dir>]   assemble a machine from .device bundles\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
@@ -1103,6 +1160,7 @@ main (int argc, char **argv)
     if (Cmd == "klib")         { return CmdKlib (SubArgc, SubArgv); }
 #endif
     if (Cmd == "dt")           { return CmdDt (SubArgc, SubArgv); }
+    if (Cmd == "machine")      { return CmdMachine (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "cache")        { return CmdCache (SubArgc, SubArgv); }
     if (Cmd == "version")      { std::printf ("lcx (LibCPU) -- unified machine driver\n"); return 0; }
     if (Cmd == "help" || Cmd == "-h" || Cmd == "--help") { return CmdHelp (); }
