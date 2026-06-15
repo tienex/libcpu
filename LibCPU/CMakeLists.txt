@@ -321,6 +321,8 @@ libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES
 libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
 libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
+libcpu_add_device(ram_device ram MATCH "libcpu,ram" SOURCES devices/ram/Ram.cpp)
+libcpu_add_device(rom_device rom MATCH "ibm,pc-xt-bios;libcpu,rom" SOURCES devices/rom/Rom.cpp)
 
 # ---- device-tree public C API exercised from C (proves the LC surface is C-callable) ----
 add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
@@ -422,6 +424,8 @@ list(APPEND LIBCPU_CHECK_DEPS i8253_device)
 list(APPEND LIBCPU_CHECK_DEPS i8255_device)
 list(APPEND LIBCPU_CHECK_DEPS i8237_device)
 list(APPEND LIBCPU_CHECK_DEPS mc6845_device)
+list(APPEND LIBCPU_CHECK_DEPS ram_device)
+list(APPEND LIBCPU_CHECK_DEPS rom_device)
 if(TARGET interp_backend)
   add_test(NAME lcx.aot COMMAND sh -c
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
@@ -755,7 +759,9 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'dma@0 .* i8237' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'ppi@60 .* i8255' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'display@3b0 .* mc6845' '${CMAKE_BINARY_DIR}/machine-match.out' && \
-   grep -q 'components: 6 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
+   grep -q 'memory@0 .* ram' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'rom@fe000 .* rom' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'components: 8 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # Run the assembled machine on the V20: a power-on program drives the matched 8250 UART
@@ -765,7 +771,9 @@ if(TARGET interp_backend)
   add_test(NAME machine.run COMMAND sh -c
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --run > '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q 'PC/XT OK' '${CMAKE_BINARY_DIR}/machine-run.out' && \
-     grep -q '\\.\\.\\.\\.\\.' '${CMAKE_BINARY_DIR}/machine-run.out'")
+     grep -q '\\.\\.\\.\\.\\.' '${CMAKE_BINARY_DIR}/machine-run.out' && \
+     grep -q 'System RAM' '${CMAKE_BINARY_DIR}/machine-run.out' && \
+     grep -q 'BIOS ROM' '${CMAKE_BINARY_DIR}/machine-run.out'")
 endif()
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),

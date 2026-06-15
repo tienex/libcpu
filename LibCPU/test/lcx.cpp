@@ -1107,10 +1107,13 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
 
     bool Run = false;
     for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--run") == 0) { Run = true; } }
-    if (Run) {
+    CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
+    if (Run || pImage != nullptr) {
+        CHAR8 CONST *pLoad = Opt (argc, argv, "--load", nullptr);
+        UINT32 LoadAddr = pLoad != nullptr ? (UINT32) std::strtoul (pLoad, nullptr, 0) : 0x0600;
         ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
         if (pBackend == nullptr) { std::printf ("lcx machine: cannot load backend\n"); return 2; }
-        int Rc = RunMachineDemo (Builder, pBackend);
+        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr);
         pBackend->Release ();
         return Rc;
     }

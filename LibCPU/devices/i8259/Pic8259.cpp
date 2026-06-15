@@ -20,11 +20,11 @@ namespace {
 // Initialization-word sequence state.
 enum { InitIdle = 0, InitIcw2, InitIcw3, InitIcw4 };
 
-class Pic8259 : public IDevice, public IPortDevice {
+class Pic8259 : public IDevice, public IPortDevice, public IInterruptController {
 public:
     Pic8259 () : m_Ref (1) {}
 
-    // --- IUnknown (shared across both interface vtables) ---
+    // --- IUnknown (shared across the interface vtables) ---
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override
     {
         if (ppvObject == nullptr) { return E_POINTER; }
@@ -32,6 +32,8 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IInterruptController)) {
+            *ppvObject = static_cast<IInterruptController *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -113,6 +115,15 @@ public:
                 m_Imr = V;                                   // OCW1: interrupt mask register
                 break;
         }
+        return S_OK;
+    }
+
+    // --- IInterruptController: arbitrate a raised IRQ line ---
+    HRESULT STDMETHODCALLTYPE AcceptInterrupt (UINT32 Irq, UINT32 *pVector) override
+    {
+        if (pVector == nullptr) { return E_POINTER; }
+        if (Irq > 7 || (m_Imr & (1u << Irq)) != 0) { return S_FALSE; }   // masked (or out of range)
+        *pVector = (UINT32) m_VectorBase + Irq;                          // ICW2 base + line
         return S_OK;
     }
 

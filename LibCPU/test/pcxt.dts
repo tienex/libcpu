@@ -19,6 +19,7 @@
 
     memory@0 {
         device_type = "memory";
+        compatible = "libcpu,ram";
         reg = <0x0 0xA0000>;            /* 640 KiB conventional RAM */
     };
 

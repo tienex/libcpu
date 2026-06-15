@@ -89,6 +89,35 @@ DECLARE_INTERFACE_ (IInterruptSource, IUnknown)
 };
 
 //
+// Capability: the component occupies a region of the physical address space (RAM, ROM, a
+// memory-mapped framebuffer, ...). GetBase/GetSize describe the region; IsReadOnly marks a ROM.
+//
+DECLARE_INTERFACE_ (IMemoryDevice, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD_ (UINT32, GetBase)(THIS) PURE;
+    STDMETHOD_ (UINT32, GetSize)(THIS) PURE;
+    STDMETHOD_ (BOOLEAN, IsReadOnly)(THIS) PURE;
+};
+
+//
+// Capability: the component arbitrates hardware interrupts (the 8259 PIC). A raised IRQ line is
+// presented to AcceptInterrupt; if the line is enabled (not masked) it returns S_OK and the CPU
+// interrupt vector to dispatch (the controller's vector base + the line), otherwise S_FALSE.
+//
+DECLARE_INTERFACE_ (IInterruptController, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (AcceptInterrupt)(THIS_ UINT32 Irq, OUT UINT32 *pVector) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -99,6 +128,10 @@ inline constexpr IID IID_IPortDevice =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 } };
 inline constexpr IID IID_IInterruptSource =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04 } };
+inline constexpr IID IID_IMemoryDevice =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05 } };
+inline constexpr IID IID_IInterruptController =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } };
 
 } // namespace LibCPU
 
