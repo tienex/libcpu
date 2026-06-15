@@ -1,0 +1,11 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos ]
+install-name:    '/usr/lib/libwidget.dylib'
+current-version: 1.0
+exports:
+  - targets:         [ x86_64-macos, arm64-macos ]
+    symbols:         [ '__ZNK2ui6Widget4areaEv', '__ZN2ui6Widget6resizeEii',
+                       '__ZN2ui6Widget6createEv', '__ZN2ui6Widget5valueEi',
+                       '__ZN2ui6Widget5valueEd' ]
+...

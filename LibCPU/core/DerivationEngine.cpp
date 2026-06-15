@@ -12,15 +12,12 @@
 
 namespace LibCPU {
 
-// The set of names a library makes callable, from its exported symbols: the raw symbol, the
-// symbol minus a leading underscore (Mach-O C convention), and -- so C++ exports match their
-// header prototypes -- the qualified name of the demangled symbol (e.g. "_ZN3gfx4drawEii" ->
-// "gfx::draw"), which is the part before the parameter list.
-// Map each name a library makes callable to the actual export symbol that backs it. For each
-// export S the keys are: S itself, S minus a leading underscore (Mach-O C convention) and --
-// so C++ exports match their header prototypes -- the qualified name of the demangled symbol
-// (e.g. "_ZN3gfx4drawEii" -> "gfx::draw"). The value is always the raw symbol S, so a matched
-// prototype can be bound to the real (mangled) export. First writer wins on collisions.
+// Map each name a library makes callable to the export symbol that backs it. Keys per export
+// S: S itself; S without a leading underscore (Mach-O C convention); the demangled qualified
+// name (e.g. "_ZN3gfx4drawEii" -> "gfx::draw"); and -- to tell C++ overloads apart -- the full
+// demangled signature ("gfx::draw(int, int)"), plus a const-stripped variant for const member
+// functions. The value is the raw symbol S, so a matched prototype binds to the real (mangled)
+// export. First writer wins on collisions.
 static void
 CollectCallable (SymbolReader CONST &Symbols, std::map<std::string, std::string> *pOut)
 {
@@ -28,12 +25,17 @@ CollectCallable (SymbolReader CONST &Symbols, std::map<std::string, std::string>
         pOut->emplace (S, S);
         if (!S.empty () && S[0] == '_') { pOut->emplace (S.substr (1), S); }
         std::string D = DemangleSymbol (S);
-        if (D != S) {
-            size_t Paren = D.find ('(');                     // drop the parameter list, if any
-            std::string Q = (Paren == std::string::npos) ? D : D.substr (0, Paren);
-            while (!Q.empty () && Q.back () == ' ') { Q.pop_back (); }
-            if (!Q.empty ()) { pOut->emplace (Q, S); }
+        if (D == S) { continue; }                            // not a C++ mangled name
+        pOut->emplace (D, S);                                // full signature -- distinguishes overloads
+        std::string Bare = D;
+        if (Bare.size () > 6 && Bare.compare (Bare.size () - 6, 6, " const") == 0) {
+            Bare.resize (Bare.size () - 6);                  // a const member function, sans the qualifier
+            pOut->emplace (Bare, S);
         }
+        size_t Paren = Bare.find ('(');                      // qualified name, parameter list dropped
+        std::string Q = (Paren == std::string::npos) ? Bare : Bare.substr (0, Paren);
+        while (!Q.empty () && Q.back () == ' ') { Q.pop_back (); }
+        if (!Q.empty ()) { pOut->emplace (Q, S); }
     }
 }
 
@@ -51,8 +53,20 @@ KnowledgeCatalog::Derive (HeaderParser CONST &Headers, SymbolReader CONST &Symbo
         E.ReturnType = Fn.ReturnType;
         E.Params     = Fn.Params;
         E.Variadic   = Fn.Variadic;
-        auto It = Callable.find (Fn.Name);
-        if (It == Callable.end ()) { It = Callable.find (std::string ("_") + Fn.Name); }
+        // The full signature, qualified name + explicit parameter types (the implicit member
+        // "this" is not part of the mangled signature), lets overloads match the right symbol.
+        std::string Sig = Fn.Name + "(";
+        bool First = true;
+        for (HEADER_PARAM CONST &P : Fn.Params) {
+            if (P.Name == "this") { continue; }
+            if (!First) { Sig += ", "; }
+            Sig += P.Type;
+            First = false;
+        }
+        Sig += ")";
+        auto It = Callable.find (Sig);                       // exact signature first (overloads)
+        if (It == Callable.end ()) { It = Callable.find (Fn.Name); }                       // then qualified name
+        if (It == Callable.end ()) { It = Callable.find (std::string ("_") + Fn.Name); }   // then C underscore
         E.Exported   = It != Callable.end ();
         E.Symbol     = E.Exported ? It->second : Fn.Name;    // the real export symbol to bind
         m_Functions.push_back (std::move (E));

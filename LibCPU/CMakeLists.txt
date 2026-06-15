@@ -666,6 +666,21 @@ add_test(NAME know.cppmatch COMMAND sh -c
    '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/cppmatch.klib'")
 set_tests_properties(know.cppmatch PROPERTIES PASS_REGULAR_EXPRESSION "gfx::draw  -> __ZN3gfx4drawEii")
 
+# C++ member functions: the parser qualifies each method with its class, gives non-static
+# methods an implicit "this" (const-qualified for const methods) and static methods none.
+add_test(NAME headers.cppmethods COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmethods.hpp' | grep -q 'area(const ui::Widget' && \
+   '$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmethods.hpp' | grep -q 'create(void)'")
+
+# C++ overload disambiguation end-to-end: value(int) and value(double) share a name but the
+# catalog matches each prototype's full signature to its own mangled export -- they must bind
+# to distinct symbols (...5valueEi vs ...5valueEd), surviving the archive round-trip.
+add_test(NAME know.cppmethods COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' know derive '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmethods.hpp' \
+       '${CMAKE_CURRENT_SOURCE_DIR}/test/cppmethods.tbd' -o '${CMAKE_BINARY_DIR}/cppmethods.klib' && \
+   '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/cppmethods.klib' | grep -q 'value  -> __ZN2ui6Widget5valueEi' && \
+   '$<TARGET_FILE:lcx>' know catalog '${CMAKE_BINARY_DIR}/cppmethods.klib' | grep -q 'value  -> __ZN2ui6Widget5valueEd'")
+
 # 8-bit immediate moves (B0..B7, MOV reg8,imm8) on the V20 frontend: a fixture of four
 # such moves (incl. the high-byte forms ah/bh) must disassemble correctly.
 add_test(NAME disasm.mov8 COMMAND lcx disasm "${CMAKE_CURRENT_SOURCE_DIR}/test/mov8.v20.bin" --arch v20 --count 4)

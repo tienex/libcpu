@@ -33,8 +33,11 @@ enum {
     CXCursor_FieldDecl    = 6,
     CXCursor_FunctionDecl = 8,
     CXCursor_ParmDecl     = 10,
+    CXCursor_CXXMethod    = 21,    // C++ member function
     CXCursor_Namespace    = 22,
-    CXCursor_LinkageSpec  = 23     // extern "C" { ... }
+    CXCursor_LinkageSpec  = 23,    // extern "C" { ... }
+    CXCursor_Constructor  = 24,
+    CXCursor_Destructor   = 25
 };
 // CXChildVisitResult
 enum { CXChildVisit_Break = 0, CXChildVisit_Continue = 1, CXChildVisit_Recurse = 2 };
@@ -64,6 +67,8 @@ typedef struct _CLANG_API {
     CXSourceLocation  (*getCursorLocation) (CXCursor);
     unsigned          (*locationIsFromMainFile) (CXSourceLocation);
     CXCursor          (*getCursorSemanticParent) (CXCursor);
+    unsigned          (*cxxMethodIsStatic) (CXCursor);
+    unsigned          (*cxxMethodIsConst) (CXCursor);
     void             *Handle;       // dlopen handle
 } CLANG_API;
 
@@ -120,6 +125,8 @@ LoadClang (CLANG_API *pApi)
     Ok &= Bind (pH, "clang_getCursorLocation", (void **) &pApi->getCursorLocation);
     Ok &= Bind (pH, "clang_Location_isFromMainFile", (void **) &pApi->locationIsFromMainFile);
     Ok &= Bind (pH, "clang_getCursorSemanticParent", (void **) &pApi->getCursorSemanticParent);
+    Ok &= Bind (pH, "clang_CXXMethod_isStatic", (void **) &pApi->cxxMethodIsStatic);
+    Ok &= Bind (pH, "clang_CXXMethod_isConst", (void **) &pApi->cxxMethodIsConst);
     if (!Ok) {
         dlclose (pH);
         return false;
@@ -138,45 +145,84 @@ TakeString (CLANG_API *pApi, CXString S)
     return Out;
 }
 
-// Visit the fields of a struct cursor.
-typedef struct _FIELD_CTX { CLANG_API *Api; HEADER_STRUCT *Struct; } FIELD_CTX;
+// The fully-qualified name of a declaration: its own spelling with each enclosing namespace
+// and class/struct/union prepended ("ui::Widget::area"). extern "C" blocks contribute no
+// scope (the function keeps C linkage and an unqualified name). This is what the catalog
+// matches a C++ export's demangled name against.
+static std::string
+QualifiedName (CLANG_API *Api, CXCursor C)
+{
+    std::string Name = TakeString (Api, Api->getCursorSpelling (C));
+    for (CXCursor P = Api->getCursorSemanticParent (C);;) {
+        int K = Api->getCursorKind (P);
+        if (K != CXCursor_Namespace && K != CXCursor_ClassDecl &&
+            K != CXCursor_StructDecl && K != CXCursor_UnionDecl) { break; }
+        std::string S = TakeString (Api, Api->getCursorSpelling (P));
+        if (!S.empty ()) { Name = S + "::" + Name; }
+        P = Api->getCursorSemanticParent (P);
+    }
+    return Name;
+}
+
+// Build a function/method entity. ClassForThis, when non-empty, is the enclosing class of a
+// non-static member function: an implicit leading "this" parameter (const-qualified for a
+// const method) is prepended so the catalog can supply the object pointer.
+static HEADER_FUNCTION
+MakeFunction (CLANG_API *Api, CXCursor C, std::string CONST &ClassForThis)
+{
+    HEADER_FUNCTION Fn;
+    CXType FnTy = Api->getCursorType (C);
+    Fn.Name       = QualifiedName (Api, C);
+    Fn.ReturnType = TakeString (Api, Api->getTypeSpelling (Api->getResultType (FnTy)));
+    Fn.Variadic   = Api->isFunctionTypeVariadic (FnTy) != 0;
+    if (!ClassForThis.empty () && Api->cxxMethodIsStatic (C) == 0) {
+        HEADER_PARAM This;
+        This.Name = "this";
+        This.Type = (Api->cxxMethodIsConst (C) ? std::string ("const ") : std::string ()) + ClassForThis + " *";
+        Fn.Params.push_back (std::move (This));
+    }
+    int N = Api->cursorGetNumArguments (C);
+    for (int I = 0; I < N; I++) {
+        CXCursor Arg = Api->cursorGetArgument (C, (unsigned) I);
+        HEADER_PARAM P;
+        P.Name = TakeString (Api, Api->getCursorSpelling (Arg));
+        P.Type = TakeString (Api, Api->getTypeSpelling (Api->getCursorType (Arg)));
+        Fn.Params.push_back (std::move (P));
+    }
+    return Fn;
+}
+
+// Visit the members of a struct/class: data fields (-> layout) and member functions.
+typedef struct _CLASS_CTX {
+    CLANG_API                    *Api;
+    HEADER_STRUCT                *Struct;
+    std::vector<HEADER_FUNCTION>  *Funcs;
+    std::string                   ClassName;
+} CLASS_CTX;
 
 static int
-FieldVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
+ClassBodyVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
 {
-    FIELD_CTX *pCtx = (FIELD_CTX *) pData;
-    if (pCtx->Api->getCursorKind (C) == CXCursor_FieldDecl) {
-        CXType Ty = pCtx->Api->getCursorType (C);
+    CLASS_CTX *pCtx = (CLASS_CTX *) pData;
+    CLANG_API *Api = pCtx->Api;
+    int Kind = Api->getCursorKind (C);
+    if (Kind == CXCursor_FieldDecl) {
+        CXType Ty = Api->getCursorType (C);
         HEADER_FIELD F;
-        F.Name   = TakeString (pCtx->Api, pCtx->Api->getCursorSpelling (C));
-        F.Type   = TakeString (pCtx->Api, pCtx->Api->getTypeSpelling (Ty));
-        long long Bits = pCtx->Api->cursorGetOffsetOfField (C);
-        long long Size = pCtx->Api->typeGetSizeOf (Ty);
+        F.Name   = TakeString (Api, Api->getCursorSpelling (C));
+        F.Type   = TakeString (Api, Api->getTypeSpelling (Ty));
+        long long Bits = Api->cursorGetOffsetOfField (C);
+        long long Size = Api->typeGetSizeOf (Ty);
         F.Offset = Bits >= 0 ? (UINT64) (Bits / 8) : 0;          // negative => error/dependent
         F.Size   = Size >= 0 ? (UINT64) Size : 0;
         pCtx->Struct->Fields.push_back (std::move (F));
+    } else if (Kind == CXCursor_CXXMethod || Kind == CXCursor_Constructor || Kind == CXCursor_Destructor) {
+        pCtx->Funcs->push_back (MakeFunction (Api, C, pCtx->ClassName));   // a callable member function
     }
     return CXChildVisit_Continue;
 }
 
 typedef struct _TOP_CTX { CLANG_API *Api; HeaderParser *Self; std::vector<HEADER_FUNCTION> *Funcs; std::vector<HEADER_STRUCT> *Structs; } TOP_CTX;
-
-// The fully-qualified name of a declaration: its own spelling with each enclosing namespace
-// prepended ("gfx::draw"). extern "C" blocks contribute no scope (the function keeps C
-// linkage and an unqualified name), so only Namespace parents are walked. This is what the
-// catalog matches a C++ export's demangled name against.
-static std::string
-QualifiedName (CLANG_API *Api, CXCursor C)
-{
-    std::string Name = TakeString (Api, Api->getCursorSpelling (C));
-    for (CXCursor P = Api->getCursorSemanticParent (C);
-         Api->getCursorKind (P) == CXCursor_Namespace;
-         P = Api->getCursorSemanticParent (P)) {
-        std::string Ns = TakeString (Api, Api->getCursorSpelling (P));
-        if (!Ns.empty ()) { Name = Ns + "::" + Name; }
-    }
-    return Name;
-}
 
 static int
 TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
@@ -194,28 +240,15 @@ TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
         return CXChildVisit_Continue;
     }
     if (Kind == CXCursor_FunctionDecl) {
-        HEADER_FUNCTION Fn;
-        CXType FnTy = Api->getCursorType (C);
-        Fn.Name       = QualifiedName (Api, C);
-        Fn.ReturnType = TakeString (Api, Api->getTypeSpelling (Api->getResultType (FnTy)));
-        Fn.Variadic   = Api->isFunctionTypeVariadic (FnTy) != 0;
-        int N = Api->cursorGetNumArguments (C);
-        for (int I = 0; I < N; I++) {
-            CXCursor Arg = Api->cursorGetArgument (C, (unsigned) I);
-            HEADER_PARAM P;
-            P.Name = TakeString (Api, Api->getCursorSpelling (Arg));
-            P.Type = TakeString (Api, Api->getTypeSpelling (Api->getCursorType (Arg)));
-            Fn.Params.push_back (std::move (P));
-        }
-        pCtx->Funcs->push_back (std::move (Fn));
+        std::string NoThis;
+        pCtx->Funcs->push_back (MakeFunction (Api, C, NoThis));   // free function: no implicit this
     } else if (Kind == CXCursor_StructDecl || Kind == CXCursor_ClassDecl || Kind == CXCursor_UnionDecl) {
         HEADER_STRUCT St;
         St.Name = QualifiedName (Api, C);                    // qualified so it matches type spellings
-
         long long Size = Api->typeGetSizeOf (Api->getCursorType (C));
         St.Size = Size >= 0 ? (UINT64) Size : 0;
-        FIELD_CTX FCtx{ Api, &St };
-        Api->visitChildren (C, FieldVisitor, &FCtx);
+        CLASS_CTX CCtx{ Api, &St, pCtx->Funcs, St.Name };    // data members -> layout, methods -> functions
+        Api->visitChildren (C, ClassBodyVisitor, &CCtx);
         if (!St.Name.empty () || !St.Fields.empty ()) {
             pCtx->Structs->push_back (std::move (St));
         }
