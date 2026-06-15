@@ -635,6 +635,11 @@ set_tests_properties(symbols.detect PROPERTIES FAIL_REGULAR_EXPRESSION "MISMATCH
 # either way the self-contained fixture yields know_open() and struct know_stat.
 add_test(NAME headers.parse COMMAND lcx klib headers "${CMAKE_CURRENT_SOURCE_DIR}/test/know.h")
 set_tests_properties(headers.parse PROPERTIES PASS_REGULAR_EXPRESSION "know_open")
+# C++ layouts: a class (Rect, via its 'Point origin' member) is captured like a struct, and a
+# namespaced struct is reported with its qualified name (ui::Color). Needs libclang.
+add_test(NAME headers.cpp COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/cppshapes.hpp' | grep -q 'Point origin' && \
+   '$<TARGET_FILE:lcx>' klib headers '${CMAKE_CURRENT_SOURCE_DIR}/test/cppshapes.hpp' | grep -q 'struct ui::Color'")
 # The built-in fallback (libclang forced off) must still recover the same declarations,
 # proving the no-hard-dependency promise holds.
 add_test(NAME headers.fallback COMMAND sh -c

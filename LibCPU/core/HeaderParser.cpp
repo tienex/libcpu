@@ -28,6 +28,8 @@ typedef struct { CONST void *ptr_data[2]; unsigned int_data; } CXSourceLocation;
 // CXCursorKind values we care about (stable across libclang versions).
 enum {
     CXCursor_StructDecl   = 2,
+    CXCursor_UnionDecl    = 3,
+    CXCursor_ClassDecl    = 4,     // C++ class (data members captured like a struct)
     CXCursor_FieldDecl    = 6,
     CXCursor_FunctionDecl = 8,
     CXCursor_ParmDecl     = 10,
@@ -206,9 +208,10 @@ TopVisitor (CXCursor C, CXCursor /*Parent*/, CXClientData pData)
             Fn.Params.push_back (std::move (P));
         }
         pCtx->Funcs->push_back (std::move (Fn));
-    } else if (Kind == CXCursor_StructDecl) {
+    } else if (Kind == CXCursor_StructDecl || Kind == CXCursor_ClassDecl || Kind == CXCursor_UnionDecl) {
         HEADER_STRUCT St;
-        St.Name = TakeString (Api, Api->getCursorSpelling (C));
+        St.Name = QualifiedName (Api, C);                    // qualified so it matches type spellings
+
         long long Size = Api->typeGetSizeOf (Api->getCursorType (C));
         St.Size = Size >= 0 ? (UINT64) Size : 0;
         FIELD_CTX FCtx{ Api, &St };
