@@ -318,6 +318,9 @@ endif()
 libcpu_add_device(i8259_device i8259 MATCH "intel,i8259;pic" SOURCES devices/i8259/Pic8259.cpp)
 libcpu_add_device(ns8250_device ns8250 MATCH "national,ns8250;ns16450;serial" SOURCES devices/ns8250/Uart8250.cpp)
 libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES devices/i8253/Pit8253.cpp)
+libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
+libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
+libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
 
 # ---- device-tree public C API exercised from C (proves the LC surface is C-callable) ----
 add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
@@ -416,6 +419,9 @@ list(APPEND LIBCPU_CHECK_DEPS dtapi)
 list(APPEND LIBCPU_CHECK_DEPS i8259_device)
 list(APPEND LIBCPU_CHECK_DEPS ns8250_device)
 list(APPEND LIBCPU_CHECK_DEPS i8253_device)
+list(APPEND LIBCPU_CHECK_DEPS i8255_device)
+list(APPEND LIBCPU_CHECK_DEPS i8237_device)
+list(APPEND LIBCPU_CHECK_DEPS mc6845_device)
 if(TARGET interp_backend)
   add_test(NAME lcx.aot COMMAND sh -c
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
@@ -744,7 +750,12 @@ set_tests_properties(dt.capi PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
 # (LCDeviceMatch) and binds it to the PC/XT device tree. The 8259 PIC bundle must match the
 # pic@20 node on its "intel,i8259" compatible and expose the port-device capability via COM.
 add_test(NAME machine.match COMMAND sh -c
-  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' | grep -q 'pic@20 .* i8259 .*intel,i8259'")
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' > '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'pic@20 .* i8259 .*intel,i8259' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'dma@0 .* i8237' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'ppi@60 .* i8255' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'display@3b0 .* mc6845' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'components: 6 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # Run the assembled machine on the V20: a power-on program drives the matched 8250 UART
