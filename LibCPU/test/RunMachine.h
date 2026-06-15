@@ -82,22 +82,40 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend)
 
     std::vector<UINT8> Ram (0x100000, 0);                    // 1 MiB real-mode address space
 
-    // Power-on program at 0x0600: write "PC/XT OK\n" to the UART (COM1, 0x3F8), then halt.
+    // IRQ0 timer ISR at 0:0x0500 -- write '.' to the UART and return.
+    UINT8 const Isr[] = {
+        0xBA, 0xF8, 0x03,        // mov dx, 0x3F8
+        0xB0, 0x2E,              // mov al, '.'
+        0xEE,                    // out dx, al
+        0xCF                     // iret
+    };
+    std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+
+    // Power-on program at 0x0600: print the banner, program PIT channel 0 (the timer tick),
+    // enable interrupts and idle. Each timer tick vectors through INT 8 to the ISR (a '.'),
+    // until the PIT's bounded heartbeat is spent and the halted guest has no interrupt left.
     std::vector<UINT8> Prog = { 0xBA, 0xF8, 0x03 };          // mov dx, 0x3F8
     CHAR8 CONST *pMsg = "PC/XT OK\n";
     for (CHAR8 CONST *p = pMsg; *p != '\0'; ++p) {
-        Prog.push_back (0xB0);                               // mov al, <char>
-        Prog.push_back ((UINT8) *p);
+        Prog.push_back (0xB0); Prog.push_back ((UINT8) *p);  // mov al, <char>
         Prog.push_back (0xEE);                               // out dx, al
     }
-    Prog.push_back (0xF4);                                   // hlt
-    Prog.push_back (0xEB); Prog.push_back (0xFD);            // jmp $ (idle once halted)
+    UINT8 const PitSetup[] = {
+        0xB0, 0x36, 0xE6, 0x43,  // mov al,0x36 ; out 0x43,al   (ch0, lo+hi, mode 3)
+        0xB0, 0xFF, 0xE6, 0x40,  // mov al,0xFF ; out 0x40,al   (count low)
+        0xB0, 0xFF, 0xE6, 0x40,  // mov al,0xFF ; out 0x40,al   (count high -> armed)
+        0xFB,                    // sti
+        0xF4,                    // hlt          (wait for a tick)
+        0xEB, 0xFD               // jmp $-1       (loop back to hlt)
+    };
+    Prog.insert (Prog.end (), PitSetup, PitSetup + sizeof (PitSetup));
     CPU_ADDR Entry = 0x0600;
     std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
 
     ICpuArchitecture *pArch = CreateV20 ();
     pArch->SetCodeMemory (Ram.data (), Ram.size ());
     System Machine (pArch, pBackend, Ram.data (), Ram.size ());
+    Machine.SetIvt (0x08, 0x0000, 0x0500);                   // IRQ0 (INT 8) -> the timer ISR
 
     // Bridge every matched component onto the device bus.
     std::vector<std::unique_ptr<ComDeviceAdapter>> Adapters;
