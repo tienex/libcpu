@@ -316,6 +316,7 @@ endif()
 
 # ---- hardware-component bundles (.device): each a COM object the machine builder matches ----
 libcpu_add_device(i8259_device i8259 MATCH "intel,i8259;pic" SOURCES devices/i8259/Pic8259.cpp)
+libcpu_add_device(ns8250_device ns8250 MATCH "national,ns8250;ns16450;serial" SOURCES devices/ns8250/Uart8250.cpp)
 
 # ---- device-tree public C API exercised from C (proves the LC surface is C-callable) ----
 add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
@@ -412,6 +413,7 @@ set_tests_properties(native.v20 PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL
 list(APPEND LIBCPU_CHECK_DEPS nativedemo)
 list(APPEND LIBCPU_CHECK_DEPS dtapi)
 list(APPEND LIBCPU_CHECK_DEPS i8259_device)
+list(APPEND LIBCPU_CHECK_DEPS ns8250_device)
 if(TARGET interp_backend)
   add_test(NAME lcx.aot COMMAND sh -c
     "'$<TARGET_FILE:lcx>' aot '${CMAKE_CURRENT_SOURCE_DIR}/test/loop.v20.bin' -o '${CMAKE_BINARY_DIR}/loop.native' --result 0x200 && '${CMAKE_BINARY_DIR}/loop.native'")
@@ -742,6 +744,14 @@ set_tests_properties(dt.capi PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
 add_test(NAME machine.match COMMAND sh -c
   "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' | grep -q 'pic@20 .* i8259 .*intel,i8259'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+# Run the assembled machine on the V20: a power-on program drives the matched 8250 UART
+# component (port 0x3F8) through the device bus, so its banner reaches the serial console --
+# end to end: device tree -> bundle match -> COM component -> CPU port I/O -> stdout.
+if(TARGET interp_backend)
+  add_test(NAME machine.run COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --run | grep -q 'PC/XT OK'")
+endif()
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets

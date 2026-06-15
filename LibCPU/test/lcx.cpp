@@ -29,6 +29,7 @@
 #include "../core/DerivationEngine.h"
 #include "../core/DeviceTree.h"
 #include "../core/MachineBuilder.h"
+#include "RunMachine.h"
 #ifdef LIBCPU_HAVE_ZSTD
 #include "../core/ZooArchive.h"
 #endif
@@ -1102,6 +1103,16 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
     }
     for (std::string CONST &U : Builder.Unmatched ()) {
         std::printf ("  (no bundle) %s\n", U.c_str ());
+    }
+
+    bool Run = false;
+    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--run") == 0) { Run = true; } }
+    if (Run) {
+        ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
+        if (pBackend == nullptr) { std::printf ("lcx machine: cannot load backend\n"); return 2; }
+        int Rc = RunMachineDemo (Builder, pBackend);
+        pBackend->Release ();
+        return Rc;
     }
     return 0;
 }
