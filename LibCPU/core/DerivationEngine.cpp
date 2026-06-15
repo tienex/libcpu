@@ -5,11 +5,32 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
 
 namespace LibCPU {
+
+// The set of names a library makes callable, from its exported symbols: the raw symbol, the
+// symbol minus a leading underscore (Mach-O C convention), and -- so C++ exports match their
+// header prototypes -- the qualified name of the demangled symbol (e.g. "_ZN3gfx4drawEii" ->
+// "gfx::draw"), which is the part before the parameter list.
+static void
+CollectCallable (SymbolReader CONST &Symbols, std::set<std::string> *pOut)
+{
+    for (std::string CONST &S : Symbols.Symbols ()) {
+        pOut->insert (S);
+        if (!S.empty () && S[0] == '_') { pOut->insert (S.substr (1)); }
+        std::string D = DemangleSymbol (S);
+        if (D != S) {
+            size_t Paren = D.find ('(');                     // drop the parameter list, if any
+            std::string Q = (Paren == std::string::npos) ? D : D.substr (0, Paren);
+            while (!Q.empty () && Q.back () == ' ') { Q.pop_back (); }
+            if (!Q.empty ()) { pOut->insert (Q); }
+        }
+    }
+}
 
 void
 KnowledgeCatalog::Derive (HeaderParser CONST &Headers, SymbolReader CONST &Symbols)
@@ -17,14 +38,15 @@ KnowledgeCatalog::Derive (HeaderParser CONST &Headers, SymbolReader CONST &Symbo
     m_Library = Symbols.InstallName ();
     m_Structs = Headers.Structs ();
     m_Functions.clear ();
+    std::set<std::string> Callable;
+    CollectCallable (Symbols, &Callable);
     for (HEADER_FUNCTION CONST &Fn : Headers.Functions ()) {
         HOST_ENTITY E;
         E.Name       = Fn.Name;
         E.ReturnType = Fn.ReturnType;
         E.Params     = Fn.Params;
         E.Variadic   = Fn.Variadic;
-        std::string Underscored = std::string ("_") + Fn.Name;
-        E.Exported   = Symbols.Has (Fn.Name) || Symbols.Has (Underscored);
+        E.Exported   = Callable.count (Fn.Name) != 0 || Callable.count (std::string ("_") + Fn.Name) != 0;
         m_Functions.push_back (std::move (E));
     }
 }

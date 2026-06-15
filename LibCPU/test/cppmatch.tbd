@@ -1,0 +1,9 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos ]
+install-name:    '/usr/lib/libcppmatch.dylib'
+current-version: 1.0
+exports:
+  - targets:         [ x86_64-macos, arm64-macos ]
+    symbols:         [ '__Z6helperd' ]
+...
