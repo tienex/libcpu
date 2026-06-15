@@ -27,6 +27,7 @@
 #include "../core/SymbolReader.h"
 #include "../core/HeaderParser.h"
 #include "../core/DerivationEngine.h"
+#include "../core/DeviceTree.h"
 #ifdef LIBCPU_HAVE_ZSTD
 #include "../core/ZooArchive.h"
 #endif
@@ -968,6 +969,80 @@ CmdKlib (int argc, char **argv)
 }
 #endif // LIBCPU_HAVE_ZSTD
 
+// Pick the output device-tree format from a file name's extension (.dtb -> blob), defaulting
+// to textual source.
+static LibCPU::DT_FORMAT
+DtFormatForPath (CHAR8 CONST *pPath)
+{
+    std::string S = pPath != nullptr ? pPath : "";
+    if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".dtb") == 0) { return LibCPU::DtFormatFdtBlob; }
+    if (S.size () >= 4 && S.compare (S.size () - 4, 4, ".adt") == 0) { return LibCPU::DtFormatAppleBinary; }
+    return LibCPU::DtFormatFdtSource;
+}
+
+// Write a tree to pOut (by format) or, when pOut is null, print its textual form to stdout.
+static int
+DtEmit (LibCPU::DeviceTree CONST &Tree, CHAR8 CONST *pOut, LibCPU::DT_FORMAT OutFmt)
+{
+    std::string Error;
+    if (pOut != nullptr) {
+        if (!Tree.Save (pOut, OutFmt, &Error)) { std::printf ("lcx dt: %s\n", Error.c_str ()); return 2; }
+        std::printf ("lcx dt: wrote %s\n", pOut);
+        return 0;
+    }
+    if (OutFmt == LibCPU::DtFormatFdtBlob || OutFmt == LibCPU::DtFormatAppleBinary) {
+        std::printf ("lcx dt: binary output requires -o <file>\n");
+        return 2;
+    }
+    std::string Text;
+    if (!Tree.EmitText (OutFmt, &Text, &Error)) { std::printf ("lcx dt: %s\n", Error.c_str ()); return 2; }
+    std::fputs (Text.c_str (), stdout);
+    return 0;
+}
+
+// lcx dt -- compile/decompile/dump/overlay device trees. Input format is auto-detected; output
+// format follows the verb (compile -> DTB, decompile/dump -> DTS) or the -o extension.
+static int
+CmdDt (int argc, char **argv)
+{
+    using namespace LibCPU;
+    CHAR8 CONST *pVerb = Positional (argc, argv, 0);
+    CHAR8 CONST *pOut  = Opt (argc, argv, "-o", nullptr);
+    if (pVerb == nullptr) {
+        std::printf ("usage: lcx dt compile   <in.dts> -o <out.dtb>      compile source to a blob\n"
+                     "       lcx dt decompile <in.dtb> [-o <out.dts>]    decompile a blob to source\n"
+                     "       lcx dt dump      <in>                       auto-detect and print as source\n"
+                     "       lcx dt overlay   <base> <frag> [-o <out>]   compose a fragment onto a base\n");
+        return 2;
+    }
+    std::string Verb = pVerb;
+    std::string Error;
+
+    if (Verb == "compile" || Verb == "decompile" || Verb == "dump") {
+        CHAR8 CONST *pIn = Positional (argc, argv, 1);
+        if (pIn == nullptr) { std::printf ("lcx dt: missing input file\n"); return 2; }
+        DeviceTree Tree;
+        if (!Tree.Load (pIn, &Error)) { std::printf ("lcx dt: %s\n", Error.c_str ()); return 2; }
+        DT_FORMAT OutFmt = (Verb == "compile") ? DtFormatFdtBlob : DtFormatFdtSource;
+        if (Verb == "decompile" && pOut != nullptr) { OutFmt = DtFormatForPath (pOut); }
+        return DtEmit (Tree, pOut, OutFmt);
+    }
+    if (Verb == "overlay") {
+        CHAR8 CONST *pBase = Positional (argc, argv, 1);
+        CHAR8 CONST *pFrag = Positional (argc, argv, 2);
+        if (pBase == nullptr || pFrag == nullptr) { std::printf ("lcx dt: overlay needs <base> <frag>\n"); return 2; }
+        DeviceTree Base, Frag;
+        if (!Base.Load (pBase, &Error) || !Frag.Load (pFrag, &Error)) {
+            std::printf ("lcx dt: %s\n", Error.c_str ());
+            return 2;
+        }
+        if (!Base.ApplyOverlay (Frag, &Error)) { std::printf ("lcx dt: %s\n", Error.c_str ()); return 2; }
+        return DtEmit (Base, pOut, pOut != nullptr ? DtFormatForPath (pOut) : DtFormatFdtSource);
+    }
+    std::printf ("lcx dt: unknown verb '%s'\n", Verb.c_str ());
+    return 2;
+}
+
 static int
 CmdHelp ()
 {
@@ -990,6 +1065,8 @@ CmdHelp ()
         "  lcx klib   symbols <lib.tbd|dylib> [--grep <s>]            exported symbols of a library\n"
         "  lcx klib   headers <file.h> [-I dir] [-D macro] ...        prototypes + struct layouts\n"
 #endif
+        "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
+        "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
@@ -1018,6 +1095,7 @@ main (int argc, char **argv)
 #ifdef LIBCPU_HAVE_ZSTD
     if (Cmd == "klib")         { return CmdKlib (SubArgc, SubArgv); }
 #endif
+    if (Cmd == "dt")           { return CmdDt (SubArgc, SubArgv); }
     if (Cmd == "cache")        { return CmdCache (SubArgc, SubArgv); }
     if (Cmd == "version")      { std::printf ("lcx (LibCPU) -- unified machine driver\n"); return 0; }
     if (Cmd == "help" || Cmd == "-h" || Cmd == "--help") { return CmdHelp (); }

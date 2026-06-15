@@ -1,0 +1,17 @@
+/dts-v1/;
+
+/* A fragment composed onto dt-machine: it adds properties to an existing node
+   (serial@10000000) and introduces a wholly new node (rtc@20000000), demonstrating that a
+   machine can be assembled from reusable pieces. */
+
+/ {
+    serial@10000000 {
+        status = "okay";
+        clock-frequency = <0x1c2000>;
+    };
+
+    rtc@20000000 {
+        compatible = "motorola,mc146818";
+        reg = <0x0 0x20000000 0x0 0x100>;
+    };
+};

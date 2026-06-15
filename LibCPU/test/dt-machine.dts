@@ -1,0 +1,41 @@
+/dts-v1/;
+
+/* A small machine description exercising the device-tree compiler: a labelled node
+   (uart0:), a "&uart0" phandle reference that the compiler must resolve into a phandle
+   cell, string and string-list properties, multi-cell <> arrays, an empty property, and a
+   /memreserve/ entry. Decompiling the resulting blob must show the materialized phandle. */
+
+/memreserve/ 0x80000000 0x10000;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    model = "LibCPU Virtual Machine";
+    compatible = "libcpu,virt";
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "libcpu,v20";
+            reg = <0>;
+        };
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x0 0x80000000 0x0 0x8000000>;
+    };
+
+    uart0: serial@10000000 {
+        compatible = "ns16550a";
+        reg = <0x0 0x10000000 0x0 0x100>;
+        interrupts = <1>;
+    };
+
+    chosen {
+        stdout-path = &uart0;
+        bootargs = "console=ttyS0";
+    };
+};

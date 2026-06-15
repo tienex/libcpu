@@ -301,7 +301,7 @@ endif()
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp core/ZooArchive.cpp
-  core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp
+  core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   frontends/v20/CpuV20.cpp frontends/m6502/Cpu6502.cpp
   third_party/zstd/zstd.c)
 target_include_directories(lcx PRIVATE frontends/v20 frontends/m6502 test aot core third_party/zstd)
@@ -685,6 +685,22 @@ add_test(NAME know.cppmethods COMMAND sh -c
 # such moves (incl. the high-byte forms ah/bh) must disassemble correctly.
 add_test(NAME disasm.mov8 COMMAND lcx disasm "${CMAKE_CURRENT_SOURCE_DIR}/test/mov8.v20.bin" --arch v20 --count 4)
 set_tests_properties(disasm.mov8 PROPERTIES PASS_REGULAR_EXPRESSION "mov ah,0x80")
+
+# Device tree: compile a machine .dts to a blob and decompile it back. The "&uart0"
+# reference must materialize -- the target node gets an auto-assigned phandle and the
+# referrer's stdout-path becomes that phandle cell, exactly as the reference compiler does.
+add_test(NAME dt.roundtrip COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' dt compile '${CMAKE_CURRENT_SOURCE_DIR}/test/dt-machine.dts' -o '${CMAKE_BINARY_DIR}/dt-machine.dtb' && \
+   '$<TARGET_FILE:lcx>' dt decompile '${CMAKE_BINARY_DIR}/dt-machine.dtb' | grep -q 'phandle = <0x1>' && \
+   '$<TARGET_FILE:lcx>' dt decompile '${CMAKE_BINARY_DIR}/dt-machine.dtb' | grep -q 'stdout-path = <0x1>'")
+
+# Device-tree fragment composition: a fragment adds a property to an existing node and a whole
+# new node; both must appear in the composed tree.
+add_test(NAME dt.overlay COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' dt compile '${CMAKE_CURRENT_SOURCE_DIR}/test/dt-machine.dts' -o '${CMAKE_BINARY_DIR}/dt-ovl-base.dtb' && \
+   '$<TARGET_FILE:lcx>' dt compile '${CMAKE_CURRENT_SOURCE_DIR}/test/dt-frag.dts' -o '${CMAKE_BINARY_DIR}/dt-ovl-frag.dtb' && \
+   '$<TARGET_FILE:lcx>' dt overlay '${CMAKE_BINARY_DIR}/dt-ovl-base.dtb' '${CMAKE_BINARY_DIR}/dt-ovl-frag.dtb' | grep -q 'clock-frequency' && \
+   '$<TARGET_FILE:lcx>' dt overlay '${CMAKE_BINARY_DIR}/dt-ovl-base.dtb' '${CMAKE_BINARY_DIR}/dt-ovl-frag.dtb' | grep -q 'rtc@20000000'")
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),
 # bound dynamically through the derived catalog (not a built-in handler). The guest sets
