@@ -707,6 +707,17 @@ if(TARGET interp_backend)
   set_tests_properties(know.marshal PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   list(APPEND LIBCPU_CHECK_DEPS structdemo)
 
+  # C++ member-call capstone: a real C++ class (built here) is derived into a catalog, then
+  # its constructor and member functions are actually CALLED through their bound symbols with
+  # a real "this" pointer. Proves the this-as-first-arg model is ABI-correct, the recorded
+  # struct size sizes the object, and the two add() overloads reach distinct code.
+  add_library(countercpp SHARED test/counter.cpp)
+  add_test(NAME know.invoke COMMAND lcx know invoke
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/counter.hpp"
+    "$<TARGET_FILE:countercpp>")
+  set_tests_properties(know.invoke PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS")
+  list(APPEND LIBCPU_CHECK_DEPS countercpp)
+
   # Derived target->host mapping: the DOS INT 21h mapping is generated from a target ABI
   # table (test/dos.abi) joined with a libc catalog -- no hand-authored <syscall> blocks --
   # then drives the canonical "Hello, LibCPU!" program. Proves derivation yields a working

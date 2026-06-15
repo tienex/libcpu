@@ -37,6 +37,7 @@
 #include "RunHostCall.h"
 #include "RunStruct.h"
 #include "RunDerivedMap.h"
+#include "RunMethodCall.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
 #include <cstring>
@@ -671,6 +672,18 @@ CmdKnowledge (int argc, char **argv, CHAR8 CONST *pArgv0)
         int Rc = RunStructDemo (pBackend, pHeader, pDylib, pXml);
         pBackend->Release ();
         return Rc;
+    }
+    if (pVerb != nullptr && std::strcmp (pVerb, "invoke") == 0) {
+        // lcx know invoke <header> <lib> -- derive a catalog from a C++ class header and its
+        // library, then actually CALL the constructor and member functions through their bound
+        // symbols with a real "this" pointer. No CPU backend: these are direct native calls.
+        CHAR8 CONST *pHeader = Positional (argc, argv, 1);
+        CHAR8 CONST *pLib    = Positional (argc, argv, 2);
+        if (pHeader == nullptr || pLib == nullptr) {
+            std::printf ("usage: lcx know invoke <header.hpp> <lib.dylib>\n");
+            return 2;
+        }
+        return RunMethodCallDemo (pHeader, pLib);
     }
     if (pVerb != nullptr && std::strcmp (pVerb, "derive-map") == 0) {
         // lcx know derive-map <header> <lib> <target.abi> -- derive the target->host
