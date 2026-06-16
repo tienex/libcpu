@@ -65,10 +65,13 @@ public:
     HRESULT STDMETHODCALLTYPE Reset (THIS) override
     {
         m_Imr        = 0xFF;          // all lines masked at power-on
+        m_Irr        = 0;             // no requests pending
+        m_Isr        = 0;             // nothing in service
         m_VectorBase = 0x08;
         m_Init       = InitIdle;
         m_Single     = FALSE;
         m_NeedIcw4   = FALSE;
+        m_ReadIsr    = FALSE;
         return S_OK;
     }
 
@@ -81,8 +84,9 @@ public:
     HRESULT STDMETHODCALLTYPE ReadPort (UINT16 Port, UINT32 /*Width*/, UINT32 *pValue) override
     {
         if (pValue == nullptr) { return E_POINTER; }
-        // Command port reads IRR/ISR (none pending in this model); data port reads the IMR.
-        *pValue = (Port == (UINT16) (m_Base + 1)) ? m_Imr : 0;
+        // Data port reads the IMR; command port reads the IRR or ISR per the last OCW3 selection.
+        if (Port == (UINT16) (m_Base + 1)) { *pValue = m_Imr; }
+        else                               { *pValue = m_ReadIsr ? m_Isr : m_Irr; }
         return S_OK;
     }
 
@@ -96,7 +100,18 @@ public:
                 m_Imr      = 0;
                 m_Init     = InitIcw2;
             }
-            // Otherwise OCW2/OCW3 (EOI, read-register select): no observable state here yet.
+            // OCW3 (bit3 set): select whether the command port reads the IRR or the ISR.
+            if ((V & 0x18) == 0x08) { m_ReadIsr = (V & 0x03) == 0x03 ? TRUE : FALSE; return S_OK; }
+            // OCW2: end-of-interrupt. Specific EOI (0x60 | level) clears that level; non-specific
+            // EOI (0x20) clears the highest-priority (lowest-numbered) in-service line.
+            if (V & 0x20) {
+                if (V & 0x40) { m_Isr = (UINT8) (m_Isr & ~(1u << (V & 7))); }   // specific EOI
+                else {                                                          // non-specific EOI
+                    for (int I = 0; I < 8; I++) {
+                        if (m_Isr & (1u << I)) { m_Isr = (UINT8) (m_Isr & ~(1u << I)); break; }
+                    }
+                }
+            }
             return S_OK;
         }
         // Data port (m_Base + 1): an ICW during init, otherwise OCW1 = the interrupt mask.
@@ -123,18 +138,32 @@ public:
     {
         if (pVector == nullptr) { return E_POINTER; }
         if (Irq > 7 || (m_Imr & (1u << Irq)) != 0) { return S_FALSE; }   // masked (or out of range)
-        *pVector = (UINT32) m_VectorBase + Irq;                          // ICW2 base + line
+        m_Irr = (UINT8) (m_Irr | (1u << Irq));                          // line requests service
+        // Priority: a line is acknowledged only if no equal-or-higher-priority line (IRQ0 is
+        // highest) is already in service. Bits 0..Irq of the ISR cover those priorities.
+        if ((m_Isr & (((1u << Irq) << 1) - 1)) != 0) { return S_FALSE; }
+        m_Irr = (UINT8) (m_Irr & ~(1u << Irq));                         // request granted -> in service
+        m_Isr = (UINT8) (m_Isr | (1u << Irq));
+        *pVector = (UINT32) m_VectorBase + Irq;                         // ICW2 base + line
         return S_OK;
+    }
+
+    BOOLEAN STDMETHODCALLTYPE IsMasked (UINT32 Irq) override            // read-only: cascade gating
+    {
+        return (Irq > 7 || (m_Imr & (1u << Irq)) != 0) ? TRUE : FALSE;
     }
 
 private:
     std::atomic<INT32> m_Ref;
     UINT16             m_Base       = 0x20;
     UINT8              m_Imr        = 0xFF;
+    UINT8              m_Irr        = 0;
+    UINT8              m_Isr        = 0;
     UINT8              m_VectorBase = 0x08;
     int                m_Init       = InitIdle;
     BOOLEAN            m_Single     = FALSE;
     BOOLEAN            m_NeedIcw4   = FALSE;
+    BOOLEAN            m_ReadIsr    = FALSE;       // OCW3: command port reads ISR vs IRR
 };
 
 } // anonymous namespace

@@ -945,6 +945,13 @@ if(TARGET interp_backend)
      grep -q 'read back from disk = .DMA-WRITE-ROUNDTRIP-OK' '${CMAKE_BINARY_DIR}/fdcw.out'")
   set_tests_properties(machine.fdcwrite PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # Priority-resolving 8259: the IRQ0 handler reads the in-service register through an OCW3 select
+  # and sees bit 0 set; EOI clears it so all five ticks are delivered. Proves ISR/IRR/OCW3/EOI.
+  add_test(NAME machine.pic COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-pic > '${CMAKE_BINARY_DIR}/pic.out' && \
+     grep -q '5 IRQ0; in-service register read inside the handler = 0x01' '${CMAKE_BINARY_DIR}/pic.out'")
+  set_tests_properties(machine.pic PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

@@ -132,6 +132,7 @@ DECLARE_INTERFACE_ (IInterruptController, IUnknown)
     STDMETHOD_ (UINT32, Release)(THIS) PURE;
 
     STDMETHOD (AcceptInterrupt)(THIS_ UINT32 Irq, OUT UINT32 *pVector) PURE;
+    STDMETHOD_ (BOOLEAN, IsMasked)(THIS_ UINT32 Irq) PURE;   // read-only mask test (cascade gating)
 };
 
 //

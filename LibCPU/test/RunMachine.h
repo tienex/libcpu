@@ -99,8 +99,7 @@ public:
                     return (int) (Vector - 8);
                 }
             } else if (m_pSlave != nullptr) {                       // slave line (8-15), cascaded on IRQ2
-                UINT32 Cascade = 0;
-                if (m_pMaster != nullptr && m_pMaster->AcceptInterrupt (2, &Cascade) != S_OK) { continue; }
+                if (m_pMaster != nullptr && m_pMaster->IsMasked (2)) { continue; }   // cascade line masked
                 if (m_pSlave->AcceptInterrupt (Irq - 8, &Vector) == S_OK) {
                     return (int) (Vector - 8);
                 }
@@ -341,6 +340,30 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 8) {
+        // Priority PIC / in-service register: the IRQ0 handler reads the ISR through an OCW3 select
+        // (out 0x0B to 0x20, then in from 0x20). With IRQ0 in service, bit 0 reads back set; the
+        // handler stashes it and sends EOI so the next tick is delivered.
+        UINT8 const Isr[] = {
+            0xB0, 0x0B, 0xE6, 0x20,  // mov al,0x0B ; out 0x20,al   OCW3: select ISR for read-back
+            0xE4, 0x20,              // in al, 0x20                 read the in-service register
+            0xA2, 0x56, 0x00,        // mov [0x0056], al            stash it for the host
+            0xB0, 0x20, 0xE6, 0x20,  // mov al,0x20 ; out 0x20,al   EOI
+            0xCF                     // iret
+        };
+        std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+        Machine.SetIvt (0x08, 0x0000, 0x0500);              // IRQ0 -> INT 8
+
+        std::vector<UINT8> Prog = {
+            0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
+            0xB0, 0x13, 0xE6, 0x20,  0xB0, 0x08, 0xE6, 0x21, // ICW1 ; ICW2 (base 8)
+            0xB0, 0x01, 0xE6, 0x21,  0xB0, 0xFE, 0xE6, 0x21, // ICW4 ; IMR: unmask IRQ0
+            0xB0, 0x36, 0xE6, 0x43,  0xB0, 0xFF, 0xE6, 0x40, 0xB0, 0xFF, 0xE6, 0x40,   // PIT ch0 mode 3, count
+            0xFB, 0xF4, 0xEB, 0xFD                           // sti ; hlt ; jmp $-1
+        };
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 7) {
         // DMA floppy WRITE round-trip: fill a buffer, DMA it out to the disk image via Write Data,
         // then DMA a Read Data of the same sector into a different buffer. If the bytes survive the
@@ -498,7 +521,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     } else {
         // Built-in power-on self test: init the PIC, program the timer, idle. Each PIC-gated
         // timer tick (INT 8) runs the ISR at 0:0x0500, which writes '.' to the UART.
-        UINT8 const Isr[] = { 0xBA, 0xF8, 0x03, 0xB0, 0x2E, 0xEE, 0xCF };   // mov dx,3F8; mov al,'.'; out; iret
+        // mov dx,0x3F8 ; mov al,'.' ; out dx,al ; mov al,0x20 ; out 0x20,al (EOI) ; iret
+        UINT8 const Isr[] = { 0xBA, 0xF8, 0x03, 0xB0, 0x2E, 0xEE, 0xB0, 0x20, 0xE6, 0x20, 0xCF };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
         Machine.SetIvt (0x08, 0x0000, 0x0500);
 
@@ -583,6 +607,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 5) {
         std::printf ("   PIT ch0 latched count = 0x%02X%02X (8254 counter-latch read-back)\n",
                      Ram[0x0071], Ram[0x0070]);
+    }
+    if (Demo == 8) {
+        std::printf ("   priority PIC: %llu IRQ0; in-service register read inside the handler = 0x%02X\n",
+                     (unsigned long long) R.Interrupts, Ram[0x0056]);
     }
     if (Demo == 7) {
         CHAR8 Text[32];
