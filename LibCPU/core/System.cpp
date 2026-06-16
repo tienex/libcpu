@@ -25,6 +25,34 @@ System::AddDevice (Device *pDevice)
 }
 
 void
+System::MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost)
+{
+    if (pHost == nullptr || Size == 0) { return; }
+    DEVICE_MEMORY M = { Base, Size, pHost };
+    m_DeviceMemory.push_back (M);
+}
+
+// Bring each device's own buffer into the guest's flat RAM, so the CPU's direct accesses see the
+// device's current memory (its initial contents, or a freshly switched bank).
+void
+System::SyncDeviceMemoryIn ()
+{
+    for (DEVICE_MEMORY CONST &M : m_DeviceMemory) {
+        if ((UINT64) M.Base + M.Size <= m_RamSize) { std::memcpy (m_pRAM + M.Base, M.pHost, M.Size); }
+    }
+}
+
+// Capture the CPU's writes from the flat RAM back into each device's own buffer, so the device
+// (e.g. a card scanning out its framebuffer) observes them.
+void
+System::SyncDeviceMemoryOut ()
+{
+    for (DEVICE_MEMORY CONST &M : m_DeviceMemory) {
+        if ((UINT64) M.Base + M.Size <= m_RamSize) { std::memcpy (M.pHost, m_pRAM + M.Base, M.Size); }
+    }
+}
+
+void
 System::SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off)
 {
     UINT32 Slot = Vector * 4;                          // real-mode IVT at physical 0
@@ -132,7 +160,9 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         m_State.TrapPc = CPU_SMC_NO_TRAP;
         m_State.IoCtrl = CPU_IO_NONE;
         m_State.SyscallVector = CPU_NO_SYSCALL;
+        SyncDeviceMemoryIn ();                          // device-owned memory -> flat RAM
         Code->Execute (m_pRAM, &m_State, nullptr);
+        SyncDeviceMemoryOut ();                         // flat RAM -> device-owned memory
         R.Steps++;
 
         if (m_State.TrapPc == CPU_SMC_NO_TRAP) {

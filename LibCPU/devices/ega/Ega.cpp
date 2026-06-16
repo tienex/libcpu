@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace LibCPU {
 
@@ -46,7 +47,7 @@ enum {
 enum { Ega_FbBase = 0xB8000, Ega_Cols = 80, Ega_Rows = 25 };
 enum { Ega_VramBase = 0xA0000, Ega_VramSize = 0x20000 };       // 128 KiB planar window 0xA0000-0xBFFFF
 
-class Ega : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
+class Ega : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory {
 public:
     Ega () : m_Ref (1) {}
 
@@ -61,6 +62,8 @@ public:
             *ppvObject = static_cast<IDisplayDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
             *ppvObject = static_cast<IMemoryDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IHostMemory)) {
+            *ppvObject = static_cast<IHostMemory *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -69,10 +72,11 @@ public:
         return S_OK;
     }
 
-    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    // --- IMemoryDevice + IHostMemory: the card's own video RAM, mapped into the address space ---
     UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Ega_VramBase; }
     UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Ega_VramSize; }
     BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
+    UINT8 * STDMETHODCALLTYPE GetHostBuffer (THIS) override { return m_Vram.data (); }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override
@@ -84,7 +88,11 @@ public:
 
     CHAR8 CONST * STDMETHODCALLTYPE GetName (THIS) override { return "IBM EGA"; }
 
-    HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode * /*pNode*/) override { return Reset (); }
+    HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode * /*pNode*/) override
+    {
+        m_Vram.assign (Ega_VramSize, 0);                // the card's own video RAM
+        return Reset ();
+    }
 
     HRESULT STDMETHODCALLTYPE Reset (THIS) override
     {
@@ -168,6 +176,7 @@ public:
 
 private:
     std::atomic<INT32> m_Ref;
+    std::vector<UINT8> m_Vram;
     UINT8              m_Crtc[25] = { 0 };
     UINT8              m_Seq[5]   = { 0 };
     UINT8              m_Gc[9]    = { 0 };

@@ -104,6 +104,23 @@ DECLARE_INTERFACE_ (IMemoryDevice, IUnknown)
 };
 
 //
+// Capability: the component backs its memory region with its OWN host buffer (e.g. a graphics
+// card's video RAM), rather than living in main RAM. The machine maps the component's
+// IMemoryDevice region onto GetHostBuffer() and keeps the guest's flat RAM and this buffer in
+// sync at execution-window boundaries -- so the memory is genuinely the device's: it can carry a
+// separate framebuffer, switch banks, or be absent ("no card, no memory"). GetHostBuffer returns
+// storage of at least the IMemoryDevice GetSize() bytes (the currently mapped bank).
+//
+DECLARE_INTERFACE_ (IHostMemory, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD_ (UINT8 *, GetHostBuffer)(THIS) PURE;
+};
+
+//
 // Capability: the component arbitrates hardware interrupts (the 8259 PIC). A raised IRQ line is
 // presented to AcceptInterrupt; if the line is enabled (not masked) it returns S_OK and the CPU
 // interrupt vector to dispatch (the controller's vector base + the line), otherwise S_FALSE.
@@ -198,6 +215,8 @@ inline constexpr IID IID_ISignalSink =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } };
 inline constexpr IID IID_ISignalSource =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
+inline constexpr IID IID_IHostMemory =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A } };
 
 } // namespace LibCPU
 

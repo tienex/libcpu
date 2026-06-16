@@ -138,6 +138,22 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     }
     InterruptArbiter Arbiter (std::move (Sources), pPic);
     Machine.AddDevice (&Arbiter);
+
+    // Map device-owned memory (a display card's video RAM) over its region: the machine keeps the
+    // flat RAM and the card's own buffer in sync at window boundaries, so the framebuffer is truly
+    // the card's memory rather than a slice of main RAM.
+    for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+        IMemoryDevice *pMem  = nullptr;
+        IHostMemory   *pHost = nullptr;
+        D.pDevice->QueryInterface (IID_IMemoryDevice, (VOID **) &pMem);
+        D.pDevice->QueryInterface (IID_IHostMemory, (VOID **) &pHost);
+        if (pMem != nullptr && pHost != nullptr) {
+            Machine.MapDeviceMemory (pMem->GetBase (), pMem->GetSize (), pHost->GetHostBuffer ());
+        }
+        if (pMem  != nullptr) { pMem->Release (); }
+        if (pHost != nullptr) { pHost->Release (); }
+    }
+
     // The board-level signal interconnect (speaker/cassette to the PPI/PIT lines) is declared in
     // the device tree ("signals = <&ppi ...>") and was resolved by MachineBuilder::Build.
     Machine.State ()->Reg[4]  = 0x1000;                      // SP
@@ -231,14 +247,27 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                  R.Reason == LC_SYS_RESULT::StepBudget ? "step-budget" : "fault",
                  (unsigned long long) R.Interrupts, (unsigned long long) R.PortWrites);
 
-    // Render any text display from its framebuffer in memory (memory-mapped video).
+    // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)
+    // is scanned out of the card's buffer at the text page's offset within the aperture; the
+    // sync at window boundaries has already captured the CPU's writes into it.
     for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
         IDisplayDevice *pDisp = nullptr;
         D.pDevice->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
         if (pDisp == nullptr) { continue; }
         UINT32 Base = pDisp->GetFramebufferBase (), Size = pDisp->GetFramebufferSize ();
         std::printf ("   --- %s, framebuffer 0x%05x ---\n", D.pDevice->GetName (), Base);
-        if ((UINT64) Base + Size <= Ram.size ()) { pDisp->RenderText (&Ram[Base], Size); }
+
+        IMemoryDevice *pMem  = nullptr;
+        IHostMemory   *pHost = nullptr;
+        D.pDevice->QueryInterface (IID_IMemoryDevice, (VOID **) &pMem);
+        D.pDevice->QueryInterface (IID_IHostMemory, (VOID **) &pHost);
+        if (pMem != nullptr && pHost != nullptr && Base >= pMem->GetBase ()) {
+            pDisp->RenderText (pHost->GetHostBuffer () + (Base - pMem->GetBase ()), Size);   // the card's own RAM
+        } else if ((UINT64) Base + Size <= Ram.size ()) {
+            pDisp->RenderText (&Ram[Base], Size);                                            // fallback: flat RAM
+        }
+        if (pMem  != nullptr) { pMem->Release (); }
+        if (pHost != nullptr) { pHost->Release (); }
         pDisp->Release ();
     }
 

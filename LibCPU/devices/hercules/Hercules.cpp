@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace LibCPU {
 
@@ -33,7 +34,7 @@ enum { Hgc_VramSize = 0x10000 };                               // 64 KiB: both 3
 enum { Mode_Graphics = 0x02, Mode_Video = 0x08, Mode_Page1 = 0x80 };
 enum { Cfg_AllowGraphics = 0x01, Cfg_AllowPage1 = 0x02 };
 
-class Hercules : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
+class Hercules : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory {
 public:
     Hercules () : m_Ref (1) {}
 
@@ -48,6 +49,8 @@ public:
             *ppvObject = static_cast<IDisplayDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
             *ppvObject = static_cast<IMemoryDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IHostMemory)) {
+            *ppvObject = static_cast<IHostMemory *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -56,10 +59,11 @@ public:
         return S_OK;
     }
 
-    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    // --- IMemoryDevice + IHostMemory: the card's own video RAM, mapped into the address space ---
     UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Hgc_FbBase; }
     UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Hgc_VramSize; }
     BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
+    UINT8 * STDMETHODCALLTYPE GetHostBuffer (THIS) override { return m_Vram.data (); }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override
@@ -76,6 +80,7 @@ public:
         UINT32 Base = 0x3B0;
         if (pNode != nullptr) { pNode->GetPropertyCell ("reg", 0, &Base); }
         m_Base = (UINT16) Base;
+        m_Vram.assign (Hgc_VramSize, 0);                // the card's own video RAM
         return Reset ();
     }
 
@@ -149,6 +154,7 @@ public:
 
 private:
     std::atomic<INT32> m_Ref;
+    std::vector<UINT8> m_Vram;
     UINT16             m_Base = 0x3B0;
     UINT8              m_Crtc[18] = { 0 };
     UINT8              m_Index  = 0;

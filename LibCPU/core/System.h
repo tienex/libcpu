@@ -54,6 +54,12 @@ public:
     void AddDevice (Device *pDevice);                // borrowed; caller keeps it alive
     void RequestShutdown () { m_Shutdown = true; }
 
+    // Map a device-owned host buffer over a guest physical region. The guest's flat RAM and the
+    // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
+    // the device's memory (a card's video RAM, a bankable aperture), not a slice of main RAM.
+    // pHost is borrowed; the caller keeps the device (and its buffer) alive for the run.
+    void MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost);
+
     // Seed an interrupt-vector-table entry (real-mode IVT at physical 0): vector ->
     // Seg:Off. Used by the "BIOS" to install a default ISR before running.
     void SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off);
@@ -69,6 +75,12 @@ private:
     Device *FindPort (UINT16 Port) CONST;
     int       PollDevices ();                          // first device asserting an IRQ
     void      InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc);
+    void      SyncDeviceMemoryIn ();                   // device buffers -> flat RAM (before a window)
+    void      SyncDeviceMemoryOut ();                  // flat RAM -> device buffers (after a window)
+
+    // A device-owned memory region mapped into the guest address space (see MapDeviceMemory).
+    struct DEVICE_MEMORY { UINT32 Base; UINT32 Size; UINT8 *pHost; };
+    std::vector<DEVICE_MEMORY> m_DeviceMemory;
 
     ICpuArchitecture       *m_pArch;
     ICpuBackend            *m_pBackend;
