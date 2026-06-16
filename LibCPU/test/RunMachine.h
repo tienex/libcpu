@@ -361,6 +361,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Out (0x0C, 0x00);                                   // clear the DMA byte-pointer flip-flop
         Out (0x0B, 0x46);                                   // ch2 mode: single, write-to-memory
         Out (0x04, 0x00); Out (0x04, 0x20);                 // ch2 base address = 0x2000
+        Out (0x81, 0x01);                                   // ch2 page = 1 -> physical 0x12000 (>64 KiB)
         Out (0x05, 0xFF); Out (0x05, 0x01);                 // ch2 count = 0x01FF (512 bytes)
         Out (0x0A, 0x02);                                   // unmask DMA channel 2
         Prog.push_back (0xBA); Prog.push_back (0xF5); Prog.push_back (0x03);   // mov dx, 0x3F5 (FDC FIFO)
@@ -544,11 +545,11 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 6) {
         CHAR8 Text[48];
         for (int I = 0; I < 47; I++) {
-            UINT8 Ch = Ram[0x2000 + I];
+            UINT8 Ch = Ram[0x12000 + I];                    // page 1 + offset 0x2000
             Text[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
         }
         Text[47] = '\0';
-        std::printf ("   floppy DMA: %llu IRQ6; sector at 0x2000 = \"%s\"\n",
+        std::printf ("   floppy DMA: %llu IRQ6; sector at 0x12000 (page 1) = \"%s\"\n",
                      (unsigned long long) R.Interrupts, Text);
     }
 

@@ -934,7 +934,7 @@ if(TARGET interp_backend)
   add_test(NAME machine.fdc COMMAND sh -c
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-fdc > '${CMAKE_BINARY_DIR}/fdc.out' && \
      grep -q '1 IRQ6' '${CMAKE_BINARY_DIR}/fdc.out' && \
-     grep -q 'sector at 0x2000 = .LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK' '${CMAKE_BINARY_DIR}/fdc.out'")
+     grep -q 'sector at 0x12000 .page 1. = .LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK' '${CMAKE_BINARY_DIR}/fdc.out'")
   set_tests_properties(machine.fdc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed

@@ -20,6 +20,20 @@ namespace LibCPU {
 
 namespace {
 
+// The DMA page registers (0x80-0x8F) are a separate latch on the PC supplying address bits 16-23.
+// Map the channel-0..3 page ports to their channels; -1 for the others (refresh, unused).
+static int
+PagePortChannel (UINT16 Port)
+{
+    switch (Port) {
+        case 0x87: return 0;
+        case 0x83: return 1;
+        case 0x81: return 2;
+        case 0x82: return 3;
+        default:   return -1;
+    }
+}
+
 class Dma8237 : public IDevice, public IPortDevice, public IDmaController {
 public:
     Dma8237 () : m_Ref (1) {}
@@ -47,7 +61,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetChannel (UINT32 Channel, UINT32 *pAddress, UINT32 *pCount, UINT32 *pMode) override
     {
         if (Channel > 3 || pAddress == nullptr || pCount == nullptr || pMode == nullptr) { return E_INVALIDARG; }
-        *pAddress = m_Addr[Channel];
+        *pAddress = ((UINT32) m_Page[Channel] << 16) | m_Addr[Channel];   // page register supplies bits 16-23
         *pCount   = m_Count[Channel];
         *pMode    = m_Mode[Channel];
         return S_OK;
@@ -76,6 +90,7 @@ public:
         std::memset (m_Addr, 0, sizeof (m_Addr));
         std::memset (m_Count, 0, sizeof (m_Count));
         std::memset (m_Mode, 0, sizeof (m_Mode));
+        std::memset (m_Page, 0, sizeof (m_Page));
         m_FlipFlop = FALSE;
         m_Mask     = 0x0F;                                   // all channels masked after reset
         m_Command  = 0;
@@ -85,12 +100,18 @@ public:
 
     BOOLEAN STDMETHODCALLTYPE OwnsPort (UINT16 Port) override
     {
+        if (Port >= 0x80 && Port <= 0x8F) { return TRUE; }   // the DMA page-register latch
         return (Port >= m_Base && Port < (UINT16) (m_Base + 0x10)) ? TRUE : FALSE;
     }
 
     HRESULT STDMETHODCALLTYPE ReadPort (UINT16 Port, UINT32 /*Width*/, UINT32 *pValue) override
     {
         if (pValue == nullptr) { return E_POINTER; }
+        if (Port >= 0x80 && Port <= 0x8F) {                  // page register
+            int Ch = PagePortChannel (Port);
+            *pValue = (Ch >= 0) ? m_Page[Ch] : 0;
+            return S_OK;
+        }
         UINT16 Off = (UINT16) (Port - m_Base);
         if (Off < 0x08) {                                    // channel address/count, low then high byte
             UINT16 *pReg = (Off & 1) ? &m_Count[Off >> 1] : &m_Addr[Off >> 1];
@@ -107,8 +128,13 @@ public:
 
     HRESULT STDMETHODCALLTYPE WritePort (UINT16 Port, UINT32 /*Width*/, UINT32 Value) override
     {
-        UINT16 Off = (UINT16) (Port - m_Base);
         UINT8  V   = (UINT8) Value;
+        if (Port >= 0x80 && Port <= 0x8F) {                  // page register
+            int Ch = PagePortChannel (Port);
+            if (Ch >= 0) { m_Page[Ch] = V; }
+            return S_OK;
+        }
+        UINT16 Off = (UINT16) (Port - m_Base);
         if (Off < 0x08) {                                    // channel address/count, low then high byte
             UINT16 *pReg = (Off & 1) ? &m_Count[Off >> 1] : &m_Addr[Off >> 1];
             if (m_FlipFlop) { *pReg = (UINT16) ((*pReg & 0x00FF) | ((UINT16) V << 8)); }
@@ -136,6 +162,7 @@ private:
     UINT16             m_Addr[4]  = { 0, 0, 0, 0 };
     UINT16             m_Count[4] = { 0, 0, 0, 0 };
     UINT8              m_Mode[4]  = { 0, 0, 0, 0 };
+    UINT8              m_Page[4]  = { 0, 0, 0, 0 };          // DMA page register (address bits 16-23)
     BOOLEAN            m_FlipFlop = FALSE;
     UINT8              m_Mask     = 0x0F;
     UINT8              m_Command  = 0;
