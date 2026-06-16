@@ -319,6 +319,7 @@ libcpu_add_device(i8259_device i8259 MATCH "intel,i8259;pic" SOURCES devices/i82
 libcpu_add_device(ns8250_device ns8250 MATCH "national,ns8250;ns16450;serial" SOURCES devices/ns8250/Uart8250.cpp)
 libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES devices/i8253/Pit8253.cpp)
 libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
+libcpu_add_device(i8042_device i8042 MATCH "intel,i8042;ibm,kbc;kbc;ps2-kbc" SOURCES devices/i8042/Kbc8042.cpp)
 libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
 libcpu_add_device(cga_device cga MATCH "ibm,cga;cga" SOURCES devices/cga/Cga6845.cpp)
@@ -880,6 +881,16 @@ if(TARGET interp_backend)
      grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q '0x000b8000..0x000bbfff  RW  MC6845 CRTC .CGA.' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-cga.out'")
+
+  # 8042 keyboard-controller self-test: a guest issues the controller self-test command (0xAA to
+  # 0x64) and reads the result from 0x60 -- the 8042 answers 0x55 ('U'), which the program prints as
+  # "KBC=U" on the serial console. End to end through the AT-class machine's device bus.
+  add_test(NAME machine.kbc COMMAND sh -c
+    "printf '\\xBA\\xF8\\x03\\xB0\\x4B\\xEE\\xB0\\x42\\xEE\\xB0\\x43\\xEE\\xB0\\x3D\\xEE\\xB0\\xAA\\xE6\\x64\\xE4\\x60\\xEE\\xB0\\x0A\\xEE\\xF4' > '${CMAKE_BINARY_DIR}/kbc.bin' && \
+     '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --image '${CMAKE_BINARY_DIR}/kbc.bin' --load 0x0600 > '${CMAKE_BINARY_DIR}/kbc.out' && \
+     grep -q 'kbc@60 .* i8042 .*intel,i8042' '${CMAKE_BINARY_DIR}/kbc.out' && \
+     grep -q 'KBC=U' '${CMAKE_BINARY_DIR}/kbc.out'")
+  set_tests_properties(machine.kbc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
