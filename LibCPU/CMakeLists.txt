@@ -858,6 +858,16 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'components: 11 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+# The --tree view renders the assembled machine as a true tree: box-drawing connectors, each node
+# annotated with its bound component/capabilities and the signal wiring resolved to source(line).
+add_test(NAME machine.tree COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pc5150.dts' --bundles '${CMAKE_BINARY_DIR}' --tree > '${CMAKE_BINARY_DIR}/machine-tree.out' && \
+   grep -q '└──' '${CMAKE_BINARY_DIR}/machine-tree.out' && \
+   grep -q 'pic@20 .*i8259.*irq-ctrl' '${CMAKE_BINARY_DIR}/machine-tree.out' && \
+   grep -q 'cassette .*signal-sink.*ppi@60.line1.' '${CMAKE_BINARY_DIR}/machine-tree.out' && \
+   grep -q 'speaker .*ppi@60.line1. pit@40.line2.' '${CMAKE_BINARY_DIR}/machine-tree.out'")
+set_tests_properties(machine.tree PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
 # The IBM PC 5150: the cassette interface the XT dropped binds as a signal sink (tapping PPI
 # port B's motor-relay bit), proving the board-level signal-line wiring across machine variants.
 add_test(NAME machine.match5150 COMMAND sh -c

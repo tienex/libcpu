@@ -1061,6 +1061,145 @@ CmdDt (int argc, char **argv)
     return 2;
 }
 
+// Big-endian cell 0 of node property pName (e.g. "phandle"); false if absent or too short.
+static bool
+NodeCell0 (LibCPU::DtNode &Node, CHAR8 CONST *pName, UINT32 *pOut)
+{
+    std::string Key = pName;
+    LibCPU::DT_PROP *pProp = Node.FindProp (Key);
+    if (pProp == nullptr || pProp->Value.size () < 4) { return false; }
+    UINT8 CONST *p = pProp->Value.data ();
+    *pOut = ((UINT32) p[0] << 24) | ((UINT32) p[1] << 16) | ((UINT32) p[2] << 8) | (UINT32) p[3];
+    return true;
+}
+
+// Collect every assigned phandle -> node name, so a "signals" reference can be shown by name.
+static void
+CollectPhandles (LibCPU::DtNode &Node, std::vector<std::pair<UINT32, std::string>> *pOut)
+{
+    UINT32 Ph = 0;
+    if (NodeCell0 (Node, "phandle", &Ph)) { pOut->push_back (std::make_pair (Ph, Node.Name)); }
+    for (LibCPU::DtNode &C : Node.Children) { CollectPhandles (C, pOut); }
+}
+
+// Describe how a node bound: the COM component and capabilities it exposes, or its compatible if no
+// bundle matched, plus any explicitly-wired signal edges resolved to "<- source(line)".
+static std::string
+DescribeNode (LibCPU::DtNode &Node, LibCPU::MachineBuilder &Builder,
+              std::vector<std::pair<UINT32, std::string>> CONST &Phandles)
+{
+    using namespace LibCPU;
+    std::string Out;
+
+    MATCHED_DEVICE CONST *pM = nullptr;
+    for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+        if (D.pNode == &Node) { pM = &D; break; }
+    }
+
+    if (pM != nullptr) {
+        IDevice *pDev = pM->pDevice;
+        IPortDevice         *pPort = nullptr;
+        IInterruptSource    *pIrq  = nullptr;
+        IInterruptController *pPic = nullptr;
+        IMemoryDevice       *pMem  = nullptr;
+        IDisplayDevice      *pDisp = nullptr;
+        ISignalSource       *pSrc  = nullptr;
+        ISignalSink         *pSnk  = nullptr;
+        pDev->QueryInterface (IID_IPortDevice, (VOID **) &pPort);
+        pDev->QueryInterface (IID_IInterruptSource, (VOID **) &pIrq);
+        pDev->QueryInterface (IID_IInterruptController, (VOID **) &pPic);
+        pDev->QueryInterface (IID_IMemoryDevice, (VOID **) &pMem);
+        pDev->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
+        pDev->QueryInterface (IID_ISignalSource, (VOID **) &pSrc);
+        pDev->QueryInterface (IID_ISignalSink, (VOID **) &pSnk);
+
+        std::string Caps;
+        if (pPort != nullptr) { Caps += "ports "; }
+        if (pIrq  != nullptr) { Caps += "irq-source "; }
+        if (pPic  != nullptr) { Caps += "irq-ctrl "; }
+        if (pSrc  != nullptr) { Caps += "signal-source "; }
+        if (pSnk  != nullptr) { Caps += "signal-sink "; }
+        if (pDisp != nullptr) { Caps += "display "; }
+        char Buf[160];
+        if (pMem != nullptr) {
+            UINT32 Base = pMem->GetBase (), Size = pMem->GetSize ();
+            std::snprintf (Buf, sizeof (Buf), "mem 0x%05x..0x%05x %s ",
+                           Base, Base + Size - 1, pMem->IsReadOnly () ? "ro" : "rw");
+            Caps += Buf;
+        }
+        if (!Caps.empty () && Caps.back () == ' ') { Caps.pop_back (); }
+
+        std::snprintf (Buf, sizeof (Buf), "%-9s %s  [%s]", pM->BundleName.c_str (),
+                       pDev->GetName (), Caps.c_str ());
+        Out = Buf;
+
+        if (pPort != nullptr) { pPort->Release (); }
+        if (pIrq  != nullptr) { pIrq->Release (); }
+        if (pPic  != nullptr) { pPic->Release (); }
+        if (pMem  != nullptr) { pMem->Release (); }
+        if (pDisp != nullptr) { pDisp->Release (); }
+        if (pSrc  != nullptr) { pSrc->Release (); }
+        if (pSnk  != nullptr) { pSnk->Release (); }
+    } else {
+        std::string Key = "compatible";
+        DT_PROP *pCompat = Node.FindProp (Key);
+        std::string Dev  = "device_type";
+        DT_PROP *pType   = Node.FindProp (Dev);
+        if (pCompat != nullptr && !pCompat->Value.empty ()) {
+            Out = std::string ("· ") + (CHAR8 CONST *) pCompat->Value.data ();
+            if (pType != nullptr && !pType->Value.empty ()) {
+                Out += std::string (" (") + (CHAR8 CONST *) pType->Value.data () + ")";
+            } else {
+                Out += " (no bundle)";
+            }
+        } else if (pType != nullptr && !pType->Value.empty ()) {
+            Out = std::string ("· (") + (CHAR8 CONST *) pType->Value.data () + ")";
+        }
+    }
+
+    // Resolve any explicit signal wiring ("signals = <&source LINE>, ...") to readable edges.
+    std::string SigKey = "signals";
+    DT_PROP *pSig = Node.FindProp (SigKey);
+    if (pSig != nullptr && pSig->Value.size () >= 8) {
+        size_t Cells = pSig->Value.size () / 4;
+        UINT8 CONST *p = pSig->Value.data ();
+        std::string Wires;
+        for (size_t I = 0; I + 1 < Cells; I += 2) {
+            UINT32 Ph   = ((UINT32) p[I*4] << 24) | ((UINT32) p[I*4+1] << 16) |
+                          ((UINT32) p[I*4+2] << 8) | (UINT32) p[I*4+3];
+            UINT32 Line = ((UINT32) p[(I+1)*4] << 24) | ((UINT32) p[(I+1)*4+1] << 16) |
+                          ((UINT32) p[(I+1)*4+2] << 8) | (UINT32) p[(I+1)*4+3];
+            std::string Name = "?";
+            for (std::pair<UINT32, std::string> CONST &E : Phandles) {
+                if (E.first == Ph) { Name = E.second; break; }
+            }
+            char Buf[64];
+            std::snprintf (Buf, sizeof (Buf), "%s%s(line%u)", Wires.empty () ? "" : " ",
+                           Name.c_str (), Line);
+            Wires += Buf;
+        }
+        if (!Wires.empty ()) { Out += "  <- " + Wires; }
+    }
+    return Out;
+}
+
+// Render a node and its subtree with box-drawing connectors -- the assembled machine as a true tree.
+static void
+PrintTree (LibCPU::DtNode &Node, std::string CONST &Prefix, bool IsLast, int Depth,
+           LibCPU::MachineBuilder &Builder, std::vector<std::pair<UINT32, std::string>> CONST &Phandles)
+{
+    std::string Branch = Prefix + (IsLast ? "└── " : "├── ");
+    std::string Desc   = DescribeNode (Node, Builder, Phandles);
+    int Pad = 22 - Depth * 4 - (int) Node.Name.size ();
+    if (Pad < 1) { Pad = 1; }
+    std::printf ("%s%s%*s%s\n", Branch.c_str (), Node.Name.c_str (), Pad, "", Desc.c_str ());
+
+    std::string ChildPrefix = Prefix + (IsLast ? "    " : "│   ");
+    for (size_t I = 0; I < Node.Children.size (); I++) {
+        PrintTree (Node.Children[I], ChildPrefix, I + 1 == Node.Children.size (), Depth + 1, Builder, Phandles);
+    }
+}
+
 // lcx machine -- assemble a machine from hardware-component bundles by matching a device tree
 // against the bundles' Info.plist personalities, then list the components COM made.
 static int
@@ -1097,6 +1236,21 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
     std::printf ("   bundles: %s (%zu match rules)\n", BundlesDir.c_str (), Builder.MatchCount ());
     std::printf ("   components: %zu matched, %zu unmatched\n\n",
                  Builder.Devices ().size (), Builder.Unmatched ().size ());
+
+    bool ShowTree = false;
+    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--tree") == 0) { ShowTree = true; } }
+    if (ShowTree) {
+        // The assembled machine as a true tree: the device-tree hierarchy, annotated with the COM
+        // component each node bound to, its discovered capabilities, and the resolved signal wiring.
+        std::vector<std::pair<UINT32, std::string>> Phandles;
+        CollectPhandles (Tree.Root, &Phandles);
+        std::printf ("/\n");
+        for (size_t I = 0; I < Tree.Root.Children.size (); I++) {
+            PrintTree (Tree.Root.Children[I], "", I + 1 == Tree.Root.Children.size (), 1, Builder, Phandles);
+        }
+        std::printf ("\n");
+        return 0;
+    }
 
     for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
         IPortDevice      *pPort = nullptr;
@@ -1160,7 +1314,7 @@ CmdHelp ()
 #endif
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
-        "  lcx machine <machine.dts> [--bundles <dir>]   assemble a machine from .device bundles\n"
+        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run]   assemble a machine from .device bundles\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");
