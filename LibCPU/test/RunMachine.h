@@ -228,6 +228,22 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 3) {
+        // RTC/CMOS read demo: select each clock register through 0x70 and read it from 0x71,
+        // stashing the BCD bytes in low RAM for the host to print as a date/time.
+        std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8 };       // xor ax,ax ; mov ds,ax  (DS = 0)
+        auto ReadCmos = [&] (UINT8 Reg, UINT8 Off) {
+            Prog.push_back (0xB0); Prog.push_back (Reg);            // mov al, Reg
+            Prog.push_back (0xE6); Prog.push_back (0x70);          // out 0x70, al   select register
+            Prog.push_back (0xE4); Prog.push_back (0x71);          // in  al, 0x71   read it
+            Prog.push_back (0xA2); Prog.push_back (Off); Prog.push_back (0x00);   // mov [Off], al
+        };
+        ReadCmos (0x04, 0x60);  ReadCmos (0x02, 0x61);  ReadCmos (0x00, 0x62);    // hour, minute, second
+        ReadCmos (0x09, 0x63);  ReadCmos (0x08, 0x64);  ReadCmos (0x07, 0x65);    // year, month, day
+        Prog.push_back (0xF4);                                     // hlt
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 1) {
         // Bank-switch + open-bus demo. Writes two Hercules display pages, probes an unmapped
         // address (which reads back as open bus), then flips the displayed page via the mode
@@ -348,6 +364,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 2) {
         std::printf ("   keyboard IRQ1: %llu interrupt(s) delivered; ISR read scan code 0x%02X from the 8042\n",
                      (unsigned long long) R.Interrupts, Ram[0x0052]);
+    }
+    if (Demo == 3) {
+        std::printf ("   RTC/CMOS: %02X:%02X:%02X  20%02X-%02X-%02X (BCD, read from the MC146818)\n",
+                     Ram[0x0060], Ram[0x0061], Ram[0x0062], Ram[0x0063], Ram[0x0064], Ram[0x0065]);
     }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)

@@ -54,6 +54,11 @@
         interrupts = <4>;
     };
 
+    rtc@70 {
+        compatible = "motorola,mc146818";
+        reg = <0x70 0x02>;              /* RTC index 0x70 / data 0x71; clock + 64-byte CMOS RAM */
+    };
+
     display@3c0 {
         compatible = "ibm,vga";
         reg = <0x3c0 0x10>;             /* attribute/sequencer/DAC/graphics + CRTC at 0x3d4 (fb A0000/B8000) */

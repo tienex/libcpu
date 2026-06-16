@@ -320,6 +320,7 @@ libcpu_add_device(ns8250_device ns8250 MATCH "national,ns8250;ns16450;serial" SO
 libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES devices/i8253/Pit8253.cpp)
 libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
 libcpu_add_device(i8042_device i8042 MATCH "intel,i8042;ibm,kbc;kbc;ps2-kbc" SOURCES devices/i8042/Kbc8042.cpp)
+libcpu_add_device(mc146818_device mc146818 MATCH "motorola,mc146818;ibm,rtc;rtc;cmos" SOURCES devices/mc146818/Rtc146818.cpp)
 libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
 libcpu_add_device(cga_device cga MATCH "ibm,cga;cga" SOURCES devices/cga/Cga6845.cpp)
@@ -900,6 +901,14 @@ if(TARGET interp_backend)
      grep -q 'press a key... [*]' '${CMAKE_BINARY_DIR}/kbd.out' && \
      grep -q '1 interrupt.s. delivered; ISR read scan code 0x1E' '${CMAKE_BINARY_DIR}/kbd.out'")
   set_tests_properties(machine.kbd PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # MC146818 RTC/CMOS: a guest selects each clock register through 0x70 and reads it from 0x71;
+  # the seeded BCD date/time (12:00:00 on 2026-06-16) comes back through the device bus.
+  add_test(NAME machine.rtc COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-rtc > '${CMAKE_BINARY_DIR}/rtc.out' && \
+     grep -q 'rtc@70 .* mc146818' '${CMAKE_BINARY_DIR}/rtc.out' && \
+     grep -q 'RTC/CMOS: 12:00:00  2026-06-16' '${CMAKE_BINARY_DIR}/rtc.out'")
+  set_tests_properties(machine.rtc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
