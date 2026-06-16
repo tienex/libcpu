@@ -179,9 +179,16 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         for (CHAR8 CONST *p = pMsg; *p != '\0'; ++p) {
             Prog.push_back (0xB0); Prog.push_back ((UINT8) *p); Prog.push_back (0xEE);
         }
-        // Sign-on banner to the MDA text framebuffer: DS = 0xB000, then write each char+attr
-        // word to DS:[col*2] -- a memory-mapped write that lands at physical 0xB0000.
-        Prog.push_back (0xB8); Prog.push_back (0x00); Prog.push_back (0xB0);   // mov ax, 0xB000
+        // Sign-on banner to the text framebuffer of whatever display card is fitted: DS = the
+        // framebuffer segment (MDA 0xB000, CGA/EGA/VGA 0xB800), then write each char+attr word to
+        // DS:[col*2] -- a memory-mapped write that lands at the card's physical framebuffer.
+        UINT16 FbSeg = 0xB000;
+        for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+            IDisplayDevice *pDisp = nullptr;
+            D.pDevice->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
+            if (pDisp != nullptr) { FbSeg = (UINT16) (pDisp->GetFramebufferBase () >> 4); pDisp->Release (); break; }
+        }
+        Prog.push_back (0xB8); Prog.push_back ((UINT8) (FbSeg & 0xFF)); Prog.push_back ((UINT8) (FbSeg >> 8));  // mov ax, FbSeg
         Prog.push_back (0x8E); Prog.push_back (0xD8);                          // mov ds, ax
         CHAR8 CONST *pScreen = "LIBCPU PC/XT 5160";
         for (UINT16 Off = 0; *pScreen != '\0'; ++pScreen, Off = (UINT16) (Off + 2)) {

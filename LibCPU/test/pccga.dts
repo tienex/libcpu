@@ -1,0 +1,59 @@
+/dts-v1/;
+
+/* IBM PC/XT with a Color Graphics Adapter. The CGA control ports are at 0x3D0-0x3DF and its
+   character/attribute framebuffer is at 0xB8000 (vs the MDA's 0x3B0 / 0xB0000). Otherwise the
+   chipset is the standard XT; only the display node differs. */
+
+/ {
+    model = "IBM PC/XT (5160) + CGA";
+    compatible = "ibm,pc-xt", "ibm,5160";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    cpu@0 {
+        device_type = "cpu";
+        compatible = "intel,i8088";
+        clock-frequency = <0x462300>;
+    };
+
+    memory@0 {
+        device_type = "memory";
+        compatible = "libcpu,ram";
+        reg = <0x0 0xA0000>;
+    };
+
+    rom@fe000 {
+        compatible = "ibm,pc-xt-bios";
+        reg = <0xfe000 0x2000>;
+        read-only;
+    };
+
+    pic@20 {
+        compatible = "intel,i8259";
+        reg = <0x20 0x02>;
+    };
+
+    pit@40 {
+        compatible = "intel,i8253";
+        reg = <0x40 0x04>;
+        interrupts = <0>;
+        libcpu,ticks = <5>;
+    };
+
+    ppi@60 {
+        compatible = "intel,i8255";
+        reg = <0x60 0x04>;
+        interrupts = <1>;
+    };
+
+    serial@3f8 {
+        compatible = "national,ns8250";
+        reg = <0x3f8 0x08>;
+        interrupts = <4>;
+    };
+
+    display@3d0 {
+        compatible = "ibm,cga";
+        reg = <0x3d0 0x10>;             /* CGA CRTC + mode/colour/status (framebuffer at B8000) */
+    };
+};

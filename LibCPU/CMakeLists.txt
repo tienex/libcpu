@@ -321,6 +321,9 @@ libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES
 libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
 libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
+libcpu_add_device(cga_device cga MATCH "ibm,cga;cga" SOURCES devices/cga/Cga6845.cpp)
+libcpu_add_device(ega_device ega MATCH "ibm,ega;ega" SOURCES devices/ega/Ega.cpp)
+libcpu_add_device(vga_device vga MATCH "ibm,vga;vga" SOURCES devices/vga/Vga.cpp)
 libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
 libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
 libcpu_add_device(pcspeaker_device pcspeaker MATCH "ibm,pc-speaker;pc-speaker;speaker" SOURCES devices/pcspeaker/Speaker.cpp)
@@ -857,6 +860,22 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'ppi@60 .* i8255 .*signal-source' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'components: 11 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+# The display-adapter family: each of CGA/EGA/VGA binds to its machine's display node and exposes
+# the display capability via COM. The CGA run renders the sign-on banner at the card's own 0xB8000
+# framebuffer (vs the MDA's 0xB0000), proving the framebuffer base comes from the bound component.
+add_test(NAME machine.video COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pccga.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3d0 .*cga .*display' && \
+   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcega.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3c0 .*ega .*display' && \
+   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3c0 .*vga .*display'")
+set_tests_properties(machine.video PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+if(TARGET interp_backend)
+  add_test(NAME machine.cga COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pccga.dts' --bundles '${CMAKE_BINARY_DIR}' --run > '${CMAKE_BINARY_DIR}/machine-cga.out' && \
+     grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
+     grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-cga.out'")
+endif()
 
 # The --tree view renders the assembled machine as a true tree: box-drawing connectors, each node
 # annotated with its bound component/capabilities and the signal wiring resolved to source(line).
