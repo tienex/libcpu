@@ -1,0 +1,60 @@
+/dts-v1/;
+
+/* IBM PC/XT with a Hercules InColor Card -- a colour Hercules: the same 0x3B0-0x3BF register
+   layout and 720x348 resolution, but four bit planes giving 16 colours from 64 KiB at 0xB0000,
+   with the InColor extended CRTC registers (0x10-0x1F) and a 16-entry palette at CRTC index 0x14.
+   Otherwise the standard XT chipset; only the display node differs. */
+
+/ {
+    model = "IBM PC/XT (5160) + Hercules InColor";
+    compatible = "ibm,pc-xt", "ibm,5160";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    cpu@0 {
+        device_type = "cpu";
+        compatible = "intel,i8088";
+        clock-frequency = <0x462300>;
+    };
+
+    memory@0 {
+        device_type = "memory";
+        compatible = "libcpu,ram";
+        reg = <0x0 0xA0000>;
+    };
+
+    rom@fe000 {
+        compatible = "ibm,pc-xt-bios";
+        reg = <0xfe000 0x2000>;
+        read-only;
+    };
+
+    pic@20 {
+        compatible = "intel,i8259";
+        reg = <0x20 0x02>;
+    };
+
+    pit@40 {
+        compatible = "intel,i8253";
+        reg = <0x40 0x04>;
+        interrupts = <0>;
+        libcpu,ticks = <5>;
+    };
+
+    ppi@60 {
+        compatible = "intel,i8255";
+        reg = <0x60 0x04>;
+        interrupts = <1>;
+    };
+
+    serial@3f8 {
+        compatible = "national,ns8250";
+        reg = <0x3f8 0x08>;
+        interrupts = <4>;
+    };
+
+    display@3b0 {
+        compatible = "hercules,incolor";
+        reg = <0x3b0 0x10>;             /* InColor extended CRTC + 16-colour palette (framebuffer at B0000) */
+    };
+};

@@ -324,6 +324,8 @@ libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES d
 libcpu_add_device(cga_device cga MATCH "ibm,cga;cga" SOURCES devices/cga/Cga6845.cpp)
 libcpu_add_device(ega_device ega MATCH "ibm,ega;ega" SOURCES devices/ega/Ega.cpp)
 libcpu_add_device(vga_device vga MATCH "ibm,vga;vga" SOURCES devices/vga/Vga.cpp)
+libcpu_add_device(hercules_device hercules MATCH "hercules,hgc;hercules;hgc" SOURCES devices/hercules/Hercules.cpp)
+libcpu_add_device(incolor_device incolor MATCH "hercules,incolor;incolor" SOURCES devices/incolor/Incolor.cpp)
 libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
 libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
 libcpu_add_device(pcspeaker_device pcspeaker MATCH "ibm,pc-speaker;pc-speaker;speaker" SOURCES devices/pcspeaker/Speaker.cpp)
@@ -867,7 +869,9 @@ set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machi
 add_test(NAME machine.video COMMAND sh -c
   "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pccga.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3d0 .*cga .*display' && \
    '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcega.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3c0 .*ega .*display' && \
-   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3c0 .*vga .*display'")
+   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3c0 .*vga .*display' && \
+   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcherc.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3b0 .*hercules .*display' && \
+   '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcincolor.dts' --bundles '${CMAKE_BINARY_DIR}' --tree | grep -q 'display@3b0 .*incolor .*display'")
 set_tests_properties(machine.video PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 if(TARGET interp_backend)

@@ -1,0 +1,60 @@
+/dts-v1/;
+
+/* IBM PC/XT with a Hercules Graphics Card. The HGC is MDA-compatible (MC6845 at 0x3B0-0x3BB,
+   monochrome text framebuffer at 0xB0000) and adds a 720x348 graphics mode in two 32 KiB pages
+   (0xB0000 / 0xB8000), gated by the mode register (0x3B8) and the configuration register (0x3BF).
+   Otherwise the standard XT chipset; only the display node differs. */
+
+/ {
+    model = "IBM PC/XT (5160) + Hercules";
+    compatible = "ibm,pc-xt", "ibm,5160";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    cpu@0 {
+        device_type = "cpu";
+        compatible = "intel,i8088";
+        clock-frequency = <0x462300>;
+    };
+
+    memory@0 {
+        device_type = "memory";
+        compatible = "libcpu,ram";
+        reg = <0x0 0xA0000>;
+    };
+
+    rom@fe000 {
+        compatible = "ibm,pc-xt-bios";
+        reg = <0xfe000 0x2000>;
+        read-only;
+    };
+
+    pic@20 {
+        compatible = "intel,i8259";
+        reg = <0x20 0x02>;
+    };
+
+    pit@40 {
+        compatible = "intel,i8253";
+        reg = <0x40 0x04>;
+        interrupts = <0>;
+        libcpu,ticks = <5>;
+    };
+
+    ppi@60 {
+        compatible = "intel,i8255";
+        reg = <0x60 0x04>;
+        interrupts = <1>;
+    };
+
+    serial@3f8 {
+        compatible = "national,ns8250";
+        reg = <0x3f8 0x08>;
+        interrupts = <4>;
+    };
+
+    display@3b0 {
+        compatible = "hercules,hgc";
+        reg = <0x3b0 0x10>;             /* MC6845 + mode 0x3B8 / config 0x3BF (framebuffer at B0000) */
+    };
+};
