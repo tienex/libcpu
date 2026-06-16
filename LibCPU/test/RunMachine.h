@@ -99,8 +99,12 @@ public:
                     return (int) (Vector - 8);
                 }
             } else if (m_pSlave != nullptr) {                       // slave line (8-15), cascaded on IRQ2
-                if (m_pMaster != nullptr && m_pMaster->IsMasked (2)) { continue; }   // cascade line masked
+                if (m_pMaster != nullptr && !m_pMaster->CanAccept (2)) { continue; }   // cascade gated by the master
                 if (m_pSlave->AcceptInterrupt (Irq - 8, &Vector) == S_OK) {
+                    if (m_pMaster != nullptr) {                     // the cascade goes in service on the master too
+                        UINT32 Casc = 0;
+                        m_pMaster->AcceptInterrupt (2, &Casc);
+                    }
                     return (int) (Vector - 8);
                 }
             }
@@ -444,9 +448,11 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         UINT8 const Isr[] = {
             0xB0, 0x0C, 0xE6, 0x70,  // mov al,0x0C ; out 0x70,al   select Status C
             0xE4, 0x71,              // in al, 0x71                 read it (clears the RTC's flags)
+            0xB0, 0x0B, 0xE6, 0x20,  // mov al,0x0B ; out 0x20,al   OCW3: select master ISR for read-back
+            0xE4, 0x20, 0xA2, 0x57, 0x00,   // in al,0x20 ; mov [0x57],al   master ISR (cascade bit 2 set?)
             0xB0, 0x21, 0xBA, 0xF8, 0x03, 0xEE,   // mov al,'!' ; mov dx,0x3F8 ; out dx,al
             0xB0, 0x20, 0xE6, 0xA0,  // mov al,0x20 ; out 0xA0,al   EOI to the slave
-            0xB0, 0x20, 0xE6, 0x20,  // mov al,0x20 ; out 0x20,al   EOI to the master
+            0xB0, 0x20, 0xE6, 0x20,  // mov al,0x20 ; out 0x20,al   EOI to the master (clears cascade ISR bit 2)
             0xCF                     // iret
         };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
@@ -601,8 +607,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                      Ram[0x0060], Ram[0x0061], Ram[0x0062], Ram[0x0063], Ram[0x0064], Ram[0x0065]);
     }
     if (Demo == 4) {
-        std::printf ("   RTC IRQ8: %llu interrupt(s) via the slave 8259 (INT 0x70)\n",
-                     (unsigned long long) R.Interrupts);
+        std::printf ("   RTC IRQ8: %llu interrupt(s) via the slave 8259 (INT 0x70); master ISR in handler = 0x%02X (cascade IRQ2)\n",
+                     (unsigned long long) R.Interrupts, Ram[0x0057]);
     }
     if (Demo == 5) {
         std::printf ("   PIT ch0 latched count = 0x%02X%02X (8254 counter-latch read-back)\n",

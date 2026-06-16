@@ -917,7 +917,8 @@ if(TARGET interp_backend)
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-rtc-irq > '${CMAKE_BINARY_DIR}/slavepic.out' && \
      grep -q 'pic@a0 .* i8259' '${CMAKE_BINARY_DIR}/slavepic.out' && \
      grep -q 'RTC IRQ8: !!!' '${CMAKE_BINARY_DIR}/slavepic.out' && \
-     grep -q '3 interrupt.s. via the slave 8259' '${CMAKE_BINARY_DIR}/slavepic.out'")
+     grep -q '3 interrupt.s. via the slave 8259' '${CMAKE_BINARY_DIR}/slavepic.out' && \
+     grep -q 'master ISR in handler = 0x04' '${CMAKE_BINARY_DIR}/slavepic.out'")
   set_tests_properties(machine.slavepic PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # 8254 counter-latch read-back: a guest programs channel 0 (reload 0x1234), latches it, and reads

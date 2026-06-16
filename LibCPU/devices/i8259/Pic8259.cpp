@@ -148,9 +148,14 @@ public:
         return S_OK;
     }
 
-    BOOLEAN STDMETHODCALLTYPE IsMasked (UINT32 Irq) override            // read-only: cascade gating
+    // Read-only test (no IRR/ISR side effect) of whether a line would be acknowledged right now --
+    // not masked, and no equal-or-higher-priority line already in service. Used by the bus to gate
+    // the slave's cascade onto the master's IRQ2 before committing the slave acknowledge.
+    BOOLEAN STDMETHODCALLTYPE CanAccept (UINT32 Irq) override
     {
-        return (Irq > 7 || (m_Imr & (1u << Irq)) != 0) ? TRUE : FALSE;
+        if (Irq > 7 || (m_Imr & (1u << Irq)) != 0) { return FALSE; }
+        if ((m_Isr & (((1u << Irq) << 1) - 1)) != 0) { return FALSE; }
+        return TRUE;
     }
 
 private:
