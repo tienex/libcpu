@@ -20,7 +20,7 @@ namespace LibCPU {
 
 namespace {
 
-class Dma8237 : public IDevice, public IPortDevice {
+class Dma8237 : public IDevice, public IPortDevice, public IDmaController {
 public:
     Dma8237 () : m_Ref (1) {}
 
@@ -31,11 +31,25 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IDmaController)) {
+            *ppvObject = static_cast<IDmaController *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
         }
         AddRef ();
+        return S_OK;
+    }
+
+    // IDmaController: expose a channel's programmed transfer (base address, byte count, mode). The
+    // 20-bit physical address would add the page register (0x80-0x8F, a separate latch); a transfer
+    // staying within the low 64 KiB page uses just this 16-bit base.
+    HRESULT STDMETHODCALLTYPE GetChannel (UINT32 Channel, UINT32 *pAddress, UINT32 *pCount, UINT32 *pMode) override
+    {
+        if (Channel > 3 || pAddress == nullptr || pCount == nullptr || pMode == nullptr) { return E_INVALIDARG; }
+        *pAddress = m_Addr[Channel];
+        *pCount   = m_Count[Channel];
+        *pMode    = m_Mode[Channel];
         return S_OK;
     }
 

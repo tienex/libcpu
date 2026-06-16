@@ -928,6 +928,15 @@ if(TARGET interp_backend)
      grep -q 'PIT ch0 latched count = 0x1233' '${CMAKE_BINARY_DIR}/pit.out'")
   set_tests_properties(machine.pit PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # DMA-driven floppy read: the guest programs DMA channel 2 and issues the FDC Read Data command;
+  # the DMA bridge moves sector 0 from the controller's backing image into memory at 0x2000 and the
+  # FDC raises IRQ6. Proves the FDC <-> 8237 <-> memory data path end to end.
+  add_test(NAME machine.fdc COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-fdc > '${CMAKE_BINARY_DIR}/fdc.out' && \
+     grep -q '1 IRQ6' '${CMAKE_BINARY_DIR}/fdc.out' && \
+     grep -q 'sector at 0x2000 = .LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK' '${CMAKE_BINARY_DIR}/fdc.out'")
+  set_tests_properties(machine.fdc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

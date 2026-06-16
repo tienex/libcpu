@@ -195,6 +195,39 @@ DECLARE_INTERFACE_ (ISignalSource, IUnknown)
 };
 
 //
+// Capability: the DMA controller (the 8237). Exposes a channel's current transfer programming so a
+// DMA bridge can move bytes between a peripheral and guest memory. GetChannel returns the channel's
+// base address, byte count (the 8237 holds count-minus-one), and mode byte (bits 2-3 select the
+// transfer direction: 01 = write to memory, 10 = read from memory).
+//
+DECLARE_INTERFACE_ (IDmaController, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (GetChannel)(THIS_ UINT32 Channel, OUT UINT32 *pAddress, OUT UINT32 *pCount, OUT UINT32 *pMode) PURE;
+};
+
+//
+// Capability: a peripheral that transfers through a DMA channel (e.g. the floppy controller). When
+// a command needs a transfer, GetDmaRequest returns S_OK with the channel, direction (TRUE = device
+// to memory), a pointer to the peripheral's own buffer, and the byte length; the machine's DMA
+// bridge moves the bytes to/from guest memory at the controller's programmed address and then calls
+// CompleteDma so the peripheral can finish (post its result and raise its interrupt). GetDmaRequest
+// returns S_FALSE when no transfer is pending.
+//
+DECLARE_INTERFACE_ (IDmaPeripheral, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (GetDmaRequest)(THIS_ OUT UINT32 *pChannel, OUT BOOLEAN *pToMemory, OUT UINT8 **ppBuffer, OUT UINT32 *pLength) PURE;
+    STDMETHOD (CompleteDma)(THIS) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -217,6 +250,10 @@ inline constexpr IID IID_ISignalSource =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
 inline constexpr IID IID_IHostMemory =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A } };
+inline constexpr IID IID_IDmaController =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B } };
+inline constexpr IID IID_IDmaPeripheral =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
 
 } // namespace LibCPU
 

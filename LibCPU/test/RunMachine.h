@@ -115,6 +115,51 @@ private:
     IInterruptController           *m_pSlave;
 };
 
+// Performs DMA transfers on behalf of peripherals. Each time the machine polls the bus, the bridge
+// asks every DMA peripheral whether it has a pending request; if so it reads the channel's address
+// and count from the DMA controller and moves the bytes between the peripheral's buffer and guest
+// memory, then tells the peripheral the transfer is done (so it can post its result and raise its
+// IRQ). It never asserts an interrupt itself -- it just moves bytes, like the real 8237 cycle.
+class DmaBridge final : public Device {
+public:
+    DmaBridge (UINT8 *pRam, UINT64 RamSize, std::vector<IDmaPeripheral *> Peripherals, IDmaController *pDma)
+        : m_pRam (pRam), m_RamSize (RamSize), m_Peripherals (std::move (Peripherals)), m_pDma (pDma) {}
+    ~DmaBridge () override
+    {
+        for (IDmaPeripheral *p : m_Peripherals) { p->Release (); }
+        if (m_pDma != nullptr) { m_pDma->Release (); }
+    }
+
+    CHAR8 CONST *Name () CONST override { return "8237 DMA bridge"; }
+
+    int Poll () override
+    {
+        for (IDmaPeripheral *p : m_Peripherals) {
+            UINT32  Channel = 0, Length = 0;
+            BOOLEAN ToMemory = FALSE;
+            UINT8  *pBuf = nullptr;
+            if (p->GetDmaRequest (&Channel, &ToMemory, &pBuf, &Length) != S_OK) { continue; }
+            UINT32 Addr = 0, Count = 0, Mode = 0;
+            if (m_pDma != nullptr && m_pDma->GetChannel (Channel, &Addr, &Count, &Mode) == S_OK) {
+                UINT32 N = Count + 1;                       // the 8237 holds count-minus-one
+                if (N > Length) { N = Length; }
+                if ((UINT64) Addr + N <= m_RamSize && pBuf != nullptr) {
+                    if (ToMemory) { std::memcpy (m_pRam + Addr, pBuf, N); }   // device -> memory
+                    else          { std::memcpy (pBuf, m_pRam + Addr, N); }   // memory -> device
+                }
+            }
+            p->CompleteDma ();
+        }
+        return -1;                                          // the bridge moves bytes, raises no IRQ
+    }
+
+private:
+    UINT8                          *m_pRam;
+    UINT64                          m_RamSize;
+    std::vector<IDmaPeripheral *>   m_Peripherals;
+    IDmaController                 *m_pDma;
+};
+
 static inline int
 RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr,
                 int Demo = 0)                                // 0 none, 1 bank-switch, 2 keyboard IRQ1
@@ -123,6 +168,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     std::vector<IInterruptSource *> Sources;
     IInterruptController           *pMaster = nullptr;       // 8259 at the lower base (0x20)
     IInterruptController           *pSlave  = nullptr;       // cascaded 8259 (0xA0), IRQ8-15
+    std::vector<IDmaPeripheral *>   DmaPeris;                // peripherals that transfer via DMA
+    IDmaController                 *pDmaCtl = nullptr;       // the 8237
     UINT64                          MemEnd = 0x100000;       // at least the 1 MiB real-mode space
     std::vector<std::pair<UINT32, UINT32>> Mapped;          // (base, size) of every backed region
     std::printf ("\n== power-on: assembling the address space and interrupt path\n");
@@ -144,6 +191,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             if (RegBase >= 0x80) { if (pSlave  == nullptr) { pSlave  = pIc; } else { pIc->Release (); } }
             else                 { if (pMaster == nullptr) { pMaster = pIc; } else { pIc->Release (); } }
         }
+        IDmaPeripheral *pPeri = nullptr;
+        D.pDevice->QueryInterface (IID_IDmaPeripheral, (VOID **) &pPeri);
+        if (pPeri != nullptr) { DmaPeris.push_back (pPeri); }
+        if (pDmaCtl == nullptr) { D.pDevice->QueryInterface (IID_IDmaController, (VOID **) &pDmaCtl); }
         IMemoryDevice *pMem = nullptr;
         D.pDevice->QueryInterface (IID_IMemoryDevice, (VOID **) &pMem);
         if (pMem != nullptr) {
@@ -167,6 +218,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Adapters.push_back (std::unique_ptr<ComDeviceAdapter> (new ComDeviceAdapter (D.pDevice)));
         Machine.AddDevice (Adapters.back ().get ());
     }
+    // The DMA bridge runs before the interrupt arbiter, so a transfer completes (and the peripheral
+    // arms its IRQ) within the same poll the arbiter then sees.
+    DmaBridge Bridge (Ram.data (), Ram.size (), std::move (DmaPeris), pDmaCtl);
+    Machine.AddDevice (&Bridge);
     InterruptArbiter Arbiter (std::move (Sources), pMaster, pSlave);
     Machine.AddDevice (&Arbiter);
 
@@ -283,6 +338,36 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             0xE4, 0x40, 0xA2, 0x71, 0x00,                    // in al,0x40 ; mov [0x71],al  latched MSB
             0xF4                                             // hlt
         };
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 6) {
+        // DMA-driven floppy read: program DMA channel 2 to land a sector at 0x2000, issue the FDC
+        // Read Data command, and idle. The DMA bridge moves the sector into memory and the FDC
+        // raises IRQ6; the INT 0x0E ISR prints '#' and sends EOI. The sector text ends up at 0x2000.
+        UINT8 const Isr[] = {
+            0xB0, 0x23, 0xBA, 0xF8, 0x03, 0xEE,   // mov al,'#' ; mov dx,0x3F8 ; out dx,al
+            0xB0, 0x20, 0xE6, 0x20,               // mov al,0x20 ; out 0x20,al   EOI to the master PIC
+            0xCF                                  // iret
+        };
+        std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+        Machine.SetIvt (0x0E, 0x0000, 0x0500);              // IRQ6 -> INT 0x0E (8 + 6)
+
+        std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8 };   // xor ax,ax ; mov ds,ax
+        auto Out = [&] (UINT8 Port, UINT8 Val) {            // out imm8 (ports < 0x100)
+            Prog.push_back (0xB0); Prog.push_back (Val); Prog.push_back (0xE6); Prog.push_back (Port);
+        };
+        Out (0x20, 0x13); Out (0x21, 0x08); Out (0x21, 0x01); Out (0x21, 0xBF);   // PIC: init, unmask IRQ6
+        Out (0x0C, 0x00);                                   // clear the DMA byte-pointer flip-flop
+        Out (0x0B, 0x46);                                   // ch2 mode: single, write-to-memory
+        Out (0x04, 0x00); Out (0x04, 0x20);                 // ch2 base address = 0x2000
+        Out (0x05, 0xFF); Out (0x05, 0x01);                 // ch2 count = 0x01FF (512 bytes)
+        Out (0x0A, 0x02);                                   // unmask DMA channel 2
+        Prog.push_back (0xBA); Prog.push_back (0xF5); Prog.push_back (0x03);   // mov dx, 0x3F5 (FDC FIFO)
+        UINT8 const Cmd[] = { 0xE6, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF };   // Read Data C0 H0 R1 N2
+        for (UINT8 B : Cmd) { Prog.push_back (0xB0); Prog.push_back (B); Prog.push_back (0xEE); }   // mov al,B ; out dx,al
+        UINT8 const Idle[] = { 0xFB, 0xF4, 0xEB, 0xFD };    // sti ; hlt ; jmp $-1
+        Prog.insert (Prog.end (), Idle, Idle + sizeof (Idle));
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
@@ -455,6 +540,16 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 5) {
         std::printf ("   PIT ch0 latched count = 0x%02X%02X (8254 counter-latch read-back)\n",
                      Ram[0x0071], Ram[0x0070]);
+    }
+    if (Demo == 6) {
+        CHAR8 Text[48];
+        for (int I = 0; I < 47; I++) {
+            UINT8 Ch = Ram[0x2000 + I];
+            Text[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
+        }
+        Text[47] = '\0';
+        std::printf ("   floppy DMA: %llu IRQ6; sector at 0x2000 = \"%s\"\n",
+                     (unsigned long long) R.Interrupts, Text);
     }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)

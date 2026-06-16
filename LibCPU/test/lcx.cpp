@@ -1284,6 +1284,7 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         if (std::strcmp (argv[I], "--demo-rtc") == 0) { Demo = 3; Run = true; }  // MC146818 RTC/CMOS read demo
         if (std::strcmp (argv[I], "--demo-rtc-irq") == 0) { Demo = 4; Run = true; }  // RTC IRQ8 via the slave PIC
         if (std::strcmp (argv[I], "--demo-pit") == 0) { Demo = 5; Run = true; }      // 8254 counter-latch read-back
+        if (std::strcmp (argv[I], "--demo-fdc") == 0) { Demo = 6; Run = true; }      // DMA-driven floppy sector read
     }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
     if (Run || pImage != nullptr) {
