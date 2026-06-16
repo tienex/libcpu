@@ -24,6 +24,7 @@
 #include "LibCPU/IDevice.h"
 #include "../core/System.h"
 #include "../core/MachineBuilder.h"
+#include "../core/DeviceTree.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -67,18 +68,22 @@ private:
     IPortDevice *m_pPort = nullptr;
 };
 
-// Aggregates every interrupt source and routes a raised IRQ through the PIC: the PIC masks it
-// (IMR) and gives the vector base, so an interrupt reaches the CPU only when the guest has
-// programmed and unmasked the controller. (System dispatches INT 8+IRQ, which equals the PIC's
-// vector when the conventional ICW2 base of 8 is in effect.)
+// Aggregates every interrupt source and routes a raised IRQ through the 8259 cascade: lines 0-7
+// go to the master, 8-15 to the slave (which is itself wired into the master's IRQ2, so the slave
+// can only get through when the master's cascade line is unmasked). Each PIC masks its own lines
+// (IMR) and supplies the vector from its ICW2 base. System dispatches INT 8+result, so the arbiter
+// returns (Vector - 8): 8 + (Vector - 8) reconstructs the exact PIC vector for either controller,
+// no matter what ICW2 base each was programmed with.
 class InterruptArbiter final : public Device {
 public:
-    InterruptArbiter (std::vector<IInterruptSource *> Sources, IInterruptController *pPic)
-        : m_Sources (std::move (Sources)), m_pPic (pPic) {}
+    InterruptArbiter (std::vector<IInterruptSource *> Sources,
+                      IInterruptController *pMaster, IInterruptController *pSlave)
+        : m_Sources (std::move (Sources)), m_pMaster (pMaster), m_pSlave (pSlave) {}
     ~InterruptArbiter () override
     {
         for (IInterruptSource *p : m_Sources) { p->Release (); }
-        if (m_pPic != nullptr) { m_pPic->Release (); }
+        if (m_pMaster != nullptr) { m_pMaster->Release (); }
+        if (m_pSlave  != nullptr) { m_pSlave->Release (); }
     }
 
     CHAR8 CONST *Name () CONST override { return "8259 interrupt arbiter"; }
@@ -88,18 +93,26 @@ public:
         for (IInterruptSource *p : m_Sources) {
             UINT32 Irq = 0;
             if (p->PollInterrupt (&Irq) != S_OK) { continue; }
-            if (m_pPic != nullptr) {
-                UINT32 Vector = 0;
-                if (m_pPic->AcceptInterrupt (Irq, &Vector) != S_OK) { continue; }   // masked by the PIC
+            UINT32 Vector = 0;
+            if (Irq < 8) {                                          // master line
+                if (m_pMaster != nullptr && m_pMaster->AcceptInterrupt (Irq, &Vector) == S_OK) {
+                    return (int) (Vector - 8);
+                }
+            } else if (m_pSlave != nullptr) {                       // slave line (8-15), cascaded on IRQ2
+                UINT32 Cascade = 0;
+                if (m_pMaster != nullptr && m_pMaster->AcceptInterrupt (2, &Cascade) != S_OK) { continue; }
+                if (m_pSlave->AcceptInterrupt (Irq - 8, &Vector) == S_OK) {
+                    return (int) (Vector - 8);
+                }
             }
-            return (int) Irq;
         }
         return -1;
     }
 
 private:
     std::vector<IInterruptSource *> m_Sources;
-    IInterruptController           *m_pPic;
+    IInterruptController           *m_pMaster;
+    IInterruptController           *m_pSlave;
 };
 
 static inline int
@@ -108,7 +121,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
-    IInterruptController           *pPic = nullptr;
+    IInterruptController           *pMaster = nullptr;       // 8259 at the lower base (0x20)
+    IInterruptController           *pSlave  = nullptr;       // cascaded 8259 (0xA0), IRQ8-15
     UINT64                          MemEnd = 0x100000;       // at least the 1 MiB real-mode space
     std::vector<std::pair<UINT32, UINT32>> Mapped;          // (base, size) of every backed region
     std::printf ("\n== power-on: assembling the address space and interrupt path\n");
@@ -117,7 +131,19 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         IInterruptSource *pSrc = nullptr;
         D.pDevice->QueryInterface (IID_IInterruptSource, (VOID **) &pSrc);
         if (pSrc != nullptr) { Sources.push_back (pSrc); }
-        if (pPic == nullptr) { D.pDevice->QueryInterface (IID_IInterruptController, (VOID **) &pPic); }
+        IInterruptController *pIc = nullptr;
+        D.pDevice->QueryInterface (IID_IInterruptController, (VOID **) &pIc);
+        if (pIc != nullptr) {                                // master if at the low base, else slave
+            std::string Key = "reg";
+            DT_PROP *pReg = (D.pNode != nullptr) ? D.pNode->FindProp (Key) : nullptr;
+            UINT32 RegBase = 0;                              // big-endian cell 0 of "reg" (the I/O base)
+            if (pReg != nullptr && pReg->Value.size () >= 4) {
+                UINT8 CONST *b = pReg->Value.data ();
+                RegBase = ((UINT32) b[0] << 24) | ((UINT32) b[1] << 16) | ((UINT32) b[2] << 8) | b[3];
+            }
+            if (RegBase >= 0x80) { if (pSlave  == nullptr) { pSlave  = pIc; } else { pIc->Release (); } }
+            else                 { if (pMaster == nullptr) { pMaster = pIc; } else { pIc->Release (); } }
+        }
         IMemoryDevice *pMem = nullptr;
         D.pDevice->QueryInterface (IID_IMemoryDevice, (VOID **) &pMem);
         if (pMem != nullptr) {
@@ -141,7 +167,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Adapters.push_back (std::unique_ptr<ComDeviceAdapter> (new ComDeviceAdapter (D.pDevice)));
         Machine.AddDevice (Adapters.back ().get ());
     }
-    InterruptArbiter Arbiter (std::move (Sources), pPic);
+    InterruptArbiter Arbiter (std::move (Sources), pMaster, pSlave);
     Machine.AddDevice (&Arbiter);
 
     // Map device-owned memory (a display card's video RAM) over its region: the machine keeps the
@@ -241,6 +267,43 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         ReadCmos (0x04, 0x60);  ReadCmos (0x02, 0x61);  ReadCmos (0x00, 0x62);    // hour, minute, second
         ReadCmos (0x09, 0x63);  ReadCmos (0x08, 0x64);  ReadCmos (0x07, 0x65);    // year, month, day
         Prog.push_back (0xF4);                                     // hlt
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 4) {
+        // RTC IRQ8 through the slave 8259. The RTC's periodic interrupt is wired to IRQ8, which the
+        // slave PIC vectors (ICW2 base 0x70 -> INT 0x70) and presents to the master on IRQ2; the
+        // ISR reads Status C to acknowledge the RTC and sends EOI to both PICs.
+        UINT8 const Isr[] = {
+            0xB0, 0x0C, 0xE6, 0x70,  // mov al,0x0C ; out 0x70,al   select Status C
+            0xE4, 0x71,              // in al, 0x71                 read it (clears the RTC's flags)
+            0xB0, 0x21, 0xBA, 0xF8, 0x03, 0xEE,   // mov al,'!' ; mov dx,0x3F8 ; out dx,al
+            0xB0, 0x20, 0xE6, 0xA0,  // mov al,0x20 ; out 0xA0,al   EOI to the slave
+            0xB0, 0x20, 0xE6, 0x20,  // mov al,0x20 ; out 0x20,al   EOI to the master
+            0xCF                     // iret
+        };
+        std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+        Machine.SetIvt (0x70, 0x0000, 0x0500);              // slave IRQ8 -> INT 0x70
+
+        std::vector<UINT8> Prog = {
+            0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
+            0xB0, 0x11, 0xE6, 0x20,  0xB0, 0x08, 0xE6, 0x21, // master: ICW1 ; ICW2 (base 8)
+            0xB0, 0x04, 0xE6, 0x21,  0xB0, 0x01, 0xE6, 0x21, // master: ICW3 (slave on IRQ2) ; ICW4
+            0xB0, 0xFB, 0xE6, 0x21,                          // master IMR: unmask IRQ2 (cascade)
+            0xB0, 0x11, 0xE6, 0xA0,  0xB0, 0x70, 0xE6, 0xA1, // slave:  ICW1 ; ICW2 (base 0x70)
+            0xB0, 0x02, 0xE6, 0xA1,  0xB0, 0x01, 0xE6, 0xA1, // slave:  ICW3 (id 2) ; ICW4
+            0xB0, 0xFE, 0xE6, 0xA1,                          // slave IMR: unmask IRQ8 (slave line 0)
+            0xBA, 0xF8, 0x03                                 // mov dx, 0x3F8
+        };
+        CHAR8 CONST *pMsg = "RTC IRQ8: ";
+        for (CHAR8 CONST *p = pMsg; *p != '\0'; ++p) {
+            Prog.push_back (0xB0); Prog.push_back ((UINT8) *p); Prog.push_back (0xEE);
+        }
+        UINT8 const Arm[] = {
+            0xB0, 0x0B, 0xE6, 0x70,  0xB0, 0x42, 0xE6, 0x71, // select Status B ; write PIE|24h (enable periodic)
+            0xFB, 0xF4, 0xEB, 0xFD                            // sti ; hlt ; jmp $-1
+        };
+        Prog.insert (Prog.end (), Arm, Arm + sizeof (Arm));
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
@@ -368,6 +431,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 3) {
         std::printf ("   RTC/CMOS: %02X:%02X:%02X  20%02X-%02X-%02X (BCD, read from the MC146818)\n",
                      Ram[0x0060], Ram[0x0061], Ram[0x0062], Ram[0x0063], Ram[0x0064], Ram[0x0065]);
+    }
+    if (Demo == 4) {
+        std::printf ("   RTC IRQ8: %llu interrupt(s) via the slave 8259 (INT 0x70)\n",
+                     (unsigned long long) R.Interrupts);
     }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)

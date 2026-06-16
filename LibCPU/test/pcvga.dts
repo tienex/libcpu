@@ -31,7 +31,12 @@
 
     pic@20 {
         compatible = "intel,i8259";
-        reg = <0x20 0x02>;
+        reg = <0x20 0x02>;              /* master 8259: IRQ0-7 */
+    };
+
+    pic@a0 {
+        compatible = "intel,i8259";
+        reg = <0xa0 0x02>;              /* slave 8259: IRQ8-15, cascaded on master IRQ2 */
     };
 
     pit@40 {

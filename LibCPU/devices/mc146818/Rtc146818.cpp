@@ -28,7 +28,7 @@ namespace {
 enum { Rtc_Index = 0, Rtc_Data = 1 };                        // offsets from the 0x70 base
 enum { Reg_StatusC = 0x0A + 2, Reg_StatusD = 0x0A + 3 };     // 0x0C, 0x0D
 
-class Rtc146818 : public IDevice, public IPortDevice {
+class Rtc146818 : public IDevice, public IPortDevice, public IInterruptSource {
 public:
     Rtc146818 () : m_Ref (1) {}
 
@@ -39,6 +39,8 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IInterruptSource)) {
+            *ppvObject = static_cast<IInterruptSource *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -60,7 +62,11 @@ public:
     HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode *pNode) override
     {
         UINT32 Base = 0x70;
-        if (pNode != nullptr) { pNode->GetPropertyCell ("reg", 0, &Base); }
+        m_Ticks = 3;                                         // periodic IRQ8 budget once enabled
+        if (pNode != nullptr) {
+            pNode->GetPropertyCell ("reg", 0, &Base);
+            pNode->GetPropertyCell ("libcpu,rtc-ticks", 0, &m_Ticks);
+        }
         m_Base = (UINT16) Base;
         return Reset ();
     }
@@ -119,12 +125,27 @@ public:
         return S_OK;
     }
 
+    HRESULT STDMETHODCALLTYPE PollInterrupt (OUT UINT32 *pIrq) override
+    {
+        if (pIrq == nullptr) { return E_POINTER; }
+        // Periodic interrupt: when the guest has set Status Register B's PIE bit (0x40), fire IRQ8 a
+        // bounded number of times, flagging Status Register C (IRQF | PF) so the ISR sees the cause.
+        if ((m_Cmos[0x0B] & 0x40) != 0 && m_Ticks > 0) {
+            m_Cmos[0x0C] |= 0xC0;                            // IRQF (0x80) + PF (0x40)
+            m_Ticks--;
+            *pIrq = 8;                                       // RTC -> IRQ8 (slave 8259)
+            return S_OK;
+        }
+        return S_FALSE;
+    }
+
 private:
     std::atomic<INT32> m_Ref;
     UINT16             m_Base = 0x70;
     UINT8              m_Cmos[64] = { 0 };
     UINT8              m_Index = 0;
     BOOLEAN            m_Nmi   = FALSE;
+    UINT32             m_Ticks = 0;                          // remaining periodic IRQ8 fires
 };
 
 } // anonymous namespace

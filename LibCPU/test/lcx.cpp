@@ -1282,6 +1282,7 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         if (std::strcmp (argv[I], "--demo") == 0) { Demo = 1; Run = true; }      // bank-switch + open-bus demo
         if (std::strcmp (argv[I], "--demo-kbd") == 0) { Demo = 2; Run = true; }  // 8042 keyboard IRQ1 demo
         if (std::strcmp (argv[I], "--demo-rtc") == 0) { Demo = 3; Run = true; }  // MC146818 RTC/CMOS read demo
+        if (std::strcmp (argv[I], "--demo-rtc-irq") == 0) { Demo = 4; Run = true; }  // RTC IRQ8 via the slave PIC
     }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
     if (Run || pImage != nullptr) {

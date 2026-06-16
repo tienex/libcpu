@@ -910,6 +910,16 @@ if(TARGET interp_backend)
      grep -q 'RTC/CMOS: 12:00:00  2026-06-16' '${CMAKE_BINARY_DIR}/rtc.out'")
   set_tests_properties(machine.rtc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # Slave 8259 cascade: the RTC's periodic interrupt (IRQ8) is vectored by the slave PIC (ICW2 base
+  # 0x70 -> INT 0x70) and presented to the master on IRQ2; the ISR fires for each tick. Proves the
+  # two-chip cascade and IRQ8-15 routing.
+  add_test(NAME machine.slavepic COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-rtc-irq > '${CMAKE_BINARY_DIR}/slavepic.out' && \
+     grep -q 'pic@a0 .* i8259' '${CMAKE_BINARY_DIR}/slavepic.out' && \
+     grep -q 'RTC IRQ8: !!!' '${CMAKE_BINARY_DIR}/slavepic.out' && \
+     grep -q '3 interrupt.s. via the slave 8259' '${CMAKE_BINARY_DIR}/slavepic.out'")
+  set_tests_properties(machine.slavepic PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).
