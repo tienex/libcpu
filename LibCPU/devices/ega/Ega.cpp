@@ -47,7 +47,7 @@ enum {
 enum { Ega_FbBase = 0xB8000, Ega_Cols = 80, Ega_Rows = 25 };
 enum { Ega_VramBase = 0xA0000, Ega_VramSize = 0x20000 };       // 128 KiB planar window 0xA0000-0xBFFFF
 
-class Ega : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory {
+class Ega : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
 public:
     Ega () : m_Ref (1) {}
 
@@ -64,6 +64,8 @@ public:
             *ppvObject = static_cast<IMemoryDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IHostMemory)) {
             *ppvObject = static_cast<IHostMemory *> (this);
+        } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
+            *ppvObject = static_cast<IOptionRomHost *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -77,6 +79,7 @@ public:
     UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Ega_VramSize; }
     BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
     UINT8 * STDMETHODCALLTYPE GetHostBuffer (THIS) override { return m_Vram.data (); }
+    UINT32  STDMETHODCALLTYPE GetRomAddress (THIS) override { return 0xC0000; }   // video BIOS
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

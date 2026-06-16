@@ -1105,6 +1105,7 @@ DescribeNode (LibCPU::DtNode &Node, LibCPU::MachineBuilder &Builder,
         IDisplayDevice      *pDisp = nullptr;
         ISignalSource       *pSrc  = nullptr;
         ISignalSink         *pSnk  = nullptr;
+        IOptionRomHost      *pRom  = nullptr;
         pDev->QueryInterface (IID_IPortDevice, (VOID **) &pPort);
         pDev->QueryInterface (IID_IInterruptSource, (VOID **) &pIrq);
         pDev->QueryInterface (IID_IInterruptController, (VOID **) &pPic);
@@ -1112,6 +1113,7 @@ DescribeNode (LibCPU::DtNode &Node, LibCPU::MachineBuilder &Builder,
         pDev->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
         pDev->QueryInterface (IID_ISignalSource, (VOID **) &pSrc);
         pDev->QueryInterface (IID_ISignalSink, (VOID **) &pSnk);
+        pDev->QueryInterface (IID_IOptionRomHost, (VOID **) &pRom);
 
         std::string Caps;
         if (pPort != nullptr) { Caps += "ports "; }
@@ -1120,6 +1122,7 @@ DescribeNode (LibCPU::DtNode &Node, LibCPU::MachineBuilder &Builder,
         if (pSrc  != nullptr) { Caps += "signal-source "; }
         if (pSnk  != nullptr) { Caps += "signal-sink "; }
         if (pDisp != nullptr) { Caps += "display "; }
+        if (pRom  != nullptr) { Caps += "rom-host "; pRom->Release (); }
         char Buf[160];
         if (pMem != nullptr) {
             UINT32 Base = pMem->GetBase (), Size = pMem->GetSize ();
@@ -1276,6 +1279,23 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         return 0;
     }
 
+    bool ListRoms = false;
+    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--roms") == 0) { ListRoms = true; } }
+    if (ListRoms) {
+        // The devices that can host an option ROM (expansion cards), and their conventional address.
+        std::printf ("== devices that accept an option ROM (use: --rom <device>=<file>)\n");
+        for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+            IOptionRomHost *pHost = nullptr;
+            D.pDevice->QueryInterface (IID_IOptionRomHost, (VOID **) &pHost);
+            if (pHost == nullptr) { continue; }
+            UINT32 Addr = pHost->GetRomAddress ();
+            if (Addr != 0) { std::printf ("  %-12s %-10s  conventional ROM @ 0x%05x\n", D.NodeName.c_str (), D.BundleName.c_str (), Addr); }
+            else           { std::printf ("  %-12s %-10s  ROM auto-assigned\n", D.NodeName.c_str (), D.BundleName.c_str ()); }
+            pHost->Release ();
+        }
+        return 0;
+    }
+
     for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
         IPortDevice      *pPort = nullptr;
         IInterruptSource *pIrq  = nullptr;
@@ -1362,7 +1382,7 @@ CmdHelp ()
 #endif
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
-        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run] [--demo] [--rom <dev>=<file>]   assemble/run a machine\n"
+        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--roms] [--run] [--rom <dev>=<file>]   assemble/run a machine\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");

@@ -25,7 +25,7 @@ enum { Hdc_Data = 0, Hdc_Status = 1, Hdc_Select = 2, Hdc_Mask = 3 };
 // Controller status register (0x321) bit field.
 enum { Sts_Req = 0x01, Sts_InputOutput = 0x02, Sts_CmdData = 0x04, Sts_Busy = 0x08, Sts_Drq = 0x10 };
 
-class HardDisk506 : public IDevice, public IPortDevice {
+class HardDisk506 : public IDevice, public IPortDevice, public IOptionRomHost {
 public:
     HardDisk506 () : m_Ref (1) {}
 
@@ -36,6 +36,8 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
+            *ppvObject = static_cast<IOptionRomHost *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -43,6 +45,8 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    UINT32 STDMETHODCALLTYPE GetRomAddress (THIS) override { return 0xC8000; }   // hard-disk option ROM
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

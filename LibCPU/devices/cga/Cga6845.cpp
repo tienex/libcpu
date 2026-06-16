@@ -28,7 +28,7 @@ enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Cga_Mode = 0x8, Cga_Color = 0x9, Cga_S
 enum { Cga_FbBase = 0xB8000, Cga_Cols = 80, Cga_Rows = 25 };   // colour text page
 enum { Cga_VramSize = 0x4000 };                                // the CGA's 16 KiB of video RAM
 
-class Cga6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory {
+class Cga6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
 public:
     Cga6845 () : m_Ref (1) {}
 
@@ -45,6 +45,8 @@ public:
             *ppvObject = static_cast<IMemoryDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IHostMemory)) {
             *ppvObject = static_cast<IHostMemory *> (this);
+        } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
+            *ppvObject = static_cast<IOptionRomHost *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -58,6 +60,7 @@ public:
     UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Cga_VramSize; }
     BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
     UINT8 * STDMETHODCALLTYPE GetHostBuffer (THIS) override { return m_Vram.data (); }
+    UINT32  STDMETHODCALLTYPE GetRomAddress (THIS) override { return 0xC0000; }   // video BIOS
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

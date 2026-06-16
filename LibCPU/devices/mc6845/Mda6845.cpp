@@ -28,7 +28,7 @@ enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Mda_Mode = 0x8, Mda_Status = 0xA };
 enum { Mda_FbBase = 0xB0000, Mda_Cols = 80, Mda_Rows = 25 };   // monochrome text page
 enum { Mda_VramSize = 0x1000 };                                // the MDA's 4 KiB of video RAM
 
-class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory {
+class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
 public:
     Mda6845 () : m_Ref (1) {}
 
@@ -45,6 +45,8 @@ public:
             *ppvObject = static_cast<IMemoryDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IHostMemory)) {
             *ppvObject = static_cast<IHostMemory *> (this);
+        } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
+            *ppvObject = static_cast<IOptionRomHost *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -58,6 +60,7 @@ public:
     UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Mda_VramSize; }
     BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
     UINT8 * STDMETHODCALLTYPE GetHostBuffer (THIS) override { return m_Vram.data (); }
+    UINT32  STDMETHODCALLTYPE GetRomAddress (THIS) override { return 0xC0000; }   // video BIOS
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

@@ -987,7 +987,19 @@ if(TARGET interp_backend)
      grep -q 'option ROM found at 0xc8000: 6144 bytes, checksum OK' romcli.out && \
      grep -q 'option ROM found at 0xc9800: 6144 bytes, checksum OK' romcli.out")
   set_tests_properties(machine.romcli PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+endif()
 
+# "lcx machine <dts> --roms" lists the expansion cards that can host an option ROM (the valid
+# --rom targets) and their conventional addresses; motherboard chips (PIC/PIT/...) are excluded.
+add_test(NAME machine.romlist COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --roms > '${CMAKE_BINARY_DIR}/romlist.out' && \
+   grep -q 'ide@300 .*xtide .*conventional ROM @ 0xc8000' '${CMAKE_BINARY_DIR}/romlist.out' && \
+   grep -q 'hdc@320 .*st506 .*conventional ROM @ 0xc8000' '${CMAKE_BINARY_DIR}/romlist.out' && \
+   grep -q 'display@3b0 .*mc6845 .*conventional ROM @ 0xc0000' '${CMAKE_BINARY_DIR}/romlist.out' && \
+   ! grep -q 'pic@20' '${CMAKE_BINARY_DIR}/romlist.out'")
+set_tests_properties(machine.romlist PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+if(TARGET interp_backend)
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

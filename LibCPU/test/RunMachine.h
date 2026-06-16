@@ -281,19 +281,33 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             RomCursor += 0x800;
             if ((UINT64) RomCursor + Size > MemEnd) { break; }
         }
-        // Identify the target device by bundle or node name (for the report).
+        // Identify the target device by bundle or node name; if it is an option-ROM host with a
+        // conventional address that's still free, place the ROM there instead of auto-assigning.
         std::string Dev = "?";
+        bool Conventional = false;
         for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
-            if (!R.first.empty () && (D.BundleName.find (R.first) != std::string::npos ||
-                                      D.NodeName.find (R.first) != std::string::npos)) {
-                Dev = D.NodeName; break;
+            if (R.first.empty () || (D.BundleName.find (R.first) == std::string::npos &&
+                                     D.NodeName.find (R.first) == std::string::npos)) { continue; }
+            Dev = D.NodeName;
+            IOptionRomHost *pHost = nullptr;
+            D.pDevice->QueryInterface (IID_IOptionRomHost, (VOID **) &pHost);
+            if (pHost != nullptr) {
+                UINT32 Want = pHost->GetRomAddress ();
+                pHost->Release ();
+                bool Free = (Want != 0) && ((UINT64) Want + Size <= MemEnd);
+                for (std::pair<UINT32, UINT32> CONST &M : Mapped) {
+                    if (Want < M.first + M.second && M.first < Want + Size) { Free = false; break; }
+                }
+                if (Free) { RomCursor = Want; Conventional = true; }   // honor the card's conventional address
             }
+            break;
         }
         RomStore.push_back (std::move (Bytes));
         Machine.MapDeviceMemory (RomCursor, Size, RomStore.back ().data (), true);
         Mapped.push_back (std::make_pair (RomCursor, Size));
-        std::printf ("   --rom %s: loaded %u bytes for %s at 0x%05x (auto-assigned)\n",
-                     R.first.empty () ? "(rom)" : R.first.c_str (), Size, Dev.c_str (), RomCursor);
+        std::printf ("   --rom %s: loaded %u bytes for %s at 0x%05x (%s)\n",
+                     R.first.empty () ? "(rom)" : R.first.c_str (), Size, Dev.c_str (), RomCursor,
+                     Conventional ? "conventional" : "auto-assigned");
         RomCursor = (UINT32) ((RomCursor + Size + 0x7FF) & ~UINT32_C (0x7FF));   // next 2 KiB slot
     }
 

@@ -32,7 +32,7 @@ enum { Ata_Data = 0, Ata_Error = 1, Ata_SecCount = 2, Ata_Lba0 = 3, Ata_Lba1 = 4
 enum { St_Bsy = 0x80, St_Drdy = 0x40, St_Drq = 0x08, St_Err = 0x01 };
 enum { Sector_Size = 512, Disk_Sectors = 32 };               // a small backing disk
 
-class Xtide : public IDevice, public IPortDevice {
+class Xtide : public IDevice, public IPortDevice, public IOptionRomHost {
 public:
     Xtide () : m_Ref (1) {}
 
@@ -43,6 +43,8 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
+            *ppvObject = static_cast<IOptionRomHost *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -50,6 +52,8 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    UINT32 STDMETHODCALLTYPE GetRomAddress (THIS) override { return 0xC8000; }   // hard-disk option ROM
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

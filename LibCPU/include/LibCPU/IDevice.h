@@ -229,6 +229,21 @@ DECLARE_INTERFACE_ (IDmaPeripheral, IUnknown)
 };
 
 //
+// Capability: the component is an expansion card that can host an option ROM (a BIOS extension in
+// a ROM socket on the card). GetRomAddress returns the card's conventional option-ROM base in the
+// upper-memory area (e.g. 0xC0000 for video, 0xC8000 for a hard-disk controller), or 0 to let the
+// machine auto-assign a free slot. Motherboard chips (PIC, PIT, DMA, ...) do NOT implement this.
+//
+DECLARE_INTERFACE_ (IOptionRomHost, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD_ (UINT32, GetRomAddress)(THIS) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -255,6 +270,8 @@ inline constexpr IID IID_IDmaController =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B } };
 inline constexpr IID IID_IDmaPeripheral =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
+inline constexpr IID IID_IOptionRomHost =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D } };
 
 } // namespace LibCPU
 
