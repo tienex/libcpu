@@ -321,6 +321,8 @@ libcpu_add_device(i8253_device i8253 MATCH "intel,i8253;intel,i8254;pit" SOURCES
 libcpu_add_device(i8255_device i8255 MATCH "intel,i8255;ppi" SOURCES devices/i8255/Ppi8255.cpp)
 libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i8237/Dma8237.cpp)
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
+libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
+libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
 libcpu_add_device(ram_device ram MATCH "libcpu,ram" SOURCES devices/ram/Ram.cpp)
 libcpu_add_device(rom_device rom MATCH "ibm,pc-xt-bios;libcpu,rom" SOURCES devices/rom/Rom.cpp)
 
@@ -847,7 +849,9 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'display@3b0 .* mc6845' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'memory@0 .* ram' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'rom@fe000 .* rom' '${CMAKE_BINARY_DIR}/machine-match.out' && \
-   grep -q 'components: 8 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
+   grep -q 'fdc@3f0 .* i8272 .*intel,i8272' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'hdc@320 .* st506 .*ibm,pc-xt-hdc' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'components: 10 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # Run the assembled machine on the V20: a power-on program drives the matched 8250 UART

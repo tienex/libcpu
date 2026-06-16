@@ -62,4 +62,16 @@
         compatible = "motorola,mc6845", "ibm,mda";
         reg = <0x3b0 0x0c>;             /* MDA CRTC control ports (framebuffer at B0000) */
     };
+
+    hdc@320 {
+        compatible = "ibm,pc-xt-hdc", "xebec,1210";
+        reg = <0x320 0x04>;             /* Xebec ST-506 fixed-disk adapter */
+        interrupts = <5>;               /* hard disk -> IRQ5 */
+    };
+
+    fdc@3f0 {
+        compatible = "intel,i8272", "nec,upd765";
+        reg = <0x3f0 0x08>;             /* uPD765/8272A floppy controller */
+        interrupts = <6>;               /* floppy -> IRQ6 */
+    };
 };
