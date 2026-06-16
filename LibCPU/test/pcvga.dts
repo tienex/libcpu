@@ -45,6 +45,7 @@
         compatible = "intel,i8042";
         reg = <0x60 0x05>;              /* 8042 KBC: data 0x60, command/status 0x64 */
         interrupts = <1>;               /* keyboard -> IRQ1 */
+        libcpu,keystroke = <0x1e>;      /* demo: deliver scan code 0x1E ('A') as an IRQ1 */
     };
 
     serial@3f8 {

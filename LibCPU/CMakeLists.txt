@@ -892,6 +892,15 @@ if(TARGET interp_backend)
      grep -q 'KBC=U' '${CMAKE_BINARY_DIR}/kbc.out'")
   set_tests_properties(machine.kbc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # 8042 keyboard IRQ1 end to end: a scan code seeded in the device tree is delivered by the 8042
+  # as IRQ1, routed through the PIC, and vectored to an INT 9 ISR that reads it from 0x60. The run
+  # reports one interrupt delivered and the scan code (0x1E) the ISR recovered.
+  add_test(NAME machine.kbd COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-kbd > '${CMAKE_BINARY_DIR}/kbd.out' && \
+     grep -q 'press a key... [*]' '${CMAKE_BINARY_DIR}/kbd.out' && \
+     grep -q '1 interrupt.s. delivered; ISR read scan code 0x1E' '${CMAKE_BINARY_DIR}/kbd.out'")
+  set_tests_properties(machine.kbd PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

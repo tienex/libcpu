@@ -104,7 +104,7 @@ private:
 
 static inline int
 RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr,
-                bool BankDemo = false)
+                int Demo = 0)                                // 0 none, 1 bank-switch, 2 keyboard IRQ1
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
@@ -195,7 +195,40 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         std::printf ("   loaded image '%s' (%ld bytes) at 0x%05x\n", pImagePath, Size, LoadAddr);
         Entry = LoadAddr;
         End   = LoadAddr + (CPU_ADDR) Size;
-    } else if (BankDemo) {
+    } else if (Demo == 2) {
+        // Keyboard IRQ1 demo: a scan code seeded into the 8042 (its "libcpu,keystroke" property) is
+        // delivered as IRQ1. The PIC is programmed with IRQ1 unmasked, an ISR at INT 9 (8 + IRQ1)
+        // reads the scan code from 0x60, prints a marker, and acknowledges the PIC -- so the full
+        // path 8042 -> arbiter -> PIC -> INT 9 -> ISR runs, then the machine idles.
+        UINT8 const Isr[] = {
+            0xE4, 0x60,              // in al, 0x60        read the scan code from the KBC
+            0xA2, 0x52, 0x00,        // mov [0x0052], al   stash it in low RAM for the host to report
+            0xBA, 0xF8, 0x03,        // mov dx, 0x3F8
+            0xB0, 0x2A, 0xEE,        // mov al,'*' ; out dx,al    visible "a key arrived" marker
+            0xB0, 0x20, 0xE6, 0x20,  // mov al,0x20 ; out 0x20,al  end-of-interrupt to the PIC
+            0xCF                     // iret
+        };
+        std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+        Machine.SetIvt (0x09, 0x0000, 0x0500);              // IRQ1 -> INT 9
+
+        std::vector<UINT8> Prog = {
+            0x31, 0xC0, 0x8E, 0xD8,  // xor ax,ax ; mov ds,ax      DS = 0 (so the ISR's store lands at 0x52)
+            0xB0, 0x13, 0xE6, 0x20,  // mov al,0x13 ; out 0x20,al   ICW1
+            0xB0, 0x08, 0xE6, 0x21,  // mov al,0x08 ; out 0x21,al   ICW2 (vector base 8 -> IRQ1 = INT 9)
+            0xB0, 0x01, 0xE6, 0x21,  // mov al,0x01 ; out 0x21,al   ICW4
+            0xB0, 0xFD, 0xE6, 0x21,  // mov al,0xFD ; out 0x21,al   IMR: unmask IRQ1 only
+            0xBA, 0xF8, 0x03         // mov dx, 0x3F8
+        };
+        CHAR8 CONST *pMsg = "press a key... ";
+        for (CHAR8 CONST *p = pMsg; *p != '\0'; ++p) {
+            Prog.push_back (0xB0); Prog.push_back ((UINT8) *p); Prog.push_back (0xEE);
+        }
+        UINT8 const Idle[] = { 0xFB, 0xF4, 0xEB, 0xFD };    // sti ; hlt ; jmp $-1
+        Prog.insert (Prog.end (), Idle, Idle + sizeof (Idle));
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 1) {
         // Bank-switch + open-bus demo. Writes two Hercules display pages, probes an unmapped
         // address (which reads back as open bus), then flips the displayed page via the mode
         // register -- so the rendered screen is the bank that was switched in.
@@ -308,9 +341,13 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                  R.Reason == LC_SYS_RESULT::StepBudget ? "step-budget" : "fault",
                  (unsigned long long) R.Interrupts, (unsigned long long) R.PortWrites);
 
-    if (BankDemo) {
+    if (Demo == 1) {
         std::printf ("   open-bus probe: guest read of unmapped 0xA0000 -> 0x%02X (%s)\n",
                      Ram[0x0050], Ram[0x0050] == 0xFF ? "open bus: no card, no memory" : "backed");
+    }
+    if (Demo == 2) {
+        std::printf ("   keyboard IRQ1: %llu interrupt(s) delivered; ISR read scan code 0x%02X from the 8042\n",
+                     (unsigned long long) R.Interrupts, Ram[0x0052]);
     }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)

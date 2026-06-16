@@ -1275,10 +1275,12 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         std::printf ("  (no bundle) %s\n", U.c_str ());
     }
 
-    bool Run = false, Demo = false;
+    bool Run = false;
+    int  Demo = 0;                                                          // 0 none, 1 bank-switch, 2 keyboard IRQ
     for (int I = 0; I < argc; I++) {
         if (std::strcmp (argv[I], "--run") == 0) { Run = true; }
-        if (std::strcmp (argv[I], "--demo") == 0) { Demo = Run = true; }   // bank-switch + open-bus demo
+        if (std::strcmp (argv[I], "--demo") == 0) { Demo = 1; Run = true; }      // bank-switch + open-bus demo
+        if (std::strcmp (argv[I], "--demo-kbd") == 0) { Demo = 2; Run = true; }  // 8042 keyboard IRQ1 demo
     }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
     if (Run || pImage != nullptr) {
