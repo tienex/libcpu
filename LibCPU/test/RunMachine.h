@@ -341,6 +341,48 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 7) {
+        // DMA floppy WRITE round-trip: fill a buffer, DMA it out to the disk image via Write Data,
+        // then DMA a Read Data of the same sector into a different buffer. If the bytes survive the
+        // trip, the controller's write path works. IRQ6 stays masked (the PIC's reset state); STI
+        // just lets the device bus -- and thus the DMA bridge -- run each window. A final HLT with
+        // no deliverable interrupt ends the run.
+        std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8, 0xFB };   // xor ax,ax ; mov ds,ax ; sti
+        auto Out = [&] (UINT8 Port, UINT8 Val) {
+            Prog.push_back (0xB0); Prog.push_back (Val); Prog.push_back (0xE6); Prog.push_back (Port);
+        };
+        auto Fdc = [&] (UINT8 const *p, size_t n) {         // DX must be 0x3F5
+            for (size_t I = 0; I < n; I++) { Prog.push_back (0xB0); Prog.push_back (p[I]); Prog.push_back (0xEE); }
+        };
+
+        CHAR8 CONST *pPat = "DMA-WRITE-ROUNDTRIP-OK";        // pattern to write then read back
+        for (UINT16 I = 0; pPat[I] != '\0'; I++) {
+            Prog.push_back (0xB0); Prog.push_back ((UINT8) pPat[I]);              // mov al, ch
+            Prog.push_back (0xA2); Prog.push_back ((UINT8) ((0x3000 + I) & 0xFF));
+            Prog.push_back ((UINT8) ((0x3000 + I) >> 8));                         // mov [0x3000+I], al
+        }
+
+        Prog.push_back (0xBA); Prog.push_back (0xF5); Prog.push_back (0x03);      // mov dx, 0x3F5
+        Out (0x0C, 0x00); Out (0x0B, 0x4A);                 // ch2 mode: single, read-from-memory
+        Out (0x04, 0x00); Out (0x04, 0x30); Out (0x81, 0x00);   // address 0x3000, page 0
+        Out (0x05, 0xFF); Out (0x05, 0x01); Out (0x0A, 0x02);   // count 0x1FF, unmask ch2
+        UINT8 const Write[] = { 0x45, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF };   // Write Data
+        Fdc (Write, sizeof (Write));
+        for (int I = 0; I < 7; I++) { Prog.push_back (0xEC); }   // drain the result bytes (in al,dx) -> ready
+
+        Out (0x0C, 0x00); Out (0x0B, 0x46);                 // ch2 mode: single, write-to-memory
+        Out (0x04, 0x00); Out (0x04, 0x50); Out (0x81, 0x00);   // address 0x5000, page 0
+        Out (0x05, 0xFF); Out (0x05, 0x01); Out (0x0A, 0x02);
+        Prog.push_back (0xBA); Prog.push_back (0xF5); Prog.push_back (0x03);      // mov dx, 0x3F5
+        UINT8 const Read[] = { 0xE6, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF };    // Read Data
+        Fdc (Read, sizeof (Read));
+        for (int I = 0; I < 7; I++) { Prog.push_back (0xEC); }   // let the read transfer + drain its result
+        UINT8 const Idle[] = { 0xF4, 0xEB, 0xFD };          // hlt ; jmp $-1
+        Prog.insert (Prog.end (), Idle, Idle + sizeof (Idle));
+
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 6) {
         // DMA-driven floppy read: program DMA channel 2 to land a sector at 0x2000, issue the FDC
         // Read Data command, and idle. The DMA bridge moves the sector into memory and the FDC
@@ -541,6 +583,15 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 5) {
         std::printf ("   PIT ch0 latched count = 0x%02X%02X (8254 counter-latch read-back)\n",
                      Ram[0x0071], Ram[0x0070]);
+    }
+    if (Demo == 7) {
+        CHAR8 Text[32];
+        for (int I = 0; I < 31; I++) {
+            UINT8 Ch = Ram[0x5000 + I];                     // sector read back into 0x5000
+            Text[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
+        }
+        Text[31] = '\0';
+        std::printf ("   floppy write round-trip: wrote then read back from disk = \"%s\"\n", Text);
     }
     if (Demo == 6) {
         CHAR8 Text[48];

@@ -937,6 +937,14 @@ if(TARGET interp_backend)
      grep -q 'sector at 0x12000 .page 1. = .LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK' '${CMAKE_BINARY_DIR}/fdc.out'")
   set_tests_properties(machine.fdc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # FDC write path: the guest fills a buffer, DMAs it out to the disk image via Write Data, then
+  # reads the same sector back into a different buffer. The pattern surviving the round trip proves
+  # the controller writes the image (memory -> FDC -> image -> FDC -> memory).
+  add_test(NAME machine.fdcwrite COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-fdc-write > '${CMAKE_BINARY_DIR}/fdcw.out' && \
+     grep -q 'read back from disk = .DMA-WRITE-ROUNDTRIP-OK' '${CMAKE_BINARY_DIR}/fdcw.out'")
+  set_tests_properties(machine.fdcwrite PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).
