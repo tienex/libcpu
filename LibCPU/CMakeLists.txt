@@ -748,6 +748,13 @@ if(TARGET interp_backend)
   add_test(NAME run.string COMMAND sh -c
     "printf '\\xb8\\x00\\x00\\x8e\\xc0\\xbf\\x00\\x02\\xb8\\x34\\x12\\xfc\\xab\\xab\\xf4' > '${CMAKE_BINARY_DIR}/string.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/string.bin' --arch v20 | grep -q 'DI =0204'")
+
+  # REP prefix as a real loop: MOV ES,0 ; MOV DI,0x200 ; MOV CX,4 ; CLD ; REP STOSW -> CX=0,
+  # DI=0x208 (four words stored). Exercises a frontend-emitted block loop on the JIT.
+  add_test(NAME run.rep COMMAND sh -c
+    "printf '\\xb8\\x00\\x00\\x8e\\xc0\\xbf\\x00\\x02\\xb9\\x04\\x00\\xfc\\xf3\\xab\\xf4' > '${CMAKE_BINARY_DIR}/rep.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/rep.bin' --arch v20 > '${CMAKE_BINARY_DIR}/rep.out' && \
+     grep -q 'DI =0208' '${CMAKE_BINARY_DIR}/rep.out' && grep -q 'CX =0000' '${CMAKE_BINARY_DIR}/rep.out'")
 endif()
 
 # Segment-override prefix + string ops disassemble.

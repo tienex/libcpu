@@ -325,6 +325,8 @@ public:
             Len = 1 + RmLen (M);
             if (Sub == 2 || Sub == 4) { Tag = TagReturn; }       // near indirect CALL/JMP -> dispatcher
             else if (Sub == 3 || Sub == 5) { Tag = TagTrap; }    // far indirect CALL/JMP
+        } else if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
+            Len = 2;                                             // REP/REPNE prefix + string op
         } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA1 || Op == 0xA3 || Op == 0xA9) {
             Len = 3;                                             // acc,imm16 / MOV AX,[addr16] / TEST AX,imm16
         } else if (Op == 0xEB) {                                 // JMP rel8
@@ -392,6 +394,11 @@ public:
             CHAR8 CONST *Seg = (Op == 0x26) ? "es" : (Op == 0x2E) ? "cs" : (Op == 0x36) ? "ss" : "ds";
             CHAR8 Inner[80]; Disassemble (Pc + 1, Inner, sizeof (Inner));
             std::snprintf (pLine, MaxLine, "%s: %s", Seg, Inner);
+            return S_OK;
+        }
+        if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
+            CHAR8 Inner[40]; Disassemble (Pc + 1, Inner, sizeof (Inner));
+            std::snprintf (pLine, MaxLine, "%s %s", (Op == 0xF3) ? "rep" : "repne", Inner);
             return S_OK;
         }
         if ((Op >= 0xA4 && Op <= 0xA7) || (Op >= 0xAA && Op <= 0xAF)) {
@@ -799,59 +806,40 @@ public:
             }
             return S_OK;                                           // /3,/5 far indirect: handled as a trap
         }
-        // String ops (one element per execution): MOVS/CMPS/STOS/LODS/SCAS. SI is read through DS
-        // (or the override), DI through ES; SI/DI advance by +/-width per the Direction flag.
-        if ((Op >= 0xA4 && Op <= 0xA7) || (Op >= 0xAA && Op <= 0xAF)) {
-            bool   W16    = (Op & 1) != 0;
-            UINT32 W      = W16 ? 16 : 8;
-            UINT32 SrcSeg = (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS;
-            // step = (width ^ sext(DF)) + zext(DF) -> +width if DF=0, -width if DF=1.
-            ComPtr<ICpuValue> DF;   pE->GetFlag (FlagDirection, &DF);
-            ComPtr<ICpuValue> DFs;  pE->Cast (CastSExt, DF, 16, &DFs);
-            ComPtr<ICpuValue> WidV; pE->ConstInt (16, W16 ? 2 : 1, &WidV);
-            ComPtr<ICpuValue> Xv;   pE->BinaryOp (BinXor, WidV, DFs, &Xv);
-            ComPtr<ICpuValue> DFz;  pE->Cast (CastZExt, DF, 16, &DFz);
-            ComPtr<ICpuValue> Step; pE->BinaryOp (BinAdd, Xv, DFz, &Step);
-
-            if (Op == 0xA4 || Op == 0xA5) {                        // MOVS: [ES:DI] = [SrcSeg:SI]
-                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
-                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
-                ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
-                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
-                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
-                pE->Store (V, DL, W);
-                AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
-            } else if (Op == 0xAA || Op == 0xAB) {                 // STOS: [ES:DI] = AL/AX
-                ComPtr<ICpuValue> V;  if (W16) { pE->GetRegister (RegV20AX, 16, &V); } else { EmitReg8Read (pE, 0, &V); }
-                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
-                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
-                pE->Store (V, DL, W);
-                AdvanceReg (pE, RegV20DI, Step);
-            } else if (Op == 0xAC || Op == 0xAD) {                 // LODS: AL/AX = [SrcSeg:SI]
-                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
-                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
-                ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
-                if (W16) { pE->PutRegister (RegV20AX, V, 16, FALSE); } else { EmitReg8Write (pE, 0, V); }
-                AdvanceReg (pE, RegV20SI, Step);
-            } else if (Op == 0xAE || Op == 0xAF) {                 // SCAS: cmp AL/AX, [ES:DI]
-                ComPtr<ICpuValue> A;  if (W16) { pE->GetRegister (RegV20AX, 16, &A); } else { EmitReg8Read (pE, 0, &A); }
-                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
-                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
-                ComPtr<ICpuValue> M;  pE->Load (DL, W, &M);
-                ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, A, M, &R); } else { EmitAlu8 (pE, 7, A, M, &R); }
-                AdvanceReg (pE, RegV20DI, Step);
-            } else {                                               // CMPS (A6/A7): cmp [SrcSeg:SI], [ES:DI]
-                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
-                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
-                ComPtr<ICpuValue> Sv; pE->Load (SL, W, &Sv);
-                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
-                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
-                ComPtr<ICpuValue> Dv; pE->Load (DL, W, &Dv);
-                ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, Sv, Dv, &R); } else { EmitAlu8 (pE, 7, Sv, Dv, &R); }
-                AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
+        // REP/REPE/REPNE (F3/F2) on a string op: a loop { if CX==0 break; one element; CX-- }.
+        // For CMPS/SCAS the prefix also tests ZF (REPE while ZF==1, REPNE while ZF==0).
+        if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
+            UINT8 SOp = m_pCode[Pc + 1];
+            bool  Repe  = (Op == 0xF3);
+            bool  IsCmp = (SOp == 0xA6 || SOp == 0xA7 || SOp == 0xAE || SOp == 0xAF);
+            ComPtr<ICpuBlock> Header, Body, Done;
+            pE->CreateBlock ("rep.head", &Header);
+            pE->CreateBlock ("rep.body", &Body);
+            pE->CreateBlock ("rep.done", &Done);
+            pE->Branch (Header);
+            pE->SetInsertBlock (Header);
+            ComPtr<ICpuValue> Cx;   pE->GetRegister (RegV20CX, 16, &Cx);
+            ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+            ComPtr<ICpuValue> Ne;   pE->Compare (CmpNe, Cx, Zero, &Ne);
+            pE->CondBranch (Ne, Body, Done);
+            pE->SetInsertBlock (Body);
+            EmitStringStep (pE, SOp);
+            ComPtr<ICpuValue> Cx2; pE->GetRegister (RegV20CX, 16, &Cx2);
+            ComPtr<ICpuValue> One; pE->ConstInt (16, 1, &One);
+            ComPtr<ICpuValue> Dec; pE->BinaryOp (BinSub, Cx2, One, &Dec);
+            pE->PutRegister (RegV20CX, Dec, 16, FALSE);
+            if (IsCmp) {
+                ComPtr<ICpuValue> ZF; pE->GetFlag (FlagZero, &ZF);
+                if (Repe) { pE->CondBranch (ZF, Header, Done); }   // REPE: continue while ZF==1
+                else { ComPtr<ICpuValue> NZ; pE->UnaryOp (UnNot, ZF, &NZ); pE->CondBranch (NZ, Header, Done); }
+            } else {
+                pE->Branch (Header);
             }
+            pE->SetInsertBlock (Done);
             return S_OK;
         }
+        // A single string element (no REP prefix).
+        if (IsStringOp (Op)) { EmitStringStep (pE, Op); return S_OK; }
 
         switch (Op) {
         // The eight ALU ops (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) in their r/m16,r16 and r16,r/m16
@@ -1309,6 +1297,62 @@ private:
         ComPtr<ICpuValue> R; pE->GetRegister (Reg, 16, &R);
         ComPtr<ICpuValue> N; pE->BinaryOp (BinAdd, R, pStep, &N);
         pE->PutRegister (Reg, N, 16, FALSE);
+    }
+
+    static bool IsStringOp (UINT8 Op) {
+        return (Op >= 0xA4 && Op <= 0xA7) || (Op >= 0xAA && Op <= 0xAF);
+    }
+
+    // One string element: MOVS/CMPS/STOS/LODS/SCAS. SI is read through DS (or the active
+    // override), DI through ES; SI/DI advance by +/-width per the Direction flag.
+    VOID EmitStringStep (ICpuEmitter *pE, UINT8 Op) {
+        bool   W16    = (Op & 1) != 0;
+        UINT32 W      = W16 ? 16 : 8;
+        UINT32 SrcSeg = (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS;
+        ComPtr<ICpuValue> DF;   pE->GetFlag (FlagDirection, &DF);
+        ComPtr<ICpuValue> DFs;  pE->Cast (CastSExt, DF, 16, &DFs);
+        ComPtr<ICpuValue> WidV; pE->ConstInt (16, W16 ? 2 : 1, &WidV);
+        ComPtr<ICpuValue> Xv;   pE->BinaryOp (BinXor, WidV, DFs, &Xv);
+        ComPtr<ICpuValue> DFz;  pE->Cast (CastZExt, DF, 16, &DFz);
+        ComPtr<ICpuValue> Step; pE->BinaryOp (BinAdd, Xv, DFz, &Step);
+
+        if (Op == 0xA4 || Op == 0xA5) {                            // MOVS: [ES:DI] = [SrcSeg:SI]
+            ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+            ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+            ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
+            ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+            ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+            pE->Store (V, DL, W);
+            AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
+        } else if (Op == 0xAA || Op == 0xAB) {                     // STOS: [ES:DI] = AL/AX
+            ComPtr<ICpuValue> V;  if (W16) { pE->GetRegister (RegV20AX, 16, &V); } else { EmitReg8Read (pE, 0, &V); }
+            ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+            ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+            pE->Store (V, DL, W);
+            AdvanceReg (pE, RegV20DI, Step);
+        } else if (Op == 0xAC || Op == 0xAD) {                     // LODS: AL/AX = [SrcSeg:SI]
+            ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+            ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+            ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
+            if (W16) { pE->PutRegister (RegV20AX, V, 16, FALSE); } else { EmitReg8Write (pE, 0, V); }
+            AdvanceReg (pE, RegV20SI, Step);
+        } else if (Op == 0xAE || Op == 0xAF) {                     // SCAS: cmp AL/AX, [ES:DI]
+            ComPtr<ICpuValue> A;  if (W16) { pE->GetRegister (RegV20AX, 16, &A); } else { EmitReg8Read (pE, 0, &A); }
+            ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+            ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+            ComPtr<ICpuValue> M;  pE->Load (DL, W, &M);
+            ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, A, M, &R); } else { EmitAlu8 (pE, 7, A, M, &R); }
+            AdvanceReg (pE, RegV20DI, Step);
+        } else {                                                   // CMPS (A6/A7): cmp [SrcSeg:SI], [ES:DI]
+            ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+            ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+            ComPtr<ICpuValue> Sv; pE->Load (SL, W, &Sv);
+            ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+            ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+            ComPtr<ICpuValue> Dv; pE->Load (DL, W, &Dv);
+            ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, Sv, Dv, &R); } else { EmitAlu8 (pE, 7, Sv, Dv, &R); }
+            AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
+        }
     }
 
     // The segment a memory operand uses: an active override prefix, else SS for BP-based
