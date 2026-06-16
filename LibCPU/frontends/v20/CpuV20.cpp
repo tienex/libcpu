@@ -19,6 +19,7 @@
 #include "CpuI8080.h"
 #include "LibCPU/CpuState.h"
 #include <cstdio>
+#include <cstring>
 
 namespace LibCPU {
 namespace {
@@ -395,7 +396,12 @@ public:
         if (Op == 0x26 || Op == 0x2E || Op == 0x36 || Op == 0x3E) {
             CHAR8 CONST *Seg = (Op == 0x26) ? "es" : (Op == 0x2E) ? "cs" : (Op == 0x36) ? "ss" : "ds";
             CHAR8 Inner[80]; Disassemble (Pc + 1, Inner, sizeof (Inner));
-            std::snprintf (pLine, MaxLine, "%s: %s", Seg, Inner);
+            CHAR8 *Br = std::strchr (Inner, '[');               // attach the override to the memory operand
+            if (Br != nullptr) {
+                std::snprintf (pLine, MaxLine, "%.*s%s:%s", (int) (Br - Inner), Inner, Seg, Br);
+            } else {
+                std::snprintf (pLine, MaxLine, "%s: %s", Seg, Inner);   // no memory operand: show as a prefix
+            }
             return S_OK;
         }
         if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
@@ -1041,7 +1047,7 @@ public:
         }
         case 0xA0: {                                               // MOV AL, [addr16] (DS-relative)
             ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS, Ad, &Lin);
             ComPtr<ICpuValue> V;   pE->Load (Lin, 8, &V);
             EmitReg8Write (pE, 0, V);                              // AL
             break;
@@ -1049,13 +1055,13 @@ public:
         case 0xA2: {                                               // MOV [addr16], AL (DS-relative)
             ComPtr<ICpuValue> V;   EmitReg8Read (pE, 0, &V);       // AL
             ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS, Ad, &Lin);
             pE->Store (V, Lin, 8);
             break;
         }
         case 0xA1: {                                               // MOV AX, [addr16] (DS-relative)
             ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS, Ad, &Lin);
             ComPtr<ICpuValue> V;   pE->Load (Lin, 16, &V);
             pE->PutRegister (RegV20AX, V, 16, FALSE);
             break;
@@ -1063,7 +1069,7 @@ public:
         case 0xA3: {                                               // MOV [addr16], AX (DS-relative)
             ComPtr<ICpuValue> V;   pE->GetRegister (RegV20AX, 16, &V);
             ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS, Ad, &Lin);
             pE->Store (V, Lin, 16);
             break;
         }

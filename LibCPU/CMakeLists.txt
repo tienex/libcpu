@@ -776,7 +776,7 @@ endif()
 add_test(NAME disasm.string COMMAND sh -c
   "printf '\\x26\\x8b\\x07\\xfc\\xab\\xa4\\xae' > '${CMAKE_BINARY_DIR}/str.bin' && \
    '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/str.bin' --arch v20 --count 5 > '${CMAKE_BINARY_DIR}/str.out' && \
-   grep -q 'es: mov' '${CMAKE_BINARY_DIR}/str.out' && grep -q 'stosw' '${CMAKE_BINARY_DIR}/str.out' && \
+   grep -q 'mov ax,es:' '${CMAKE_BINARY_DIR}/str.out' && grep -q 'stosw' '${CMAKE_BINARY_DIR}/str.out' && \
    grep -q 'movsb' '${CMAKE_BINARY_DIR}/str.out'")
 
 # grp3/grp5 disassemble (mul, neg, indirect call, inc r/m).
