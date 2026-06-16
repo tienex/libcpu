@@ -25,8 +25,9 @@ namespace {
 
 enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Mda_Mode = 0x8, Mda_Status = 0xA };
 enum { Mda_FbBase = 0xB0000, Mda_Cols = 80, Mda_Rows = 25 };   // monochrome text page
+enum { Mda_VramSize = 0x1000 };                                // the MDA's 4 KiB of video RAM
 
-class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice {
+class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
 public:
     Mda6845 () : m_Ref (1) {}
 
@@ -39,6 +40,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IDisplayDevice)) {
             *ppvObject = static_cast<IDisplayDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
+            *ppvObject = static_cast<IMemoryDevice *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -46,6 +49,11 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Mda_FbBase; }
+    UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Mda_VramSize; }
+    BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

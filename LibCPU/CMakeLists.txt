@@ -878,6 +878,7 @@ if(TARGET interp_backend)
   add_test(NAME machine.cga COMMAND sh -c
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pccga.dts' --bundles '${CMAKE_BINARY_DIR}' --run > '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
+     grep -q '0x000b8000..0x000bbfff  RW  MC6845 CRTC .CGA.' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-cga.out'")
 endif()
 

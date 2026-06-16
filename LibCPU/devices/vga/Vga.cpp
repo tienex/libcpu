@@ -35,8 +35,9 @@ enum {
     Vga_CrtcIndex = 0x3D4, Vga_CrtcData = 0x3D5, Vga_Status1 = 0x3DA
 };
 enum { Vga_FbBase = 0xB8000, Vga_Cols = 80, Vga_Rows = 25 };
+enum { Vga_VramBase = 0xA0000, Vga_VramSize = 0x20000 };       // 128 KiB window 0xA0000-0xBFFFF (256 KiB card)
 
-class Vga : public IDevice, public IPortDevice, public IDisplayDevice {
+class Vga : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
 public:
     Vga () : m_Ref (1) {}
 
@@ -49,6 +50,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IDisplayDevice)) {
             *ppvObject = static_cast<IDisplayDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
+            *ppvObject = static_cast<IMemoryDevice *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -56,6 +59,11 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Vga_VramBase; }
+    UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Vga_VramSize; }
+    BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

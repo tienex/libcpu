@@ -28,8 +28,9 @@ namespace {
 enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Inc_Mode = 0x8, Inc_Status = 0xA, Inc_Config = 0xF };
 enum { Inc_FbBase = 0xB0000, Inc_Cols = 80, Inc_Rows = 25 };
 enum { Inc_PaletteReg = 0x14 };                                // CRTC index of the palette register
+enum { Inc_VramSize = 0x10000 };                               // 64 KiB across the four colour planes
 
-class Incolor : public IDevice, public IPortDevice, public IDisplayDevice {
+class Incolor : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
 public:
     Incolor () : m_Ref (1) {}
 
@@ -42,6 +43,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IDisplayDevice)) {
             *ppvObject = static_cast<IDisplayDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
+            *ppvObject = static_cast<IMemoryDevice *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -49,6 +52,11 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Inc_FbBase; }
+    UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Inc_VramSize; }
+    BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

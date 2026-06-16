@@ -27,12 +27,13 @@ namespace {
 
 enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Hgc_Mode = 0x8, Hgc_Status = 0xA, Hgc_Config = 0xF };
 enum { Hgc_FbBase = 0xB0000, Hgc_Cols = 80, Hgc_Rows = 25 };   // monochrome text page
+enum { Hgc_VramSize = 0x10000 };                               // 64 KiB: both 32 KiB graphics pages
 
 // Mode-control (0x3B8) and configuration (0x3BF) register bits.
 enum { Mode_Graphics = 0x02, Mode_Video = 0x08, Mode_Page1 = 0x80 };
 enum { Cfg_AllowGraphics = 0x01, Cfg_AllowPage1 = 0x02 };
 
-class Hercules : public IDevice, public IPortDevice, public IDisplayDevice {
+class Hercules : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
 public:
     Hercules () : m_Ref (1) {}
 
@@ -45,6 +46,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IDisplayDevice)) {
             *ppvObject = static_cast<IDisplayDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
+            *ppvObject = static_cast<IMemoryDevice *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -52,6 +55,11 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Hgc_FbBase; }
+    UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Hgc_VramSize; }
+    BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override

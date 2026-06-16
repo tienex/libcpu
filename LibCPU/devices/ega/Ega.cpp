@@ -44,8 +44,9 @@ enum {
     Ega_Status1   = 0x3DA       // input status 1 (read) / feature control (write)
 };
 enum { Ega_FbBase = 0xB8000, Ega_Cols = 80, Ega_Rows = 25 };
+enum { Ega_VramBase = 0xA0000, Ega_VramSize = 0x20000 };       // 128 KiB planar window 0xA0000-0xBFFFF
 
-class Ega : public IDevice, public IPortDevice, public IDisplayDevice {
+class Ega : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice {
 public:
     Ega () : m_Ref (1) {}
 
@@ -58,6 +59,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IDisplayDevice)) {
             *ppvObject = static_cast<IDisplayDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_IMemoryDevice)) {
+            *ppvObject = static_cast<IMemoryDevice *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -65,6 +68,11 @@ public:
         AddRef ();
         return S_OK;
     }
+
+    // --- IMemoryDevice: the card's own video RAM mapped into the address space ---
+    UINT32  STDMETHODCALLTYPE GetBase (THIS) override { return Ega_VramBase; }
+    UINT32  STDMETHODCALLTYPE GetSize (THIS) override { return Ega_VramSize; }
+    BOOLEAN STDMETHODCALLTYPE IsReadOnly (THIS) override { return FALSE; }
 
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override
