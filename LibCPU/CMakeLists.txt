@@ -920,6 +920,14 @@ if(TARGET interp_backend)
      grep -q '3 interrupt.s. via the slave 8259' '${CMAKE_BINARY_DIR}/slavepic.out'")
   set_tests_properties(machine.slavepic PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # 8254 counter-latch read-back: a guest programs channel 0 (reload 0x1234), latches it, and reads
+  # the count back LSB-then-MSB -- proving the access-mode sequencing and latch path (the old model
+  # always read 0). The latch advances the live count once, so 0x1234 reads back as 0x1233.
+  add_test(NAME machine.pit COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-pit > '${CMAKE_BINARY_DIR}/pit.out' && \
+     grep -q 'PIT ch0 latched count = 0x1233' '${CMAKE_BINARY_DIR}/pit.out'")
+  set_tests_properties(machine.pit PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

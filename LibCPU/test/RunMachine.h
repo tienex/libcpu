@@ -270,6 +270,22 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 5) {
+        // 8254 counter-latch read-back: program channel 0 (mode 2, LSB/MSB) with reload 0x1234,
+        // issue the counter-latch command, and read the latched count LSB-then-MSB into low RAM.
+        std::vector<UINT8> Prog = {
+            0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
+            0xB0, 0x34, 0xE6, 0x43,                          // mov al,0x34 ; out 0x43,al   ch0, LSB/MSB, mode 2
+            0xB0, 0x34, 0xE6, 0x40,                          // mov al,0x34 ; out 0x40,al   reload LSB
+            0xB0, 0x12, 0xE6, 0x40,                          // mov al,0x12 ; out 0x40,al   reload MSB -> 0x1234
+            0xB0, 0x00, 0xE6, 0x43,                          // mov al,0x00 ; out 0x43,al   counter-latch ch0
+            0xE4, 0x40, 0xA2, 0x70, 0x00,                    // in al,0x40 ; mov [0x70],al  latched LSB
+            0xE4, 0x40, 0xA2, 0x71, 0x00,                    // in al,0x40 ; mov [0x71],al  latched MSB
+            0xF4                                             // hlt
+        };
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 4) {
         // RTC IRQ8 through the slave 8259. The RTC's periodic interrupt is wired to IRQ8, which the
         // slave PIC vectors (ICW2 base 0x70 -> INT 0x70) and presents to the master on IRQ2; the
@@ -435,6 +451,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 4) {
         std::printf ("   RTC IRQ8: %llu interrupt(s) via the slave 8259 (INT 0x70)\n",
                      (unsigned long long) R.Interrupts);
+    }
+    if (Demo == 5) {
+        std::printf ("   PIT ch0 latched count = 0x%02X%02X (8254 counter-latch read-back)\n",
+                     Ram[0x0071], Ram[0x0070]);
     }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)
