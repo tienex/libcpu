@@ -288,6 +288,11 @@ public:
             }
             return m_pEmu->TagInstr (Pc, pTag, pNewPc, pNextPc);
         }
+        // A segment-override prefix is one byte; the length and classification come from the
+        // instruction it prefixes.
+        if (Op == 0x26 || Op == 0x2E || Op == 0x36 || Op == 0x3E) {
+            return TagInstr (Pc + 1, pTag, pNewPc, pNextPc);
+        }
 
         if (Op >= 0xB8 && Op <= 0xBF) {                          // MOV reg16,imm16
             Len = 3;
@@ -383,6 +388,18 @@ public:
         }
         if (Op == 0x0F && m_pCode[Pc + 1] == 0xFF) { std::snprintf (pLine, MaxLine, "brkem 0x%02x", m_pCode[Pc + 2]); return S_OK; }
         if (Op == 0x0F && m_pCode[Pc + 1] == 0xED) { std::snprintf (pLine, MaxLine, "calln 0x%02x", m_pCode[Pc + 2]); return S_OK; }
+        if (Op == 0x26 || Op == 0x2E || Op == 0x36 || Op == 0x3E) {
+            CHAR8 CONST *Seg = (Op == 0x26) ? "es" : (Op == 0x2E) ? "cs" : (Op == 0x36) ? "ss" : "ds";
+            CHAR8 Inner[80]; Disassemble (Pc + 1, Inner, sizeof (Inner));
+            std::snprintf (pLine, MaxLine, "%s: %s", Seg, Inner);
+            return S_OK;
+        }
+        if ((Op >= 0xA4 && Op <= 0xA7) || (Op >= 0xAA && Op <= 0xAF)) {
+            static CHAR8 CONST *kStr[16] = { "","","","","movs","movs","cmps","cmps",
+                                             "","","stos","stos","lods","lods","scas","scas" };
+            std::snprintf (pLine, MaxLine, "%s%c", kStr[Op - 0xA0], (Op & 1) ? 'w' : 'b');
+            return S_OK;
+        }
         if (Op >= 0xB8 && Op <= 0xBF) {
             std::snprintf (pLine, MaxLine, "mov %s,0x%04x", RegName (Op - 0xB8), Imm16At (m_pCode, Pc + 1));
         } else if (Op >= 0xB0 && Op <= 0xB7) {
@@ -434,9 +451,9 @@ public:
             CHAR8 CONST *Rm = ((M >> 6) == 3) ? Reg8Name (M & 7) : "[mem]";
             if (Op & 2) { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Reg8Name ((M >> 3) & 7), Rm); }
             else        { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Rm, Reg8Name ((M >> 3) & 7)); }
-        } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) || Op == 0x85) {
+        } else if ((Op < 0x40 && ((Op & 7) == 1 || (Op & 7) == 3)) || Op == 0x85 || Op == 0x89 || Op == 0x8B) {
             UINT8 M = m_pCode[Pc + 1];
-            CHAR8 CONST *Mn = (Op == 0x85) ? "test" : kAluName ((Op >> 3) & 7);
+            CHAR8 CONST *Mn = (Op == 0x85) ? "test" : (Op == 0x89 || Op == 0x8B) ? "mov" : kAluName ((Op >> 3) & 7);
             CHAR8 CONST *Rm = ((M >> 6) == 3) ? RegName (M & 7) : "[mem]";
             if (Op & 2) { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, RegName ((M >> 3) & 7), Rm); }
             else        { std::snprintf (pLine, MaxLine, "%s %s,%s", Mn, Rm, RegName ((M >> 3) & 7)); }
@@ -534,6 +551,14 @@ public:
         }
         if (Op == 0x0F && (m_pCode[Pc + 1] == 0xFF || m_pCode[Pc + 1] == 0xED)) {
             return S_OK;                            // BRKEM / CALLN: emulation-mode switch, no data effect
+        }
+        // Segment-override prefix (ES:/CS:/SS:/DS:): translate the following instruction with the
+        // override in effect, then clear it.
+        if (Op == 0x26 || Op == 0x2E || Op == 0x36 || Op == 0x3E) {
+            m_SegOv = (Op == 0x26) ? RegV20ES : (Op == 0x2E) ? RegV20CS : (Op == 0x36) ? RegV20SS : RegV20DS;
+            HRESULT Hr = TranslateInstr (Pc + 1, pE);
+            m_SegOv = -1;
+            return Hr;
         }
 
         if (Op >= 0xB8 && Op <= 0xBF) {            // MOV reg16, imm16
@@ -774,6 +799,59 @@ public:
             }
             return S_OK;                                           // /3,/5 far indirect: handled as a trap
         }
+        // String ops (one element per execution): MOVS/CMPS/STOS/LODS/SCAS. SI is read through DS
+        // (or the override), DI through ES; SI/DI advance by +/-width per the Direction flag.
+        if ((Op >= 0xA4 && Op <= 0xA7) || (Op >= 0xAA && Op <= 0xAF)) {
+            bool   W16    = (Op & 1) != 0;
+            UINT32 W      = W16 ? 16 : 8;
+            UINT32 SrcSeg = (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS;
+            // step = (width ^ sext(DF)) + zext(DF) -> +width if DF=0, -width if DF=1.
+            ComPtr<ICpuValue> DF;   pE->GetFlag (FlagDirection, &DF);
+            ComPtr<ICpuValue> DFs;  pE->Cast (CastSExt, DF, 16, &DFs);
+            ComPtr<ICpuValue> WidV; pE->ConstInt (16, W16 ? 2 : 1, &WidV);
+            ComPtr<ICpuValue> Xv;   pE->BinaryOp (BinXor, WidV, DFs, &Xv);
+            ComPtr<ICpuValue> DFz;  pE->Cast (CastZExt, DF, 16, &DFz);
+            ComPtr<ICpuValue> Step; pE->BinaryOp (BinAdd, Xv, DFz, &Step);
+
+            if (Op == 0xA4 || Op == 0xA5) {                        // MOVS: [ES:DI] = [SrcSeg:SI]
+                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+                ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
+                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+                pE->Store (V, DL, W);
+                AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
+            } else if (Op == 0xAA || Op == 0xAB) {                 // STOS: [ES:DI] = AL/AX
+                ComPtr<ICpuValue> V;  if (W16) { pE->GetRegister (RegV20AX, 16, &V); } else { EmitReg8Read (pE, 0, &V); }
+                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+                pE->Store (V, DL, W);
+                AdvanceReg (pE, RegV20DI, Step);
+            } else if (Op == 0xAC || Op == 0xAD) {                 // LODS: AL/AX = [SrcSeg:SI]
+                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+                ComPtr<ICpuValue> V;  pE->Load (SL, W, &V);
+                if (W16) { pE->PutRegister (RegV20AX, V, 16, FALSE); } else { EmitReg8Write (pE, 0, V); }
+                AdvanceReg (pE, RegV20SI, Step);
+            } else if (Op == 0xAE || Op == 0xAF) {                 // SCAS: cmp AL/AX, [ES:DI]
+                ComPtr<ICpuValue> A;  if (W16) { pE->GetRegister (RegV20AX, 16, &A); } else { EmitReg8Read (pE, 0, &A); }
+                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+                ComPtr<ICpuValue> M;  pE->Load (DL, W, &M);
+                ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, A, M, &R); } else { EmitAlu8 (pE, 7, A, M, &R); }
+                AdvanceReg (pE, RegV20DI, Step);
+            } else {                                               // CMPS (A6/A7): cmp [SrcSeg:SI], [ES:DI]
+                ComPtr<ICpuValue> Si; pE->GetRegister (RegV20SI, 16, &Si);
+                ComPtr<ICpuValue> SL; EmitSegLinear (pE, SrcSeg, Si, &SL);
+                ComPtr<ICpuValue> Sv; pE->Load (SL, W, &Sv);
+                ComPtr<ICpuValue> Di; pE->GetRegister (RegV20DI, 16, &Di);
+                ComPtr<ICpuValue> DL; EmitSegLinear (pE, RegV20ES, Di, &DL);
+                ComPtr<ICpuValue> Dv; pE->Load (DL, W, &Dv);
+                ComPtr<ICpuValue> R;  if (W16) { EmitAlu16 (pE, 7, Sv, Dv, &R); } else { EmitAlu8 (pE, 7, Sv, Dv, &R); }
+                AdvanceReg (pE, RegV20SI, Step); AdvanceReg (pE, RegV20DI, Step);
+            }
+            return S_OK;
+        }
 
         switch (Op) {
         // The eight ALU ops (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) in their r/m16,r16 and r16,r/m16
@@ -844,7 +922,8 @@ public:
         case 0xF9: { ComPtr<ICpuValue> O; pE->ConstInt (1, 1, &O); pE->SetFlag (FlagCarry, O); break; }   // STC
         case 0xF5: { ComPtr<ICpuValue> C; pE->GetFlag (FlagCarry, &C);                                    // CMC
                      ComPtr<ICpuValue> N; pE->UnaryOp (UnNot, C, &N); pE->SetFlag (FlagCarry, N); break; }
-        case 0xFC: case 0xFD: break;                               // CLD/STD: no direction flag modelled yet
+        case 0xFC: { ComPtr<ICpuValue> Z; pE->ConstInt (1, 0, &Z); pE->SetFlag (FlagDirection, Z); break; }   // CLD
+        case 0xFD: { ComPtr<ICpuValue> O; pE->ConstInt (1, 1, &O); pE->SetFlag (FlagDirection, O); break; }   // STD
         case 0x98: {                                               // CBW: AX = sign-extend AL
             ComPtr<ICpuValue> Ax; pE->GetRegister (RegV20AX, 16, &Ax);
             ComPtr<ICpuValue> Al; pE->Cast (CastTrunc, Ax, 8, &Al);
@@ -1225,13 +1304,29 @@ private:
         pE->BinaryOp (BinAdd, Base, Off32, ppLinear);                          // + offset
     }
 
-    // Read / write the r/m operand: a register (mod=11) or DS-relative memory at the EA.
+    // Add a (signed) step to a 16-bit register: SI/DI advance for the string ops.
+    VOID AdvanceReg (ICpuEmitter *pE, UINT32 Reg, ICpuValue *pStep) {
+        ComPtr<ICpuValue> R; pE->GetRegister (Reg, 16, &R);
+        ComPtr<ICpuValue> N; pE->BinaryOp (BinAdd, R, pStep, &N);
+        pE->PutRegister (Reg, N, 16, FALSE);
+    }
+
+    // The segment a memory operand uses: an active override prefix, else SS for BP-based
+    // addressing (the 8086 default), else DS.
+    UINT32 SegForRm (UINT8 M) {
+        if (m_SegOv >= 0) { return (UINT32) m_SegOv; }
+        UINT8 Mod = (UINT8) (M >> 6), Rm = (UINT8) (M & 7);
+        if (Mod != 3 && (Rm == 2 || Rm == 3 || (Rm == 6 && Mod != 0))) { return RegV20SS; }
+        return RegV20DS;
+    }
+
+    // Read / write the r/m operand: a register (mod=11) or segment-relative memory at the EA.
     VOID EmitRmRead (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue **ppValue) {
         if ((M >> 6) == 3) {
             pE->GetRegister ((UINT32) (M & 7), 16, ppValue);
         } else {
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
             pE->Load (Lin, 16, ppValue);
         }
     }
@@ -1240,7 +1335,7 @@ private:
             pE->PutRegister ((UINT32) (M & 7), pValue, 16, FALSE);
         } else {
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
             pE->Store (pValue, Lin, 16);
         }
     }
@@ -1275,13 +1370,13 @@ private:
         pE->PutRegister (Gpr, Res, 16, FALSE);
     }
 
-    // 8-bit r/m: a byte register (mod=11) or DS-relative memory byte at the EA.
+    // 8-bit r/m: a byte register (mod=11) or segment-relative memory byte at the EA.
     VOID EmitRmRead8 (ICpuEmitter *pE, UINT8 M, CPU_ADDR ModRMPc, ICpuValue **ppVal) {
         if ((M >> 6) == 3) {
             EmitReg8Read (pE, (UINT8) (M & 7), ppVal);
         } else {
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
             pE->Load (Lin, 8, ppVal);
         }
     }
@@ -1290,7 +1385,7 @@ private:
             EmitReg8Write (pE, (UINT8) (M & 7), pVal);
         } else {
             ComPtr<ICpuValue> EA;  EmitEA (pE, M, ModRMPc + 1, &EA);
-            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, EA, &Lin);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
             pE->Store (pVal, Lin, 8);
         }
     }
@@ -1393,6 +1488,7 @@ private:
     ICpuArchitecture *m_pEmu    = nullptr;
     bool              m_In8080  = false;
     CPU_ADDR          m_BrkemPc = (CPU_ADDR) -1;   // address of the BRKEM that entered 8080 mode
+    int               m_SegOv   = -1;              // active segment-override prefix (a Reg index), or -1
 };
 
 } // anonymous namespace

@@ -742,7 +742,20 @@ if(TARGET interp_backend)
   add_test(NAME run.grp3 COMMAND sh -c
     "printf '\\xb8\\x64\\x00\\xb3\\x07\\xf6\\xf3\\xf4' > '${CMAKE_BINARY_DIR}/grp3.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/grp3.bin' --arch v20 | grep -q 'AX =020e'")
+
+  # String ops + Direction flag: MOV ES,0 ; MOV DI,0x200 ; MOV AX,0x1234 ; CLD ; STOSW ; STOSW
+  # advances DI forward to 0x204 (with STD it would go backward).
+  add_test(NAME run.string COMMAND sh -c
+    "printf '\\xb8\\x00\\x00\\x8e\\xc0\\xbf\\x00\\x02\\xb8\\x34\\x12\\xfc\\xab\\xab\\xf4' > '${CMAKE_BINARY_DIR}/string.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/string.bin' --arch v20 | grep -q 'DI =0204'")
 endif()
+
+# Segment-override prefix + string ops disassemble.
+add_test(NAME disasm.string COMMAND sh -c
+  "printf '\\x26\\x8b\\x07\\xfc\\xab\\xa4\\xae' > '${CMAKE_BINARY_DIR}/str.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/str.bin' --arch v20 --count 5 > '${CMAKE_BINARY_DIR}/str.out' && \
+   grep -q 'es: mov' '${CMAKE_BINARY_DIR}/str.out' && grep -q 'stosw' '${CMAKE_BINARY_DIR}/str.out' && \
+   grep -q 'movsb' '${CMAKE_BINARY_DIR}/str.out'")
 
 # grp3/grp5 disassemble (mul, neg, indirect call, inc r/m).
 add_test(NAME disasm.grp COMMAND sh -c

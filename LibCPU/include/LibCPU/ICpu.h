@@ -68,7 +68,8 @@ typedef enum _CPU_FLAG {
     FlagOverflow,
     FlagZero,
     FlagCarry,
-    FlagParity
+    FlagParity,
+    FlagDirection      // string-op direction (x86 DF): 0 = increment, 1 = decrement
 } CPU_FLAG;
 
 //
