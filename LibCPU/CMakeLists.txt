@@ -880,6 +880,16 @@ if(TARGET interp_backend)
      grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q '0x000b8000..0x000bbfff  RW  MC6845 CRTC .CGA.' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-cga.out'")
+
+  # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
+  # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
+  # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).
+  add_test(NAME machine.bank COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcherc.dts' --bundles '${CMAKE_BINARY_DIR}' --demo > '${CMAKE_BINARY_DIR}/machine-bank.out' && \
+     grep -q 'unmapped 0xA0000 -> 0xFF' '${CMAKE_BINARY_DIR}/machine-bank.out' && \
+     grep -q 'no card, no memory' '${CMAKE_BINARY_DIR}/machine-bank.out' && \
+     grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-bank.out' && \
+     grep -q 'PAGE 1 -- bank-switched in' '${CMAKE_BINARY_DIR}/machine-bank.out'")
 endif()
 
 # The --tree view renders the assembled machine as a true tree: box-drawing connectors, each node

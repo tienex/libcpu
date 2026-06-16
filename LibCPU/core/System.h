@@ -60,6 +60,10 @@ public:
     // pHost is borrowed; the caller keeps the device (and its buffer) alive for the run.
     void MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost);
 
+    // Mark a region that no component backs ("no card, no memory"): it reads as open bus (0xFF)
+    // and writes to it are discarded. Enforced at execution-window boundaries.
+    void MarkOpenBus (UINT32 Base, UINT32 Size);
+
     // Seed an interrupt-vector-table entry (real-mode IVT at physical 0): vector ->
     // Seg:Off. Used by the "BIOS" to install a default ISR before running.
     void SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off);
@@ -81,6 +85,10 @@ private:
     // A device-owned memory region mapped into the guest address space (see MapDeviceMemory).
     struct DEVICE_MEMORY { UINT32 Base; UINT32 Size; UINT8 *pHost; };
     std::vector<DEVICE_MEMORY> m_DeviceMemory;
+
+    // Unbacked ("open bus") regions: read 0xFF, writes discarded (see MarkOpenBus).
+    struct OPEN_BUS { UINT32 Base; UINT32 Size; };
+    std::vector<OPEN_BUS> m_OpenBus;
 
     ICpuArchitecture       *m_pArch;
     ICpuBackend            *m_pBackend;

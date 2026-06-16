@@ -32,11 +32,24 @@ System::MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost)
     m_DeviceMemory.push_back (M);
 }
 
+void
+System::MarkOpenBus (UINT32 Base, UINT32 Size)
+{
+    if (Size == 0) { return; }
+    OPEN_BUS M = { Base, Size };
+    m_OpenBus.push_back (M);
+}
+
 // Bring each device's own buffer into the guest's flat RAM, so the CPU's direct accesses see the
-// device's current memory (its initial contents, or a freshly switched bank).
+// device's current memory (its initial contents, or a freshly switched bank). Unbacked regions
+// are forced to 0xFF, so a slot with no card reads as open bus and any writes from the previous
+// window are discarded -- "no card, no memory".
 void
 System::SyncDeviceMemoryIn ()
 {
+    for (OPEN_BUS CONST &M : m_OpenBus) {
+        if ((UINT64) M.Base + M.Size <= m_RamSize) { std::memset (m_pRAM + M.Base, 0xFF, M.Size); }
+    }
     for (DEVICE_MEMORY CONST &M : m_DeviceMemory) {
         if ((UINT64) M.Base + M.Size <= m_RamSize) { std::memcpy (m_pRAM + M.Base, M.pHost, M.Size); }
     }

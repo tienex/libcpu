@@ -24,10 +24,12 @@
 #include "LibCPU/IDevice.h"
 #include "../core/System.h"
 #include "../core/MachineBuilder.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace LibCPU {
@@ -101,12 +103,14 @@ private:
 };
 
 static inline int
-RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr)
+RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr,
+                bool BankDemo = false)
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
     IInterruptController           *pPic = nullptr;
     UINT64                          MemEnd = 0x100000;       // at least the 1 MiB real-mode space
+    std::vector<std::pair<UINT32, UINT32>> Mapped;          // (base, size) of every backed region
     std::printf ("\n== power-on: assembling the address space and interrupt path\n");
     std::printf ("   memory map:\n");
     for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
@@ -121,6 +125,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             std::printf ("     0x%08x..0x%08x  %s  %s\n", Base, Base + Size - 1,
                          pMem->IsReadOnly () ? "RO" : "RW", D.pDevice->GetName ());
             if ((UINT64) Base + Size > MemEnd) { MemEnd = (UINT64) Base + Size; }
+            Mapped.push_back (std::make_pair (Base, Size));
             pMem->Release ();
         }
     }
@@ -154,6 +159,18 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         if (pHost != nullptr) { pHost->Release (); }
     }
 
+    // "No card, no memory": every hole between backed regions, up to the top of the address space,
+    // is open bus -- it reads 0xFF and discards writes. Walk the mapped regions in address order
+    // and mark each gap.
+    std::sort (Mapped.begin (), Mapped.end ());
+    UINT64 Cursor = 0;
+    for (std::pair<UINT32, UINT32> CONST &Rgn : Mapped) {
+        if (Rgn.first > Cursor) { Machine.MarkOpenBus ((UINT32) Cursor, (UINT32) (Rgn.first - Cursor)); }
+        UINT64 RegionEnd = (UINT64) Rgn.first + Rgn.second;
+        if (RegionEnd > Cursor) { Cursor = RegionEnd; }
+    }
+    if (Cursor < MemEnd) { Machine.MarkOpenBus ((UINT32) Cursor, (UINT32) (MemEnd - Cursor)); }
+
     // The board-level signal interconnect (speaker/cassette to the PPI/PIT lines) is declared in
     // the device tree ("signals = <&ppi ...>") and was resolved by MachineBuilder::Build.
     Machine.State ()->Reg[4]  = 0x1000;                      // SP
@@ -178,6 +195,51 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         std::printf ("   loaded image '%s' (%ld bytes) at 0x%05x\n", pImagePath, Size, LoadAddr);
         Entry = LoadAddr;
         End   = LoadAddr + (CPU_ADDR) Size;
+    } else if (BankDemo) {
+        // Bank-switch + open-bus demo. Writes two Hercules display pages, probes an unmapped
+        // address (which reads back as open bus), then flips the displayed page via the mode
+        // register -- so the rendered screen is the bank that was switched in.
+        std::vector<UINT8> Prog;
+        auto Emit = [&] (CHAR8 CONST *p) {                  // print a string to the UART (DX=0x3F8)
+            for (; *p != '\0'; ++p) { Prog.push_back (0xB0); Prog.push_back ((UINT8) *p); Prog.push_back (0xEE); }
+        };
+        auto SetDs = [&] (UINT16 Seg) {                     // mov bx,Seg ; mov ds,bx (via BX, so AL survives)
+            Prog.push_back (0xBB); Prog.push_back ((UINT8) (Seg & 0xFF)); Prog.push_back ((UINT8) (Seg >> 8));
+            Prog.push_back (0x8E); Prog.push_back (0xDB);
+        };
+        auto Screen = [&] (CHAR8 CONST *p) {                // write a char+attr string at DS:0
+            for (UINT16 Off = 0; *p != '\0'; ++p, Off = (UINT16) (Off + 2)) {
+                Prog.push_back (0xB8); Prog.push_back ((UINT8) *p); Prog.push_back (0x07);   // mov ax,0x07<<8|ch
+                Prog.push_back (0x89); Prog.push_back (0x06);                                 // mov [disp16],ax
+                Prog.push_back ((UINT8) (Off & 0xFF)); Prog.push_back ((UINT8) (Off >> 8));
+            }
+        };
+
+        Prog.push_back (0xBA); Prog.push_back (0xF8); Prog.push_back (0x03);   // mov dx, 0x3F8
+        Emit ("HERCULES bank-switch + open-bus demo\n");
+
+        // Probe an unmapped address (0xA0000): read it, stash the byte in low RAM for reporting.
+        // (ModRM [disp16] form, which applies the DS segment base.)
+        SetDs (0xA000);
+        Prog.push_back (0x8A); Prog.push_back (0x06); Prog.push_back (0x00); Prog.push_back (0x00);   // mov al, ds:[0x0000]
+        SetDs (0x0000);
+        Prog.push_back (0x88); Prog.push_back (0x06); Prog.push_back (0x50); Prog.push_back (0x00);   // mov ds:[0x0050], al
+
+        // Write both Hercules pages: page 0 (initially shown) and page 1 (the bank to switch in).
+        SetDs (0xB000); Screen ("PAGE 0 -- hidden after the flip");
+        SetDs (0xB800); Screen ("PAGE 1 -- bank-switched in by mode bit7");
+
+        // Enable and select page 1: config 0x3BF bit0|bit1, then mode 0x3B8 bit7.
+        UINT8 const Flip[] = {
+            0xBA, 0xBF, 0x03, 0xB0, 0x03, 0xEE,   // mov dx,0x3BF ; mov al,0x03 ; out dx,al  (allow gfx+page1)
+            0xBA, 0xB8, 0x03, 0xB0, 0x80, 0xEE,   // mov dx,0x3B8 ; mov al,0x80 ; out dx,al  (display page1)
+            0xF4, 0xEB, 0xFD                       // hlt ; jmp $-1
+        };
+        Prog.insert (Prog.end (), Flip, Flip + sizeof (Flip));
+
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else {
         // Built-in power-on self test: init the PIC, program the timer, idle. Each PIC-gated
         // timer tick (INT 8) runs the ISR at 0:0x0500, which writes '.' to the UART.
@@ -246,6 +308,11 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                  R.Reason == LC_SYS_RESULT::Shutdown   ? "shutdown" :
                  R.Reason == LC_SYS_RESULT::StepBudget ? "step-budget" : "fault",
                  (unsigned long long) R.Interrupts, (unsigned long long) R.PortWrites);
+
+    if (BankDemo) {
+        std::printf ("   open-bus probe: guest read of unmapped 0xA0000 -> 0x%02X (%s)\n",
+                     Ram[0x0050], Ram[0x0050] == 0xFF ? "open bus: no card, no memory" : "backed");
+    }
 
     // Render any text display from ITS OWN video RAM. A card that owns its memory (IHostMemory)
     // is scanned out of the card's buffer at the text page's offset within the aperture; the

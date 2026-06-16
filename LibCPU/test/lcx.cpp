@@ -1275,15 +1275,18 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         std::printf ("  (no bundle) %s\n", U.c_str ());
     }
 
-    bool Run = false;
-    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--run") == 0) { Run = true; } }
+    bool Run = false, Demo = false;
+    for (int I = 0; I < argc; I++) {
+        if (std::strcmp (argv[I], "--run") == 0) { Run = true; }
+        if (std::strcmp (argv[I], "--demo") == 0) { Demo = Run = true; }   // bank-switch + open-bus demo
+    }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
     if (Run || pImage != nullptr) {
         CHAR8 CONST *pLoad = Opt (argc, argv, "--load", nullptr);
         UINT32 LoadAddr = pLoad != nullptr ? (UINT32) std::strtoul (pLoad, nullptr, 0) : 0x0600;
         ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
         if (pBackend == nullptr) { std::printf ("lcx machine: cannot load backend\n"); return 2; }
-        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr);
+        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo);
         pBackend->Release ();
         return Rc;
     }
@@ -1314,7 +1317,7 @@ CmdHelp ()
 #endif
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
-        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run]   assemble a machine from .device bundles\n"
+        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run] [--demo]   assemble a machine from .device bundles\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");

@@ -128,7 +128,12 @@ public:
     }
 
     // --- IDisplayDevice: the character framebuffer and how to draw it ---
-    UINT32 STDMETHODCALLTYPE GetFramebufferBase (THIS) override { return Hgc_FbBase; }
+    // The displayed page is selected by mode-register bit 7: page 0 scans out of 0xB0000, page 1
+    // out of 0xB8000. So flipping the bit bank-switches which half of the 64 KiB VRAM is shown.
+    UINT32 STDMETHODCALLTYPE GetFramebufferBase (THIS) override
+    {
+        return (m_Mode & Mode_Page1) ? (Hgc_FbBase + 0x8000) : Hgc_FbBase;
+    }
     UINT32 STDMETHODCALLTYPE GetFramebufferSize (THIS) override { return Hgc_Cols * Hgc_Rows * 2; }
 
     HRESULT STDMETHODCALLTYPE RenderText (UINT8 CONST *pFb, UINT32 Len) override
