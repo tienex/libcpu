@@ -328,8 +328,9 @@ public:
             else if (Sub == 3 || Sub == 5) { Tag = TagTrap; }    // far indirect CALL/JMP
         } else if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
             Len = 2;                                             // REP/REPNE prefix + string op
-        } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA1 || Op == 0xA3 || Op == 0xA9) {
-            Len = 3;                                             // acc,imm16 / MOV AX,[addr16] / TEST AX,imm16
+        } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA0 || Op == 0xA1 ||
+                   Op == 0xA2 || Op == 0xA3 || Op == 0xA9) {
+            Len = 3;                                             // acc,imm16 / MOV AL|AX,[addr16] / MOV [addr16],AL|AX / TEST AX,imm16
         } else if (Op == 0xEB) {                                 // JMP rel8
             Len = 2; Tag = TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
         } else if (Op == 0xE9) {                                 // JMP rel16
@@ -425,6 +426,12 @@ public:
         } else if (Op == 0x01) {
             UINT8 M = m_pCode[Pc + 1];
             std::snprintf (pLine, MaxLine, "add %s,%s", RegName (M & 7), RegName ((M >> 3) & 7));
+        } else if (Op == 0xA0) {
+            std::snprintf (pLine, MaxLine, "mov al,[0x%04x]", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xA1) {
+            std::snprintf (pLine, MaxLine, "mov ax,[0x%04x]", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xA2) {
+            std::snprintf (pLine, MaxLine, "mov [0x%04x],al", Imm16At (m_pCode, Pc + 1));
         } else if (Op == 0xA3) {
             std::snprintf (pLine, MaxLine, "mov [0x%04x],ax", Imm16At (m_pCode, Pc + 1));
         } else if (Op == 0x9A) {
@@ -1030,6 +1037,20 @@ public:
             ComPtr<ICpuValue> HiV; pE->BinaryOp (BinLShr, Sx, Sh, &HiV);
             ComPtr<ICpuValue> Dx;  pE->Cast (CastTrunc, HiV, 16, &Dx);
             pE->PutRegister (RegV20DX, Dx, 16, FALSE);
+            break;
+        }
+        case 0xA0: {                                               // MOV AL, [addr16] (DS-relative)
+            ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            ComPtr<ICpuValue> V;   pE->Load (Lin, 8, &V);
+            EmitReg8Write (pE, 0, V);                              // AL
+            break;
+        }
+        case 0xA2: {                                               // MOV [addr16], AL (DS-relative)
+            ComPtr<ICpuValue> V;   EmitReg8Read (pE, 0, &V);       // AL
+            ComPtr<ICpuValue> Ad;  pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Ad);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20DS, Ad, &Lin);
+            pE->Store (V, Lin, 8);
             break;
         }
         case 0xA1: {                                               // MOV AX, [addr16] (DS-relative)

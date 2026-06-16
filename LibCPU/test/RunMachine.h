@@ -219,11 +219,10 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Emit ("HERCULES bank-switch + open-bus demo\n");
 
         // Probe an unmapped address (0xA0000): read it, stash the byte in low RAM for reporting.
-        // (ModRM [disp16] form, which applies the DS segment base.)
         SetDs (0xA000);
-        Prog.push_back (0x8A); Prog.push_back (0x06); Prog.push_back (0x00); Prog.push_back (0x00);   // mov al, ds:[0x0000]
+        Prog.push_back (0xA0); Prog.push_back (0x00); Prog.push_back (0x00);   // mov al, [0x0000]  (ds:0 = 0xA0000)
         SetDs (0x0000);
-        Prog.push_back (0x88); Prog.push_back (0x06); Prog.push_back (0x50); Prog.push_back (0x00);   // mov ds:[0x0050], al
+        Prog.push_back (0xA2); Prog.push_back (0x50); Prog.push_back (0x00);   // mov [0x0050], al  (ds:0x50 = phys 0x50)
 
         // Write both Hercules pages: page 0 (initially shown) and page 1 (the bank to switch in).
         SetDs (0xB000); Screen ("PAGE 0 -- hidden after the flip");
