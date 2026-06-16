@@ -344,6 +344,33 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 9) {
+        // XT-IDE PIO read: program the ATA task file for an LBA-0 read, issue READ SECTORS, then
+        // read words from the data register -- low byte from 0x300 (which latches the high byte),
+        // high byte from 0x308 -- into memory at 0x4000. No interrupts: pure programmed I/O.
+        std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8 };   // xor ax,ax ; mov ds,ax
+        auto OutDx = [&] (UINT16 Port, UINT8 Val) {            // mov dx,Port ; mov al,Val ; out dx,al
+            Prog.push_back (0xBA); Prog.push_back ((UINT8) (Port & 0xFF)); Prog.push_back ((UINT8) (Port >> 8));
+            Prog.push_back (0xB0); Prog.push_back (Val); Prog.push_back (0xEE);
+        };
+        OutDx (0x302, 0x01);                                // sector count = 1
+        OutDx (0x303, 0x00); OutDx (0x304, 0x00); OutDx (0x305, 0x00);   // LBA = 0
+        OutDx (0x306, 0xE0);                                // drive/head: LBA mode, drive 0
+        OutDx (0x307, 0x20);                                // command: READ SECTORS
+
+        for (UINT16 W = 0; W < 20; W++) {                   // read 20 words (40 bytes) of the sector
+            UINT16 Dst = (UINT16) (0x4000 + W * 2);
+            Prog.push_back (0xBA); Prog.push_back (0x00); Prog.push_back (0x03);   // mov dx,0x300
+            Prog.push_back (0xEC);                                                  // in al,dx (low + latch high)
+            Prog.push_back (0xA2); Prog.push_back ((UINT8) (Dst & 0xFF)); Prog.push_back ((UINT8) (Dst >> 8));
+            Prog.push_back (0xBA); Prog.push_back (0x08); Prog.push_back (0x03);   // mov dx,0x308
+            Prog.push_back (0xEC);                                                  // in al,dx (latched high)
+            Prog.push_back (0xA2); Prog.push_back ((UINT8) ((Dst + 1) & 0xFF)); Prog.push_back ((UINT8) ((Dst + 1) >> 8));
+        }
+        Prog.push_back (0xF4);                              // hlt
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 8) {
         // Priority PIC / in-service register: the IRQ0 handler reads the ISR through an OCW3 select
         // (out 0x0B to 0x20, then in from 0x20). With IRQ0 in service, bit 0 reads back set; the
@@ -617,6 +644,15 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     if (Demo == 8) {
         std::printf ("   priority PIC: %llu IRQ0; in-service register read inside the handler = 0x%02X\n",
                      (unsigned long long) R.Interrupts, Ram[0x0056]);
+    }
+    if (Demo == 9) {
+        CHAR8 Text[40];
+        for (int I = 0; I < 39; I++) {
+            UINT8 Ch = Ram[0x4000 + I];
+            Text[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
+        }
+        Text[39] = '\0';
+        std::printf ("   XT-IDE PIO read: sector 0 at 0x4000 = \"%s\"\n", Text);
     }
     if (Demo == 7) {
         CHAR8 Text[32];

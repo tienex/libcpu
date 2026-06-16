@@ -330,6 +330,7 @@ libcpu_add_device(hercules_device hercules MATCH "hercules,hgc;hercules;hgc" SOU
 libcpu_add_device(incolor_device incolor MATCH "hercules,incolor;incolor" SOURCES devices/incolor/Incolor.cpp)
 libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
 libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
+libcpu_add_device(xtide_device xtide MATCH "xtide;xt-ide;ide" SOURCES devices/xtide/Xtide.cpp)
 libcpu_add_device(pcspeaker_device pcspeaker MATCH "ibm,pc-speaker;pc-speaker;speaker" SOURCES devices/pcspeaker/Speaker.cpp)
 libcpu_add_device(cassette_device cassette MATCH "ibm,pc-cassette;cassette" SOURCES devices/cassette/Cassette.cpp)
 libcpu_add_device(ram_device ram MATCH "libcpu,ram" SOURCES devices/ram/Ram.cpp)
@@ -862,7 +863,8 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'hdc@320 .* st506 .*ibm,pc-xt-hdc' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'speaker .* pcspeaker .*signal-sink.*ibm,pc-speaker' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'ppi@60 .* i8255 .*signal-source' '${CMAKE_BINARY_DIR}/machine-match.out' && \
-   grep -q 'components: 11 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
+   grep -q 'ide@300 .* xtide .*xtide' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'components: 12 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # The display-adapter family: each of CGA/EGA/VGA binds to its machine's display node and exposes
@@ -952,6 +954,14 @@ if(TARGET interp_backend)
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-pic > '${CMAKE_BINARY_DIR}/pic.out' && \
      grep -q '5 IRQ0; in-service register read inside the handler = 0x01' '${CMAKE_BINARY_DIR}/pic.out'")
   set_tests_properties(machine.pic PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # XT-IDE PIO read: the guest programs the ATA task file (LBA 0, READ SECTORS) and reads the sector
+  # back through the 8-bit data path (low byte 0x300, latched high byte 0x308). Sector 0's pattern
+  # arriving at 0x4000 proves the task file + PIO transfer + high-byte latch.
+  add_test(NAME machine.ide COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-ide > '${CMAKE_BINARY_DIR}/ide.out' && \
+     grep -q 'sector 0 at 0x4000 = .LIBCPU XT-IDE SECTOR 0 - PIO READ OK' '${CMAKE_BINARY_DIR}/ide.out'")
+  set_tests_properties(machine.ide PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own

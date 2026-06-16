@@ -1287,6 +1287,7 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         if (std::strcmp (argv[I], "--demo-fdc") == 0) { Demo = 6; Run = true; }      // DMA-driven floppy sector read
         if (std::strcmp (argv[I], "--demo-fdc-write") == 0) { Demo = 7; Run = true; }  // DMA floppy write round-trip
         if (std::strcmp (argv[I], "--demo-pic") == 0) { Demo = 8; Run = true; }      // 8259 in-service register read-back
+        if (std::strcmp (argv[I], "--demo-ide") == 0) { Demo = 9; Run = true; }      // XT-IDE PIO sector read
     }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
     if (Run || pImage != nullptr) {
