@@ -1314,13 +1314,24 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         if (std::strcmp (argv[I], "--demo-ide") == 0) { Demo = 9; Run = true; }      // XT-IDE PIO sector read
         if (std::strcmp (argv[I], "--demo-rom") == 0) { Demo = 10; Run = true; }     // controller option-ROM firmware
     }
+    // --rom <device>=<path> (repeatable): load a firmware image for the named controller into a
+    // free slot of the option-ROM area (the address is auto-assigned). The device is matched by
+    // its bundle name or node name.
+    std::vector<std::pair<std::string, std::string>> CliRoms;
+    for (int I = 0; I + 1 < argc; I++) {
+        if (std::strcmp (argv[I], "--rom") != 0) { continue; }
+        std::string Spec = argv[I + 1];
+        size_t Eq = Spec.find ('=');
+        if (Eq == std::string::npos) { CliRoms.push_back (std::make_pair (std::string (), Spec)); }
+        else { CliRoms.push_back (std::make_pair (Spec.substr (0, Eq), Spec.substr (Eq + 1))); }
+    }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
-    if (Run || pImage != nullptr) {
+    if (Run || pImage != nullptr || !CliRoms.empty ()) {
         CHAR8 CONST *pLoad = Opt (argc, argv, "--load", nullptr);
         UINT32 LoadAddr = pLoad != nullptr ? (UINT32) std::strtoul (pLoad, nullptr, 0) : 0x0600;
         ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
         if (pBackend == nullptr) { std::printf ("lcx machine: cannot load backend\n"); return 2; }
-        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo);
+        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo, CliRoms);
         pBackend->Release ();
         return Rc;
     }
@@ -1351,7 +1362,7 @@ CmdHelp ()
 #endif
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
-        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run] [--demo]   assemble a machine from .device bundles\n"
+        "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--run] [--demo] [--rom <dev>=<file>]   assemble/run a machine\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");

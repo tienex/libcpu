@@ -975,6 +975,19 @@ if(TARGET interp_backend)
      grep -q 'option ROM found at 0xd0000: 6144 bytes, checksum OK' rom.out")
   set_tests_properties(machine.rom PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # Command-line firmware with auto-assigned addresses: "--rom <device>=<path>" loads a real ROM
+  # for the named controller into the next free option-ROM slot. The ST-11 (for st506) lands at
+  # 0xC8000 and the Future Domain ROM (for xtide) packs in at 0xC9800; both scan as valid.
+  add_test(NAME machine.romcli COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcxt.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-rom \
+       --rom 'st506=${CMAKE_CURRENT_SOURCE_DIR}/roms/option-roms/Seagate/Seagate ST11 - BIOS version 2.0.0.bin' \
+       --rom 'xtide=${CMAKE_CURRENT_SOURCE_DIR}/roms/option-roms/Future Domain/Future Domain - SCSI Disk Drive ROM BIOS V6.01.bin' > romcli.out && \
+     grep -q 'st506: loaded 6144 bytes for hdc@320 at 0xc8000' romcli.out && \
+     grep -q 'xtide: loaded 6144 bytes for ide@300 at 0xc9800' romcli.out && \
+     grep -q 'option ROM found at 0xc8000: 6144 bytes, checksum OK' romcli.out && \
+     grep -q 'option ROM found at 0xc9800: 6144 bytes, checksum OK' romcli.out")
+  set_tests_properties(machine.romcli PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

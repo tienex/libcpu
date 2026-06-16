@@ -165,7 +165,8 @@ private:
 
 static inline int
 RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr,
-                int Demo = 0)                                // 0 none, 1 bank-switch, 2 keyboard IRQ1
+                int Demo,                                    // 0 none, 1 bank-switch, 2 keyboard IRQ1, ...
+                std::vector<std::pair<std::string, std::string>> CONST &CliRoms)
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
@@ -245,6 +246,55 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         }
         if (pMem  != nullptr) { pMem->Release (); }
         if (pHost != nullptr) { pHost->Release (); }
+    }
+
+    // Command-line firmware: "--rom <device>=<path>" loads an option ROM for a named controller
+    // into a free, 2 KiB-aligned slot of the option-ROM area (0xC8000 up), auto-assigning the
+    // address around everything already mapped. The image is read-only, like any other option ROM.
+    std::vector<std::vector<UINT8>> RomStore;
+    RomStore.reserve (CliRoms.size ());
+    UINT32 RomCursor = 0xC8000;
+    for (std::pair<std::string, std::string> CONST &R : CliRoms) {
+        std::FILE *pF = std::fopen (R.second.c_str (), "rb");
+        if (pF == nullptr) { std::printf ("   --rom: cannot open '%s'\n", R.second.c_str ()); continue; }
+        std::fseek (pF, 0, SEEK_END);
+        long FileLen = std::ftell (pF);
+        std::fseek (pF, 0, SEEK_SET);
+        if (FileLen <= 0) { std::fclose (pF); continue; }
+        std::vector<UINT8> Bytes ((size_t) FileLen);
+        if (std::fread (Bytes.data (), 1, (size_t) FileLen, pF) != (size_t) FileLen) { std::fclose (pF); continue; }
+        std::fclose (pF);
+
+        // The option ROM occupies its declared length (header block count), else the whole file.
+        UINT32 Size = (UINT32) Bytes.size ();
+        if (Bytes.size () >= 3 && Bytes[0] == 0x55 && Bytes[1] == 0xAA) {
+            UINT32 Decl = (UINT32) Bytes[2] * 512;
+            if (Decl > 0 && Decl <= Bytes.size ()) { Size = Decl; }
+        }
+        // Find the lowest free 2 KiB-aligned address that doesn't overlap a mapped region.
+        for (;;) {
+            bool Clear = (UINT64) RomCursor + Size <= MemEnd;
+            for (std::pair<UINT32, UINT32> CONST &M : Mapped) {
+                if (RomCursor < M.first + M.second && M.first < RomCursor + Size) { Clear = false; break; }
+            }
+            if (Clear) { break; }
+            RomCursor += 0x800;
+            if ((UINT64) RomCursor + Size > MemEnd) { break; }
+        }
+        // Identify the target device by bundle or node name (for the report).
+        std::string Dev = "?";
+        for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+            if (!R.first.empty () && (D.BundleName.find (R.first) != std::string::npos ||
+                                      D.NodeName.find (R.first) != std::string::npos)) {
+                Dev = D.NodeName; break;
+            }
+        }
+        RomStore.push_back (std::move (Bytes));
+        Machine.MapDeviceMemory (RomCursor, Size, RomStore.back ().data (), true);
+        Mapped.push_back (std::make_pair (RomCursor, Size));
+        std::printf ("   --rom %s: loaded %u bytes for %s at 0x%05x (auto-assigned)\n",
+                     R.first.empty () ? "(rom)" : R.first.c_str (), Size, Dev.c_str (), RomCursor);
+        RomCursor = (UINT32) ((RomCursor + Size + 0x7FF) & ~UINT32_C (0x7FF));   // next 2 KiB slot
     }
 
     // "No card, no memory": every hole between backed regions, up to the top of the address space,
