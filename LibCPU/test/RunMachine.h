@@ -349,20 +349,16 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 10) {
-        // Option-ROM firmware: the firmware is mapped read-only at the controller's ROM address.
-        // The guest copies the ROM's id string (read through an ES segment override) to low RAM,
-        // proving the firmware is present and CPU-readable in the address space.
+        // Option-ROM firmware: the controller firmware is mapped read-only at its ROM address. The
+        // guest reads the first two bytes (the 0x55 0xAA signature) at 0xC8000 through an ES segment
+        // override, proving the firmware is present and CPU-readable in the address space.
         std::vector<UINT8> Prog = {
             0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
-            0xB8, 0x00, 0xC8, 0x8E, 0xC0                     // mov ax,0xC800 ; mov es,ax
+            0xB8, 0x00, 0xC8, 0x8E, 0xC0,                    // mov ax,0xC800 ; mov es,ax
+            0x26, 0x8A, 0x06, 0x00, 0x00, 0xA2, 0x00, 0x48,  // mov al,es:[0] ; mov [0x4800],al
+            0x26, 0x8A, 0x06, 0x01, 0x00, 0xA2, 0x01, 0x48,  // mov al,es:[1] ; mov [0x4801],al
+            0xF4                                             // hlt
         };
-        for (UINT16 I = 0; I < 26; I++) {                    // copy es:[3+I] -> ds:[0x4800+I]
-            UINT16 Src = (UINT16) (3 + I), Dst = (UINT16) (0x4800 + I);
-            Prog.push_back (0x26); Prog.push_back (0x8A); Prog.push_back (0x06);   // mov al, es:[Src]
-            Prog.push_back ((UINT8) (Src & 0xFF)); Prog.push_back ((UINT8) (Src >> 8));
-            Prog.push_back (0xA2); Prog.push_back ((UINT8) (Dst & 0xFF)); Prog.push_back ((UINT8) (Dst >> 8));
-        }
-        Prog.push_back (0xF4);                               // hlt
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
@@ -668,13 +664,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                      (unsigned long long) R.Interrupts, Ram[0x0056]);
     }
     if (Demo == 10) {
-        CHAR8 Id[27];
-        for (int I = 0; I < 26; I++) {
-            UINT8 Ch = Ram[0x4800 + I];
-            Id[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
-        }
-        Id[26] = '\0';
-        std::printf ("   guest read option-ROM id from its mapped address: \"%s\"\n", Id);
+        std::printf ("   guest read option-ROM signature at 0xc8000: 0x%02X 0x%02X\n",
+                     Ram[0x4800], Ram[0x4801]);
         // BIOS-style option-ROM scan: walk the UMA in 2 KiB steps looking for the 0x55 0xAA marker.
         for (UINT32 Seg = 0xC0000; Seg < 0xF0000 && Seg + 2 < Ram.size (); Seg += 0x800) {
             if (Ram[Seg] != 0x55 || Ram[Seg + 1] != 0xAA) { continue; }

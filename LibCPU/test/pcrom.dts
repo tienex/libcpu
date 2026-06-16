@@ -1,13 +1,12 @@
 /dts-v1/;
 
-/* An IBM PC/XT whose XT-IDE controller carries an option ROM (firmware). The firmware lives in a
-   ROM chip on the card, mapped into the upper-memory area at 0xC8000 (the conventional hard-disk
-   option-ROM address); the system BIOS finds it by scanning for the 0x55 0xAA marker. The ROM
-   image comes from the node's "libcpu,firmware" property -- so any controller's firmware can be
-   loaded by pointing its ROM node at the image. */
+/* An IBM PC/XT whose hard-disk controllers carry their real vendor option ROMs (fetched into
+   roms/). Each controller's firmware is a ROM chip mapped into the upper-memory area; the system
+   BIOS finds it by scanning for the 0x55 0xAA marker. The "libcpu,firmware" path is resolved
+   relative to this file's directory, so it points at the images in ../roms. */
 
 / {
-    model = "IBM PC/XT (5160) + XT-IDE with option ROM";
+    model = "IBM PC/XT (5160) + controller option ROMs";
     compatible = "ibm,pc-xt", "ibm,5160";
     #address-cells = <1>;
     #size-cells = <1>;
@@ -41,15 +40,31 @@
         interrupts = <4>;
     };
 
-    ide@300 {
-        compatible = "xtide";
-        reg = <0x300 0x10>;             /* XT-IDE 8-bit ATA adapter */
+    /* ST-506 / MFM fixed-disk controller and its firmware (a real Seagate ST-11 controller BIOS). */
+    hdc@320 {
+        compatible = "ibm,pc-xt-hdc", "xebec,1210";
+        reg = <0x320 0x04>;
+        interrupts = <5>;
     };
 
-    optionrom@c8000 {
+    hdc-rom@c8000 {
         compatible = "libcpu,rom";
-        reg = <0xc8000 0x200>;          /* the XT-IDE card's BIOS extension (option ROM) */
-        libcpu,firmware = "optrom.bin"; /* firmware image (resolved from the working directory) */
+        reg = <0xc8000 0x4000>;
+        libcpu,firmware = "../roms/option-roms/Seagate/Seagate ST11 - BIOS version 2.0.0.bin";
         read-only;
+    };
+
+    /* A SCSI host adapter's firmware (a real Future Domain ROM BIOS) -- "etc.": any controller's
+       option ROM loads the same way. */
+    scsi-rom@d0000 {
+        compatible = "libcpu,rom";
+        reg = <0xd0000 0x2000>;
+        libcpu,firmware = "../roms/option-roms/Future Domain/Future Domain - SCSI Disk Drive ROM BIOS V6.01.bin";
+        read-only;
+    };
+
+    ide@300 {
+        compatible = "xtide";
+        reg = <0x300 0x10>;             /* XT-IDE 8-bit ATA adapter (no vendor ROM in the set) */
     };
 };

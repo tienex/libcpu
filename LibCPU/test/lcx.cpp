@@ -1200,6 +1200,23 @@ PrintTree (LibCPU::DtNode &Node, std::string CONST &Prefix, bool IsLast, int Dep
     }
 }
 
+// Rewrite each node's relative "libcpu,firmware" path to be relative to the device-tree directory,
+// so a ROM image referenced by the machine description resolves no matter where lcx is run from.
+static void
+ResolveFirmwarePaths (LibCPU::DtNode &Node, std::string CONST &Dir)
+{
+    std::string Key = "libcpu,firmware";
+    LibCPU::DT_PROP *pProp = Node.FindProp (Key);
+    if (pProp != nullptr && !pProp->Value.empty ()) {
+        std::string Path ((CHAR8 CONST *) pProp->Value.data ());
+        if (!Path.empty () && Path[0] != '/') {              // relative -> prepend the DTS directory
+            std::string Full = Dir + "/" + Path;
+            Node.SetPropString (Key, Full);
+        }
+    }
+    for (LibCPU::DtNode &Child : Node.Children) { ResolveFirmwarePaths (Child, Dir); }
+}
+
 // lcx machine -- assemble a machine from hardware-component bundles by matching a device tree
 // against the bundles' Info.plist personalities, then list the components COM made.
 static int
@@ -1224,6 +1241,13 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
     DeviceTree Tree;
     std::string Error;
     if (!Tree.Load (pDts, &Error)) { std::printf ("lcx machine: %s\n", Error.c_str ()); return 2; }
+
+    // Resolve relative "libcpu,firmware" paths against the machine-description's directory, so a
+    // ROM image referenced by the device tree is found regardless of the working directory.
+    std::string DtsPath = pDts;
+    std::string DtsDir  = DtsPath.find_last_of ('/') == std::string::npos ?
+                          std::string (".") : DtsPath.substr (0, DtsPath.find_last_of ('/'));
+    ResolveFirmwarePaths (Tree.Root, DtsDir);
 
     MachineBuilder Builder;
     Builder.AddBundleDirectory (BundlesDir.c_str ());
