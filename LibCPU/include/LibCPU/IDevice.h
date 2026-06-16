@@ -134,6 +134,50 @@ DECLARE_INTERFACE_ (IDisplayDevice, IUnknown)
 };
 
 //
+// Board-level signal lines. Some parts are not addressed through I/O ports at all: they are wired
+// to the output pins of another chip. The PC speaker and the (5150) cassette interface are driven
+// this way -- by the 8255 PPI's port-B latch (timer-2 gate, speaker data, cassette-motor relay) and
+// by the 8253 PIT's channel-2 output. A signal SOURCE (the PPI, the PIT) drives one or more named
+// lines; a signal SINK (the speaker, the cassette) observes them. This models the physical board
+// interconnect without violating port ownership (the PPI still solely owns port 0x61).
+//
+enum LC_SIGNAL_LINE {
+    LCSignalPpiPortB = 1,           // 8255 port-B latch byte: bit0 timer-2 gate, bit1 speaker data,
+                                    //   bit3 cassette-motor relay (active low: 0 = motor on)
+    LCSignalPitCh2   = 2            // 8253 channel-2 reload divisor (the speaker/cassette tone clock)
+};
+
+//
+// Capability: the component observes board-level signal lines driven by another component.
+// OnSignal is called by the source whenever a line it drives changes; Line is an LC_SIGNAL_LINE
+// and Value carries the line's new state (a latch byte, a divisor, ...).
+//
+DECLARE_INTERFACE_ (ISignalSink, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (OnSignal)(THIS_ UINT32 Line, UINT32 Value) PURE;
+};
+
+//
+// Capability: the component drives board-level signal lines that signal sinks observe. The wiring
+// is explicit and per-line: the machine builder resolves the "signals = <&source LINE>, ..." links
+// in the device tree and calls ConnectSink once for each declared (sink, line) edge. The source
+// then pushes a change on a given line only to the sinks wired to that line. ConnectSink takes a
+// reference to the sink for the source's lifetime.
+//
+DECLARE_INTERFACE_ (ISignalSource, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (ConnectSink)(THIS_ ISignalSink *pSink, UINT32 Line) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -150,6 +194,10 @@ inline constexpr IID IID_IInterruptController =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } };
 inline constexpr IID IID_IDisplayDevice =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } };
+inline constexpr IID IID_ISignalSink =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } };
+inline constexpr IID IID_ISignalSource =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } };
 
 } // namespace LibCPU
 

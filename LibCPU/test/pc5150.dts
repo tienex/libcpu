@@ -1,13 +1,15 @@
 /dts-v1/;
 
-/* IBM PC/XT (class 5160) machine description. Each device node's "compatible" names the
-   hardware part; the machine builder matches it against the .device component bundles. "reg"
-   gives the I/O-port base and length (the PC/XT I/O map); "interrupts" gives the IRQ line on
-   the 8259. As more component bundles are written, more of these nodes bind. */
+/* IBM PC (class 5150) machine description -- the original Personal Computer. Like the 5160 (XT) but
+   with the cassette interface the XT dropped, and without the fixed-disk adapter (a hard disk was
+   an XT addition). The speaker and the cassette are not I/O-port devices: they tap the 8255 PPI
+   port-B latch (gate / speaker-data / cassette-motor) and the 8253 PIT channel-2 tone clock, which
+   the machine wires up as signal sources feeding these signal sinks. Each node's "compatible" names
+   the part; the machine builder matches it against the .device component bundles. */
 
 / {
-    model = "IBM PC/XT (5160)";
-    compatible = "ibm,pc-xt", "ibm,5160";
+    model = "IBM PC (5150)";
+    compatible = "ibm,pc-5150", "ibm,5150";
     #address-cells = <1>;
     #size-cells = <1>;
 
@@ -20,7 +22,7 @@
     memory@0 {
         device_type = "memory";
         compatible = "libcpu,ram";
-        reg = <0x0 0xA0000>;            /* 640 KiB conventional RAM */
+        reg = <0x0 0xA0000>;            /* up to 640 KiB conventional RAM */
     };
 
     rom@fe000 {
@@ -36,19 +38,19 @@
 
     pic@20 {
         compatible = "intel,i8259";
-        reg = <0x20 0x02>;              /* 8259A interrupt controller (master only on XT) */
+        reg = <0x20 0x02>;              /* 8259A interrupt controller */
     };
 
     pit: pit@40 {
         compatible = "intel,i8253";
-        reg = <0x40 0x04>;              /* 8253 programmable interval timer */
+        reg = <0x40 0x04>;              /* 8253 PIT: ch0 -> IRQ0, ch2 -> speaker/cassette tone */
         interrupts = <0>;               /* channel 0 -> IRQ0 */
-        libcpu,ticks = <5>;             /* demo heartbeat: fire IRQ0 five times */
+        libcpu,ticks = <5>;             /* demo heartbeat */
     };
 
     ppi: ppi@60 {
         compatible = "intel,i8255";
-        reg = <0x60 0x04>;              /* 8255 PPI: keyboard + DIP switches */
+        reg = <0x60 0x04>;              /* 8255 PPI: keyboard, DIP switches, port B gate/data/motor */
         interrupts = <1>;               /* keyboard -> IRQ1 */
     };
 
@@ -63,22 +65,21 @@
         reg = <0x3b0 0x0c>;             /* MDA CRTC control ports (framebuffer at B0000) */
     };
 
-    hdc@320 {
-        compatible = "ibm,pc-xt-hdc", "xebec,1210";
-        reg = <0x320 0x04>;             /* Xebec ST-506 fixed-disk adapter */
-        interrupts = <5>;               /* hard disk -> IRQ5 */
-    };
-
     fdc@3f0 {
         compatible = "intel,i8272", "nec,upd765";
-        reg = <0x3f0 0x08>;             /* uPD765/8272A floppy controller */
+        reg = <0x3f0 0x08>;             /* uPD765/8272A floppy controller (optional adapter) */
         interrupts = <6>;               /* floppy -> IRQ6 */
     };
 
     speaker {
         compatible = "ibm,pc-speaker";
-        /* signal-line wiring: gate/data come from 8255 port B (line 1), tone clock from
-           8253 channel 2 (line 2). The phandles bind this sink to those sources explicitly. */
+        /* gate/data from 8255 port B (line 1), tone clock from 8253 channel 2 (line 2). */
         signals = <&ppi 1>, <&pit 2>;
+    };
+
+    cassette {
+        compatible = "ibm,pc-cassette";
+        /* motor relay is 8255 port B bit 3 -- tap port B (line 1). */
+        signals = <&ppi 1>;
     };
 };

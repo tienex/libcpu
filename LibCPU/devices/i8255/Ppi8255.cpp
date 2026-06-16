@@ -13,14 +13,16 @@
 
 #include "LibCPU/IDevice.h"
 #include <atomic>
+#include <vector>
 
 namespace LibCPU {
 
 namespace {
 
-class Ppi8255 : public IDevice, public IPortDevice {
+class Ppi8255 : public IDevice, public IPortDevice, public ISignalSource {
 public:
     Ppi8255 () : m_Ref (1) {}
+    ~Ppi8255 () { for (SINK_EDGE CONST &E : m_Sinks) { E.pSink->Release (); } }
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override
     {
@@ -29,6 +31,8 @@ public:
             *ppvObject = static_cast<IDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IPortDevice)) {
             *ppvObject = static_cast<IPortDevice *> (this);
+        } else if (CompareGuid (&riid, &IID_ISignalSource)) {
+            *ppvObject = static_cast<ISignalSource *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -46,6 +50,16 @@ public:
     }
 
     CHAR8 CONST * STDMETHODCALLTYPE GetName (THIS) override { return "Intel 8255 PPI"; }
+
+    // ISignalSource: the speaker and cassette tap port B's gate/data/motor bits. A sink is wired to
+    // a specific line (here only LCSignalPpiPortB); changes are pushed only on the wired line.
+    HRESULT STDMETHODCALLTYPE ConnectSink (ISignalSink *pSink, UINT32 Line) override
+    {
+        if (pSink == nullptr) { return E_POINTER; }
+        pSink->AddRef ();
+        m_Sinks.push_back (SINK_EDGE { pSink, Line });
+        return S_OK;
+    }
 
     HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode *pNode) override
     {
@@ -83,7 +97,12 @@ public:
     HRESULT STDMETHODCALLTYPE WritePort (UINT16 Port, UINT32 /*Width*/, UINT32 Value) override
     {
         switch (Port - m_Base) {
-            case 1:  m_PortB   = (UINT8) Value; break;       // port B: keyboard enable / speaker / nibble select
+            case 1:                                          // port B: keyboard enable / speaker / motor / nibble select
+                m_PortB = (UINT8) Value;
+                for (SINK_EDGE CONST &E : m_Sinks) {
+                    if (E.Line == LCSignalPpiPortB) { E.pSink->OnSignal (LCSignalPpiPortB, m_PortB); }
+                }
+                break;
             case 3:  m_Control = (UINT8) Value; break;       // control word
             default: break;                                  // ports A/C are inputs here
         }
@@ -91,12 +110,15 @@ public:
     }
 
 private:
-    std::atomic<INT32> m_Ref;
-    UINT16             m_Base    = 0x60;
-    UINT32             m_Sw1     = 0x30;
-    UINT8              m_KbScan  = 0;
-    UINT8              m_PortB   = 0;
-    UINT8              m_Control = 0;
+    struct SINK_EDGE { ISignalSink *pSink; UINT32 Line; };   // an explicitly wired (sink, line) edge
+
+    std::atomic<INT32>        m_Ref;
+    std::vector<SINK_EDGE>    m_Sinks;
+    UINT16                    m_Base    = 0x60;
+    UINT32                    m_Sw1     = 0x30;
+    UINT8                     m_KbScan  = 0;
+    UINT8                     m_PortB   = 0;
+    UINT8                     m_Control = 0;
 };
 
 } // anonymous namespace

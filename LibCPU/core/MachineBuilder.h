@@ -34,6 +34,7 @@ typedef struct _MATCHED_DEVICE {
     std::string  BundleName;     // matching bundle (e.g. "i8259")
     std::string  MatchedOn;      // the "compatible" string that matched
     IDevice     *pDevice;        // owned by the builder (Released on destruction)
+    DtNode      *pNode;          // the device-tree node it came from (owned by the tree)
 } MATCHED_DEVICE;
 
 class MachineBuilder {
@@ -58,6 +59,10 @@ public:
 
 private:
     bool WalkNode (DtNode &Node, std::string CONST &Path, std::string *pError);
+
+    // After matching, resolve the device tree's "signals = <&source LINE>, ..." links: connect each
+    // signal-sink component to the signal-source component the phandle names, on the given line.
+    void ResolveSignalLinks ();
 
     std::vector<std::pair<std::string, std::string>> m_Match;     // (compatible, bundle path)
     std::vector<MATCHED_DEVICE>                      m_Devices;

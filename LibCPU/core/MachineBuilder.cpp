@@ -158,6 +158,7 @@ MachineBuilder::WalkNode (DtNode &Node, std::string CONST &Path, std::string *pE
                 Md.BundleName = BundleDisplayName (M.second);
                 Md.MatchedOn  = C;
                 Md.pDevice    = pDev;
+                Md.pNode      = &Node;
                 m_Devices.push_back (std::move (Md));
                 Bound = true;
                 break;
@@ -173,11 +174,63 @@ MachineBuilder::WalkNode (DtNode &Node, std::string CONST &Path, std::string *pE
     return true;
 }
 
+// Read big-endian cell Index (a 4-byte word) of property pProp; returns false past the end.
+static bool
+ReadCell (DT_PROP CONST *pProp, size_t Index, UINT32 *pValue)
+{
+    size_t Off = Index * 4;
+    if (pProp == nullptr || Off + 4 > pProp->Value.size ()) { return false; }
+    UINT8 CONST *p = &pProp->Value[Off];
+    *pValue = ((UINT32) p[0] << 24) | ((UINT32) p[1] << 16) | ((UINT32) p[2] << 8) | (UINT32) p[3];
+    return true;
+}
+
+void
+MachineBuilder::ResolveSignalLinks ()
+{
+    // Map every assigned phandle to the matched component carrying it (its "phandle" cell).
+    std::vector<std::pair<UINT32, IDevice *>> ByPhandle;
+    for (MATCHED_DEVICE CONST &D : m_Devices) {
+        std::string Key = "phandle";
+        UINT32 Ph = 0;
+        if (D.pNode != nullptr && ReadCell (D.pNode->FindProp (Key), 0, &Ph)) {
+            ByPhandle.push_back (std::make_pair (Ph, D.pDevice));
+        }
+    }
+
+    // Connect each sink's declared "signals = <&source LINE>, ..." edges to the named source.
+    for (MATCHED_DEVICE CONST &D : m_Devices) {
+        std::string Key = "signals";
+        DT_PROP CONST *pSig = (D.pNode != nullptr) ? D.pNode->FindProp (Key) : nullptr;
+        if (pSig == nullptr) { continue; }
+        ISignalSink *pSink = nullptr;
+        D.pDevice->QueryInterface (IID_ISignalSink, (VOID **) &pSink);
+        if (pSink == nullptr) { continue; }
+        size_t Cells = pSig->Value.size () / 4;
+        for (size_t I = 0; I + 1 < Cells; I += 2) {
+            UINT32 Ph = 0, Line = 0;
+            ReadCell (pSig, I, &Ph);
+            ReadCell (pSig, I + 1, &Line);
+            IDevice *pSrcDev = nullptr;
+            for (std::pair<UINT32, IDevice *> CONST &E : ByPhandle) {
+                if (E.first == Ph) { pSrcDev = E.second; break; }
+            }
+            if (pSrcDev == nullptr) { continue; }
+            ISignalSource *pSrc = nullptr;
+            pSrcDev->QueryInterface (IID_ISignalSource, (VOID **) &pSrc);
+            if (pSrc != nullptr) { pSrc->ConnectSink (pSink, Line); pSrc->Release (); }
+        }
+        pSink->Release ();
+    }
+}
+
 bool
 MachineBuilder::Build (DeviceTree &Tree, std::string *pError)
 {
     std::string Root = "/";
-    return WalkNode (Tree.Root, Root, pError);
+    if (!WalkNode (Tree.Root, Root, pError)) { return false; }
+    ResolveSignalLinks ();
+    return true;
 }
 
 } // namespace LibCPU

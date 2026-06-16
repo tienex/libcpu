@@ -323,6 +323,8 @@ libcpu_add_device(i8237_device i8237 MATCH "intel,i8237;dma" SOURCES devices/i82
 libcpu_add_device(mc6845_device mc6845 MATCH "motorola,mc6845;ibm,mda" SOURCES devices/mc6845/Mda6845.cpp)
 libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
 libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
+libcpu_add_device(pcspeaker_device pcspeaker MATCH "ibm,pc-speaker;pc-speaker;speaker" SOURCES devices/pcspeaker/Speaker.cpp)
+libcpu_add_device(cassette_device cassette MATCH "ibm,pc-cassette;cassette" SOURCES devices/cassette/Cassette.cpp)
 libcpu_add_device(ram_device ram MATCH "libcpu,ram" SOURCES devices/ram/Ram.cpp)
 libcpu_add_device(rom_device rom MATCH "ibm,pc-xt-bios;libcpu,rom" SOURCES devices/rom/Rom.cpp)
 
@@ -851,8 +853,20 @@ add_test(NAME machine.match COMMAND sh -c
    grep -q 'rom@fe000 .* rom' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'fdc@3f0 .* i8272 .*intel,i8272' '${CMAKE_BINARY_DIR}/machine-match.out' && \
    grep -q 'hdc@320 .* st506 .*ibm,pc-xt-hdc' '${CMAKE_BINARY_DIR}/machine-match.out' && \
-   grep -q 'components: 10 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
+   grep -q 'speaker .* pcspeaker .*signal-sink.*ibm,pc-speaker' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'ppi@60 .* i8255 .*signal-source' '${CMAKE_BINARY_DIR}/machine-match.out' && \
+   grep -q 'components: 11 matched' '${CMAKE_BINARY_DIR}/machine-match.out'")
 set_tests_properties(machine.match PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+# The IBM PC 5150: the cassette interface the XT dropped binds as a signal sink (tapping PPI
+# port B's motor-relay bit), proving the board-level signal-line wiring across machine variants.
+add_test(NAME machine.match5150 COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pc5150.dts' --bundles '${CMAKE_BINARY_DIR}' > '${CMAKE_BINARY_DIR}/machine-5150.out' && \
+   grep -q 'cassette .* cassette .*signal-sink.*ibm,pc-cassette' '${CMAKE_BINARY_DIR}/machine-5150.out' && \
+   grep -q 'speaker .* pcspeaker .*signal-sink' '${CMAKE_BINARY_DIR}/machine-5150.out' && \
+   ! grep -q 'hdc@' '${CMAKE_BINARY_DIR}/machine-5150.out' && \
+   grep -q 'components: 11 matched' '${CMAKE_BINARY_DIR}/machine-5150.out'")
+set_tests_properties(machine.match5150 PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
 # Run the assembled machine on the V20: a power-on program drives the matched 8250 UART
 # component (port 0x3F8) through the device bus, so its banner reaches the serial console --
@@ -864,7 +878,17 @@ if(TARGET interp_backend)
      grep -q '\\.\\.\\.\\.\\.' '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q 'System RAM' '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q 'BIOS ROM' '${CMAKE_BINARY_DIR}/machine-run.out' && \
+     grep -q 'speaker. ON' '${CMAKE_BINARY_DIR}/machine-run.out' && \
+     ! grep -q 'cassette' '${CMAKE_BINARY_DIR}/machine-run.out' && \
      grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-run.out'")
+
+  # The 5150 run drives the same power-on program: the speaker beeps AND the cassette motor
+  # cycles on/off -- the PPI port-B writes reach both signal sinks through the board wiring.
+  add_test(NAME machine.run5150 COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pc5150.dts' --bundles '${CMAKE_BINARY_DIR}' --run > '${CMAKE_BINARY_DIR}/machine-5150run.out' && \
+     grep -q 'speaker. ON' '${CMAKE_BINARY_DIR}/machine-5150run.out' && \
+     grep -q 'cassette. motor ON' '${CMAKE_BINARY_DIR}/machine-5150run.out' && \
+     grep -q 'cassette. motor OFF' '${CMAKE_BINARY_DIR}/machine-5150run.out'")
 endif()
 
 # Catalog into dispatch: a guest INT 21h/AH=10h is dispatched to the real libc toupper(),

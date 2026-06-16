@@ -1101,14 +1101,21 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
     for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
         IPortDevice      *pPort = nullptr;
         IInterruptSource *pIrq  = nullptr;
+        ISignalSource    *pSrc  = nullptr;
+        ISignalSink      *pSnk  = nullptr;
         D.pDevice->QueryInterface (IID_IPortDevice, (VOID **) &pPort);
         D.pDevice->QueryInterface (IID_IInterruptSource, (VOID **) &pIrq);
-        std::printf ("  %-16s -> %-8s  %-20s [%s%s]  (matched \"%s\")\n",
+        D.pDevice->QueryInterface (IID_ISignalSource, (VOID **) &pSrc);
+        D.pDevice->QueryInterface (IID_ISignalSink, (VOID **) &pSnk);
+        std::printf ("  %-16s -> %-9s  %-20s [%s%s%s%s]  (matched \"%s\")\n",
                      D.NodeName.c_str (), D.BundleName.c_str (), D.pDevice->GetName (),
-                     pPort != nullptr ? "ports " : "", pIrq != nullptr ? "irq-source" : "",
+                     pPort != nullptr ? "ports " : "", pIrq != nullptr ? "irq-source " : "",
+                     pSrc != nullptr ? "signal-source " : "", pSnk != nullptr ? "signal-sink" : "",
                      D.MatchedOn.c_str ());
         if (pPort != nullptr) { pPort->Release (); }
         if (pIrq != nullptr) { pIrq->Release (); }
+        if (pSrc != nullptr) { pSrc->Release (); }
+        if (pSnk != nullptr) { pSnk->Release (); }
     }
     for (std::string CONST &U : Builder.Unmatched ()) {
         std::printf ("  (no bundle) %s\n", U.c_str ());

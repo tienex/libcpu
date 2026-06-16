@@ -138,6 +138,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     }
     InterruptArbiter Arbiter (std::move (Sources), pPic);
     Machine.AddDevice (&Arbiter);
+    // The board-level signal interconnect (speaker/cassette to the PPI/PIT lines) is declared in
+    // the device tree ("signals = <&ppi ...>") and was resolved by MachineBuilder::Build.
     Machine.State ()->Reg[4]  = 0x1000;                      // SP
     Machine.State ()->Reg[10] = 0x0000;                      // SS
 
@@ -187,6 +189,21 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             Prog.push_back (0x89); Prog.push_back (0x06);                      // mov [disp16], ax
             Prog.push_back ((UINT8) (Off & 0xFF)); Prog.push_back ((UINT8) (Off >> 8));
         }
+        // Beep the speaker and cycle the cassette motor through the board signal lines: program PIT
+        // channel 2 to ~896 Hz (divisor 0x0533), then drive PPI port B -- gate+data sound the
+        // speaker, bit 3 (active low) runs the cassette motor. The PPI/PIT push these onto whatever
+        // signal sinks (speaker, cassette) the machine wired up.
+        UINT8 const Beep[] = {
+            0xB0, 0xB6, 0xE6, 0x43,  // mov al,0xB6 ; out 0x43,al   PIT ch2, lo/hi, mode 3
+            0xB0, 0x33, 0xE6, 0x42,  // mov al,0x33 ; out 0x42,al   divisor low
+            0xB0, 0x05, 0xE6, 0x42,  // mov al,0x05 ; out 0x42,al   divisor high -> tone set
+            0xB0, 0x0B, 0xE6, 0x61,  // mov al,0x0B ; out 0x61,al   gate+data+motor-off -> speaker ON
+            0xB0, 0x03, 0xE6, 0x61,  // mov al,0x03 ; out 0x61,al   clear bit3 -> cassette motor ON
+            0xB0, 0x00, 0xE6, 0x61,  // mov al,0x00 ; out 0x61,al   gate/data low -> speaker off
+            0xB0, 0x08, 0xE6, 0x61   // mov al,0x08 ; out 0x61,al   set bit3 -> cassette motor OFF
+        };
+        Prog.insert (Prog.end (), Beep, Beep + sizeof (Beep));
+
         UINT8 const PitAndIdle[] = {
             0xB0, 0x36, 0xE6, 0x43,  // mov al,0x36 ; out 0x43,al   PIT ch0 mode 3
             0xB0, 0xFF, 0xE6, 0x40,  // count low
