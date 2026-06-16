@@ -1,0 +1,55 @@
+/dts-v1/;
+
+/* An IBM PC/XT whose XT-IDE controller carries an option ROM (firmware). The firmware lives in a
+   ROM chip on the card, mapped into the upper-memory area at 0xC8000 (the conventional hard-disk
+   option-ROM address); the system BIOS finds it by scanning for the 0x55 0xAA marker. The ROM
+   image comes from the node's "libcpu,firmware" property -- so any controller's firmware can be
+   loaded by pointing its ROM node at the image. */
+
+/ {
+    model = "IBM PC/XT (5160) + XT-IDE with option ROM";
+    compatible = "ibm,pc-xt", "ibm,5160";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    cpu@0 {
+        device_type = "cpu";
+        compatible = "intel,i8088";
+        clock-frequency = <0x462300>;
+    };
+
+    memory@0 {
+        device_type = "memory";
+        compatible = "libcpu,ram";
+        reg = <0x0 0xA0000>;
+    };
+
+    rom@fe000 {
+        compatible = "ibm,pc-xt-bios";
+        reg = <0xfe000 0x2000>;
+        read-only;
+    };
+
+    pic@20 {
+        compatible = "intel,i8259";
+        reg = <0x20 0x02>;
+    };
+
+    serial@3f8 {
+        compatible = "national,ns8250";
+        reg = <0x3f8 0x08>;
+        interrupts = <4>;
+    };
+
+    ide@300 {
+        compatible = "xtide";
+        reg = <0x300 0x10>;             /* XT-IDE 8-bit ATA adapter */
+    };
+
+    optionrom@c8000 {
+        compatible = "libcpu,rom";
+        reg = <0xc8000 0x200>;          /* the XT-IDE card's BIOS extension (option ROM) */
+        libcpu,firmware = "optrom.bin"; /* firmware image (resolved from the working directory) */
+        read-only;
+    };
+};

@@ -25,10 +25,10 @@ System::AddDevice (Device *pDevice)
 }
 
 void
-System::MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost)
+System::MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost, bool ReadOnly)
 {
     if (pHost == nullptr || Size == 0) { return; }
-    DEVICE_MEMORY M = { Base, Size, pHost };
+    DEVICE_MEMORY M = { Base, Size, pHost, ReadOnly };
     m_DeviceMemory.push_back (M);
 }
 
@@ -61,6 +61,7 @@ void
 System::SyncDeviceMemoryOut ()
 {
     for (DEVICE_MEMORY CONST &M : m_DeviceMemory) {
+        if (M.ReadOnly) { continue; }                        // ROM/firmware: writes are discarded
         if ((UINT64) M.Base + M.Size <= m_RamSize) { std::memcpy (M.pHost, m_pRAM + M.Base, M.Size); }
     }
 }

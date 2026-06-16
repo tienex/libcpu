@@ -963,6 +963,18 @@ if(TARGET interp_backend)
      grep -q 'sector 0 at 0x4000 = .LIBCPU XT-IDE SECTOR 0 - PIO READ OK' '${CMAKE_BINARY_DIR}/ide.out'")
   set_tests_properties(machine.ide PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
+  # Controller firmware (option ROM): a generated 512-byte option ROM (0x55 0xAA header, valid
+  # checksum) is loaded into the XT-IDE card's ROM node at 0xC8000. The guest reads its id string
+  # from the mapped address, and the BIOS-style UMA scan finds it. Proves firmware loading.
+  add_test(NAME machine.rom COMMAND sh -c
+    "printf '\\x55\\xAA\\x01LIBCPU OPTION ROM FIRMWARE' > optrom.bin && \
+     head -c 482 /dev/zero >> optrom.bin && printf '\\xBD' >> optrom.bin && \
+     '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcrom.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-rom > rom.out && \
+     grep -q 'firmware mapped: 512 bytes at 0xc8000' rom.out && \
+     grep -q 'LIBCPU OPTION ROM FIRMWARE' rom.out && \
+     grep -q 'option ROM found at 0xc8000: 512 bytes, checksum OK' rom.out")
+  set_tests_properties(machine.rom PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # Bank switching + "no card, no memory": the demo writes both Hercules pages, flips the displayed
   # page via the mode register (so the rendered screen is page 1, scanned out of the card's own
   # VRAM at 0xB8000), and probes an unmapped address -- which reads back 0xFF (open bus).

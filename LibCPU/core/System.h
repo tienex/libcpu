@@ -58,7 +58,7 @@ public:
     // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
     // the device's memory (a card's video RAM, a bankable aperture), not a slice of main RAM.
     // pHost is borrowed; the caller keeps the device (and its buffer) alive for the run.
-    void MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost);
+    void MapDeviceMemory (UINT32 Base, UINT32 Size, UINT8 *pHost, bool ReadOnly = false);
 
     // Mark a region that no component backs ("no card, no memory"): it reads as open bus (0xFF)
     // and writes to it are discarded. Enforced at execution-window boundaries.
@@ -83,7 +83,7 @@ private:
     void      SyncDeviceMemoryOut ();                  // flat RAM -> device buffers (after a window)
 
     // A device-owned memory region mapped into the guest address space (see MapDeviceMemory).
-    struct DEVICE_MEMORY { UINT32 Base; UINT32 Size; UINT8 *pHost; };
+    struct DEVICE_MEMORY { UINT32 Base; UINT32 Size; UINT8 *pHost; bool ReadOnly; };
     std::vector<DEVICE_MEMORY> m_DeviceMemory;
 
     // Unbacked ("open bus") regions: read 0xFF, writes discarded (see MarkOpenBus).
