@@ -303,9 +303,10 @@ public:
         } else if (Op >= 0x50 && Op <= 0x5F) {                   // PUSH/POP reg16
             Len = 1;
         } else if ((Op < 0x40 && (Op & 7) <= 3) ||              // ALU r/m,r (8- and 16-bit, both dirs)
-                   Op == 0x84 || Op == 0x85 || Op == 0x88 || Op == 0x89 ||
-                   Op == 0x8A || Op == 0x8B || Op == 0x8E || Op == 0x8C) {
-            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV r/m,r (+disp)
+                   Op == 0x84 || Op == 0x85 || Op == 0x86 || Op == 0x87 || Op == 0x88 || Op == 0x89 ||
+                   Op == 0x8A || Op == 0x8B || Op == 0x8C || Op == 0x8D || Op == 0x8E ||
+                   Op == 0xC4 || Op == 0xC5) {
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // ALU/TEST/MOV/XCHG/LEA/LDS/LES r/m (+disp)
         } else if (Op == 0xD0 || Op == 0xD1 || Op == 0xD2 || Op == 0xD3) {   // grp2 shift r/m,1 or r/m,CL
             Len = 1 + RmLen (m_pCode[Pc + 1]);
         } else if (Op == 0x80 || Op == 0x83 || Op == 0xC6 || Op == 0xC0 || Op == 0xC1) {
@@ -498,6 +499,20 @@ public:
         } else if (Op == 0xFD) { std::snprintf (pLine, MaxLine, "std");
         } else if (Op == 0x98) { std::snprintf (pLine, MaxLine, "cbw");
         } else if (Op == 0x99) { std::snprintf (pLine, MaxLine, "cwd");
+        } else if (Op == 0x9E) { std::snprintf (pLine, MaxLine, "sahf");
+        } else if (Op == 0x9F) { std::snprintf (pLine, MaxLine, "lahf");
+        } else if (Op == 0xD7) { std::snprintf (pLine, MaxLine, "xlat");
+        } else if (Op == 0x8D) {
+            std::snprintf (pLine, MaxLine, "lea %s,[mem]", RegName ((m_pCode[Pc + 1] >> 3) & 7));
+        } else if (Op == 0x86 || Op == 0x87) {
+            UINT8 M = m_pCode[Pc + 1];
+            CHAR8 CONST *Rg = (Op & 1) ? RegName ((M >> 3) & 7) : Reg8Name ((M >> 3) & 7);
+            CHAR8 CONST *Rm = ((M >> 6) == 3) ? ((Op & 1) ? RegName (M & 7) : Reg8Name (M & 7)) : "[mem]";
+            std::snprintf (pLine, MaxLine, "xchg %s,%s", Rg, Rm);
+        } else if (Op >= 0x91 && Op <= 0x97) {
+            std::snprintf (pLine, MaxLine, "xchg ax,%s", RegName (Op - 0x90));
+        } else if (Op == 0xC4 || Op == 0xC5) {
+            std::snprintf (pLine, MaxLine, "%s %s,[mem]", Op == 0xC4 ? "les" : "lds", RegName ((m_pCode[Pc + 1] >> 3) & 7));
         } else if (Op == 0xF6 || Op == 0xF7) {
             static CHAR8 CONST *kG3[8] = { "test","test","not","neg","mul","imul","div","idiv" };
             UINT8 M = m_pCode[Pc + 1]; UINT8 Sub = (M >> 3) & 7;
@@ -840,6 +855,95 @@ public:
         }
         // A single string element (no REP prefix).
         if (IsStringOp (Op)) { EmitStringStep (pE, Op); return S_OK; }
+
+        // LEA r16, m: load the effective address (the offset), not the memory contents.
+        if (Op == 0x8D) {
+            UINT8 M = m_pCode[Pc + 1];
+            if ((M >> 6) != 3) {
+                ComPtr<ICpuValue> EA; EmitEA (pE, M, Pc + 2, &EA);
+                pE->PutRegister ((M >> 3) & 7, EA, 16, FALSE);
+            }
+            return S_OK;
+        }
+        // XCHG r/m, r (0x86 byte / 0x87 word).
+        if (Op == 0x86 || Op == 0x87) {
+            UINT8 M = m_pCode[Pc + 1]; UINT32 Reg = (M >> 3) & 7;
+            if (Op & 1) {
+                ComPtr<ICpuValue> RegV; pE->GetRegister (Reg, 16, &RegV);
+                ComPtr<ICpuValue> RmV;  EmitRmRead (pE, M, Pc + 1, &RmV);
+                EmitRmWrite (pE, M, Pc + 1, RegV); pE->PutRegister (Reg, RmV, 16, FALSE);
+            } else {
+                ComPtr<ICpuValue> RegV; EmitReg8Read (pE, (UINT8) Reg, &RegV);
+                ComPtr<ICpuValue> RmV;  EmitRmRead8 (pE, M, Pc + 1, &RmV);
+                EmitRmWrite8 (pE, M, Pc + 1, RegV); EmitReg8Write (pE, (UINT8) Reg, RmV);
+            }
+            return S_OK;
+        }
+        // XCHG AX, reg (0x91..0x97; 0x90 = XCHG AX,AX = NOP).
+        if (Op >= 0x91 && Op <= 0x97) {
+            UINT32 Reg = Op - 0x90;
+            ComPtr<ICpuValue> Ax; pE->GetRegister (RegV20AX, 16, &Ax);
+            ComPtr<ICpuValue> Rg; pE->GetRegister (Reg, 16, &Rg);
+            pE->PutRegister (RegV20AX, Rg, 16, FALSE); pE->PutRegister (Reg, Ax, 16, FALSE);
+            return S_OK;
+        }
+        // LES/LDS r16, m: reg = [m], ES/DS = [m+2].
+        if (Op == 0xC4 || Op == 0xC5) {
+            UINT8 M = m_pCode[Pc + 1]; UINT32 Reg = (M >> 3) & 7;
+            UINT32 Seg = (Op == 0xC4) ? RegV20ES : RegV20DS;
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, Pc + 2, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
+            ComPtr<ICpuValue> Off; pE->Load (Lin, 16, &Off); pE->PutRegister (Reg, Off, 16, FALSE);
+            ComPtr<ICpuValue> Two; pE->ConstInt (32, 2, &Two);
+            ComPtr<ICpuValue> Lin2; pE->BinaryOp (BinAdd, Lin, Two, &Lin2);
+            ComPtr<ICpuValue> Sg;  pE->Load (Lin2, 16, &Sg); pE->PutRegister (Seg, Sg, 16, FALSE);
+            return S_OK;
+        }
+        // LAHF: AH = flags byte (SF ZF 0 AF 0 PF 1 CF).
+        if (Op == 0x9F) {
+            ComPtr<ICpuValue> Base; pE->ConstInt (8, 0x02, &Base);
+            ICpuValue *Acc = Base;
+            ComPtr<ICpuValue> H[4];
+            CPU_FLAG  Fl[4] = { FlagCarry, FlagParity, FlagZero, FlagNegative };
+            UINT8     Bt[4] = { 0, 2, 6, 7 };
+            for (int I = 0; I < 4; I++) {
+                ComPtr<ICpuValue> F; pE->GetFlag (Fl[I], &F);
+                ComPtr<ICpuValue> F8; pE->Cast (CastZExt, F, 8, &F8);
+                ComPtr<ICpuValue> Sh; pE->ConstInt (8, Bt[I], &Sh);
+                ComPtr<ICpuValue> Bv; pE->BinaryOp (BinShl, F8, Sh, &Bv);
+                pE->BinaryOp (BinOr, Acc, Bv, &H[I]);
+                Acc = H[I];
+            }
+            EmitReg8Write (pE, 4, Acc);                            // AH
+            return S_OK;
+        }
+        // SAHF: CF/PF/ZF/SF from AH.
+        if (Op == 0x9E) {
+            ComPtr<ICpuValue> Ah; EmitReg8Read (pE, 4, &Ah);
+            CPU_FLAG Fl[4] = { FlagCarry, FlagParity, FlagZero, FlagNegative };
+            UINT8    Bt[4] = { 0, 2, 6, 7 };
+            for (int I = 0; I < 4; I++) {
+                ComPtr<ICpuValue> Sh;  pE->ConstInt (8, Bt[I], &Sh);
+                ComPtr<ICpuValue> Shf; pE->BinaryOp (BinLShr, Ah, Sh, &Shf);
+                ComPtr<ICpuValue> One; pE->ConstInt (8, 1, &One);
+                ComPtr<ICpuValue> Bit; pE->BinaryOp (BinAnd, Shf, One, &Bit);
+                ComPtr<ICpuValue> B1;  pE->Cast (CastTrunc, Bit, 1, &B1);
+                pE->SetFlag (Fl[I], B1);
+            }
+            return S_OK;
+        }
+        // XLAT: AL = [DS:BX + AL].
+        if (Op == 0xD7) {
+            UINT32 Seg = (m_SegOv >= 0) ? (UINT32) m_SegOv : (UINT32) RegV20DS;
+            ComPtr<ICpuValue> Bx;  pE->GetRegister (RegV20BX, 16, &Bx);
+            ComPtr<ICpuValue> Al;  EmitReg8Read (pE, 0, &Al);
+            ComPtr<ICpuValue> Al16;pE->Cast (CastZExt, Al, 16, &Al16);
+            ComPtr<ICpuValue> Off; pE->BinaryOp (BinAdd, Bx, Al16, &Off);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, Seg, Off, &Lin);
+            ComPtr<ICpuValue> V;   pE->Load (Lin, 8, &V);
+            EmitReg8Write (pE, 0, V);
+            return S_OK;
+        }
 
         switch (Op) {
         // The eight ALU ops (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) in their r/m16,r16 and r16,r/m16

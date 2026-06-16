@@ -755,6 +755,12 @@ if(TARGET interp_backend)
     "printf '\\xb8\\x00\\x00\\x8e\\xc0\\xbf\\x00\\x02\\xb9\\x04\\x00\\xfc\\xf3\\xab\\xf4' > '${CMAKE_BINARY_DIR}/rep.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/rep.bin' --arch v20 > '${CMAKE_BINARY_DIR}/rep.out' && \
      grep -q 'DI =0208' '${CMAKE_BINARY_DIR}/rep.out' && grep -q 'CX =0000' '${CMAKE_BINARY_DIR}/rep.out'")
+
+  # Misc ops: MOV BX,0x10 ; LEA AX,[BX+4] -> AX = 0x14 ; XCHG AX,BX -> AX=0x10, BX=0x14.
+  add_test(NAME run.misc COMMAND sh -c
+    "printf '\\xbb\\x10\\x00\\x8d\\x47\\x04\\x93\\xf4' > '${CMAKE_BINARY_DIR}/misc.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/misc.bin' --arch v20 > '${CMAKE_BINARY_DIR}/misc.out' && \
+     grep -q 'AX =0010' '${CMAKE_BINARY_DIR}/misc.out' && grep -q 'BX =0014' '${CMAKE_BINARY_DIR}/misc.out'")
 endif()
 
 # Segment-override prefix + string ops disassemble.
