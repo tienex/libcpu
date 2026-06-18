@@ -500,6 +500,18 @@ add_test(NAME klib.roundtrip COMMAND sh -c
 set_tests_properties(klib.roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "solid zstd")
 list(APPEND LIBCPU_CHECK_DEPS lcx)
 
+# ZOO raw-member round-trip: the format extension that makes the archive a directly-
+# mappable code cache. Builds a small harness against core/ZooArchive.cpp + vendored zstd
+# and checks page-aligned zero-copy mapping, compressed-slot inflate, and solid coexistence.
+add_executable(zooraw test/zooraw.cpp core/ZooArchive.cpp third_party/zstd/zstd.c)
+target_include_directories(zooraw PRIVATE . third_party/zstd)
+target_compile_definitions(zooraw PRIVATE LIBCPU_HAVE_ZSTD)
+target_link_libraries(zooraw PRIVATE LibCPU)
+add_test(NAME zoo.raw COMMAND zooraw "${CMAKE_BINARY_DIR}/test-raw.zoo")
+set_tests_properties(zoo.raw PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                                        FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+list(APPEND LIBCPU_CHECK_DEPS zooraw)
+
 # Symbol reader (knowledge-library v2 step b): derive a library's exported-symbol set
 # from a real toolchain artifact. Two formats, two hermetic fixtures:
 #  - TBD text stub: a checked-in tapi-tbd v4 file; assert a known export is read.
