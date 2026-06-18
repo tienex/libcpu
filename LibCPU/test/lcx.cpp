@@ -1382,12 +1382,29 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         // and promotes hot ROM regions to this optimizing JIT backend, which only pays off where its
         // compile cost amortizes -- a BIOS POST is mostly cold, so this keeps it fast while still
         // JIT-compiling genuine hot loops.
+        // --jit takes a COMMA-SEPARATED tier ladder, cold->hot (e.g. --jit asmjit.backend,sljit.backend,
+        // mir.backend): a hot region climbs them in the background, each tier optimizing harder. A single
+        // bundle is the common one-tier case.
         CHAR8 CONST *pJit = Opt (argc, argv, "--jit", nullptr);
-        ICpuBackend *pHotBackend = (pJit != nullptr) ? LoadBackendBundle (pJit) : nullptr;
-        if (pJit != nullptr && pHotBackend == nullptr) { std::printf ("lcx machine: cannot load --jit backend '%s'\n", pJit); }
+        std::vector<ICpuBackend *> HotTiers;
+        if (pJit != nullptr) {
+            std::string Spec (pJit);
+            size_t Pos = 0;
+            for (;;) {
+                size_t Comma = Spec.find (',', Pos);
+                std::string One = Spec.substr (Pos, (Comma == std::string::npos) ? std::string::npos : Comma - Pos);
+                if (!One.empty ()) {
+                    ICpuBackend *pB = LoadBackendBundle (One.c_str ());
+                    if (pB != nullptr) { HotTiers.push_back (pB); }
+                    else { std::printf ("lcx machine: cannot load --jit backend '%s'\n", One.c_str ()); }
+                }
+                if (Comma == std::string::npos) { break; }
+                Pos = Comma + 1;
+            }
+        }
         int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo, CliRoms, BiosBoot, BiosSteps,
-                                 ConsoleMode, ConsoleKeys, BootScan, pHotBackend);
-        if (pHotBackend != nullptr) { pHotBackend->Release (); }
+                                 ConsoleMode, ConsoleKeys, BootScan, HotTiers);
+        for (ICpuBackend *pB : HotTiers) { pB->Release (); }
         pBackend->Release ();
         return Rc;
     }

@@ -289,7 +289,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                 bool ConsoleMode = false,                    // run interactively through the console seam
                 std::string CONST &ConsoleKeys = std::string (),  // headless: pre-injected keystrokes (else live TTY)
                 bool BootScan = false,                       // run the option-ROM bootstrap (scan UMA + far-call inits)
-                ICpuBackend *pHotBackend = nullptr)          // optional tier-1 JIT for hot regions (tiered execution)
+                std::vector<ICpuBackend *> CONST &pHotTiers = std::vector<ICpuBackend *> ())  // tiered JIT ladder (cold->hot)
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
@@ -339,14 +339,19 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     pArch->SetCodeMemory (Ram.data (), Ram.size ());
     System Machine (pArch, pBackend, Ram.data (), Ram.size ());
     InstallX86System (Machine);                              // CPU personality: x86 privileged ops
-    if (pHotBackend != nullptr) {
-        // Tiered, COMPILED IN THE BACKGROUND: a dedicated hot frontend over the same RAM lets the tier-1
+    if (!pHotTiers.empty ()) {
+        // Tiered, COMPILED IN THE BACKGROUND: a dedicated hot frontend over the same RAM lets every tier
         // recompile run on a worker thread (System owns it -> released after the queue joins), so a hot
-        // region promotes to the JIT without ever stalling execution.
+        // region climbs the ladder without ever stalling execution. Each tier has a higher run threshold
+        // (50, 200, 800, ...) and a higher optimization level, so a region only reaches the costly
+        // optimizing backends once it is hot enough to amortize them.
         ICpuArchitecture *pHotArch = CreateV20 ();
         pHotArch->SetCodeMemory (Ram.data (), Ram.size ());
-        Machine.SetHotBackend (pHotBackend, 50, pHotArch);   // hot regions (>=50 runs) compile asynchronously
+        Machine.SetHotArch (pHotArch);
         pHotArch->Release ();                                // System holds its own reference now
+        for (size_t I = 0; I < pHotTiers.size (); I++) {
+            Machine.AddTier (pHotTiers[I], (UINT64) 50 << (2 * I), (UINT32) (I + 1));
+        }
     }
 
     // Port devices onto the bus; one arbiter for interrupts.

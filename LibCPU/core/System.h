@@ -106,6 +106,14 @@ public:
     // promotion. Both pHotBackend and pHotArch are borrowed (kept alive by the caller for the run).
     void SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold, ICpuArchitecture *pHotArch = nullptr);
 
+    // Multi-tier ladder. SetHotArch installs the dedicated background frontend (and the worker queue) once;
+    // each AddTier appends a progressively more-optimizing tier (call them in ascending Threshold order),
+    // optimized at OptLevel (honored by backends implementing ICpuBackendOptimize; LC_OPT_DEFAULT leaves
+    // the backend's own setting). A hot region then climbs interp -> tier 1 -> tier 2 -> ... in the
+    // background. (SetHotBackend is the one-tier shorthand built on these.)
+    void SetHotArch (ICpuArchitecture *pHotArch);
+    void AddTier (ICpuBackend *pBackend, UINT64 Threshold, UINT32 OptLevel);
+
     // Map a device-owned host buffer over a guest physical region. The guest's flat RAM and the
     // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
     // the device's memory (a card's video RAM, a bankable aperture), not a slice of main RAM.
@@ -159,26 +167,32 @@ private:
     // In-memory translation cache: compiled code keyed by the burst's linear entry address. Without
     // it the run loop re-translates every burst, which is cheap for the interpreter but ruinous for a
     // JIT (an LLVM module compiled per burst). Invalidated when the guest writes to watched code (SMC).
-    // Compiling: a background tier-1 recompile of this region has been queued and is still in flight;
-    // the run loop keeps using the tier-0 (interpreter) pCode until the worker delivers the artifact.
-    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; bool Hot; bool Compiling; };
+    // Tier: which tier's artifact pCode currently is -- 0 = tier 0 (the base/interpreter backend),
+    // t in 1..N = m_Tiers[t-1]. Compiling: a background promotion to a higher tier is in flight; the run
+    // loop keeps using the current pCode until the worker delivers the next one.
+    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; UINT32 Tier; bool Compiling; };
     std::unordered_map<UINT64, CACHED_CODE> m_CodeCache;
     UINT64 m_StatCompiles = 0;   // diagnostic (LCX_CACHE_STATS): translations performed
     UINT64 m_StatHits     = 0;   // diagnostic: cache hits (translations avoided)
     std::vector<std::pair<UINT64, UINT64>> m_ImmutableCode;   // (base, end) ranges safe to cache
-    ICpuBackend            *m_pHotBackend = nullptr;          // tier-1 (JIT) backend, or null
-    UINT64                  m_HotThreshold = 0;               // runs before a region promotes to tier 1
     void ClearCodeCache ();
     bool IsImmutableCode (UINT64 Addr) CONST;                 // in a ROM / marked-immutable region?
 
-    // Background (asynchronous) tier-1 compilation. m_pQueue runs recompiles on a worker that uses
-    // m_pHotArch (a dedicated frontend over the same RAM), so the optimizing compile never stalls the
-    // execution thread. Finished artifacts are posted to m_Done under m_DoneMutex and the run loop swaps
-    // them into m_CodeCache at a safe point (so the cache itself stays single-threaded). See Dispatch.h.
+    // The MULTI-TIER ladder. A region climbs interp(0) -> m_Tiers[0] -> m_Tiers[1] -> ... as its run count
+    // crosses each tier's Threshold: progressively more optimizing (and slower-to-compile) backends, each
+    // told to optimize at OptLevel (ICpuBackendOptimize). Ordered by ascending Threshold.
+    struct HOT_TIER { ICpuBackend *pBackend; UINT64 Threshold; UINT32 OptLevel; };
+    std::vector<HOT_TIER> m_Tiers;
+
+    // Background (asynchronous) recompilation. m_pQueue runs every tier promotion on a worker that uses
+    // m_pHotArch (a dedicated frontend over the same RAM, shared because there is one worker), so the
+    // optimizing compile never stalls the execution thread. Finished artifacts are posted to m_Done under
+    // m_DoneMutex; the run loop swaps them in at a safe point (so the cache stays single-threaded).
     ICpuArchitecture *m_pHotArch = nullptr;
     DispatchQueue    *m_pQueue   = nullptr;
-    std::mutex                                m_DoneMutex;
-    std::vector<std::pair<UINT64, ICpuCode *>> m_Done;        // (cache key, finished tier-1 artifact)
+    std::mutex        m_DoneMutex;
+    struct DONE_JOB { UINT64 Key; ICpuCode *pCode; UINT32 Tier; };
+    std::vector<DONE_JOB> m_Done;
     void DrainCompiled ();                                    // swap in completed background compiles
 };
 

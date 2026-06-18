@@ -1014,6 +1014,21 @@ if(TARGET interp_backend)
     endif ()
   endforeach ()
 
+  # MULTI-TIER ladder: --jit takes a comma-separated cold->hot list, and a hot region climbs it in the
+  # BACKGROUND (interp -> asmjit -> sljit -> mir), each tier optimizing harder at a higher run threshold.
+  # Proves the tier engine + async promotion drive the machine to the identical POST screen.
+  if (EXISTS "${CMAKE_BINARY_DIR}/asmjit.backend" AND EXISTS "${CMAKE_BINARY_DIR}/sljit.backend" AND EXISTS "${CMAKE_BINARY_DIR}/mir.backend")
+    add_test(NAME machine.m24jit-multitier COMMAND sh -c
+      "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+         --jit '${CMAKE_BINARY_DIR}/asmjit.backend,${CMAKE_BINARY_DIR}/sljit.backend,${CMAKE_BINARY_DIR}/mir.backend' \
+         --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+         --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24jit-multitier.out' 2>&1 && \
+       grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24jit-multitier.out' && \
+       grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-multitier.out' && \
+       grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-multitier.out'")
+    set_tests_properties(machine.m24jit-multitier PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+  endif ()
+
   # PURE JIT (no interpreter tier): the whole M24 BIOS -- cold code and all -- runs on the JIT. This
   # is the strongest test: it requires the JIT to be a complete, correct frontend target (every ALU
   # op incl. division, a bounded temp frame, full CFG + traps) AND the unified per-instruction clock

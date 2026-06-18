@@ -382,6 +382,26 @@ DECLARE_INTERFACE_ (ICpuBackendCache, IUnknown)
     STDMETHOD (LoadCode)(THIS_ IN UINT8 CONST *pBytes, UINT32 Len, OUT ICpuCode **ppCode) PURE;
 };
 
+// LC_OPT_DEFAULT: leave the backend's own optimization setting untouched (used by the one-tier
+// SetHotBackend shorthand so legacy behavior is preserved).
+#define LC_OPT_DEFAULT  ((UINT32) ~0u)
+
+//
+// ICpuBackendOptimize -- optional capability: a backend that can vary its optimization effort. The
+// tiered driver cranks it up at higher tiers (e.g. LLVM / GCC JIT O0..O3, MIR generator levels) to
+// trade compile time for code quality. Level is backend-defined but MONOTONE (higher = more optimized,
+// slower to compile); subsequent compiles by this backend use the level until it is set again. Backends
+// that do not optimize simply do not implement this interface, and the driver leaves them as-is.
+//
+DECLARE_INTERFACE_ (ICpuBackendOptimize, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (SetOptimization)(THIS_ UINT32 Level) PURE;
+};
+
 /**
   ICpuSystemEmitter -- optional emitter capability for SYSTEM-level emulation.
 
@@ -476,6 +496,8 @@ inline constexpr IID IID_ICpuSegmentedCode =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E } };
 inline constexpr IID IID_ICpuClockEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F } };
+inline constexpr IID IID_ICpuBackendOptimize =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 } };
 
 } // namespace LibCPU
 
