@@ -402,6 +402,37 @@ DECLARE_INTERFACE_ (ICpuBackendOptimize, IUnknown)
     STDMETHOD (SetOptimization)(THIS_ UINT32 Level) PURE;
 };
 
+// Feature levels for ICpuBackendTarget::SetTargetFeatures.
+#define LC_FEAT_BASELINE  ((UINT32) 0)   // the architecture's portable baseline (maximum compatibility)
+#define LC_FEAT_NATIVE    ((UINT32) 1)   // everything the running host CPU supports (maximum performance)
+
+//
+// ICpuBackendTarget -- optional capability: a backend that emits HOST-SPECIFIC code reports a
+// fingerprint of the target it compiles for, and can be asked to target a baseline or the native
+// host. The fingerprint is the host half of the on-disk cache key: a cached artifact is reused only
+// on a host whose fingerprint matches (or, for a baseline artifact, supersets) the artifact's -- so a
+// blob is never run on a host missing an instruction it uses. Backends whose artifacts are host-
+// independent (an interpreter's bytecode) report 0 and run anywhere. Discovered via QueryInterface
+// (IID_ICpuBackendTarget). Orthogonal to ICpuBackendOptimize: feature level and optimization level are
+// independent axes the tiered driver can vary, recompiling in the background and hot-swapping.
+//
+DECLARE_INTERFACE_ (ICpuBackendTarget, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // A stable fingerprint of the host target this backend currently emits for (host arch + CPU model +
+    // enabled feature set + the requested feature level). Two backends yield the same value iff an
+    // artifact built by one is safe to run where the other emits. 0 means host-independent (run anywhere).
+    STDMETHOD_ (UINT64, GetTargetFingerprint)(THIS) PURE;
+
+    // Request a feature level (LC_FEAT_*) for subsequent compiles; changes the fingerprint accordingly.
+    // A backend that only ever targets the native host may accept LC_FEAT_NATIVE and return E_NOTIMPL
+    // for others. Returns S_OK on success.
+    STDMETHOD (SetTargetFeatures)(THIS_ UINT32 Level) PURE;
+};
+
 /**
   ICpuSystemEmitter -- optional emitter capability for SYSTEM-level emulation.
 
@@ -498,6 +529,8 @@ inline constexpr IID IID_ICpuClockEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F } };
 inline constexpr IID IID_ICpuBackendOptimize =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 } };
+inline constexpr IID IID_ICpuBackendTarget =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 } };
 
 } // namespace LibCPU
 

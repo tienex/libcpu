@@ -108,6 +108,11 @@ public:
     UINT32 RawCount () CONST { return (UINT32) m_Raw.size (); }
     std::vector<std::string> ListRaw () CONST;
 
+    // Directory metadata for a raw member without mapping it: its uncompressed (slot) size,
+    // its stored compressed length (0 = verbatim), and its alignment. Returns false if absent.
+    bool RawInfo (std::string CONST &Name, OUT UINT64 *pLen, OUT UINT64 *pCompLength,
+                  OUT UINT32 *pAlignment) CONST;
+
     UINT32 MemberCount () CONST { return (UINT32) m_Entries.size (); }
     UINT64 UncompressedSize () CONST { return m_Solid.size (); }
     UINT64 CompressedSize () CONST { return m_CompressedSize; }

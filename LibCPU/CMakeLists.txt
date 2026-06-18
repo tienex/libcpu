@@ -315,7 +315,7 @@ endif()
 # across the toolchain's arches, no external dependency) and powers `lcx klib`.
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
-  core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp
+  core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp core/CodeCache.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   core/DeviceNode.cpp core/MachineBuilder.cpp
   console/ConsoleChannel.cpp console/ConsoleBridge.cpp console/TerminalConsole.cpp
@@ -511,6 +511,18 @@ add_test(NAME zoo.raw COMMAND zooraw "${CMAKE_BINARY_DIR}/test-raw.zoo")
 set_tests_properties(zoo.raw PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
                                         FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
 list(APPEND LIBCPU_CHECK_DEPS zooraw)
+
+# Content-addressed code cache (the DBM-like store on the ZOO substrate): content-hash +
+# host-fingerprint keying, profile persistence, multi-target sharing, and cross-run
+# accretion. Builds against core/CodeCache.cpp + core/ZooArchive.cpp + vendored zstd.
+add_executable(codecache test/codecache.cpp core/CodeCache.cpp core/ZooArchive.cpp third_party/zstd/zstd.c)
+target_include_directories(codecache PRIVATE . third_party/zstd)
+target_compile_definitions(codecache PRIVATE LIBCPU_HAVE_ZSTD)
+target_link_libraries(codecache PRIVATE LibCPU)
+add_test(NAME cache.codecache COMMAND codecache "${CMAKE_BINARY_DIR}/test.codecache")
+set_tests_properties(cache.codecache PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                                                FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+list(APPEND LIBCPU_CHECK_DEPS codecache)
 
 # Symbol reader (knowledge-library v2 step b): derive a library's exported-symbol set
 # from a real toolchain artifact. Two formats, two hermetic fixtures:

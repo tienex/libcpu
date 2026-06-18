@@ -304,12 +304,18 @@ ZooWriter::Save (CHAR8 CONST *pPath, INT32 Level, std::string *pError)
         std::fwrite (RawPayload[I].data (), 1, RawPayload[I].size (), pf);
     }
     // With no raw members the file already ends exactly at the solid block (Pos == BodyEnd);
-    // the steps below apply only when raw slots exist. (Extending to Pos-1 unconditionally
-    // would overwrite the last byte of the solid zstd stream.)
+    // the steps below apply only when raw slots exist.
     if (!m_Raw.empty ()) {
-        std::fseek (pf, (long) (Pos - 1), SEEK_SET);
-        UINT8 CONST Last = 0;
-        std::fwrite (&Last, 1, 1, pf);   // reserve the last slot's full uncompressed extent
+        // The writes above ended at the last member's payload. Reserve the rest of its slot
+        // ONLY when the payload is shorter than the slot (a compressed last member): write a
+        // zero at Pos-1. When the last member is verbatim, WrittenEnd already equals Pos, and
+        // writing at Pos-1 would clobber its final data byte -- so skip the extend entirely.
+        UINT64 WrittenEnd = RawOffsets.back () + RawPayload.back ().size ();
+        if (WrittenEnd < Pos) {
+            std::fseek (pf, (long) (Pos - 1), SEEK_SET);
+            UINT8 CONST Last = 0;
+            std::fwrite (&Last, 1, 1, pf);
+        }
 
         // 6. Punch every unused region into a hole (best-effort, FS-gated): the gap before
         //    the first slot, then for each slot the span from its written payload end up to
@@ -441,6 +447,19 @@ ZooArchive::ListRaw () CONST
         Out.push_back (E.Name);
     }
     return Out;
+}
+
+bool
+ZooArchive::RawInfo (std::string CONST &Name, UINT64 *pLen, UINT64 *pCompLength, UINT32 *pAlignment) CONST
+{
+    for (RAWENTRY CONST &E : m_Raw) {
+        if (E.Name != Name) { continue; }
+        if (pLen)        { *pLen        = E.Length; }
+        if (pCompLength) { *pCompLength = E.CompLength; }
+        if (pAlignment)  { *pAlignment  = E.Alignment; }
+        return true;
+    }
+    return false;
 }
 
 bool

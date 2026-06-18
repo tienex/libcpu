@@ -8,7 +8,8 @@
     lcx debug   <image> [--arch ...]
     lcx system  <image> [--arch v20]                 (8086 device bus + timer IRQ)
     lcx know    <image> <library.xml> [--arch v20]   (in-line syscalls -> host)
-    lcx cache   ls | info | clean
+    lcx cache   ls | info | clean                    (shared translation-cache dir)
+    lcx cache   dump | compress | uncompress | clear <file>   (a DBM code-cache file)
     lcx help | version
 
   The backend defaults to the interpreter bundle next to this executable (override
@@ -22,6 +23,7 @@
 #include "../aot/AotGenerator.h"
 #include "../core/Debugger.h"
 #include "../core/TranslationCache.h"
+#include "../core/CodeCache.h"
 #include "../core/KnowledgeLibrary.h"
 #include "../core/System.h"
 #include "../core/NativeAot.h"
@@ -45,6 +47,9 @@
 #include "LibCPU/PCom.h"
 #include <cstdio>
 #include <cstring>
+#if defined (__unix__) || defined (__APPLE__)
+#  include <sys/stat.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -734,10 +739,112 @@ CmdKnowledge (int argc, char **argv, CHAR8 CONST *pArgv0)
     return Rc;
 }
 
+// Physical (allocated) size of a file in bytes, or 0 if unknown. Reveals the space a
+// hole-punched/compressed cache actually occupies vs its logical size.
+static UINT64
+FilePhysicalSize (CHAR8 CONST *pPath)
+{
+#if defined (__unix__) || defined (__APPLE__)
+    struct stat St;
+    if (stat (pPath, &St) == 0) { return (UINT64) St.st_blocks * 512; }
+#endif
+    (VOID) pPath;
+    return 0;
+}
+
+static UINT64
+FileLogicalSize (CHAR8 CONST *pPath)
+{
+    std::FILE *pf = std::fopen (pPath, "rb");
+    if (pf == nullptr) { return 0; }
+    std::fseek (pf, 0, SEEK_END);
+    long Sz = std::ftell (pf);
+    std::fclose (pf);
+    return Sz > 0 ? (UINT64) Sz : 0;
+}
+
+// Re-pack a DBM cache, storing every artifact verbatim (Compress=FALSE) or zstd+hole-punched
+// (Compress=TRUE). Reads each (already-inflated) artifact and its profile, re-stores it under
+// the new policy, and flushes. Returns 0 on success.
+static int
+RepackCache (CHAR8 CONST *pFile, BOOLEAN Compress)
+{
+    CodeCache Cache (pFile);
+    std::string Err;
+    if (!Cache.Load (&Err)) { std::printf ("lcx cache: %s\n", Err.c_str ()); return 1; }
+    std::vector<std::string> Keys = Cache.Keys ();
+    for (std::string CONST &Key : Keys) {
+        UINT8 CONST *pB = nullptr;
+        UINT64 Len = 0;
+        LC_CACHE_PROFILE Prof;
+        if (Cache.Lookup (Key, &pB, &Len, &Prof)) {
+            Cache.Store (Key, pB, Len, Prof, Compress);
+        }
+    }
+    if (!Cache.Flush (&Err)) { std::printf ("lcx cache: %s\n", Err.c_str ()); return 1; }
+    std::printf ("  re-packed %zu artifact(s) %s -> %llu bytes logical, %llu physical\n",
+                 Keys.size (), Compress ? "compressed" : "verbatim",
+                 (unsigned long long) FileLogicalSize (pFile),
+                 (unsigned long long) FilePhysicalSize (pFile));
+    return 0;
+}
+
 static int
 CmdCache (int argc, char **argv)
 {
     CHAR8 CONST *pVerb = Positional (argc, argv, 0);
+
+    // File-based DBM (CodeCache) verbs: each takes a <file> argument.
+    if (pVerb != nullptr
+        && (std::strcmp (pVerb, "dump") == 0 || std::strcmp (pVerb, "compress") == 0
+            || std::strcmp (pVerb, "uncompress") == 0 || std::strcmp (pVerb, "clear") == 0)) {
+        CHAR8 CONST *pFile = Positional (argc, argv, 1);
+        if (pFile == nullptr) {
+            std::printf ("usage: lcx cache %s <file>\n", pVerb);
+            return 2;
+        }
+        if (std::strcmp (pVerb, "clear") == 0) {
+            int Rc = std::remove (pFile);
+            std::printf ("  %s %s\n", Rc == 0 ? "removed" : "could not remove", pFile);
+            return Rc == 0 ? 0 : 1;
+        }
+        if (std::strcmp (pVerb, "compress") == 0)   { return RepackCache (pFile, TRUE); }
+        if (std::strcmp (pVerb, "uncompress") == 0) { return RepackCache (pFile, FALSE); }
+
+        // dump / analyze: decode every artifact key, its sizes, compression, and profile.
+        CodeCache Cache (pFile);
+        std::string Err;
+        if (!Cache.Load (&Err)) { std::printf ("lcx cache: %s\n", Err.c_str ()); return 1; }
+        std::vector<std::string> Keys = Cache.Keys ();
+        std::printf ("cache: %s  (%u artifact(s); %llu bytes logical, %llu physical)\n",
+                     pFile, Cache.Count (),
+                     (unsigned long long) FileLogicalSize (pFile),
+                     (unsigned long long) FilePhysicalSize (pFile));
+        for (std::string CONST &Key : Keys) {
+            UINT64 Len = 0, CompLen = 0;
+            UINT32 Align = 0;
+            Cache.RawInfo (Key, &Len, &CompLen, &Align);
+            LC_CACHE_PROFILE Prof;
+            UINT8 CONST *pB = nullptr;
+            UINT64 BLen = 0;
+            std::memset (&Prof, 0, sizeof (Prof));
+            Cache.Lookup (Key, &pB, &BLen, &Prof);
+            std::printf ("  %s\n", Key.c_str ());
+            std::printf ("      %llu bytes", (unsigned long long) Len);
+            if (CompLen != 0) {
+                std::printf (" (zstd %llu, %.0f%%)", (unsigned long long) CompLen,
+                             Len ? 100.0 * (double) CompLen / (double) Len : 0.0);
+            } else {
+                std::printf (" (verbatim)");
+            }
+            std::printf ("  align=%uK  runs=%llu tier=%u opt=%u\n",
+                         (unsigned) (Align / 1024), (unsigned long long) Prof.Runs,
+                         Prof.Tier, Prof.OptLevel);
+        }
+        return 0;
+    }
+
+    // Directory-based translation cache (TranslationCache): info / ls / clean.
     TranslationCache Cache (TranslationCache::DefaultDir ());
     std::printf ("cache dir: %s\n", TranslationCache::DefaultDir ().c_str ());
     if (pVerb == nullptr || std::strcmp (pVerb, "info") == 0) {
@@ -752,7 +859,8 @@ CmdCache (int argc, char **argv)
     } else if (std::strcmp (pVerb, "clean") == 0) {
         std::printf ("  removed %u artifact(s)\n", Cache.Clean ());
     } else {
-        std::printf ("usage: lcx cache ls | info | clean\n");
+        std::printf ("usage: lcx cache info | ls | clean            (the shared translation-cache dir)\n");
+        std::printf ("       lcx cache dump | compress | uncompress | clear <file>   (a DBM code-cache file)\n");
         return 2;
     }
     return 0;
