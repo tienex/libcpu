@@ -153,6 +153,8 @@ private:
     // JIT (an LLVM module compiled per burst). Invalidated when the guest writes to watched code (SMC).
     struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; bool Hot; };   // a cached translation + its heat
     std::unordered_map<UINT64, CACHED_CODE> m_CodeCache;
+    UINT64 m_StatCompiles = 0;   // diagnostic (LCX_CACHE_STATS): translations performed
+    UINT64 m_StatHits     = 0;   // diagnostic: cache hits (translations avoided)
     std::vector<std::pair<UINT64, UINT64>> m_ImmutableCode;   // (base, end) ranges safe to cache
     ICpuBackend            *m_pHotBackend = nullptr;          // tier-1 (JIT) backend, or null
     UINT64                  m_HotThreshold = 0;               // runs before a region promotes to tier 1

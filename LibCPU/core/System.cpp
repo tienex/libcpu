@@ -234,6 +234,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
                     }
                 }
                 pCode = C.pCode;                        // borrowed; the cache owns the ref
+                m_StatHits++;
             }
         }
         if (pCode == nullptr) {
@@ -241,6 +242,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
                 R.Reason = LC_SYS_RESULT::Fault;
                 break;
             }
+            m_StatCompiles++;
             pCode = Fresh.Get ();
             if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, false }; }
         }
@@ -324,6 +326,10 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             R.Reason = LC_SYS_RESULT::Shutdown;
             break;
         }
+    }
+    if (std::getenv ("LCX_CACHE_STATS") != nullptr) {
+        std::fprintf (stderr, "[cache] compiles=%llu hits=%llu cached=%zu\n",
+                      (unsigned long long) m_StatCompiles, (unsigned long long) m_StatHits, m_CodeCache.size ());
     }
     return R;
 }
