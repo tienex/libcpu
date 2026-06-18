@@ -1029,6 +1029,23 @@ if(TARGET interp_backend)
     set_tests_properties(machine.m24jit-multitier PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
   endif ()
 
+  # OPTIMIZATION at a higher tier: a hot region reaches an OPTIMIZING backend (LLVM / GCC JIT) that the
+  # tiered driver tells to compile at the tier's level (ICpuBackendOptimize -> O2 here), in the
+  # background. Proves opt-options end-to-end: the machine POSTs with the optimized hot code.
+  foreach (_opt llvm-22 gccjit-15)
+    if (EXISTS "${CMAKE_BINARY_DIR}/asmjit.backend" AND EXISTS "${CMAKE_BINARY_DIR}/${_opt}.backend")
+      add_test(NAME machine.m24jit-opt-${_opt} COMMAND sh -c
+        "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+           --jit '${CMAKE_BINARY_DIR}/asmjit.backend,${CMAKE_BINARY_DIR}/${_opt}.backend' \
+           --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+           --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24jit-opt-${_opt}.out' 2>&1 && \
+         grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24jit-opt-${_opt}.out' && \
+         grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-opt-${_opt}.out' && \
+         grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-opt-${_opt}.out'")
+      set_tests_properties(machine.m24jit-opt-${_opt} PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+    endif ()
+  endforeach ()
+
   # PURE JIT (no interpreter tier): the whole M24 BIOS -- cold code and all -- runs on the JIT. This
   # is the strongest test: it requires the JIT to be a complete, correct frontend target (every ALU
   # op incl. division, a bounded temp frame, full CFG + traps) AND the unified per-instruction clock

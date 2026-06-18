@@ -63,8 +63,13 @@ private:
 //
 class GccEmitter final : public ComObject<ICpuEmitter> {
 public:
-    GccEmitter () {
+    explicit GccEmitter (UINT32 OptLevel = LC_OPT_DEFAULT) {
         m_C = gcc_jit_context_acquire ();
+        // Optimization level set by the tiered driver (ICpuBackendOptimize); libgccjit takes 0..3.
+        if (OptLevel != LC_OPT_DEFAULT) {
+            gcc_jit_context_set_int_option (m_C, GCC_JIT_INT_OPTION_OPTIMIZATION_LEVEL,
+                                            (int) (OptLevel > 3 ? 3 : OptLevel));
+        }
 
         m_Bool = T (GCC_JIT_TYPE_BOOL);
         m_U8   = T (GCC_JIT_TYPE_UINT8_T);
@@ -250,14 +255,20 @@ private:
     gcc_jit_rvalue   *m_RamU8, *m_GrfU8, *m_GrfU64, *m_Zero;
 };
 
-class GccJitBackend final : public ComObject<ICpuBackend> {
+class GccJitBackend final : public ComObject<ICpuBackend>, public ICpuBackendOptimize {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) { return E_POINTER; }
+        if (CompareGuid (&riid, &IID_ICpuBackendOptimize)) {
+            *ppvObject = static_cast<ICpuBackendOptimize *> (this); AddRef (); return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuBackend>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuBackend>::Release (); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "gccjit"; }
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture *, ICpuEmitter **ppEmitter) override {
-        *ppEmitter = new GccEmitter ();
+        *ppEmitter = new GccEmitter (m_OptLevel);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
@@ -265,6 +276,9 @@ public:
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
     }
+    HRESULT STDMETHODCALLTYPE SetOptimization (UINT32 Level) override { m_OptLevel = Level; return S_OK; }
+private:
+    UINT32 m_OptLevel = LC_OPT_DEFAULT;
 };
 
 } // anonymous namespace

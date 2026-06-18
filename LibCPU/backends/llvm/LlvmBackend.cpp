@@ -12,6 +12,9 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Error.h"
+#if LLVM_VERSION_MAJOR >= 14
+#include "llvm/Passes/PassBuilder.h"   // optimization pass pipeline (ICpuBackendOptimize)
+#endif
 
 #include "LlvmBackend.h"
 #include "LibCPU/CpuState.h"
@@ -91,7 +94,7 @@ private:
 class LlvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter,
                           public ICpuSystemEmitter, public ICpuSyscallEmitter, public ICpuClockEmitter {
 public:
-    LlvmEmitter () {
+    explicit LlvmEmitter (UINT32 OptLevel = LC_OPT_DEFAULT) : m_OptLevel (OptLevel) {
         m_Ctx     = std::make_unique<LLVMContext> ();
         m_Mod     = std::make_unique<Module> ("libcpu.jit", *m_Ctx);
         m_Builder = std::make_unique<IRBuilder<>> (*m_Ctx);
@@ -375,6 +378,28 @@ public:
             return nullptr;
         }
 
+        // Optimize the IR before handing it to the JIT, at the level the tiered driver set via
+        // ICpuBackendOptimize. LC_OPT_DEFAULT (or 0) leaves it unoptimized -- the fast, low-tier path.
+#if LLVM_VERSION_MAJOR >= 14
+        if (m_OptLevel != LC_OPT_DEFAULT && m_OptLevel > 0) {
+            PassBuilder            PB;
+            LoopAnalysisManager    LAM;
+            FunctionAnalysisManager FAM;
+            CGSCCAnalysisManager   CGAM;
+            ModuleAnalysisManager  MAM;
+            PB.registerModuleAnalyses (MAM);
+            PB.registerCGSCCAnalyses (CGAM);
+            PB.registerFunctionAnalyses (FAM);
+            PB.registerLoopAnalyses (LAM);
+            PB.crossRegisterProxies (LAM, FAM, CGAM, MAM);
+            OptimizationLevel OL = (m_OptLevel >= 3) ? OptimizationLevel::O3
+                                 : (m_OptLevel == 2) ? OptimizationLevel::O2
+                                                     : OptimizationLevel::O1;
+            ModulePassManager MPM = PB.buildPerModuleDefaultPipeline (OL);
+            MPM.run (*m_Mod, MAM);
+        }
+#endif
+
         EnsureNativeTargetInit ();
         auto JitOrErr = orc::LLJITBuilder ().create ();
         if (!JitOrErr) {
@@ -473,16 +498,23 @@ private:
     llvm::Value *m_pRAM = nullptr;
     llvm::Value *m_pGRF = nullptr;
     llvm::Value *m_pFRF = nullptr;
+    UINT32       m_OptLevel = LC_OPT_DEFAULT;   // IR optimization level set by the tiered driver
 };
 
-class LlvmBackend final : public ComObject<ICpuBackend> {
+class LlvmBackend final : public ComObject<ICpuBackend>, public ICpuBackendOptimize {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) { return E_POINTER; }
+        if (CompareGuid (&riid, &IID_ICpuBackendOptimize)) {
+            *ppvObject = static_cast<ICpuBackendOptimize *> (this); AddRef (); return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuBackend>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuBackend>::Release (); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "llvm-" LIBCPU_STR (LLVM_VERSION_MAJOR); }
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture * /*pArch*/, ICpuEmitter **ppEmitter) override {
-        *ppEmitter = new LlvmEmitter ();
+        *ppEmitter = new LlvmEmitter (m_OptLevel);   // the IR optimization level for this (tier's) compiles
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
@@ -490,6 +522,9 @@ public:
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
     }
+    HRESULT STDMETHODCALLTYPE SetOptimization (UINT32 Level) override { m_OptLevel = Level; return S_OK; }
+private:
+    UINT32 m_OptLevel = LC_OPT_DEFAULT;
 };
 
 } // anonymous namespace
