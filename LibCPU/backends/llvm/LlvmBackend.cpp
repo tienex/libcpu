@@ -15,6 +15,11 @@
 #if LLVM_VERSION_MAJOR >= 14
 #include "llvm/Passes/PassBuilder.h"   // optimization pass pipeline (ICpuBackendOptimize)
 #endif
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/TargetParser/Host.h"    // host CPU name + triple (ICpuBackendTarget); moved here in LLVM 17
+#else
+#include "llvm/Support/Host.h"
+#endif
 
 #include "LlvmBackend.h"
 #include "LibCPU/CpuState.h"
@@ -501,12 +506,32 @@ private:
     UINT32       m_OptLevel = LC_OPT_DEFAULT;   // IR optimization level set by the tiered driver
 };
 
-class LlvmBackend final : public ComObject<ICpuBackend>, public ICpuBackendOptimize {
+// Fingerprint of the host LLVM emits for: a hash of the host triple plus, at the native
+// level, the host CPU model name (which names a microarchitecture and so a feature set).
+// A baseline target hashes the triple only, so it is identical on every CPU of that triple.
+// Never 0 (the cache reserves 0 for "host-independent"). The host half of the cache key.
+static UINT64
+LlvmHostFingerprint (UINT32 FeatLevel)
+{
+    UINT64 Fp = UINT64_C (0xCBF29CE484222325);
+    auto MixStr = [&] (llvm::StringRef S) {
+        for (char C : S) { Fp = (Fp ^ (UINT64) (UINT8) C) * UINT64_C (0x00000100000001B3); }
+        Fp = (Fp ^ UINT64_C (0xFF)) * UINT64_C (0x00000100000001B3);   // delimiter
+    };
+    MixStr (llvm::sys::getDefaultTargetTriple ());
+    if (FeatLevel != LC_FEAT_BASELINE) { MixStr (llvm::sys::getHostCPUName ()); }
+    return Fp ? Fp : UINT64_C (1);
+}
+
+class LlvmBackend final : public ComObject<ICpuBackend>, public ICpuBackendOptimize, public ICpuBackendTarget {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) { return E_POINTER; }
         if (CompareGuid (&riid, &IID_ICpuBackendOptimize)) {
             *ppvObject = static_cast<ICpuBackendOptimize *> (this); AddRef (); return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuBackendTarget)) {
+            *ppvObject = static_cast<ICpuBackendTarget *> (this); AddRef (); return S_OK;
         }
         return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
     }
@@ -523,8 +548,11 @@ public:
         return pCode ? S_OK : E_FAIL;
     }
     HRESULT STDMETHODCALLTYPE SetOptimization (UINT32 Level) override { m_OptLevel = Level; return S_OK; }
+    UINT64 STDMETHODCALLTYPE GetTargetFingerprint () override { return LlvmHostFingerprint (m_FeatLevel); }
+    HRESULT STDMETHODCALLTYPE SetTargetFeatures (UINT32 Level) override { m_FeatLevel = Level; return S_OK; }
 private:
-    UINT32 m_OptLevel = LC_OPT_DEFAULT;
+    UINT32 m_OptLevel  = LC_OPT_DEFAULT;
+    UINT32 m_FeatLevel = LC_FEAT_NATIVE;   // LLVM JITs for the native host by default
 };
 
 } // anonymous namespace

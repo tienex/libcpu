@@ -844,6 +844,46 @@ CmdCache (int argc, char **argv)
         return 0;
     }
 
+    // Diagnose a backend's host-target fingerprint (ICpuBackendTarget): the host half of the
+    // cache key. Prints the native and baseline fingerprints; they must be non-zero and differ.
+    if (pVerb != nullptr && std::strcmp (pVerb, "fingerprint") == 0) {
+        CHAR8 CONST *pBackendPath = Positional (argc, argv, 1);
+        if (pBackendPath == nullptr) {
+            std::printf ("usage: lcx cache fingerprint <backend.bundle>\n");
+            return 2;
+        }
+        ICpuBackend *pBackend = LoadBackendBundle (pBackendPath);
+        if (pBackend == nullptr) {
+            std::printf ("lcx cache: cannot load backend '%s'\n", pBackendPath);
+            return 1;
+        }
+        ICpuBackendTarget *pTarget = nullptr;
+        if (FAILED (pBackend->QueryInterface (IID_ICpuBackendTarget, (VOID **) &pTarget)) || pTarget == nullptr) {
+            std::printf ("  %s: host-independent (no ICpuBackendTarget)\n", pBackend->GetName ());
+            pBackend->Release ();
+            return 0;
+        }
+        pTarget->SetTargetFeatures (LC_FEAT_NATIVE);
+        UINT64 Native = pTarget->GetTargetFingerprint ();
+        pTarget->SetTargetFeatures (LC_FEAT_BASELINE);
+        UINT64 Baseline = pTarget->GetTargetFingerprint ();
+        std::printf ("  %s: native fp=%016llx  baseline fp=%016llx\n",
+                     pBackend->GetName (), (unsigned long long) Native, (unsigned long long) Baseline);
+        int Rc = 0;
+        if (Native == 0) {
+            std::printf ("  FAIL: native fingerprint is zero\n");
+            Rc = 1;
+        } else if (Native == Baseline) {
+            std::printf ("  FAIL: native and baseline fingerprints are identical\n");
+            Rc = 1;
+        } else {
+            std::printf ("  RESULT: PASS\n");
+        }
+        pTarget->Release ();
+        pBackend->Release ();
+        return Rc;
+    }
+
     // Directory-based translation cache (TranslationCache): info / ls / clean.
     TranslationCache Cache (TranslationCache::DefaultDir ());
     std::printf ("cache dir: %s\n", TranslationCache::DefaultDir ().c_str ());

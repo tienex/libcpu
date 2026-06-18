@@ -524,6 +524,17 @@ set_tests_properties(cache.codecache PROPERTIES PASS_REGULAR_EXPRESSION "RESULT:
                                                 FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
 list(APPEND LIBCPU_CHECK_DEPS codecache)
 
+# Host-target fingerprint (ICpuBackendTarget): a host-specific backend must report a non-zero
+# fingerprint that differs between the native and baseline feature levels (the host half of the
+# cache key). Checked for whichever optimizing/native backends were built.
+foreach (_fpbe asmjit llvm-22)
+  if (EXISTS "${CMAKE_BINARY_DIR}/${_fpbe}.backend")
+    add_test(NAME cache.fingerprint-${_fpbe} COMMAND lcx cache fingerprint "${CMAKE_BINARY_DIR}/${_fpbe}.backend")
+    set_tests_properties(cache.fingerprint-${_fpbe} PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                                                               FAIL_REGULAR_EXPRESSION "FAIL:")
+  endif ()
+endforeach ()
+
 # Symbol reader (knowledge-library v2 step b): derive a library's exported-symbol set
 # from a real toolchain artifact. Two formats, two hermetic fixtures:
 #  - TBD text stub: a checked-in tapi-tbd v4 file; assert a known export is read.

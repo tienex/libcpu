@@ -882,9 +882,39 @@ private:
 #error "AsmJit backend: unsupported host architecture (need AArch64 or x86/x86-64)"
 #endif
 
-class AsmjitBackend final : public ComObject<ICpuBackend> {
+// Fingerprint of the host this backend emits code for: a hash of the running CPU's asmjit
+// arch + sub-arch and, at the native level, its full enabled feature set. A baseline target
+// folds in only arch + sub-arch (no feature bits), so its fingerprint is the same on every
+// CPU of that architecture -- a baseline artifact runs anywhere of its arch, a native one is
+// pinned to a matching feature set. Never returns 0 (which the cache reserves for "host-
+// independent"). This is the host half of the on-disk cache key (ICpuBackendTarget).
+static UINT64
+AsmjitHostFingerprint (UINT32 FeatLevel)
+{
+    asmjit::CpuInfo CONST &Ci = asmjit::CpuInfo::host ();
+    UINT64 Fp = UINT64_C (0xCBF29CE484222325);
+    auto Mix = [&] (UINT64 V) { Fp = (Fp ^ V) * UINT64_C (0x00000100000001B3); };
+    Mix ((UINT64) (UINT32) Ci.arch ());
+    Mix ((UINT64) (UINT32) Ci.sub_arch ());
+    if (FeatLevel != LC_FEAT_BASELINE) {
+        asmjit::CpuFeatures::Data CONST &D = Ci.features ().data ();
+        asmjit::Support::BitWord CONST *pBits = D.bits ();
+        for (size_t I = 0; I < D.bit_word_count (); I++) { Mix ((UINT64) pBits[I]); }
+    }
+    return Fp ? Fp : UINT64_C (1);
+}
+
+class AsmjitBackend final : public ComObject<ICpuBackend>, public ICpuBackendTarget {
 public:
-    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override { return DefaultQuery (riid, IID_ICpuBackend, ppvObject); }
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) { return E_POINTER; }
+        if (CompareGuid (&riid, &IID_ICpuBackendTarget)) {
+            *ppvObject = static_cast<ICpuBackendTarget *> (this); AddRef (); return S_OK;
+        }
+        return DefaultQuery (riid, IID_ICpuBackend, ppvObject);
+    }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuBackend>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuBackend>::Release (); }
     CHAR8 CONST *STDMETHODCALLTYPE GetName () override { return "asmjit"; }
     HRESULT STDMETHODCALLTYPE CreateEmitter (ICpuArchitecture *, ICpuEmitter **ppEmitter) override { *ppEmitter = new AjEmitter (); return S_OK; }
     HRESULT STDMETHODCALLTYPE Compile (ICpuEmitter *pEmitter, ICpuCode **ppCode) override {
@@ -892,6 +922,10 @@ public:
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
     }
+    UINT64 STDMETHODCALLTYPE GetTargetFingerprint () override { return AsmjitHostFingerprint (m_FeatLevel); }
+    HRESULT STDMETHODCALLTYPE SetTargetFeatures (UINT32 Level) override { m_FeatLevel = Level; return S_OK; }
+private:
+    UINT32 m_FeatLevel = LC_FEAT_NATIVE;   // asmjit emits for the native host by default
 };
 
 } // anonymous namespace
