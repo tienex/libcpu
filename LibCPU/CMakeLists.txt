@@ -994,10 +994,13 @@ if(TARGET interp_backend)
     set_tests_properties(machine.m24jitsl PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
   endif ()
 
-  # Same proof for the other register-assembler JITs given full CFG support: GNU Lightning and AsmJit
-  # (both slot/virtual-register assemblers, not IR builders) now drive the device-emulated machine as
-  # tier-1 hot backends and produce the identical POST screen.
-  foreach (_jit lightning asmjit)
+  # Same proof for the other JITs given full CFG support, driving the device-emulated machine as tier-1
+  # hot backends and producing the identical POST screen: GNU Lightning and AsmJit (slot/register
+  # assemblers) plus MIR. MIR is an optimizing IR builder (SSA + register allocation), so like LLVM it
+  # is practical only TIERED -- the interpreter runs cold code and MIR compiles just the hot loops; a
+  # MIR-only run recompiles every window and is as slow as LLVM-only. (MIR_gen also needed a large stack
+  # for its recursive CFG DFS and opt level 0 to avoid an AArch64 codegen bug -- see MirBackend.cpp.)
+  foreach (_jit lightning asmjit mir)
     if (EXISTS "${CMAKE_BINARY_DIR}/${_jit}.backend")
       add_test(NAME machine.m24jit-${_jit} COMMAND sh -c
         "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
