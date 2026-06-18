@@ -6,7 +6,9 @@
 set(LIBCPU_BACKEND_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/cmake/BackendInfo.plist.in)
 
 function(libcpu_add_backend target outname)
-  cmake_parse_arguments(B "" "ARCHS" "SOURCES;INCLUDES;DEFINES;LIBS;RPATH" ${ARGN})
+  # ARCHS is multi-value: a one-value keyword would capture only the first arch because a "a;b" list
+  # re-splits on ';' when forwarded through ${ARGN} (silently dropping x86_64 from "arm64;x86_64").
+  cmake_parse_arguments(B "" "" "ARCHS;SOURCES;INCLUDES;DEFINES;LIBS;RPATH" ${ARGN})
   add_library(${target} MODULE ${B_SOURCES})
   set_target_properties(${target} PROPERTIES
     OUTPUT_NAME ${outname}

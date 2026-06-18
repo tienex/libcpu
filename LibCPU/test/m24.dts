@@ -1,0 +1,112 @@
+/dts-v1/;
+
+/* Olivetti M24 (sold in the US as the AT&T PC 6300). An XT-class PC built around a true 16-bit
+   Intel 8086 at 8 MHz -- noticeably faster than IBM's 8088/4.77 MHz XT -- with the standard XT
+   support chipset (8237 DMA, a single 8259 PIC, 8253 PIT, 8255 keyboard/config PPI, 8250 serial),
+   an enhanced CGA-compatible display that adds a 640x400 mono mode on top of the IBM CGA modes,
+   a uPD765 floppy controller, and an optional ST-506 fixed-disk adapter. The keyboard is read
+   through the 8255 PPI (port A scan codes) as on the XT, not an AT 8042.
+
+   Each node's "compatible" names the part; the machine builder matches it against the .device
+   component bundles. "reg" is the I/O-port base/length; "interrupts" is the 8259 IRQ line. */
+
+/ {
+    model = "Olivetti M24 (AT&T PC 6300)";
+    compatible = "olivetti,m24", "att,6300", "ibm,pc-xt";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    cpu@0 {
+        device_type = "cpu";
+        compatible = "intel,i8086";
+        clock-frequency = <0x7A1200>;   /* 8 MHz -- the M24's full 16-bit bus, vs the XT's 8088 */
+    };
+
+    fpu@0 {
+        device_type = "fpu";
+        compatible = "intel,i8087";     /* optional 8087 math coprocessor (socketed on the M24) */
+    };
+
+    memory@0 {
+        device_type = "memory";
+        compatible = "libcpu,ram";
+        reg = <0x0 0xA0000>;            /* up to 640 KiB conventional RAM */
+    };
+
+    rom@fc000 {
+        compatible = "olivetti,m24-bios", "ibm,pc-xt-bios";
+        reg = <0xfc000 0x4000>;         /* 16 KiB system BIOS at F000:C000 */
+        read-only;
+    };
+
+    dma@0 {
+        compatible = "intel,i8237";
+        reg = <0x00 0x10>;              /* 8237 DMA controller */
+    };
+
+    pic@20 {
+        compatible = "intel,i8259";
+        reg = <0x20 0x02>;              /* single 8259A (XT-class: master only) */
+    };
+
+    pit: pit@40 {
+        compatible = "intel,i8253";
+        reg = <0x40 0x04>;              /* 8253 programmable interval timer */
+        interrupts = <0>;               /* channel 0 -> IRQ0 */
+        libcpu,ticks = <5>;             /* demo heartbeat: fire IRQ0 five times */
+        libcpu,cycles-per-tick = <1>;   /* counter rate vs the CPU: the M24 POST "DMA Timer" test
+                                         * latches a counter twice and wants the delta in [4,14];
+                                         * Cycles now counts guest instructions, so 1/tick lands there */
+    };
+
+    ppi: ppi@60 {
+        compatible = "intel,i8255";
+        reg = <0x60 0x04>;              /* 8255 PPI: keyboard scan codes + configuration switches */
+        interrupts = <1>;               /* keyboard -> IRQ1 */
+    };
+
+    serial@3f8 {
+        compatible = "national,ns8250";
+        reg = <0x3f8 0x08>;             /* COM1 */
+        interrupts = <4>;
+    };
+
+    display@3d0 {
+        compatible = "olivetti,m24-video", "att,6300-video", "ibm,cga";
+        reg = <0x3d0 0x10>;             /* enhanced CGA: CRTC + mode/colour/status (framebuffer at B8000) */
+    };
+
+    parallel@378 {
+        compatible = "ibm,parallel", "centronics";
+        reg = <0x378 0x03>;             /* LPT1 standard parallel port (data/status/control) */
+    };
+
+    fdc@3f0 {
+        compatible = "intel,i8272", "nec,upd765";
+        reg = <0x3f0 0x08>;             /* uPD765 floppy controller */
+        interrupts = <6>;               /* floppy -> IRQ6 */
+        libcpu,cylinders = <40>;        /* 5.25" 360 KiB drive: 40 cyl x 2 heads x 9 sectors */
+        libcpu,heads = <2>;
+        libcpu,sectors = <9>;
+    };
+
+    hdc@320 {
+        compatible = "ibm,pc-xt-hdc", "xebec,1210";
+        reg = <0x320 0x04>;             /* ST-506 fixed-disk adapter */
+        interrupts = <5>;               /* hard disk -> IRQ5 */
+        disks = <&hd0>;                 /* the mounted drive (a generic block medium) */
+    };
+
+    hd0: disk@0 {
+        compatible = "libcpu,disk";     /* the platters, independent of the ST-506 bus above */
+        libcpu,cylinders = <615>;       /* 20 MB (XT drive type 2): 615 cyl x 4 heads x 17 sectors */
+        libcpu,heads = <4>;
+        libcpu,sectors = <17>;
+    };
+
+    speaker {
+        compatible = "ibm,pc-speaker";
+        /* gate/data from 8255 port B (line 1), tone clock from 8253 channel 2 (line 2) */
+        signals = <&ppi 1>, <&pit 2>;
+    };
+};

@@ -222,6 +222,33 @@ MachineBuilder::ResolveSignalLinks ()
         }
         pSink->Release ();
     }
+
+    // Attach each storage controller's declared "disks = <&drive0>, <&drive1>, ..." media. Every
+    // phandle names a generic block medium; the controller receives it as a unit (drive 0, 1, ...),
+    // independent of the controller's bus (ST-506, IDE, SCSI, ...).
+    for (MATCHED_DEVICE CONST &D : m_Devices) {
+        std::string Key = "disks";
+        DT_PROP CONST *pDisks = (D.pNode != nullptr) ? D.pNode->FindProp (Key) : nullptr;
+        if (pDisks == nullptr) { continue; }
+        IStorageController *pCtl = nullptr;
+        D.pDevice->QueryInterface (IID_IStorageController, (VOID **) &pCtl);
+        if (pCtl == nullptr) { continue; }
+        size_t Cells = pDisks->Value.size () / 4;
+        UINT32 Unit  = 0;
+        for (size_t I = 0; I < Cells; I++) {
+            UINT32 Ph = 0;
+            ReadCell (pDisks, I, &Ph);
+            IDevice *pMedDev = nullptr;
+            for (std::pair<UINT32, IDevice *> CONST &E : ByPhandle) {
+                if (E.first == Ph) { pMedDev = E.second; break; }
+            }
+            if (pMedDev == nullptr) { continue; }
+            IBlockMedium *pMed = nullptr;
+            pMedDev->QueryInterface (IID_IBlockMedium, (VOID **) &pMed);
+            if (pMed != nullptr) { pCtl->AttachMedium (Unit++, pMed); pMed->Release (); }
+        }
+        pCtl->Release ();
+    }
 }
 
 bool

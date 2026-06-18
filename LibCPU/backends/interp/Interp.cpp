@@ -27,7 +27,9 @@ typedef enum _INTERP_OP {
     OpSyscall,      // Imm = vector, A = return-pc temp: set SyscallVector + TrapPc, return
     OpPortOut,      // Bits = width, A = port, B = data, C = return-pc: set IoCtrl=OUT, trap
     OpPortIn,       // Bits = width, A = port, B = return-pc: set IoCtrl=IN, trap
-    OpSysTrap       // Imm = reason (IRET/HLT/STI/CLI), A = return-pc: set IoCtrl=reason, trap
+    OpSysTrap,      // Imm = reason (IRET/HLT/STI/CLI), A = return-pc: set IoCtrl=reason, trap
+    OpSysTrapData,  // Imm = reason, A = return-pc, B = value: set IoCtrl=reason, IoData=value, trap
+    OpTick          // Imm = count: Cycles += count (one per guest instruction; the time base)
 } INTERP_OP;
 
 //
@@ -221,6 +223,9 @@ public:
                     pState->EdgeCount[In.Imm]++;
                 }
                 break;
+            case OpTick:                              // time base: one tick per guest instruction
+                pState->Cycles += In.Imm;
+                break;
             case OpSyscall:                           // guest system call: record + trap to host
                 pState->SyscallVector = In.Imm;
                 pState->TrapPc        = Temp[In.A];
@@ -238,6 +243,11 @@ public:
                 return ExecSmc;
             case OpSysTrap:                           // privileged control (IRET/HLT/STI/CLI)
                 pState->IoCtrl = CPU_IO_MAKE (In.Imm, 0);
+                pState->TrapPc = Temp[In.A];
+                return ExecSmc;
+            case OpSysTrapData:                       // privileged control carrying a runtime value
+                pState->IoCtrl = CPU_IO_MAKE (In.Imm, 0);
+                pState->IoData = Temp[In.B];
                 pState->TrapPc = Temp[In.A];
                 return ExecSmc;
             }
@@ -344,6 +354,8 @@ FormatInterpInsn (INTERP_INSN CONST &In)
     case OpPortOut:    std::snprintf (Buf, sizeof (Buf), "out.%u port t%u, t%u     ; trap -> device bus", In.Bits, In.A, In.B); break;
     case OpPortIn:     std::snprintf (Buf, sizeof (Buf), "in.%u  port t%u          ; trap -> device bus", In.Bits, In.A); break;
     case OpSysTrap:    std::snprintf (Buf, sizeof (Buf), "systrap %llu -> t%u       ; trap -> machine", (unsigned long long) In.Imm, In.A); break;
+    case OpSysTrapData: std::snprintf (Buf, sizeof (Buf), "systrap %llu t%u -> t%u   ; trap -> machine", (unsigned long long) In.Imm, In.B, In.A); break;
+    case OpTick:       std::snprintf (Buf, sizeof (Buf), "tick %llu                 ; cycles += n", (unsigned long long) In.Imm); break;
     default:           std::snprintf (Buf, sizeof (Buf), "op%u", In.Op); break;
     }
     return std::string (Buf);
@@ -399,7 +411,7 @@ InterpCode::Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded)
 //
 // The builder: records ops, hands back opaque value handles.
 //
-class InterpEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter, public ICpuSystemEmitter {
+class InterpEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter, public ICpuSyscallEmitter, public ICpuSystemEmitter, public ICpuClockEmitter {
 public:
     // Five interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter +
     // ICpuSyscallEmitter): resolve QI here, forward refcounting to the ComObject base.
@@ -421,6 +433,11 @@ public:
         }
         if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSystemEmitter)) {
             *ppvObject = static_cast<ICpuSystemEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuClockEmitter)) {
+            *ppvObject = static_cast<ICpuClockEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -515,6 +532,10 @@ public:
         Record (OpEdgeCount, 0, 0, 0, 0, 0, 0, (UINT64) Index);
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        Record (OpTick, 0, 0, 0, 0, 0, 0, (UINT64) Count);
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
         Record (OpSyscall, 0, 0, 0, TempOf (pReturnPc), 0, 0, (UINT64) Vector);
         return S_OK;
@@ -529,6 +550,10 @@ public:
     }
     HRESULT STDMETHODCALLTYPE EmitSystemTrap (UINT32 Reason, ICpuValue *pReturnPc) override {
         Record (OpSysTrap, 0, 0, 0, TempOf (pReturnPc), 0, 0, (UINT64) Reason);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrapValue (UINT32 Reason, ICpuValue *pValue, ICpuValue *pReturnPc) override {
+        Record (OpSysTrapData, 0, 0, 0, TempOf (pReturnPc), TempOf (pValue), 0, (UINT64) Reason);
         return S_OK;
     }
 

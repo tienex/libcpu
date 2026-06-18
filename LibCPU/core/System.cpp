@@ -3,19 +3,49 @@
 #include "System.h"
 #include "../aot/AotGenerator.h"
 #include "LibCPU/PCom.h"
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <thread>
 
 namespace LibCPU {
 
 // 8086 register-file indices (must match the V20 frontend's RegV20* layout).
-enum { S_AX = 0, S_DX = 2, S_SP = 4, S_CS = 9, S_SS = 10 };
+enum { S_AX = 0, S_CS = 9 };   // the only registers the generic loop touches (AX for port-IN, CS for the trace)
+
+// Representative machine cycles credited to a burst a JIT ran natively without counting (see Run).
+// Sized so a few back-to-back port traps (a BIOS timer-calibration loop) advance the PIT counter by
+// the same order of magnitude the interpreter's per-micro-op count does for the same loop.
+static CONST UINT64 CYCLES_PER_BURST = 32;
 
 System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize)
     : m_pArch (pArch), m_pBackend (pBackend), m_pRAM (pRAM), m_RamSize (RamSize),
-      m_If (false), m_Halted (false), m_Shutdown (false), m_NextPc (0)
+      m_If (false), m_Halted (false), m_Shutdown (false)
 {
     std::memset (&m_State, 0, sizeof (m_State));
     m_State.RamSize = RamSize;
+}
+
+System::~System ()
+{
+    ClearCodeCache ();
+}
+
+void
+System::ClearCodeCache ()
+{
+    for (auto CONST &Entry : m_CodeCache) {
+        if (Entry.second.pCode != nullptr) { Entry.second.pCode->Release (); }
+    }
+    m_CodeCache.clear ();
+}
+
+void
+System::SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold)
+{
+    m_pHotBackend  = pHotBackend;
+    m_HotThreshold = Threshold;
 }
 
 void
@@ -38,6 +68,25 @@ System::MarkOpenBus (UINT32 Base, UINT32 Size)
     if (Size == 0) { return; }
     OPEN_BUS M = { Base, Size };
     m_OpenBus.push_back (M);
+}
+
+void
+System::MarkCodeImmutable (UINT64 Base, UINT64 Size)
+{
+    if (Size == 0) { return; }
+    m_ImmutableCode.push_back (std::make_pair (Base, Base + Size));
+}
+
+bool
+System::IsImmutableCode (UINT64 Addr) CONST
+{
+    for (auto CONST &R : m_ImmutableCode) {
+        if (Addr >= R.first && Addr < R.second) { return true; }
+    }
+    for (DEVICE_MEMORY CONST &M : m_DeviceMemory) {           // read-only device memory is firmware too
+        if (M.ReadOnly && Addr >= M.Base && Addr < (UINT64) M.Base + M.Size) { return true; }
+    }
+    return false;
 }
 
 // Bring each device's own buffer into the guest's flat RAM, so the CPU's direct accesses see the
@@ -66,19 +115,6 @@ System::SyncDeviceMemoryOut ()
     }
 }
 
-void
-System::SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off)
-{
-    UINT32 Slot = Vector * 4;                          // real-mode IVT at physical 0
-    if (Slot + 4 > m_RamSize) {
-        return;
-    }
-    m_pRAM[Slot + 0] = (UINT8) (Off & 0xFF);
-    m_pRAM[Slot + 1] = (UINT8) (Off >> 8);
-    m_pRAM[Slot + 2] = (UINT8) (Seg & 0xFF);
-    m_pRAM[Slot + 3] = (UINT8) (Seg >> 8);
-}
-
 Device *
 System::FindPort (UINT16 Port) CONST
 {
@@ -102,86 +138,140 @@ System::PollDevices ()
     return -1;
 }
 
-// 8086 interrupt entry: push FLAGS, CS, IP; load CS:IP from the IVT; mask interrupts.
-void
-System::InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc)
-{
-    UINT16 Sp = (UINT16) m_State.Reg[S_SP];
-    UINT16 Ss = (UINT16) m_State.Reg[S_SS];
-    auto Push = [&] (UINT16 V) {
-        Sp -= 2;
-        UINT32 A = ((UINT32) Ss << 4) + Sp;
-        if (A + 1 < m_RamSize) { m_pRAM[A] = (UINT8) (V & 0xFF); m_pRAM[A + 1] = (UINT8) (V >> 8); }
-    };
-    UINT16 Flags = (UINT16) (m_If ? 0x0200 : 0x0000);  // synthesize FLAGS (only IF matters here)
-    Push (Flags);
-    Push ((UINT16) m_State.Reg[S_CS]);
-    Push ((UINT16) ReturnPc);
-    m_State.Reg[S_SP] = Sp;
-
-    UINT32 Slot = Vector * 4;
-    UINT16 Off = (UINT16) (m_pRAM[Slot] | (m_pRAM[Slot + 1] << 8));
-    UINT16 Seg = (UINT16) (m_pRAM[Slot + 2] | (m_pRAM[Slot + 3] << 8));
-    m_State.Reg[S_CS] = Seg;
-    m_NextPc = (CPU_ADDR) Off;                         // CS=0 flat machine: linear == offset
-    m_If = false;                                      // interrupts masked inside the ISR
-    m_Halted = false;                                  // an interrupt wakes a halted CPU
-}
-
 LC_SYS_RESULT
 System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
 {
     LC_SYS_RESULT R;
     R.Reason = LC_SYS_RESULT::StepBudget;
     R.Steps = R.Interrupts = R.PortWrites = R.PortReads = 0;
+    R.FinalPc = CodeEntry;
+
+    bool Trace = std::getenv ("LCX_TRACE") != nullptr;  // per-step PC trace for post-mortem debugging
+    // A segmented frontend (8086/V20) fetches code from a CS base + IP offset. Pc here is the IP
+    // offset; we re-point the decode base at the guest CS each window and report the linear PC.
+    ComPtr<ICpuSegmentedCode> Seg;
+    m_pArch->QueryInterface (IID_ICpuSegmentedCode, (VOID **) &Seg);   // null for flat-address archs
 
     CPU_ADDR Pc = CodeEntry;
     for (UINT64 Step = 0; Step < MaxSteps; Step++) {
-        // Halted (HLT): the CPU idles until a device raises an interrupt. Advance the
-        // device bus looking for one; if interrupts are disabled or no device will
-        // ever raise another, the machine is idle and stops.
+        UINT64 SegBase = (Seg != nullptr) ? Seg->SegmentBase ((UINT32) (UINT16) m_State.Reg[S_CS]) : 0;
+        R.FinalPc = SegBase + Pc;                       // linear PC for a post-mortem report
+        if (Trace) {
+            UINT64 Lin = SegBase + Pc;
+            std::fprintf (stderr, "[%6llu] pc=%05llX cs=%04X ax=%04X op=%02X %02X %02X "
+                          "S%d O%d Z%d C%d P%d halt=%d if=%d\n",
+                          (unsigned long long) Step, (unsigned long long) Lin, (UINT16) m_State.Reg[S_CS],
+                          (UINT16) m_State.Reg[S_AX],
+                          Lin < m_RamSize ? m_pRAM[Lin] : 0, Lin + 1 < m_RamSize ? m_pRAM[Lin + 1] : 0,
+                          Lin + 2 < m_RamSize ? m_pRAM[Lin + 2] : 0,
+                          m_State.Flag[FlagNegative], m_State.Flag[FlagOverflow], m_State.Flag[FlagZero],
+                          m_State.Flag[FlagCarry], m_State.Flag[FlagParity], m_Halted ? 1 : 0, m_If ? 1 : 0);
+        }
+        // Service the console (stream the framebuffer out, feed injected keys in) and honour a
+        // shutdown the pump may have requested (e.g. the console sent CTRL_QUIT).
+        if (m_Pump) { m_Pump (); }
+        if (m_Shutdown) { R.Reason = LC_SYS_RESULT::Shutdown; break; }
+
+        // Halted (HLT): the CPU idles until a device raises an interrupt. A halt with interrupts
+        // disabled is terminal. Otherwise wait for an IRQ: bounded by MaxSteps without a console,
+        // or indefinitely (pacing the idle wait) with one, so a keystroke can still wake the guest.
         if (m_Halted) {
+            if (!m_If) { R.Reason = LC_SYS_RESULT::HaltedIdle; break; }
             int Irq = -1;
-            for (UINT64 Spin = 0; Spin < MaxSteps && Irq < 0; Spin++) {
+            for (UINT64 Spin = 0; Irq < 0 && (m_Pump != nullptr || Spin < MaxSteps); Spin++) {
+                if (m_Pump) { m_Pump (); if (m_Shutdown) { break; } }
                 Irq = PollDevices ();
+                if (Irq < 0 && m_Pump) { std::this_thread::sleep_for (std::chrono::milliseconds (1)); }
             }
-            if (Irq < 0 || !m_If) {
-                R.Reason = LC_SYS_RESULT::HaltedIdle;
-                break;
-            }
-            InjectInterrupt ((UINT32) (8 + Irq), Pc);    // IRQ n -> INT 8+n
-            Pc = m_NextPc;
+            if (m_Shutdown) { R.Reason = LC_SYS_RESULT::Shutdown; break; }
+            if (Irq < 0 || !m_DeliverIrq) { R.Reason = LC_SYS_RESULT::HaltedIdle; break; }
+            Pc = m_DeliverIrq (*this, (UINT32) Irq, Pc);  // CPU personality vectors the IRQ
+            m_Halted = false;                             // an interrupt wakes a halted CPU
             R.Interrupts++;
             continue;
         }
         // Running with interrupts enabled: deliver a pending IRQ at this boundary.
-        if (m_If) {
+        if (m_If && m_DeliverIrq) {
             int Irq = PollDevices ();
             if (Irq >= 0) {
-                InjectInterrupt ((UINT32) (8 + Irq), Pc);
-                Pc = m_NextPc;
+                Pc = m_DeliverIrq (*this, (UINT32) Irq, Pc);
                 R.Interrupts++;
                 continue;
             }
         }
 
-        // Translate a window from Pc and run it until the next trap.
-        ComPtr<ICpuCode> Code;
-        if (FAILED (GenerateAotCfg (m_pArch, m_pBackend, Pc, CodeEnd, &Code, nullptr)) || Code == nullptr) {
-            R.Reason = LC_SYS_RESULT::Fault;
-            break;
+        // Translate a window from Pc and run it until the next trap. For a segmented frontend,
+        // re-point the decode base at the guest CS and bound the window to the bytes physically
+        // above that base so CFG discovery cannot read past RAM.
+        CPU_ADDR EffEnd = CodeEnd;
+        if (Seg != nullptr) {
+            Seg->SetCodeSegment ((UINT32) (UINT16) m_State.Reg[S_CS]);
+            UINT64 Avail = (SegBase < m_RamSize) ? (m_RamSize - SegBase) : 0;
+            if ((UINT64) EffEnd > Avail) { EffEnd = (CPU_ADDR) Avail; }
+        }
+        // Reuse a cached translation when this burst enters immutable code (a ROM/BIOS image); the
+        // bytes there can never change, so the compiled artifact stays valid. Code in writable RAM
+        // is re-translated each burst (so the JIT always sees current bytes -- correct for SMC).
+        UINT64           CacheKey  = SegBase + (UINT64) Pc;
+        bool             Cacheable = IsImmutableCode (CacheKey);
+        ICpuCode        *pCode     = nullptr;
+        ComPtr<ICpuCode> Fresh;                         // owns a ref only on a cache miss
+        if (Cacheable) {
+            auto It = m_CodeCache.find (CacheKey);
+            if (It != m_CodeCache.end ()) {
+                CACHED_CODE &C = It->second;
+                C.Runs++;
+                // Tiered promotion: a region that stays hot is recompiled once with the optimizing
+                // JIT (tier 1) and the tier-0 (interpreter) artifact is swapped out for it.
+                if (!C.Hot && m_pHotBackend != nullptr && C.Runs >= m_HotThreshold) {
+                    ComPtr<ICpuCode> Hot;
+                    if (SUCCEEDED (GenerateAotCfg (m_pArch, m_pHotBackend, Pc, EffEnd, &Hot, nullptr)) && Hot != nullptr) {
+                        C.pCode->Release ();
+                        Hot->AddRef (); C.pCode = Hot.Get ();
+                        C.Hot = true;
+                    } else {
+                        C.Hot = true;                   // tier-1 compile failed: stop retrying, keep tier 0
+                    }
+                }
+                pCode = C.pCode;                        // borrowed; the cache owns the ref
+            }
+        }
+        if (pCode == nullptr) {
+            if (FAILED (GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr)) || Fresh == nullptr) {
+                R.Reason = LC_SYS_RESULT::Fault;
+                break;
+            }
+            pCode = Fresh.Get ();
+            if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, false }; }
         }
         m_State.TrapPc = CPU_SMC_NO_TRAP;
         m_State.IoCtrl = CPU_IO_NONE;
         m_State.SyscallVector = CPU_NO_SYSCALL;
         SyncDeviceMemoryIn ();                          // device-owned memory -> flat RAM
-        Code->Execute (m_pRAM, &m_State, nullptr);
+        UINT64 CyclesBefore = m_State.Cycles;
+        pCode->Execute (m_pRAM, &m_State, nullptr);
         SyncDeviceMemoryOut ();                         // flat RAM -> device-owned memory
         R.Steps++;
+
+        // Advance the machine time base, then hand it to time-driven devices (the PIT) before
+        // servicing this burst's trap, so a port access that latches a timer reads a count
+        // consistent with the work just performed. The interpreter counts every executed micro-op
+        // into Cycles; a JIT runs the whole burst natively with no per-instruction hook, so when the
+        // backend left Cycles untouched we credit the burst a representative cost -- enough that the
+        // counter still advances between the back-to-back port traps a BIOS timer loop issues.
+        if (m_State.Cycles == CyclesBefore) { m_State.Cycles += CYCLES_PER_BURST; }
+        for (Device *p : m_Devices) { p->Clock (m_State.Cycles); }
 
         if (m_State.TrapPc == CPU_SMC_NO_TRAP) {
             R.Reason = LC_SYS_RESULT::HaltedIdle;       // ran off the code window
             break;
+        }
+        // A software interrupt (INT n) records its vector and traps to the instruction after it.
+        // A full machine vectors it in-guest through the IVT so the guest's own handlers run; the
+        // personality returns the resume PC (and may re-point CS). Without a deliverer it stays inert.
+        if (m_State.SyscallVector != CPU_NO_SYSCALL && m_DeliverSyscall) {
+            Pc = m_DeliverSyscall (*this, (UINT32) m_State.SyscallVector, (CPU_ADDR) m_State.TrapPc);
+            continue;
         }
         if (m_State.IoCtrl == CPU_IO_NONE) {
             Pc = (CPU_ADDR) m_State.TrapPc;             // a non-system trap (far jump)
@@ -217,26 +307,16 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         case CPU_IO_STI: m_If = true;  Pc = Return; break;
         case CPU_IO_CLI: m_If = false; Pc = Return; break;
         case CPU_IO_HLT: m_Halted = true; Pc = Return; break;
-        case CPU_IO_IRET: {
-            UINT16 Sp = (UINT16) m_State.Reg[S_SP];
-            UINT16 Ss = (UINT16) m_State.Reg[S_SS];
-            auto Pop = [&] () -> UINT16 {
-                UINT32 A = ((UINT32) Ss << 4) + Sp;
-                UINT16 V = (A + 1 < m_RamSize) ? (UINT16) (m_pRAM[A] | (m_pRAM[A + 1] << 8)) : 0;
-                Sp += 2;
-                return V;
-            };
-            UINT16 Ip = Pop ();
-            UINT16 Cs = Pop ();
-            UINT16 Fl = Pop ();
-            m_State.Reg[S_SP] = Sp;
-            m_State.Reg[S_CS] = Cs;
-            m_If = ((Fl >> 9) & 1) != 0;                // restore IF from FLAGS bit 9
-            Pc = (CPU_ADDR) Ip;
-            break;
-        }
         default:
-            Pc = Return;
+            // Any other reason is CPU-architecture-specific (>= CPU_IO_ARCH_BASE): hand it to the
+            // installed CPU personality (e.g. InstallX86System for the x86 IRET/PUSHF/POPF/INTO/
+            // BOUND/INS/OUTS), which works through the generic accessors and returns the resume PC.
+            // The generic machine itself has no knowledge of any specific CPU's privileged ops.
+            if ((UINT64) Reason >= CPU_IO_ARCH_BASE && m_ArchTrap) {
+                Pc = m_ArchTrap (*this, Reason, (UINT32) m_State.IoData, Return);
+            } else {
+                Pc = Return;
+            }
             break;
         }
 

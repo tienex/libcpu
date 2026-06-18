@@ -105,6 +105,12 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     if (FAILED (Emitter->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc))) {
         pSmc = nullptr;
     }
+    // Optional uniform time base: one tick per translated guest instruction (see ICpuClockEmitter),
+    // so CPU_STATE.Cycles counts instructions retired identically across interpreter and JITs.
+    ICpuClockEmitter *pClk = nullptr;
+    if (FAILED (Emitter->QueryInterface (IID_ICpuClockEmitter, (VOID **) &pClk))) {
+        pClk = nullptr;
+    }
 
     //
     // 1. Discover the CALLER's blocks. An inlined CALL site does NOT pull its callee
@@ -278,6 +284,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
         if (pExit != nullptr) { pExit->Release (); }
         if (pSmc != nullptr)  { pSmc->Release (); }
+        if (pClk != nullptr)  { pClk->Release (); }
         return BrHr;
     }
 
@@ -290,6 +297,9 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         Emitter->SetInsertBlock (Blocks[Pc]);
         if (pSmc != nullptr) {
             pSmc->EmitCodeGuard (Pc);
+        }
+        if (pClk != nullptr) {
+            pClk->EmitTick (1);                     // one tick per guest instruction executed
         }
 
         UINT32   Tag;
@@ -337,6 +347,9 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
             Emitter->SetInsertBlock (Inst.Blocks.at (Cp));
             if (pSmc != nullptr) {
                 pSmc->EmitCodeGuard (Cp);
+            }
+            if (pClk != nullptr) {
+                pClk->EmitTick (1);
             }
 
             UINT32   T;
@@ -404,6 +417,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     for (ICpuBlock *pB : Disp) { if (pB != nullptr) { pB->Release (); } }
     if (pExit != nullptr) { pExit->Release (); }
     if (pSmc != nullptr)  { pSmc->Release (); }
+    if (pClk != nullptr)  { pClk->Release (); }
     return hr;
 }
 

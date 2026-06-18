@@ -22,14 +22,20 @@
 #include "CpuV20.h"
 #include "LibCPU/CpuState.h"
 #include "LibCPU/IDevice.h"
+#include "LibCPU/IConsole.h"
 #include "../core/System.h"
+#include "../core/X86System.h"
 #include "../core/MachineBuilder.h"
 #include "../core/DeviceTree.h"
+#include "../console/ConsoleBridge.h"
+#include "../console/TerminalConsole.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -43,9 +49,11 @@ public:
     {
         m_pDev->AddRef ();
         m_pDev->QueryInterface (IID_IPortDevice, (VOID **) &m_pPort);
+        m_pDev->QueryInterface (IID_IClockSink, (VOID **) &m_pClock);
     }
     ~ComDeviceAdapter () override
     {
+        if (m_pClock != nullptr) { m_pClock->Release (); }
         if (m_pPort != nullptr) { m_pPort->Release (); }
         m_pDev->Release ();
     }
@@ -62,10 +70,15 @@ public:
     {
         if (m_pPort != nullptr) { m_pPort->WritePort (Port, Width, Value); }
     }
+    void Clock (UINT64 Cycles) override
+    {
+        if (m_pClock != nullptr) { m_pClock->OnClock (Cycles); }
+    }
 
 private:
     IDevice     *m_pDev;
-    IPortDevice *m_pPort = nullptr;
+    IPortDevice *m_pPort  = nullptr;
+    IClockSink  *m_pClock = nullptr;
 };
 
 // Aggregates every interrupt source and routes a raised IRQ through the 8259 cascade: lines 0-7
@@ -150,6 +163,7 @@ public:
                     if (ToMemory) { std::memcpy (m_pRam + Addr, pBuf, N); }   // device -> memory
                     else          { std::memcpy (pBuf, m_pRam + Addr, N); }   // memory -> device
                 }
+                m_pDma->SetTerminalCount (Channel);         // latch TC so the BIOS sees the op completed
             }
             p->CompleteDma ();
         }
@@ -163,10 +177,119 @@ private:
     IDmaController                 *m_pDma;
 };
 
+// Build an interactive "typewriter" guest at 0x0600. An IRQ1 handler reads the keyboard scan
+// code, translates it through a seeded XT-set-1 -> ASCII table, and writes the glyph to the text
+// framebuffer (segment FbSeg), advancing a cursor word; main installs the vector, unmasks IRQ1 on
+// the 8259, prints a "TYPE: " prompt, then idles with STI/HLT waiting for keystrokes. Returns the
+// entry point. This is the guest that demonstrates the console seam end to end.
+static inline CPU_ADDR
+BuildTypewriter (std::vector<UINT8> &Ram, UINT16 FbSeg)
+{
+    enum { Table = 0x0500, Cursor = 0x04FE, Main = 0x0600, IsrAddr = 0x0700 };
+    auto Lo = [] (UINT32 V) { return (UINT8) (V & 0xFF); };
+    auto Hi = [] (UINT32 V) { return (UINT8) ((V >> 8) & 0xFF); };
+
+    // Seed scancode -> ASCII for the printable XT set-1 keys the console forwards.
+    static CHAR8 CONST *Row1 = "1234567890";          // 0x02..0x0B
+    static CHAR8 CONST *Row2 = "qwertyuiop";           // 0x10..0x19
+    static CHAR8 CONST *Row3 = "asdfghjkl";            // 0x1E..0x26
+    static CHAR8 CONST *Row4 = "zxcvbnm";              // 0x2C..0x32
+    for (int I = 0; Row1[I]; I++) { Ram[Table + 0x02 + I] = (UINT8) Row1[I]; }
+    for (int I = 0; Row2[I]; I++) { Ram[Table + 0x10 + I] = (UINT8) Row2[I]; }
+    for (int I = 0; Row3[I]; I++) { Ram[Table + 0x1E + I] = (UINT8) Row3[I]; }
+    for (int I = 0; Row4[I]; I++) { Ram[Table + 0x2C + I] = (UINT8) Row4[I]; }
+    Ram[Table + 0x39] = ' ';                           // space
+
+    // --- ISR at 0x0700: translate one make code to a glyph and place it on screen ---
+    std::vector<UINT8> Isr;
+    auto E = [&] (std::initializer_list<UINT8> B) { for (UINT8 X : B) { Isr.push_back (X); } };
+    E ({ 0x50, 0x53, 0x57 });                          // push ax, bx, di
+    E ({ 0xE4, 0x60 });                                // in al, 0x60
+    E ({ 0xA8, 0x80 });                                // test al, 0x80   (break code?)
+    E ({ 0x75, 0x00 }); size_t Jbreak = Isr.size () - 1;   // jnz eoi
+    E ({ 0x8A, 0xD8, 0x32, 0xFF });                    // mov bl,al ; xor bh,bh
+    E ({ 0x8A, 0x87, Lo (Table), Hi (Table) });        // mov al, [bx+Table]
+    E ({ 0x3C, 0x00 });                                // cmp al, 0
+    E ({ 0x74, 0x00 }); size_t Jnull = Isr.size () - 1;    // jz eoi (unmapped)
+    E ({ 0xB4, 0x07 });                                // mov ah, 0x07 (attribute)
+    E ({ 0x8B, 0x3E, Lo (Cursor), Hi (Cursor) });      // mov di, [Cursor]
+    E ({ 0x26, 0x89, 0x05 });                          // mov es:[di], ax
+    E ({ 0x83, 0x06, Lo (Cursor), Hi (Cursor), 0x02 });// add word [Cursor], 2
+    size_t Eoi = Isr.size ();
+    E ({ 0xB0, 0x20, 0xE6, 0x20 });                    // mov al,0x20 ; out 0x20,al  (EOI)
+    E ({ 0x5F, 0x5B, 0x58, 0xCF });                    // pop di, bx, ax ; iret
+    Isr[Jbreak] = (UINT8) (Eoi - (Jbreak + 1));        // patch the two short forward jumps
+    Isr[Jnull]  = (UINT8) (Eoi - (Jnull + 1));
+    std::memcpy (Ram.data () + IsrAddr, Isr.data (), Isr.size ());
+
+    // --- main at 0x0600 ---
+    std::vector<UINT8> M;
+    auto A = [&] (std::initializer_list<UINT8> B) { for (UINT8 X : B) { M.push_back (X); } };
+    A ({ 0xFA });                                      // cli
+    A ({ 0xB8, Lo (FbSeg), Hi (FbSeg), 0x8E, 0xC0 });  // mov ax, FbSeg ; mov es, ax
+    A ({ 0x31, 0xC0, 0xA3, Lo (Cursor), Hi (Cursor) });// xor ax,ax ; mov [Cursor], ax
+    A ({ 0xB8, Lo (IsrAddr), Hi (IsrAddr), 0xA3, 0x24, 0x00 });   // mov ax,Isr ; mov [0x0024],ax
+    A ({ 0x31, 0xC0, 0xA3, 0x26, 0x00 });              // xor ax,ax ; mov [0x0026],ax  (IVT[9] seg 0)
+    A ({ 0xB0, 0x13, 0xE6, 0x20, 0xB0, 0x08, 0xE6, 0x21, 0xB0, 0x01, 0xE6, 0x21, 0xB0, 0xFD, 0xE6, 0x21 });
+    //   8259: ICW1=0x13, ICW2=0x08, ICW4=0x01, OCW1 mask=0xFD (IRQ1 enabled)
+    CHAR8 CONST *pPrompt = "TYPE: ";
+    UINT16 Off = 0;
+    for (CHAR8 CONST *p = pPrompt; *p; ++p, Off = (UINT16) (Off + 2)) {
+        A ({ 0xB8, (UINT8) *p, 0x07, 0x26, 0xA3, Lo (Off), Hi (Off) });   // mov ax,0x07<<8|ch ; mov es:[off],ax
+    }
+    A ({ 0xB8, Lo (Off), Hi (Off), 0xA3, Lo (Cursor), Hi (Cursor) });    // cursor = after prompt
+    A ({ 0xFB });                                      // sti
+    A ({ 0xF4 });                                      // hlt
+    A ({ 0xEB, 0xFD });                                // jmp $-1 (back to hlt)
+    std::memcpy (Ram.data () + Main, M.data (), M.size ());
+    return Main;
+}
+
+// Build a minimal BIOS-style option-ROM bootstrap at 0x0600: walk the upper-memory area in 2 KiB
+// steps looking for the 0x55 0xAA option-ROM signature, and far-CALL each found ROM's init entry
+// (offset 3) -- exactly what a PC BIOS does during POST. Registers are saved around each call
+// (PUSHA/POPA). Returns the entry point. The far pointer is staged at 0x0500.
+static inline CPU_ADDR
+BuildBiosBootstrap (std::vector<UINT8> &Ram)
+{
+    enum { Ptr = 0x0500, Main = 0x0600 };
+    auto Lo = [] (UINT32 V) { return (UINT8) (V & 0xFF); };
+    auto Hi = [] (UINT32 V) { return (UINT8) ((V >> 8) & 0xFF); };
+
+    std::vector<UINT8> M;
+    auto A = [&] (std::initializer_list<UINT8> B) { for (UINT8 X : B) { M.push_back (X); } };
+    A ({ 0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0xFB });        // cli ; xor ax,ax ; mov ds,ax ; sti
+    A ({ 0xBB, 0x00, 0xC0 });                          // mov bx, 0xC000  (first option-ROM segment)
+    size_t Scan = M.size ();
+    A ({ 0x8E, 0xC3 });                                // mov es, bx
+    A ({ 0x26, 0x81, 0x3E, 0x00, 0x00, 0x55, 0xAA });  // cmp word es:[0], 0xAA55
+    A ({ 0x75, 0x00 }); size_t Jne = M.size () - 1;    // jne .next  (patched)
+    A ({ 0xC7, 0x06, Lo (Ptr), Hi (Ptr), 0x03, 0x00 });// mov word [Ptr], 3      (ROM init offset)
+    A ({ 0x89, 0x1E, Lo (Ptr + 2), Hi (Ptr + 2) });    // mov [Ptr+2], bx        (ROM segment)
+    A ({ 0x60 });                                      // pusha
+    A ({ 0xFF, 0x1E, Lo (Ptr), Hi (Ptr) });            // call far [Ptr]  -> ROM init (RETFs back)
+    A ({ 0x61 });                                      // popa
+    size_t Next = M.size ();
+    A ({ 0x81, 0xC3, 0x80, 0x00 });                    // add bx, 0x0080  (advance 2 KiB)
+    A ({ 0x81, 0xFB, 0x00, 0xF0 });                    // cmp bx, 0xF000
+    A ({ 0x72, 0x00 }); size_t Jb = M.size () - 1;     // jb .scan   (patched, backward)
+    A ({ 0xF4 });                                      // hlt
+    M[Jne] = (UINT8) (Next - (Jne + 1));               // forward to .next
+    M[Jb]  = (UINT8) (INT8) ((int) Scan - (int) (Jb + 1));   // backward to .scan
+    std::memcpy (Ram.data () + Main, M.data (), M.size ());
+    return Main;
+}
+
 static inline int
 RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pImagePath, UINT32 LoadAddr,
                 int Demo,                                    // 0 none, 1 bank-switch, 2 keyboard IRQ1, ...
-                std::vector<std::pair<std::string, std::string>> CONST &CliRoms)
+                std::vector<std::pair<std::string, std::string>> CONST &CliRoms,
+                bool BiosBoot = false,                       // load the image at the top of memory, boot the reset vector
+                UINT64 BiosSteps = 4000,                     // bounded execution-burst budget for the BIOS attempt
+                bool ConsoleMode = false,                    // run interactively through the console seam
+                std::string CONST &ConsoleKeys = std::string (),  // headless: pre-injected keystrokes (else live TTY)
+                bool BootScan = false,                       // run the option-ROM bootstrap (scan UMA + far-call inits)
+                ICpuBackend *pHotBackend = nullptr)          // optional tier-1 JIT for hot regions (tiered execution)
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
@@ -215,6 +338,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     ICpuArchitecture *pArch = CreateV20 ();
     pArch->SetCodeMemory (Ram.data (), Ram.size ());
     System Machine (pArch, pBackend, Ram.data (), Ram.size ());
+    InstallX86System (Machine);                              // CPU personality: x86 privileged ops
+    if (pHotBackend != nullptr) { Machine.SetHotBackend (pHotBackend, 50); }   // tiered: JIT regions run >=50x
 
     // Port devices onto the bus; one arbiter for interrupts.
     std::vector<std::unique_ptr<ComDeviceAdapter>> Adapters;
@@ -330,23 +455,46 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
 
     CPU_ADDR Entry;
     CPU_ADDR End;
-    if (pImagePath != nullptr) {
+    if (BootScan) {
+        // Minimal BIOS POST: scan the UMA for option ROMs and far-call each one's init entry.
+        Entry = BuildBiosBootstrap (Ram);
+        End   = 0x0700;
+    } else if (ConsoleMode) {
+        // Interactive console: an IRQ1-driven typewriter that echoes typed keys onto the display.
+        // Use whatever text framebuffer segment the fitted display card reports.
+        UINT16 FbSeg = 0xB800;
+        for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+            IDisplayDevice *pDisp = nullptr;
+            D.pDevice->QueryInterface (IID_IDisplayDevice, (VOID **) &pDisp);
+            if (pDisp != nullptr) { FbSeg = (UINT16) (pDisp->GetFramebufferBase () >> 4); pDisp->Release (); break; }
+        }
+        Entry = BuildTypewriter (Ram, FbSeg);
+        End   = 0x0800;
+    } else if (pImagePath != nullptr) {
         // Load and run a supplied image (e.g. a BIOS dump) at LoadAddr.
         std::FILE *pF = std::fopen (pImagePath, "rb");
         if (pF == nullptr) { std::printf ("   cannot open image '%s'\n", pImagePath); pArch->Release (); return 2; }
         std::fseek (pF, 0, SEEK_END);
         long Size = std::ftell (pF);
         std::fseek (pF, 0, SEEK_SET);
-        if (Size <= 0 || (UINT64) LoadAddr + (UINT64) Size > Ram.size ()) {
-            std::fclose (pF); std::printf ("   image does not fit at 0x%x\n", LoadAddr); pArch->Release (); return 2;
+        if (Size <= 0 || (UINT64) Size > Ram.size ()) {
+            std::fclose (pF); std::printf ("   image too large\n"); pArch->Release (); return 2;
         }
-        if (std::fread (Ram.data () + LoadAddr, 1, (size_t) Size, pF) != (size_t) Size) {
+        // A BIOS maps at the top of memory so its reset vector lands at 0xFFFF0; otherwise load at
+        // the given address.
+        UINT32 La = BiosBoot ? (UINT32) (Ram.size () - (UINT64) Size) : LoadAddr;
+        if ((UINT64) La + (UINT64) Size > Ram.size ()) {
+            std::fclose (pF); std::printf ("   image does not fit at 0x%x\n", La); pArch->Release (); return 2;
+        }
+        if (std::fread (Ram.data () + La, 1, (size_t) Size, pF) != (size_t) Size) {
             std::fclose (pF); std::printf ("   short read of image\n"); pArch->Release (); return 2;
         }
         std::fclose (pF);
-        std::printf ("   loaded image '%s' (%ld bytes) at 0x%05x\n", pImagePath, Size, LoadAddr);
-        Entry = LoadAddr;
-        End   = LoadAddr + (CPU_ADDR) Size;
+        std::printf ("   loaded image '%s' (%ld bytes) at 0x%05x%s\n", pImagePath, Size, La,
+                     BiosBoot ? " (BIOS; booting reset vector 0xFFFF0)" : "");
+        if (BiosBoot) { Machine.MarkCodeImmutable (La, (UINT64) Size); }   // firmware: cache its translations
+        Entry = BiosBoot ? (CPU_ADDR) 0xFFFF0 : La;          // reset vector vs the load address
+        End   = BiosBoot ? (CPU_ADDR) Ram.size () : (La + (CPU_ADDR) Size);
     } else if (Demo == 2) {
         // Keyboard IRQ1 demo: a scan code seeded into the 8042 (its "libcpu,keystroke" property) is
         // delivered as IRQ1. The PIC is programmed with IRQ1 unmasked, an ISR at INT 9 (8 + IRQ1)
@@ -361,7 +509,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             0xCF                     // iret
         };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
-        Machine.SetIvt (0x09, 0x0000, 0x0500);              // IRQ1 -> INT 9
+        X86SetIvt (Machine, 0x09, 0x0000, 0x0500);              // IRQ1 -> INT 9
 
         std::vector<UINT8> Prog = {
             0x31, 0xC0, 0x8E, 0xD8,  // xor ax,ax ; mov ds,ax      DS = 0 (so the ISR's store lands at 0x52)
@@ -465,7 +613,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             0xCF                     // iret
         };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
-        Machine.SetIvt (0x08, 0x0000, 0x0500);              // IRQ0 -> INT 8
+        X86SetIvt (Machine, 0x08, 0x0000, 0x0500);              // IRQ0 -> INT 8
 
         std::vector<UINT8> Prog = {
             0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
@@ -529,7 +677,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             0xCF                                  // iret
         };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
-        Machine.SetIvt (0x0E, 0x0000, 0x0500);              // IRQ6 -> INT 0x0E (8 + 6)
+        X86SetIvt (Machine, 0x0E, 0x0000, 0x0500);              // IRQ6 -> INT 0x0E (8 + 6)
 
         std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8 };   // xor ax,ax ; mov ds,ax
         auto Out = [&] (UINT8 Port, UINT8 Val) {            // out imm8 (ports < 0x100)
@@ -550,6 +698,39 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         Entry = 0x0600;
         std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
         End = Entry + (CPU_ADDR) Prog.size ();
+    } else if (Demo == 12) {
+        // DMA-driven hard-disk read: program DMA channel 3 to land sector 0 at physical 0x12000,
+        // write the ST-506 six-byte READ control block to 0x320, and idle. The DMA bridge moves the
+        // sector (read from the mounted medium) into memory and the controller raises IRQ5; the
+        // INT 0x0D ISR prints '#' and sends EOI. The medium's sector-0 text ends up at 0x12000.
+        UINT8 const Isr[] = {
+            0xB0, 0x23, 0xBA, 0xF8, 0x03, 0xEE,   // mov al,'#' ; mov dx,0x3F8 ; out dx,al
+            0xB0, 0x20, 0xE6, 0x20,               // mov al,0x20 ; out 0x20,al   EOI to the master PIC
+            0xCF                                  // iret
+        };
+        std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
+        X86SetIvt (Machine, 0x0D, 0x0000, 0x0500);              // IRQ5 -> INT 0x0D (8 + 5)
+
+        std::vector<UINT8> Prog = { 0x31, 0xC0, 0x8E, 0xD8 };   // xor ax,ax ; mov ds,ax
+        auto Out = [&] (UINT8 Port, UINT8 Val) {
+            Prog.push_back (0xB0); Prog.push_back (Val); Prog.push_back (0xE6); Prog.push_back (Port);
+        };
+        Out (0x20, 0x13); Out (0x21, 0x08); Out (0x21, 0x01); Out (0x21, 0xDF);   // PIC: init, unmask IRQ5
+        Out (0x0C, 0x00);                                   // clear the DMA byte-pointer flip-flop
+        Out (0x0B, 0x47);                                   // ch3 mode: single, write-to-memory
+        Out (0x06, 0x00); Out (0x06, 0x20);                 // ch3 base address = 0x2000
+        Out (0x82, 0x01);                                   // ch3 page = 1 -> physical 0x12000
+        Out (0x07, 0xFF); Out (0x07, 0x01);                 // ch3 count = 0x01FF (512 bytes)
+        Out (0x0A, 0x03);                                   // unmask DMA channel 3
+        // Write the 6-byte READ Device Control Block to the data port 0x320 (>= 0x100, so via DX).
+        Prog.push_back (0xBA); Prog.push_back (0x20); Prog.push_back (0x03);   // mov dx, 0x0320
+        UINT8 const Dcb[] = { 0x08, 0x00, 0x00, 0x00, 0x01, 0x00 };   // READ cyl0 head0 sect0 count1
+        for (UINT8 B : Dcb) { Prog.push_back (0xB0); Prog.push_back (B); Prog.push_back (0xEE); }   // mov al,B ; out dx,al
+        UINT8 const Idle[] = { 0xFB, 0xF4, 0xEB, 0xFD };    // sti ; hlt ; jmp $-1
+        Prog.insert (Prog.end (), Idle, Idle + sizeof (Idle));
+        Entry = 0x0600;
+        std::memcpy (Ram.data () + Entry, Prog.data (), Prog.size ());
+        End = Entry + (CPU_ADDR) Prog.size ();
     } else if (Demo == 4) {
         // RTC IRQ8 through the slave 8259. The RTC's periodic interrupt is wired to IRQ8, which the
         // slave PIC vectors (ICW2 base 0x70 -> INT 0x70) and presents to the master on IRQ2; the
@@ -565,7 +746,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
             0xCF                     // iret
         };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
-        Machine.SetIvt (0x70, 0x0000, 0x0500);              // slave IRQ8 -> INT 0x70
+        X86SetIvt (Machine, 0x70, 0x0000, 0x0500);              // slave IRQ8 -> INT 0x70
 
         std::vector<UINT8> Prog = {
             0x31, 0xC0, 0x8E, 0xD8,                          // xor ax,ax ; mov ds,ax
@@ -639,7 +820,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         // mov dx,0x3F8 ; mov al,'.' ; out dx,al ; mov al,0x20 ; out 0x20,al (EOI) ; iret
         UINT8 const Isr[] = { 0xBA, 0xF8, 0x03, 0xB0, 0x2E, 0xEE, 0xB0, 0x20, 0xE6, 0x20, 0xCF };
         std::memcpy (Ram.data () + 0x0500, Isr, sizeof (Isr));
-        Machine.SetIvt (0x08, 0x0000, 0x0500);
+        X86SetIvt (Machine, 0x08, 0x0000, 0x0500);
 
         std::vector<UINT8> Prog = {
             0xB0, 0x13, 0xE6, 0x20,  // mov al,0x13 ; out 0x20,al   ICW1 (edge, single, ICW4)
@@ -695,13 +876,79 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         End = Entry + (CPU_ADDR) Prog.size ();
     }
 
+    if (ConsoleMode) {
+        // Find the display (mode + framebuffer) and the keyboard sink among the matched components.
+        IDisplayMode  *pDispMode = nullptr;
+        IKeyboardSink *pKbd      = nullptr;
+        for (MATCHED_DEVICE CONST &D : Builder.Devices ()) {
+            if (pDispMode == nullptr) { D.pDevice->QueryInterface (IID_IDisplayMode, (VOID **) &pDispMode); }
+            if (pKbd      == nullptr) { D.pDevice->QueryInterface (IID_IKeyboardSink, (VOID **) &pKbd); }
+        }
+        if (pDispMode == nullptr) {
+            std::printf ("   console: the fitted display exposes no IDisplayMode\n");
+            if (pKbd) { pKbd->Release (); }
+            pArch->Release (); return 2;
+        }
+
+        // Wire the console seam: machine endpoint -> ConsoleBridge (the System pump); console
+        // endpoint -> TerminalConsole. The two talk only through the in-process channel, so the
+        // console could be split into a separate process by swapping the channel transport.
+        IConsoleChannel *pMachEnd = nullptr, *pConEnd = nullptr;
+        CreateInProcConsolePair (&pMachEnd, &pConEnd);
+        ConsoleBridge Bridge (pMachEnd, pDispMode, pKbd, &Machine);
+        Machine.SetPump ([&Bridge] () { Bridge.Pump (); });
+
+        bool Headless = !ConsoleKeys.empty ();
+        TerminalConsole Console (pConEnd, Headless ? nullptr : stdout);
+
+        std::printf ("   --- console (%s; CPU: V20, backend: %s) ---\n",
+                     Headless ? "headless/scripted" : "interactive", pBackend->GetName ());
+
+        std::thread Worker ([&] () { Machine.Run (Entry, End, ~(UINT64) 0); });
+        if (Headless) {
+            // Scripted: type the given keys, let them round-trip, print the resulting screen.
+            for (char Ch : ConsoleKeys) { Console.FeedKey (Ch); }
+            for (int I = 0; I < 200; I++) {                  // poll up to ~2 s for the echo to land
+                Console.Service ();
+                std::string S = Console.ScreenText ();
+                if (S.find (ConsoleKeys) != std::string::npos) { break; }
+                std::this_thread::sleep_for (std::chrono::milliseconds (10));
+            }
+            Console.Service ();
+            Console.SendControl (ConsoleControlQuit);
+            std::string Screen = Console.ScreenText ();
+            std::printf ("   screen %ux%u:\n", Console.Cols (), Console.Rows ());
+            std::printf ("%s", Screen.c_str ());
+        } else {
+            Console.RunInteractive ();                       // blocks until Ctrl-]; sends CONTROL_QUIT
+        }
+        Worker.join ();
+        pConEnd->Release ();
+        pMachEnd->Release ();
+        if (pKbd) { pKbd->Release (); }
+        pDispMode->Release ();
+        pArch->Release ();
+        return 0;
+    }
+
     std::printf ("   --- serial console (CPU: V20, backend: %s) ---\n   ", pBackend->GetName ());
-    LC_SYS_RESULT R = Machine.Run (Entry, End, 2000000);
+    // A real BIOS POST does thousands of port accesses, each forcing a whole-window re-translation
+    // here (there is no block cache), so it is slow -- a bounded budget keeps the attempt observable.
+    UINT64 Budget = BiosBoot ? BiosSteps : 2000000;
+    LC_SYS_RESULT R = Machine.Run (Entry, End, Budget);
     std::printf ("\n   --- machine halted (reason=%s, interrupts=%llu, port writes=%llu) ---\n",
                  R.Reason == LC_SYS_RESULT::HaltedIdle ? "halted-idle" :
                  R.Reason == LC_SYS_RESULT::Shutdown   ? "shutdown" :
                  R.Reason == LC_SYS_RESULT::StepBudget ? "step-budget" : "fault",
                  (unsigned long long) R.Interrupts, (unsigned long long) R.PortWrites);
+    if (BiosBoot) {
+        // Post-mortem: report where POST stopped as a linear address and an F000:offset pair, plus
+        // the I/O activity, so we can see how far the real firmware advanced through power-on tests.
+        UINT32 Lin = (UINT32) R.FinalPc;
+        std::printf ("   BIOS POST stopped at linear 0x%05X (F000:%04X); port reads=%llu writes=%llu, steps=%llu\n",
+                     Lin, (UINT16) (Lin - 0xF0000), (unsigned long long) R.PortReads,
+                     (unsigned long long) R.PortWrites, (unsigned long long) R.Steps);
+    }
 
     if (Demo == 1) {
         std::printf ("   open-bus probe: guest read of unmapped 0xA0000 -> 0x%02X (%s)\n",
@@ -727,9 +974,11 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         std::printf ("   priority PIC: %llu IRQ0; in-service register read inside the handler = 0x%02X\n",
                      (unsigned long long) R.Interrupts, Ram[0x0056]);
     }
-    if (Demo == 10) {
-        std::printf ("   guest read option-ROM signature at 0xc8000: 0x%02X 0x%02X\n",
-                     Ram[0x4800], Ram[0x4801]);
+    if (Demo == 10 || BootScan) {
+        if (Demo == 10) {
+            std::printf ("   guest read option-ROM signature at 0xc8000: 0x%02X 0x%02X\n",
+                         Ram[0x4800], Ram[0x4801]);
+        }
         // BIOS-style option-ROM scan: walk the UMA in 2 KiB steps looking for the 0x55 0xAA marker.
         for (UINT32 Seg = 0xC0000; Seg < 0xF0000 && Seg + 2 < Ram.size (); Seg += 0x800) {
             if (Ram[Seg] != 0x55 || Ram[Seg + 1] != 0xAA) { continue; }
@@ -766,6 +1015,16 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
         }
         Text[47] = '\0';
         std::printf ("   floppy DMA: %llu IRQ6; sector at 0x12000 (page 1) = \"%s\"\n",
+                     (unsigned long long) R.Interrupts, Text);
+    }
+    if (Demo == 12) {
+        CHAR8 Text[40];
+        for (int I = 0; I < 39; I++) {
+            UINT8 Ch = Ram[0x12000 + I];                    // ch3 page 1 + offset 0x2000
+            Text[I] = (Ch >= 0x20 && Ch < 0x7F) ? (CHAR8) Ch : ' ';
+        }
+        Text[39] = '\0';
+        std::printf ("   hard-disk DMA: %llu IRQ5; sector 0 at 0x12000 = \"%s\"\n",
                      (unsigned long long) R.Interrupts, Text);
     }
 

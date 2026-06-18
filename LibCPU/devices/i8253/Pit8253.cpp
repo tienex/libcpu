@@ -49,9 +49,12 @@ struct PIT_CHANNEL {
     BOOLEAN Output    = TRUE;       // OUT pin level
     BOOLEAN NullCount = TRUE;       // a new count has been written but not yet loaded into the counter
     BOOLEAN Armed     = FALSE;
+    UINT64  LoadCycle = 0;          // machine-time stamp when the count was (re)loaded
+    UINT64  LastLive  = 0;          // machine-time stamp of the previous Live () evaluation
+    UINT32  Phase     = 0;          // accumulated down-count phase within the current period
 };
 
-class Pit8253 : public IDevice, public IPortDevice, public IInterruptSource, public ISignalSource {
+class Pit8253 : public IDevice, public IPortDevice, public IInterruptSource, public ISignalSource, public IClockSink {
 public:
     Pit8253 () : m_Ref (1) {}
     ~Pit8253 () { for (SINK_EDGE CONST &E : m_Sinks) { E.pSink->Release (); } }
@@ -67,6 +70,8 @@ public:
             *ppvObject = static_cast<IInterruptSource *> (this);
         } else if (CompareGuid (&riid, &IID_ISignalSource)) {
             *ppvObject = static_cast<ISignalSource *> (this);
+        } else if (CompareGuid (&riid, &IID_IClockSink)) {
+            *ppvObject = static_cast<IClockSink *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -101,7 +106,9 @@ public:
         if (pNode != nullptr) {
             pNode->GetPropertyCell ("reg", 0, &Base);
             pNode->GetPropertyCell ("libcpu,ticks", 0, &m_Ticks);   // machine-described tick budget
+            pNode->GetPropertyCell ("libcpu,cycles-per-tick", 0, &m_CycPerTick);  // counter rate
         }
+        if (m_CycPerTick == 0) { m_CycPerTick = 1; }            // avoid a divide-by-zero rate
         m_Base = (UINT16) Base;
         return Reset ();
     }
@@ -167,6 +174,11 @@ public:
         return S_FALSE;
     }
 
+    // IClockSink: the machine's time base. Live () derives each counter from the cycles elapsed
+    // since it was loaded, so a guest that latches a counter twice sees a delta proportional to the
+    // work done between the latches (what a BIOS timer-calibration loop checks).
+    HRESULT STDMETHODCALLTYPE OnClock (UINT64 Cycles) override { m_Now = Cycles; return S_OK; }
+
 private:
     struct SINK_EDGE { ISignalSink *pSink; UINT32 Line; };   // an explicitly wired (sink, line) edge
 
@@ -215,6 +227,9 @@ private:
         C.Count     = C.Reload;
         C.NullCount = FALSE;
         C.Armed     = TRUE;
+        C.LoadCycle = m_Now;                                 // start counting from now
+        C.LastLive  = m_Now;
+        C.Phase     = 0;
         C.Output    = (C.Mode == 0) ? FALSE : TRUE;
         if (Ch == 0) { m_Remaining = m_Ticks; }              // (re)arm the bounded channel-0 heartbeat
         if (Ch == 2) {                                       // channel-2 reload = speaker tone divisor
@@ -224,18 +239,36 @@ private:
         }
     }
 
-    // The live counter: advanced on each read so a polling guest sees it decrease, wrapping to the
-    // reload value at terminal count for the periodic modes (2/3).
+    // The live counter, derived from elapsed machine time. A real 8253 counts down at its input
+    // clock independently of the CPU, so two reads N cycles apart differ by ~N counts. We model that
+    // by mapping the cycles elapsed since the count was loaded onto the counter: the periodic modes
+    // (2/3) wrap at the reload value, the one-shot modes (0/1) stop at terminal count. m_Tick scales
+    // machine cycles to counter ticks (the absolute machine clock is arbitrary, so this just sets the
+    // apparent rate -- enough for a guest to see a sane, monotone-decreasing, wrapping counter).
     UINT16 Live (PIT_CHANNEL &C)
     {
-        if (C.Armed) {
-            if (C.Count == 0) {
-                C.Count  = C.Reload;
-                C.Output = C.Output ? FALSE : TRUE;
-            } else {
-                C.Count--;
-            }
+        if (!C.Armed) { return C.Count; }
+        UINT32 Period = (C.Reload == 0) ? 0x10000u : (UINT32) C.Reload;
+
+        // Advance by the cycles elapsed since the previous read. A real PIT is clocked from its own
+        // oscillator, asynchronous to the CPU, so the per-step amount is effectively never a clean
+        // submultiple of the period; we model that by forcing the step odd (hence coprime to the
+        // 2^n periods a BIOS uses). That keeps the down-counter ranging over every value in a tight
+        // latch loop -- so a coverage test (AND/OR of successive latches) still converges -- while a
+        // delta between two nearby latches stays proportional to the work done between them.
+        UINT64 Step = (m_Now - C.LastLive) / m_CycPerTick;
+        C.LastLive  = m_Now;
+        if (Step == 0) { Step = 1; }                         // a read implies time has advanced
+        Step |= 1;
+
+        if (C.Mode == 0 || C.Mode == 1) {                    // interrupt-on-terminal-count / one-shot
+            UINT64 Done = C.Phase + Step;                    // counts down to 0 and stays there
+            C.Phase     = (Done >= Period) ? Period : (UINT32) Done;
+            C.Output    = (C.Phase >= Period) ? TRUE : FALSE;
+        } else {                                             // rate generator / square wave: wrap
+            C.Phase = (UINT32) ((C.Phase + Step) % Period);
         }
+        C.Count = (UINT16) (Period - C.Phase);
         return C.Count;
     }
 
@@ -254,6 +287,8 @@ private:
     UINT16                 m_Base      = 0x40;
     UINT32                 m_Ticks     = 4;
     UINT32                 m_Remaining = 0;
+    UINT64                 m_Now       = 0;     // latest machine cycle count (fed via IClockSink)
+    UINT32                 m_CycPerTick = 1;    // machine cycles (guest instructions) per counter tick
     PIT_CHANNEL            m_Ch[3];
 };
 

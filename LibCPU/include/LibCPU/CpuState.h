@@ -58,6 +58,13 @@ typedef struct _CPU_STATE {
     UINT64 IoCtrl;          // CPU_IO_* reason in the low 8 bits, access width in the next 8
     UINT64 IoPort;          // I/O port (for OUT/IN)
     UINT64 IoData;          // data written (OUT); the host writes the read value back to AL/AX (IN)
+
+    // A monotonically increasing measure of executed work (interpreter: one per micro-op).
+    // It is the machine's time base: the host feeds it to time-driven peripherals (e.g. the
+    // 8253 PIT) so a counter latched twice -- as a BIOS timer-calibration loop does -- shows a
+    // delta proportional to the work between the latches, instead of a fixed per-read step. Last
+    // field of the struct so the codegen field offsets above stay stable; not used by the JITs.
+    UINT64 Cycles;
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -85,6 +92,7 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_IOCTRL_OFFSET    ((UINT32) (32 * 8 + 96 + 32 * 8)) // IoCtrl (after SyscallVector)
 #define CPU_STATE_IOPORT_OFFSET    ((UINT32) (32 * 8 + 104 + 32 * 8))// IoPort
 #define CPU_STATE_IODATA_OFFSET    ((UINT32) (32 * 8 + 112 + 32 * 8))// IoData
+#define CPU_STATE_CYCLES_OFFSET    ((UINT32) (32 * 8 + 120 + 32 * 8))// Cycles (after IoData)
 
 // Number of per-call-site edge counters (profiling instrumentation).
 #define CPU_PROFILE_SLOTS          ((UINT32) 32)
@@ -99,13 +107,19 @@ typedef struct _CPU_STATE {
 #define CPU_NO_SYSCALL            (~UINT64_C (0))
 
 // CPU_STATE.IoCtrl reason codes (low byte). The access width (8/16) is the next byte.
+//
+// These are the GENERIC, CPU-neutral traps a machine understands: port I/O, halt, and the
+// interrupt-enable controls. Anything CPU-architecture-specific (an x86 IRET/PUSHF/POPF/INTO/
+// BOUND/INS/OUTS, a different CPU's privileged ops, ...) is NOT defined here: it traps with a
+// reason at or above CPU_IO_ARCH_BASE, which the generic machine forwards verbatim (with IoData)
+// to its installed CPU "personality" (e.g. X86Trap.h / X86System) without interpreting it.
 #define CPU_IO_NONE               ((UINT64) 0)   // no system trap pending
 #define CPU_IO_OUT                ((UINT64) 1)   // port write: IoPort, IoData
-#define CPU_IO_IN                 ((UINT64) 2)   // port read: IoPort; host writes AL/AX back
-#define CPU_IO_IRET               ((UINT64) 3)   // interrupt return: host pops IP:CS:FLAGS
+#define CPU_IO_IN                 ((UINT64) 2)   // port read: IoPort; host writes the value back
 #define CPU_IO_HLT                ((UINT64) 4)   // halt until the next interrupt
 #define CPU_IO_STI                ((UINT64) 5)   // enable interrupts
 #define CPU_IO_CLI                ((UINT64) 6)   // disable interrupts
+#define CPU_IO_ARCH_BASE          ((UINT64) 0x80) // reasons >= this are CPU-personality-defined (opaque here)
 #define CPU_IO_REASON(c)          ((UINT32) ((c) & 0xFF))
 #define CPU_IO_WIDTH(c)           ((UINT32) (((c) >> 8) & 0xFF))
 #define CPU_IO_MAKE(reason, w)    (((UINT64) (reason)) | (((UINT64) (w)) << 8))

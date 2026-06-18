@@ -22,6 +22,8 @@
 #include "LibCPU/IDevice.h"
 #include "LibCPU/CpuState.h"
 #include <atomic>
+#include <deque>
+#include <mutex>
 
 namespace LibCPU {
 
@@ -31,7 +33,7 @@ enum { Kbc_Data = 0x60, Kbc_Cmd = 0x64 };
 // Status register (0x64 read) bits.
 enum { Sts_Obf = 0x01, Sts_Ibf = 0x02, Sts_Sys = 0x04, Sts_Cmd = 0x08, Sts_Inh = 0x10 };
 
-class Kbc8042 : public IDevice, public IPortDevice, public IInterruptSource {
+class Kbc8042 : public IDevice, public IPortDevice, public IInterruptSource, public IKeyboardSink {
 public:
     Kbc8042 () : m_Ref (1) {}
 
@@ -44,6 +46,8 @@ public:
             *ppvObject = static_cast<IPortDevice *> (this);
         } else if (CompareGuid (&riid, &IID_IInterruptSource)) {
             *ppvObject = static_cast<IInterruptSource *> (this);
+        } else if (CompareGuid (&riid, &IID_IKeyboardSink)) {
+            *ppvObject = static_cast<IKeyboardSink *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -64,8 +68,9 @@ public:
 
     HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode *pNode) override
     {
-        m_Key = 0;
-        if (pNode != nullptr) { pNode->GetPropertyCell ("libcpu,keystroke", 0, &m_Key); }   // demo scan code
+        UINT32 Seed = 0;
+        if (pNode != nullptr) { pNode->GetPropertyCell ("libcpu,keystroke", 0, &Seed); }   // demo scan code
+        if (Seed != 0) { PushScanCode ((UINT8) Seed); }                                    // queue it like a keypress
         return Reset ();
     }
 
@@ -124,23 +129,33 @@ public:
     HRESULT STDMETHODCALLTYPE PollInterrupt (OUT UINT32 *pIrq) override
     {
         if (pIrq == nullptr) { return E_POINTER; }
-        // Deliver a seeded scan code once: load it into the output buffer and raise IRQ1. While the
-        // buffer is full (CPU has not read it) or no key is queued, assert nothing -- bounded, so
-        // the machine can go idle.
-        if (m_Key != 0 && (m_Status & Sts_Obf) == 0) {
-            SetOutput ((UINT8) m_Key);
-            m_Key = 0;
-            *pIrq = 1;                                       // keyboard -> IRQ1
-            return S_OK;
-        }
-        return S_FALSE;
+        // Deliver the next queued scan code: load it into the output buffer and raise IRQ1. While
+        // the buffer is full (CPU has not read it) or the queue is empty, assert nothing -- bounded,
+        // so the machine can go idle when nobody is typing.
+        if ((m_Status & Sts_Obf) != 0) { return S_FALSE; }
+        std::lock_guard<std::mutex> Lock (m_QueueMtx);
+        if (m_Queue.empty ()) { return S_FALSE; }
+        SetOutput (m_Queue.front ());
+        m_Queue.pop_front ();
+        *pIrq = 1;                                           // keyboard -> IRQ1
+        return S_OK;
+    }
+
+    // IKeyboardSink: a console front end queues a raw scan code as the user types. Thread-safe so
+    // it may be called from a console thread while the machine thread polls.
+    HRESULT STDMETHODCALLTYPE PushScanCode (UINT8 ScanCode) override
+    {
+        std::lock_guard<std::mutex> Lock (m_QueueMtx);
+        m_Queue.push_back (ScanCode);
+        return S_OK;
     }
 
 private:
     VOID SetOutput (UINT8 V) { m_Output = V; m_Status |= Sts_Obf; }
 
     std::atomic<INT32> m_Ref;
-    UINT32             m_Key     = 0;                        // seeded scan code to deliver (0 = none)
+    std::mutex         m_QueueMtx;                           // guards m_Queue (console vs machine thread)
+    std::deque<UINT8>  m_Queue;                              // pending scan codes awaiting delivery
     UINT8              m_Status  = 0;
     UINT8              m_Output  = 0;
     UINT8              m_Pending = 0;                        // controller command awaiting its data byte

@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# CMake build trees
+build/
+
+# CTest output
+Testing/

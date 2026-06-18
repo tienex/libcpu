@@ -38,7 +38,7 @@ enum {
 enum { Vga_FbBase = 0xB8000, Vga_Cols = 80, Vga_Rows = 25 };
 enum { Vga_VramBase = 0xA0000, Vga_VramSize = 0x20000 };       // 128 KiB window 0xA0000-0xBFFFF (256 KiB card)
 
-class Vga : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
+class Vga : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost, public IDisplayMode {
 public:
     Vga () : m_Ref (1) {}
 
@@ -57,11 +57,46 @@ public:
             *ppvObject = static_cast<IHostMemory *> (this);
         } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
             *ppvObject = static_cast<IOptionRomHost *> (this);
+        } else if (CompareGuid (&riid, &IID_IDisplayMode)) {
+            *ppvObject = static_cast<IDisplayMode *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
         }
         AddRef ();
+        return S_OK;
+    }
+
+    // --- IDisplayMode: report graphics (mode 13h: 320x200x8 at 0xA0000) when the graphics
+    // controller's Miscellaneous register (index 6) selects graphics, else the 80x25 text page
+    // at 0xB8000. The framebuffer pointer aliases the card's own VRAM at the active page offset. ---
+    bool IsGraphics () CONST { return (m_Gc[6] & 0x01) != 0; }   // GC[6] bit0 = alpha-disable (graphics)
+
+    HRESULT STDMETHODCALLTYPE GetMode (UINT32 *pFormat, UINT32 *pWidth, UINT32 *pHeight, UINT32 *pBpp) override
+    {
+        if (IsGraphics ()) {
+            if (pFormat) { *pFormat = 1; }              // graphics
+            if (pWidth)  { *pWidth  = 320; }
+            if (pHeight) { *pHeight = 200; }
+            if (pBpp)    { *pBpp    = 8; }
+        } else {
+            if (pFormat) { *pFormat = 0; }              // text
+            if (pWidth)  { *pWidth  = Vga_Cols; }
+            if (pHeight) { *pHeight = Vga_Rows; }
+            if (pBpp)    { *pBpp    = 0; }
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetFramebuffer (UINT8 CONST **ppBytes, UINT32 *pLength) override
+    {
+        if (ppBytes == nullptr || pLength == nullptr) { return E_POINTER; }
+        if (IsGraphics ()) {
+            *ppBytes = m_Vram.data ();                  // mode 13h linear bitmap at 0xA0000 (VRAM offset 0)
+            *pLength = 320 * 200;
+        } else {
+            *ppBytes = m_Vram.data () + (Vga_FbBase - Vga_VramBase);   // text page 0xB8000
+            *pLength = Vga_Cols * Vga_Rows * 2;
+        }
         return S_OK;
     }
 

@@ -28,7 +28,7 @@ enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Mda_Mode = 0x8, Mda_Status = 0xA };
 enum { Mda_FbBase = 0xB0000, Mda_Cols = 80, Mda_Rows = 25 };   // monochrome text page
 enum { Mda_VramSize = 0x1000 };                                // the MDA's 4 KiB of video RAM
 
-class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
+class Mda6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost, public IDisplayMode {
 public:
     Mda6845 () : m_Ref (1) {}
 
@@ -47,11 +47,30 @@ public:
             *ppvObject = static_cast<IHostMemory *> (this);
         } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
             *ppvObject = static_cast<IOptionRomHost *> (this);
+        } else if (CompareGuid (&riid, &IID_IDisplayMode)) {
+            *ppvObject = static_cast<IDisplayMode *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
         }
         AddRef ();
+        return S_OK;
+    }
+
+    // --- IDisplayMode: the MDA is text-only (80x25 monochrome); its page sits at the start of VRAM ---
+    HRESULT STDMETHODCALLTYPE GetMode (UINT32 *pFormat, UINT32 *pWidth, UINT32 *pHeight, UINT32 *pBpp) override
+    {
+        if (pFormat) { *pFormat = 0; }                  // text
+        if (pWidth)  { *pWidth  = Mda_Cols; }
+        if (pHeight) { *pHeight = Mda_Rows; }
+        if (pBpp)    { *pBpp    = 0; }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetFramebuffer (UINT8 CONST **ppBytes, UINT32 *pLength) override
+    {
+        if (ppBytes == nullptr || pLength == nullptr) { return E_POINTER; }
+        *ppBytes = m_Vram.data ();                      // text page at offset 0 of the card's VRAM
+        *pLength = Mda_Cols * Mda_Rows * 2;
         return S_OK;
     }
 

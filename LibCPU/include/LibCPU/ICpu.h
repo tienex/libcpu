@@ -69,7 +69,8 @@ typedef enum _CPU_FLAG {
     FlagZero,
     FlagCarry,
     FlagParity,
-    FlagDirection      // string-op direction (x86 DF): 0 = increment, 1 = decrement
+    FlagDirection,     // string-op direction (x86 DF): 0 = increment, 1 = decrement
+    FlagAux            // auxiliary carry (x86 AF, bit 4): carry/borrow out of bit 3, for BCD
 } CPU_FLAG;
 
 //
@@ -284,6 +285,26 @@ DECLARE_INTERFACE_ (ICpuProfileEmitter, IUnknown)
 };
 
 /**
+  ICpuClockEmitter -- optional emitter capability for a backend-independent time base.
+
+  The AOT/CFG driver calls EmitTick once per translated guest instruction, so CPU_STATE.Cycles
+  counts INSTRUCTIONS RETIRED uniformly across every backend -- the interpreter and each JIT advance
+  the same clock the same way. A system-emulation host feeds Cycles to time-driven peripherals (the
+  8253 PIT), so a guest's timing (a BIOS calibration loop, a delay) behaves identically whether it
+  runs interpreted or JIT-compiled. A backend that does not implement this leaves Cycles untouched and
+  the host falls back to a coarse per-burst estimate. Discovered via QueryInterface (IID_ICpuClockEmitter).
+**/
+DECLARE_INTERFACE_ (ICpuClockEmitter, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Advance CPU_STATE.Cycles by Count (the AOT driver passes 1 per guest instruction).
+    STDMETHOD (EmitTick)(THIS_ UINT32 Count) PURE;
+};
+
+/**
   ICpuSyscallEmitter -- optional emitter capability for guest system calls.
 
   A frontend's INT/SVC/trap instruction, instead of being a black-box trap, records
@@ -379,6 +400,33 @@ DECLARE_INTERFACE_ (ICpuSystemEmitter, IUnknown)
     STDMETHOD (EmitPortIn)(THIS_ IN ICpuValue *pPort, UINT32 Width, IN ICpuValue *pReturnPc) PURE;
     // Privileged control (CPU_IO_IRET/HLT/STI/CLI): record IoCtrl=Reason and trap.
     STDMETHOD (EmitSystemTrap)(THIS_ UINT32 Reason, IN ICpuValue *pReturnPc) PURE;
+    // Like EmitSystemTrap but also records a runtime value in IoData (e.g. BOUND's out-of-range
+    // condition), so the host can act on it. Optional: backends may forward to EmitSystemTrap.
+    STDMETHOD (EmitSystemTrapValue)(THIS_ UINT32 Reason, IN ICpuValue *pValue, IN ICpuValue *pReturnPc) PURE;
+};
+
+/**
+  ICpuSegmentedCode -- optional ARCHITECTURE capability for segmented code fetch.
+
+  A segmented guest (e.g. 8086/V20) fetches instructions from a code segment base plus
+  an offset; the AOT driver works in offset (IP) space. After any control transfer that
+  reloads the code segment -- far JMP/CALL/RETF, an interrupt, or IRET -- the host
+  re-points the frontend at the new segment with SetCodeSegment before re-translating,
+  and SegmentBase reports the segment's linear base so the host can bound the window.
+  Frontends with flat addressing do not expose this. Discovered via QueryInterface
+  (IID_ICpuSegmentedCode) on the ICpuArchitecture.
+**/
+DECLARE_INTERFACE_ (ICpuSegmentedCode, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Re-point the decode base at code segment Selector; subsequent translation fetches
+    // from SegmentBase(Selector) + offset.
+    STDMETHOD (SetCodeSegment)(THIS_ UINT32 Selector) PURE;
+    // The linear base address of the given code segment (Selector << 4 on the 8086).
+    STDMETHOD_ (UINT64, SegmentBase)(THIS_ UINT32 Selector) PURE;
 };
 
 //
@@ -411,6 +459,10 @@ inline constexpr IID IID_ICpuBackendCache =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
 inline constexpr IID IID_ICpuSystemEmitter =
     { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D } };
+inline constexpr IID IID_ICpuSegmentedCode =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E } };
+inline constexpr IID IID_ICpuClockEmitter =
+    { 0x1C9A0001, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F } };
 
 } // namespace LibCPU
 

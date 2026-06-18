@@ -67,6 +67,14 @@ public:
         return S_OK;
     }
 
+    HRESULT STDMETHODCALLTYPE SetTerminalCount (UINT32 Channel) override
+    {
+        if (Channel > 3) { return E_INVALIDARG; }
+        m_Status |= (UINT8) (1u << Channel);                 // status bit 0-3: channel reached TC
+        m_Count[Channel] = 0xFFFF;                            // current count underflows past 0 to 0xFFFF
+        return S_OK;
+    }
+
     UINT32 STDMETHODCALLTYPE AddRef (THIS) override { return (UINT32) ++m_Ref; }
     UINT32 STDMETHODCALLTYPE Release (THIS) override
     {
@@ -119,7 +127,8 @@ public:
             m_FlipFlop = (BOOLEAN) !m_FlipFlop;
             *pValue = B;
         } else if (Off == 0x08) {
-            *pValue = m_Status;                              // status register
+            *pValue   = m_Status;                            // status register: TC + request bits
+            m_Status &= 0xF0;                                // reading clears the terminal-count bits
         } else {
             *pValue = 0;
         }

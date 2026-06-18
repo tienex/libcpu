@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <atomic>
+#include <vector>
 
 extern "C" {
 #include <lightning.h>
@@ -20,6 +21,8 @@ namespace LibCPU {
 namespace {
 
 static UINT64 Mask (UINT64 V, UINT32 Bits) { return (Bits >= 64) ? V : (V & (((UINT64) 1 << Bits) - 1)); }
+// Temp slots are reset at every block entry, so this need only cover the widest single instruction.
+static CONST UINT32 NUM_SLOTS = 256;
 
 class LnValue final : public ComObject<ICpuValue> {
 public:
@@ -36,6 +39,8 @@ public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         return DefaultQuery (riid, IID_ICpuBlock, ppvObject);
     }
+    jit_node_t              *m_Label = nullptr;   // emitted when the block is first inserted into
+    std::vector<jit_node_t *> m_Pending;          // jumps awaiting this block's label
 };
 
 static INT32  SlotOf (ICpuValue *pV) { return static_cast<LnValue *> (pV)->m_Slot; }
@@ -58,7 +63,8 @@ private:
     JittedFn     m_Fn;
 };
 
-class LnEmitter final : public ComObject<ICpuEmitter> {
+class LnEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter,
+                        public ICpuSystemEmitter, public ICpuSyscallEmitter, public ICpuClockEmitter {
 public:
     LnEmitter () {
         _jit = jit_new_state ();
@@ -68,13 +74,26 @@ public:
         jit_node_t *a2 = jit_arg ();
         jit_getarg_l (JIT_V0, a0);   // RAM
         jit_getarg_l (JIT_V1, a1);   // GRF
+        // One fixed temp frame, reused per block (a value never outlives its instruction). Allocating
+        // a slot per value instead would grow the frame without bound on a large window and overflow.
+        m_FrameBase = jit_allocai (NUM_SLOTS * 8);
         (void) a2;                   // FRF unused
     }
-    ~LnEmitter () override { if (_jit) jit_destroy_state (); }
+    ~LnEmitter () override {
+        for (LnBlock *pB : m_Blocks) { pB->Release (); }   // release m_Blocks' retained references
+        if (_jit) { jit_destroy_state (); }
+    }
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject == nullptr) { return E_POINTER; }
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter))     { *ppvObject = static_cast<ICpuSmcEmitter *> (this);     AddRef (); return S_OK; }
+        if (CompareGuid (&riid, &IID_ICpuSystemEmitter))  { *ppvObject = static_cast<ICpuSystemEmitter *> (this);  AddRef (); return S_OK; }
+        if (CompareGuid (&riid, &IID_ICpuSyscallEmitter)) { *ppvObject = static_cast<ICpuSyscallEmitter *> (this); AddRef (); return S_OK; }
+        if (CompareGuid (&riid, &IID_ICpuClockEmitter))   { *ppvObject = static_cast<ICpuClockEmitter *> (this);   AddRef (); return S_OK; }
         return DefaultQuery (riid, IID_ICpuEmitter, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
         INT32 S = Slot (); jit_movi (JIT_R0, (jit_word_t) Mask (Value, Bits)); Store (S); return Make (S, Bits, ppValue);
@@ -180,7 +199,16 @@ public:
         }
         Store (S); return Make (S, Bits, ppValue);
     }
-    HRESULT STDMETHODCALLTYPE Select (ICpuValue *, ICpuValue *, ICpuValue *, ICpuValue **ppValue) override { *ppValue = nullptr; return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Select (ICpuValue *pCond, ICpuValue *pTrue, ICpuValue *pFalse, ICpuValue **ppValue) override {
+        UINT32 Bits = BitsOf (pTrue);
+        INT32  S    = Slot ();
+        jit_ldxi_l (JIT_R0, JIT_FP, SlotOf (pFalse));        // default = false value
+        jit_ldxi_l (JIT_R1, JIT_FP, SlotOf (pCond));
+        jit_node_t *pSkip = jit_beqi (JIT_R1, 0);            // cond == 0 -> keep false
+        jit_ldxi_l (JIT_R0, JIT_FP, SlotOf (pTrue));
+        jit_patch_at (pSkip, jit_label ());
+        Store (S); return Make (S, Bits, ppValue);
+    }
     HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG Flag, ICpuValue **ppValue) override {
         INT32 S = Slot ();
         jit_ldxi_uc (JIT_R0, JIT_V1, CPU_STATE_FLAG_OFFSET + (UINT32) Flag);
@@ -198,14 +226,116 @@ public:
         jit_stxi_l (CPU_STATE_PC_OFFSET, JIT_V1, JIT_R0);
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override { *ppBlock = new LnBlock (); return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override { *ppBlock = nullptr; return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *, ICpuBlock *, ICpuBlock *) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *, ICpuBlock **ppBlock) override {
+        LnBlock *pB = new LnBlock ();                    // refcount 1: the reference returned to the caller
+        pB->AddRef ();                                   // refcount 2: m_Blocks retains its own reference for
+        m_Blocks.push_back (pB);                         // the exit pass in Build -- the caller (frontend or
+        *ppBlock = pB;                                   // generator) owns blocks via ComPtr and may release
+        return S_OK;                                     // them (e.g. a REP prefix's helper blocks) pre-Build
+    }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pBlock) override {
+        LnBlock *pB = static_cast<LnBlock *> (pBlock);
+        pB->m_Label = jit_label ();
+        for (jit_node_t *pJ : pB->m_Pending) { jit_patch_at (pJ, pB->m_Label); }
+        pB->m_Pending.clear ();
+        m_Cur      = pB;
+        m_NextSlot = 0;            // an instruction's temps don't outlive its block: reuse the frame
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppBlock) override {
+        if (m_Cur != nullptr) { m_Cur->AddRef (); }
+        *ppBlock = m_Cur;
+        return m_Cur != nullptr ? S_OK : E_FAIL;
+    }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pTarget) override {
+        WireJump (jit_jmpi (), static_cast<LnBlock *> (pTarget));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pCond, ICpuBlock *pTrue, ICpuBlock *pFalse) override {
+        jit_ldxi_l (JIT_R0, JIT_FP, SlotOf (pCond));
+        WireJump (jit_bnei (JIT_R0, 0), static_cast<LnBlock *> (pTrue));    // cond != 0 -> true
+        WireJump (jit_jmpi (), static_cast<LnBlock *> (pFalse));
+        return S_OK;
+    }
+
+    // ---- self-modifying-code / dispatch (ICpuSmcEmitter) ------------------
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard (CPU_ADDR Pc) override {
+        UINT32     Page = (UINT32) ((Pc >> CPU_SMC_PAGE_SHIFT) & (CPU_SMC_PAGE_COUNT - 1));
+        jit_word_t Mask = (jit_word_t) (1u << (Page & 7));
+        jit_ldxi_uc (JIT_R0, JIT_V1, CPU_STATE_CODEDIRTY_OFFSET + (Page >> 3));
+        jit_andi (JIT_R0, JIT_R0, Mask);
+        jit_node_t *pSkip = jit_beqi (JIT_R0, 0);            // clean -> skip the trap
+        jit_movi (JIT_R0, (jit_word_t) Pc);
+        jit_stxi_l (CPU_STATE_TRAPPC_OFFSET, JIT_V1, JIT_R0);
+        jit_movi (JIT_R0, ExecSmc);
+        jit_retr (JIT_R0);
+        jit_patch_at (pSkip, jit_label ());
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pTargetPc));
+        return TrapReturn ();
+    }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        StoreField (CPU_STATE_DISPPC_OFFSET, SlotOf (pTargetPc));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        INT32 S = Slot ();
+        jit_ldxi_l (JIT_R0, JIT_V1, CPU_STATE_DISPPC_OFFSET);
+        Store (S);
+        return Make (S, 64, ppValue);
+    }
+
+    // ---- port I/O + system traps (ICpuSystemEmitter / ICpuSyscallEmitter) -
+    HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {
+        StoreFieldImm (CPU_STATE_IOCTRL_OFFSET, (jit_word_t) CPU_IO_MAKE (CPU_IO_OUT, Width));
+        StoreField (CPU_STATE_IOPORT_OFFSET, SlotOf (pPort));
+        StoreField (CPU_STATE_IODATA_OFFSET, SlotOf (pData));
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pReturnPc));
+        return TrapReturn ();
+    }
+    HRESULT STDMETHODCALLTYPE EmitPortIn (ICpuValue *pPort, UINT32 Width, ICpuValue *pReturnPc) override {
+        StoreFieldImm (CPU_STATE_IOCTRL_OFFSET, (jit_word_t) CPU_IO_MAKE (CPU_IO_IN, Width));
+        StoreField (CPU_STATE_IOPORT_OFFSET, SlotOf (pPort));
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pReturnPc));
+        return TrapReturn ();
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrap (UINT32 Reason, ICpuValue *pReturnPc) override {
+        StoreFieldImm (CPU_STATE_IOCTRL_OFFSET, (jit_word_t) CPU_IO_MAKE (Reason, 0));
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pReturnPc));
+        return TrapReturn ();
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrapValue (UINT32 Reason, ICpuValue *pValue, ICpuValue *pReturnPc) override {
+        StoreFieldImm (CPU_STATE_IOCTRL_OFFSET, (jit_word_t) CPU_IO_MAKE (Reason, 0));
+        StoreField (CPU_STATE_IODATA_OFFSET, SlotOf (pValue));
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pReturnPc));
+        return TrapReturn ();
+    }
+    HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
+        StoreFieldImm (CPU_STATE_SYSCALL_OFFSET, (jit_word_t) Vector);
+        StoreField (CPU_STATE_TRAPPC_OFFSET, SlotOf (pReturnPc));
+        return TrapReturn ();
+    }
+
+    // ---- time base (ICpuClockEmitter): Cycles += Count, once per guest instruction --------
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        jit_ldxi_l (JIT_R0, JIT_V1, CPU_STATE_CYCLES_OFFSET);
+        jit_addi (JIT_R0, JIT_R0, (jit_word_t) Count);
+        jit_stxi_l (CPU_STATE_CYCLES_OFFSET, JIT_V1, JIT_R0);
+        return S_OK;
+    }
 
     ICpuCode *Build () {
-        jit_movi (JIT_R0, 0);          // return ExecOk
+        jit_node_t *pExit = jit_label ();                    // shared exit for never-inserted blocks
+        for (LnBlock *pB : m_Blocks) {
+            if (pB->m_Label == nullptr) {
+                for (jit_node_t *pJ : pB->m_Pending) { jit_patch_at (pJ, pExit); }
+                pB->m_Pending.clear ();
+                pB->m_Label = pExit;
+            }
+        }
+        jit_movi (JIT_R0, ExecOk);
         jit_retr (JIT_R0);
         JittedFn Fn = (JittedFn) jit_emit ();
         jit_clear_state ();
@@ -215,12 +345,33 @@ public:
     }
 
 private:
-    INT32 Slot () { return jit_allocai (8); }
+    INT32 Slot () { return m_FrameBase + (INT32) (m_NextSlot++ * 8); }
     void  Store (INT32 S) { jit_stxi_l (S, JIT_FP, JIT_R0); }
     void  MaskReg (UINT32 Bits) { if (Bits < 64) jit_andi (JIT_R0, JIT_R0, (jit_word_t) Mask (~0ull, Bits)); }
     HRESULT Make (INT32 S, UINT32 Bits, ICpuValue **ppValue) { *ppValue = new LnValue (S, Bits); return S_OK; }
+    void  WireJump (jit_node_t *pJump, LnBlock *pTarget) {
+        if (pTarget->m_Label != nullptr) { jit_patch_at (pJump, pTarget->m_Label); }
+        else                             { pTarget->m_Pending.push_back (pJump); }
+    }
+    void  StoreField (UINT32 Off, INT32 Slot) {              // CPU_STATE[Off] = slot value (full word)
+        jit_ldxi_l (JIT_R0, JIT_FP, Slot);
+        jit_stxi_l (Off, JIT_V1, JIT_R0);
+    }
+    void  StoreFieldImm (UINT32 Off, jit_word_t Imm) {
+        jit_movi (JIT_R0, Imm);
+        jit_stxi_l (Off, JIT_V1, JIT_R0);
+    }
+    HRESULT TrapReturn () {                                  // hand control back to the host machine loop
+        jit_movi (JIT_R0, ExecSmc);
+        jit_retr (JIT_R0);
+        return S_OK;
+    }
 
-    jit_state_t *_jit;
+    jit_state_t              *_jit;
+    LnBlock                  *m_Cur = nullptr;
+    std::vector<LnBlock *>    m_Blocks;
+    INT32                     m_FrameBase = 0;     // base offset of the fixed temp frame
+    UINT32                    m_NextSlot  = 0;     // next free slot within the current block
 };
 
 class LightningBackend final : public ComObject<ICpuBackend> {

@@ -1333,6 +1333,7 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         if (std::strcmp (argv[I], "--demo-pic") == 0) { Demo = 8; Run = true; }      // 8259 in-service register read-back
         if (std::strcmp (argv[I], "--demo-ide") == 0) { Demo = 9; Run = true; }      // XT-IDE PIO sector read
         if (std::strcmp (argv[I], "--demo-rom") == 0) { Demo = 10; Run = true; }     // controller option-ROM firmware
+        if (std::strcmp (argv[I], "--demo-hdc") == 0) { Demo = 12; Run = true; }     // DMA-driven ST-506 sector read
     }
     // --rom <device>=<path> (repeatable): load a firmware image for the named controller into a
     // free slot of the option-ROM area (the address is auto-assigned). The device is matched by
@@ -1346,12 +1347,47 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
         else { CliRoms.push_back (std::make_pair (Spec.substr (0, Eq), Spec.substr (Eq + 1))); }
     }
     CHAR8 CONST *pImage = Opt (argc, argv, "--image", nullptr);
+    // --bios <file>: map a real system-BIOS image at the top of memory and boot the reset vector
+    // (0xFFFF0). The BIOS image stands in for the --image payload, so the boot path runs POST.
+    CHAR8 CONST *pBios = Opt (argc, argv, "--bios", nullptr);
+    bool BiosBoot = pBios != nullptr;
+    if (BiosBoot) { pImage = pBios; Run = true; }
+    // --console: run the interactive typewriter through the console seam (host keyboard -> 8042 ->
+    // IRQ1, framebuffer -> terminal). --keys <text> drives it headlessly (scripted) for tests.
+    bool ConsoleMode = false;
+    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--console") == 0) { ConsoleMode = true; Run = true; } }
+    CHAR8 CONST *pKeys = Opt (argc, argv, "--keys", nullptr);
+    std::string ConsoleKeys = pKeys != nullptr ? std::string (pKeys) : std::string ();
+    // --boot: run the option-ROM bootstrap (scan the UMA, far-call each ROM's init), like a POST.
+    bool BootScan = false;
+    for (int I = 0; I < argc; I++) { if (std::strcmp (argv[I], "--boot") == 0) { BootScan = true; Run = true; } }
+    // Loading option ROMs and then running the machine means "run these ROMs", not "run the canned
+    // self-test". A real PC powers on, the BIOS scans the UMA and far-calls each option ROM's init.
+    // So when --rom firmware is present and the user picked no explicit --demo-*, no system --bios,
+    // and no --console, default to the boot scan (the same path as --boot). A bare --demo-* keeps
+    // its own program; --bios runs the real firmware which does its own scan.
+    if (!CliRoms.empty () && Demo == 0 && !BiosBoot && !ConsoleMode && !BootScan) {
+        std::printf ("   --rom firmware present and no explicit demo: running the option-ROM boot scan\n");
+        BootScan = true;
+        Run      = true;
+    }
     if (Run || pImage != nullptr || !CliRoms.empty ()) {
         CHAR8 CONST *pLoad = Opt (argc, argv, "--load", nullptr);
         UINT32 LoadAddr = pLoad != nullptr ? (UINT32) std::strtoul (pLoad, nullptr, 0) : 0x0600;
         ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
         if (pBackend == nullptr) { std::printf ("lcx machine: cannot load backend\n"); return 2; }
-        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo, CliRoms);
+        CHAR8 CONST *pSteps = Opt (argc, argv, "--steps", nullptr);
+        UINT64 BiosSteps = pSteps != nullptr ? (UINT64) std::strtoull (pSteps, nullptr, 0) : 4000;
+        // --jit <bundle>: tiered execution. The machine runs on the interpreter (instant translation)
+        // and promotes hot ROM regions to this optimizing JIT backend, which only pays off where its
+        // compile cost amortizes -- a BIOS POST is mostly cold, so this keeps it fast while still
+        // JIT-compiling genuine hot loops.
+        CHAR8 CONST *pJit = Opt (argc, argv, "--jit", nullptr);
+        ICpuBackend *pHotBackend = (pJit != nullptr) ? LoadBackendBundle (pJit) : nullptr;
+        if (pJit != nullptr && pHotBackend == nullptr) { std::printf ("lcx machine: cannot load --jit backend '%s'\n", pJit); }
+        int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo, CliRoms, BiosBoot, BiosSteps,
+                                 ConsoleMode, ConsoleKeys, BootScan, pHotBackend);
+        if (pHotBackend != nullptr) { pHotBackend->Release (); }
         pBackend->Release ();
         return Rc;
     }
@@ -1383,6 +1419,9 @@ CmdHelp ()
         "  lcx dt     compile <in.dts> -o <out.dtb> | decompile <in.dtb> [-o <out.dts>]\n"
         "  lcx dt     dump <in> | overlay <base> <frag> [-o <out>]    device-tree compile/decompile\n"
         "  lcx machine <machine.dts> [--bundles <dir>] [--tree] [--roms] [--run] [--rom <dev>=<file>]   assemble/run a machine\n"
+        "  lcx machine <machine.dts> --bios <bios.bin>   boot a real system BIOS at the reset vector (0xFFFF0)\n"
+        "  lcx machine <machine.dts> --console [--keys <text>]   interactive typewriter via the console seam\n"
+        "  lcx machine <machine.dts> --boot [--rom <dev>=<file>]   POST: scan the UMA and run option ROMs\n"
         "  lcx cache  ls | info | clean\n"
         "  lcx version | help\n\n"
         "backend: --backend <bundle> | $LCX_BACKEND | <exe-dir>/interp.backend\n");

@@ -18,6 +18,7 @@
 #include "CpuV20.h"
 #include "CpuI8080.h"
 #include "LibCPU/CpuState.h"
+#include "LibCPU/X86Trap.h"   // x86 system-trap reasons (LibCPU::X86::CPU_IO_*)
 #include <cstdio>
 #include <cstring>
 
@@ -228,15 +229,26 @@ EmitAlu8 (ICpuEmitter *pE, UINT32 AluOp, ICpuValue *pDst, ICpuValue *pSrc, ICpuV
     EmitZSF8 (pE, Res);
 }
 
-class CpuV20 final : public ComObject<ICpuArchitecture> {
+class CpuV20 final : public ComObject<ICpuArchitecture>, public ICpuSegmentedCode {
 public:
     explicit CpuV20 (UINT16 CodeSeg, bool IsV30 = false)
         : m_CodeSeg (CodeSeg), m_IsV30 (IsV30), m_pEmu (CreateI8080 ()) {}
     ~CpuV20 () override { if (m_pEmu != nullptr) { m_pEmu->Release (); } }
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSegmentedCode)) {
+            *ppvObject = static_cast<ICpuSegmentedCode *> (this);   // optional segmented-fetch capability
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuArchitecture>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuArchitecture>::Release (); }
+
+    // ICpuSegmentedCode: the host re-points the decode base after a CS reload (far flow / INT / IRET).
+    HRESULT STDMETHODCALLTYPE SetCodeSegment (UINT32 Selector) override { SetCodeSeg ((UINT16) Selector); return S_OK; }
+    UINT64  STDMETHODCALLTYPE SegmentBase (UINT32 Selector) override { return (UINT64) (Selector & 0xFFFF) << 4; }
 
     HRESULT STDMETHODCALLTYPE GetInfo (CPU_ARCH_INFO *pInfo) override {
         // The V20 (uPD70108) and V30 (uPD70116) share the instruction set; they differ only in
@@ -327,6 +339,8 @@ public:
             Len = 1 + RmLen (M);
             if (Sub == 2 || Sub == 4) { Tag = TagReturn; }       // near indirect CALL/JMP -> dispatcher
             else if (Sub == 3 || Sub == 5) { Tag = TagTrap; }    // far indirect CALL/JMP
+        } else if ((Op == 0xF2 || Op == 0xF3) && m_pCode[Pc + 1] >= 0x6C && m_pCode[Pc + 1] <= 0x6F) {
+            Len = 2; Tag = TagTrap;                              // REP INS/OUTS: host does the whole move
         } else if ((Op == 0xF2 || Op == 0xF3) && IsStringOp (m_pCode[Pc + 1])) {
             Len = 2;                                             // REP/REPNE prefix + string op
         } else if ((Op < 0x40 && (Op & 7) == 5) || Op == 0xA0 || Op == 0xA1 ||
@@ -354,10 +368,45 @@ public:
             Len = 1; Tag = TagTrap;
         } else if (Op == 0xCF || Op == 0xF4 || Op == 0xFA || Op == 0xFB) {   // IRET / HLT / CLI / STI
             Len = 1; Tag = TagTrap;
+        } else if (Op == 0x9B) {                                 // WAIT / FWAIT: sync with the 8087
+            Len = 1;                                             // (no-op here; nothing to wait on)
+        } else if (Op >= 0xD8 && Op <= 0xDF) {                   // ESC: an 8087 coprocessor instruction
+            Len = 1 + RmLen (m_pCode[Pc + 1]);                   // decode its length; the CPU itself ignores it
         } else if (Op >= 0x70 && Op <= 0x7F) {                   // Jcc rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
-        } else if (Op == 0xE2) {                                 // LOOP rel8
+        } else if (Op == 0xE2 || Op == 0xE0 || Op == 0xE1 || Op == 0xE3) {   // LOOP / LOOPNE / LOOPE / JCXZ rel8
             Len = 2; Tag = TagConditional | TagBranch; NewPc = (CPU_ADDR) (Pc + 2 + (INT8) m_pCode[Pc + 1]);
+        } else if (Op == 0x06 || Op == 0x07 || Op == 0x0E || Op == 0x16 ||   // PUSH/POP seg (ES/CS/SS/DS)
+                   Op == 0x17 || Op == 0x1E || Op == 0x1F ||
+                   Op == 0x27 || Op == 0x2F || Op == 0x37 || Op == 0x3F ||   // DAA/DAS/AAA/AAS
+                   Op == 0x60 || Op == 0x61) {                               // PUSHA / POPA
+            Len = 1;
+        } else if (Op == 0x8F) {                                 // POP r/m16
+            Len = 1 + RmLen (m_pCode[Pc + 1]);
+        } else if (Op == 0x9C || Op == 0x9D) {                   // PUSHF / POPF (-> host, owns IF)
+            Len = 1; Tag = TagTrap;
+        } else if (Op == 0xCC) {                                 // INT3 (-> host interrupt)
+            Len = 1; Tag = TagTrap;
+        } else if (Op == 0xCE) {                                 // INTO (-> host; INT 4 iff OF)
+            Len = 1; Tag = TagTrap;
+        } else if (Op == 0xC2) {                                 // RET imm16 (near, pop args)
+            Len = 3; Tag = TagReturn;
+        } else if (Op == 0xCA) {                                 // RETF imm16 (far, pop args)
+            Len = 3; Tag = TagTrap;
+        } else if (Op == 0xD4 || Op == 0xD5) {                   // AAM / AAD (imm base byte follows)
+            Len = 2;
+        } else if (Op == 0x68) {                                 // PUSH imm16
+            Len = 3;
+        } else if (Op == 0x6A) {                                 // PUSH imm8 (sign-extended)
+            Len = 2;
+        } else if (Op == 0x69) {                                 // IMUL r16, r/m16, imm16
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 2;
+        } else if (Op == 0x6B) {                                 // IMUL r16, r/m16, imm8
+            Len = 1 + RmLen (m_pCode[Pc + 1]) + 1;
+        } else if (Op == 0x62) {                                 // BOUND r16, m16:16 (-> host; INT 5 if out of range)
+            Len = 1 + RmLen (m_pCode[Pc + 1]); Tag = TagTrap;
+        } else if (Op == 0x6C || Op == 0x6D || Op == 0x6E || Op == 0x6F) {   // INS/OUTS (-> host, string port I/O)
+            Len = 1; Tag = TagTrap;
         } else if (Op == 0x0F) {                                 // NEC 0F-prefixed instructions
             UINT8 Sub = m_pCode[Pc + 1];
             UINT8 Mrm = m_pCode[Pc + 2];
@@ -515,6 +564,39 @@ public:
         } else if (Op == 0x9E) { std::snprintf (pLine, MaxLine, "sahf");
         } else if (Op == 0x9F) { std::snprintf (pLine, MaxLine, "lahf");
         } else if (Op == 0xD7) { std::snprintf (pLine, MaxLine, "xlat");
+        } else if (Op == 0x06) { std::snprintf (pLine, MaxLine, "push es");
+        } else if (Op == 0x0E) { std::snprintf (pLine, MaxLine, "push cs");
+        } else if (Op == 0x16) { std::snprintf (pLine, MaxLine, "push ss");
+        } else if (Op == 0x1E) { std::snprintf (pLine, MaxLine, "push ds");
+        } else if (Op == 0x07) { std::snprintf (pLine, MaxLine, "pop es");
+        } else if (Op == 0x17) { std::snprintf (pLine, MaxLine, "pop ss");
+        } else if (Op == 0x1F) { std::snprintf (pLine, MaxLine, "pop ds");
+        } else if (Op == 0x8F) { std::snprintf (pLine, MaxLine, "pop [mem]");
+        } else if (Op == 0x9C) { std::snprintf (pLine, MaxLine, "pushf");
+        } else if (Op == 0x9D) { std::snprintf (pLine, MaxLine, "popf");
+        } else if (Op == 0x60) { std::snprintf (pLine, MaxLine, "pusha");
+        } else if (Op == 0x61) { std::snprintf (pLine, MaxLine, "popa");
+        } else if (Op == 0x68) { std::snprintf (pLine, MaxLine, "push 0x%04x", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0x6A) { std::snprintf (pLine, MaxLine, "push 0x%02x", m_pCode[Pc + 1]);
+        } else if (Op == 0x69 || Op == 0x6B) { std::snprintf (pLine, MaxLine, "imul %s", RegName ((m_pCode[Pc + 1] >> 3) & 7));
+        } else if (Op == 0x62) { std::snprintf (pLine, MaxLine, "bound %s", RegName ((m_pCode[Pc + 1] >> 3) & 7));
+        } else if (Op == 0x6C) { std::snprintf (pLine, MaxLine, "insb");
+        } else if (Op == 0x6D) { std::snprintf (pLine, MaxLine, "insw");
+        } else if (Op == 0x6E) { std::snprintf (pLine, MaxLine, "outsb");
+        } else if (Op == 0x6F) { std::snprintf (pLine, MaxLine, "outsw");
+        } else if (Op == 0xC2) { std::snprintf (pLine, MaxLine, "ret 0x%04x", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xCA) { std::snprintf (pLine, MaxLine, "retf 0x%04x", Imm16At (m_pCode, Pc + 1));
+        } else if (Op == 0xCC) { std::snprintf (pLine, MaxLine, "int3");
+        } else if (Op == 0xCE) { std::snprintf (pLine, MaxLine, "into");
+        } else if (Op == 0xD4) { std::snprintf (pLine, MaxLine, "aam");
+        } else if (Op == 0xD5) { std::snprintf (pLine, MaxLine, "aad");
+        } else if (Op == 0x27) { std::snprintf (pLine, MaxLine, "daa");
+        } else if (Op == 0x2F) { std::snprintf (pLine, MaxLine, "das");
+        } else if (Op == 0x37) { std::snprintf (pLine, MaxLine, "aaa");
+        } else if (Op == 0x3F) { std::snprintf (pLine, MaxLine, "aas");
+        } else if (Op == 0xE0) { std::snprintf (pLine, MaxLine, "loopne 0x%04x", (UINT16) (Pc + 2 + (INT8) m_pCode[Pc + 1]));
+        } else if (Op == 0xE1) { std::snprintf (pLine, MaxLine, "loope 0x%04x", (UINT16) (Pc + 2 + (INT8) m_pCode[Pc + 1]));
+        } else if (Op == 0xE3) { std::snprintf (pLine, MaxLine, "jcxz 0x%04x", (UINT16) (Pc + 2 + (INT8) m_pCode[Pc + 1]));
         } else if (Op == 0x8D) {
             std::snprintf (pLine, MaxLine, "lea %s,[mem]", RegName ((m_pCode[Pc + 1] >> 3) & 7));
         } else if (Op == 0x86 || Op == 0x87) {
@@ -587,6 +669,11 @@ public:
         if (Op == 0x0F && (m_pCode[Pc + 1] == 0xFF || m_pCode[Pc + 1] == 0xED)) {
             return S_OK;                            // BRKEM / CALLN: emulation-mode switch, no data effect
         }
+        // WAIT (0x9B) and ESC (0xD8-0xDF) are the 8087 coprocessor interface. The 8086/V20 itself
+        // performs no operation for them (the 8087, when present, snoops the bus); we model the
+        // coprocessor as present-but-idle, so these decode to nothing. FP arithmetic is not executed.
+        if (Op == 0x9B || (Op >= 0xD8 && Op <= 0xDF)) { return S_OK; }
+
         // Segment-override prefix (ES:/CS:/SS:/DS:): translate the following instruction with the
         // override in effect, then clear it.
         if (Op == 0x26 || Op == 0x2E || Op == 0x36 || Op == 0x3E) {
@@ -832,7 +919,51 @@ public:
                 }
                 return S_OK;
             }
-            return S_OK;                                           // /3,/5 far indirect: handled as a trap
+            if (Sub == 3 || Sub == 5) {                            // CALL / JMP m16:16 (far indirect)
+                // Read the far pointer from memory: offset at [EA], segment at [EA+2]. A BIOS uses
+                // this to enter an option ROM (or a service routine) at a segment computed at run time.
+                ComPtr<ICpuValue> EA;     EmitEA (pE, M, Pc + 2, &EA);
+                ComPtr<ICpuValue> LinIp;  EmitSegLinear (pE, SegForRm (M), EA, &LinIp);
+                ComPtr<ICpuValue> NewIp;  pE->Load (LinIp, 16, &NewIp);
+                ComPtr<ICpuValue> Two32;  pE->ConstInt (32, 2, &Two32);
+                ComPtr<ICpuValue> LinSeg; pE->BinaryOp (BinAdd, LinIp, Two32, &LinSeg);
+                ComPtr<ICpuValue> NewCs;  pE->Load (LinSeg, 16, &NewCs);
+                if (Sub == 3) {                                    // far CALL: push return CS:IP (8086 order)
+                    ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+                    ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+                    ComPtr<ICpuValue> Sp1;   pE->BinaryOp (BinSub, SP, Two, &Sp1);
+                    ComPtr<ICpuValue> CurCs; pE->GetRegister (RegV20CS, 16, &CurCs);
+                    ComPtr<ICpuValue> LinCs; EmitSegLinear (pE, RegV20SS, Sp1, &LinCs);
+                    pE->Store (CurCs, LinCs, 16);
+                    ComPtr<ICpuValue> Sp2;   pE->BinaryOp (BinSub, Sp1, Two, &Sp2);
+                    pE->PutRegister (RegV20SP, Sp2, 16, FALSE);
+                    ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+                    ComPtr<ICpuValue> LinRt; EmitSegLinear (pE, RegV20SS, Sp2, &LinRt);
+                    pE->Store (Ret, LinRt, 16);
+                }
+                pE->PutRegister (RegV20CS, NewCs, 16, FALSE);      // guest CS = loaded segment
+                ICpuSmcEmitter *pFlow = nullptr;
+                if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                    pFlow->IndirectBranch (NewIp);                 // resume at IP in the new CS (host re-points)
+                    pFlow->Release ();
+                }
+                return S_OK;
+            }
+            return S_OK;
+        }
+        // REP INS/OUTS: a single emitted block cannot loop a trapping port op, so trap once and let
+        // the host move all CX elements (advancing SI/DI) and clear CX.
+        if ((Op == 0xF2 || Op == 0xF3) && m_pCode[Pc + 1] >= 0x6C && m_pCode[Pc + 1] <= 0x6F) {
+            UINT8  SOp = m_pCode[Pc + 1];
+            UINT32 Rsn = (SOp == 0x6C) ? (UINT32) X86::CPU_IO_REP_INSB  : (SOp == 0x6D) ? (UINT32) X86::CPU_IO_REP_INSW :
+                         (SOp == 0x6E) ? (UINT32) X86::CPU_IO_REP_OUTSB : (UINT32) X86::CPU_IO_REP_OUTSW;
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);
+                pSysm->EmitSystemTrap (Rsn, Ret);
+                pSysm->Release ();
+            }
+            return S_OK;
         }
         // REP/REPE/REPNE (F3/F2) on a string op: a loop { if CX==0 break; one element; CX-- }.
         // For CMPS/SCAS the prefix also tests ZF (REPE while ZF==1, REPNE while ZF==0).
@@ -916,10 +1047,10 @@ public:
         if (Op == 0x9F) {
             ComPtr<ICpuValue> Base; pE->ConstInt (8, 0x02, &Base);
             ICpuValue *Acc = Base;
-            ComPtr<ICpuValue> H[4];
-            CPU_FLAG  Fl[4] = { FlagCarry, FlagParity, FlagZero, FlagNegative };
-            UINT8     Bt[4] = { 0, 2, 6, 7 };
-            for (int I = 0; I < 4; I++) {
+            ComPtr<ICpuValue> H[5];
+            CPU_FLAG  Fl[5] = { FlagCarry, FlagParity, FlagAux, FlagZero, FlagNegative };
+            UINT8     Bt[5] = { 0, 2, 4, 6, 7 };
+            for (int I = 0; I < 5; I++) {
                 ComPtr<ICpuValue> F; pE->GetFlag (Fl[I], &F);
                 ComPtr<ICpuValue> F8; pE->Cast (CastZExt, F, 8, &F8);
                 ComPtr<ICpuValue> Sh; pE->ConstInt (8, Bt[I], &Sh);
@@ -930,12 +1061,12 @@ public:
             EmitReg8Write (pE, 4, Acc);                            // AH
             return S_OK;
         }
-        // SAHF: CF/PF/ZF/SF from AH.
+        // SAHF: CF/PF/AF/ZF/SF from AH (bits 0/2/4/6/7).
         if (Op == 0x9E) {
             ComPtr<ICpuValue> Ah; EmitReg8Read (pE, 4, &Ah);
-            CPU_FLAG Fl[4] = { FlagCarry, FlagParity, FlagZero, FlagNegative };
-            UINT8    Bt[4] = { 0, 2, 6, 7 };
-            for (int I = 0; I < 4; I++) {
+            CPU_FLAG Fl[5] = { FlagCarry, FlagParity, FlagAux, FlagZero, FlagNegative };
+            UINT8    Bt[5] = { 0, 2, 4, 6, 7 };
+            for (int I = 0; I < 5; I++) {
                 ComPtr<ICpuValue> Sh;  pE->ConstInt (8, Bt[I], &Sh);
                 ComPtr<ICpuValue> Shf; pE->BinaryOp (BinLShr, Ah, Sh, &Shf);
                 ComPtr<ICpuValue> One; pE->ConstInt (8, 1, &One);
@@ -1085,11 +1216,241 @@ public:
             }
             break;
         }
-        case 0xE2: {                                               // LOOP: CX-- (no flags)
+        case 0xE0: case 0xE1: case 0xE2: {                         // LOOPNE / LOOPE / LOOP: CX-- (no flags)
             ComPtr<ICpuValue> C;   pE->GetRegister (RegV20CX, 16, &C);
             ComPtr<ICpuValue> One; pE->ConstInt (16, 1, &One);
             ComPtr<ICpuValue> Res; pE->BinaryOp (BinSub, C, One, &Res);
             pE->PutRegister (RegV20CX, Res, 16, FALSE);
+            break;                                                 // JCXZ (E3) has no CX effect; see TranslateCond
+        }
+
+        case 0x06: case 0x0E: case 0x16: case 0x1E: {              // PUSH ES/CS/SS/DS
+            ComPtr<ICpuValue> S; pE->GetRegister (RegV20ES + ((Op >> 3) & 3), 16, &S);
+            EmitPush16 (pE, S);
+            break;
+        }
+        case 0x07: case 0x17: case 0x1F: {                         // POP ES/SS/DS (no POP CS on the 8086)
+            ComPtr<ICpuValue> V; EmitPop16 (pE, &V);
+            pE->PutRegister (RegV20ES + ((Op >> 3) & 3), V, 16, FALSE);
+            break;
+        }
+        case 0x8F: {                                               // POP r/m16
+            ComPtr<ICpuValue> V; EmitPop16 (pE, &V);
+            EmitRmWrite (pE, m_pCode[Pc + 1], Pc + 1, V);
+            break;
+        }
+        case 0x68: {                                               // PUSH imm16
+            ComPtr<ICpuValue> Imm; pE->ConstInt (16, Imm16At (m_pCode, Pc + 1), &Imm);
+            EmitPush16 (pE, Imm);
+            break;
+        }
+        case 0x6A: {                                               // PUSH imm8 (sign-extended)
+            ComPtr<ICpuValue> Imm; pE->ConstInt (16, (UINT16) (INT16) (INT8) m_pCode[Pc + 1], &Imm);
+            EmitPush16 (pE, Imm);
+            break;
+        }
+        case 0x60: {                                               // PUSHA: AX,CX,DX,BX,(orig)SP,BP,SI,DI
+            ComPtr<ICpuValue> OrigSP; pE->GetRegister (RegV20SP, 16, &OrigSP);
+            for (UINT32 R = 0; R < 8; R++) {
+                if (R == (UINT32) RegV20SP) { EmitPush16 (pE, OrigSP); }
+                else { ComPtr<ICpuValue> V; pE->GetRegister (R, 16, &V); EmitPush16 (pE, V); }
+            }
+            break;
+        }
+        case 0x61: {                                               // POPA: DI,SI,BP,(skip)SP,BX,DX,CX,AX
+            for (int R = 7; R >= 0; R--) {
+                ComPtr<ICpuValue> V; EmitPop16 (pE, &V);
+                if (R != (int) RegV20SP) { pE->PutRegister ((UINT32) R, V, 16, FALSE); }   // SP slot discarded
+            }
+            break;
+        }
+        case 0x9C: {                                               // PUSHF -> host (the host owns IF)
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_PUSHF, Ret);
+                pSysm->Release ();
+            }
+            break;
+        }
+        case 0x9D: {                                               // POPF -> host
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_POPF, Ret);
+                pSysm->Release ();
+            }
+            break;
+        }
+        case 0xCC: {                                               // INT3 -> host (vector 3)
+            ICpuSyscallEmitter *pSys = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                pSys->EmitSyscall (3, Ret);
+                pSys->Release ();
+            }
+            break;
+        }
+        case 0xCE: {                                               // INTO: host raises INT 4 iff OF
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_INTO, Ret);
+                pSysm->Release ();
+            }
+            break;
+        }
+        case 0x62: {                                               // BOUND r16,m16:16: INT 5 if idx out of range
+            UINT8 M = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> Idx; pE->GetRegister ((M >> 3) & 7, 16, &Idx);
+            ComPtr<ICpuValue> EA;  EmitEA (pE, M, Pc + 2, &EA);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, SegForRm (M), EA, &Lin);
+            ComPtr<ICpuValue> Lo;  pE->Load (Lin, 16, &Lo);
+            ComPtr<ICpuValue> Two; pE->ConstInt (32, 2, &Two);
+            ComPtr<ICpuValue> LinHi; pE->BinaryOp (BinAdd, Lin, Two, &LinHi);
+            ComPtr<ICpuValue> Hi;  pE->Load (LinHi, 16, &Hi);
+            ComPtr<ICpuValue> Below; pE->Compare (CmpSLt, Idx, Lo, &Below);        // idx < lower
+            ComPtr<ICpuValue> Above; pE->Compare (CmpSGt, Idx, Hi, &Above);        // idx > upper
+            ComPtr<ICpuValue> Oob; pE->BinaryOp (BinOr, Below, Above, &Oob);
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1 + RmLen (M)), &Ret);
+                pSysm->EmitSystemTrapValue ((UINT32) X86::CPU_IO_BOUND, Oob, Ret);
+                pSysm->Release ();
+            }
+            break;
+        }
+        case 0x6C: case 0x6D: case 0x6E: case 0x6F: {              // INS/OUTS: host moves port<->[ES:DI]/[DS:SI]
+            UINT32 R = (Op == 0x6C) ? (UINT32) X86::CPU_IO_INSB : (Op == 0x6D) ? (UINT32) X86::CPU_IO_INSW :
+                       (Op == 0x6E) ? (UINT32) X86::CPU_IO_OUTSB : (UINT32) X86::CPU_IO_OUTSW;
+            ICpuSystemEmitter *pSysm = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                pSysm->EmitSystemTrap (R, Ret);
+                pSysm->Release ();
+            }
+            break;
+        }
+        case 0xC2: {                                               // RET imm16 (near): pop IP, then SP += imm16
+            ComPtr<ICpuValue> SP;  pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, SP, &Lin);
+            ComPtr<ICpuValue> T;   pE->Load (Lin, 16, &T);
+            ComPtr<ICpuValue> Adj; pE->ConstInt (16, (UINT16) (2 + Imm16At (m_pCode, Pc + 1)), &Adj);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Adj, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                ComPtr<ICpuValue> LinT; EmitSegLinear (pE, RegV20CS, T, &LinT);   // fold CS for the host
+                pFlow->SetDispatchTarget (LinT); pFlow->Release ();
+            }
+            break;
+        }
+        case 0xCA: {                                               // RETF imm16 (far): pop CS:IP, SP += 4 + imm16
+            ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+            ComPtr<ICpuValue> LinIp; EmitSegLinear (pE, RegV20SS, SP, &LinIp);
+            ComPtr<ICpuValue> Ip;    pE->Load (LinIp, 16, &Ip);
+            ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+            ComPtr<ICpuValue> Sp1;   pE->BinaryOp (BinAdd, SP, Two, &Sp1);
+            ComPtr<ICpuValue> LinCs; EmitSegLinear (pE, RegV20SS, Sp1, &LinCs);
+            ComPtr<ICpuValue> Cs;    pE->Load (LinCs, 16, &Cs);
+            ComPtr<ICpuValue> Adj;   pE->ConstInt (16, (UINT16) (4 + Imm16At (m_pCode, Pc + 1)), &Adj);
+            ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Adj, &NewSP);
+            pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+            pE->PutRegister (RegV20CS, Cs, 16, FALSE);
+            ICpuSmcEmitter *pFlow = nullptr;
+            if (SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                pFlow->IndirectBranch (Ip); pFlow->Release ();
+            }
+            break;
+        }
+        case 0xD5: {                                               // AAD: AL = AH*base + AL; AH = 0
+            UINT8 Base = m_pCode[Pc + 1];
+            ComPtr<ICpuValue> Ah;  EmitReg8Read (pE, 4, &Ah);
+            ComPtr<ICpuValue> Al;  EmitReg8Read (pE, 0, &Al);
+            ComPtr<ICpuValue> B;   pE->ConstInt (8, Base, &B);
+            ComPtr<ICpuValue> Mul; pE->BinaryOp (BinMul, Ah, B, &Mul);
+            ComPtr<ICpuValue> Sum; pE->BinaryOp (BinAdd, Mul, Al, &Sum);
+            EmitReg8Write (pE, 0, Sum);
+            ComPtr<ICpuValue> Z;   pE->ConstInt (8, 0, &Z);
+            EmitReg8Write (pE, 4, Z);
+            EmitZSF8 (pE, Sum);
+            break;
+        }
+        case 0xD4: {                                               // AAM: AH = AL / base; AL = AL % base
+            UINT8 Base = m_pCode[Pc + 1] ? m_pCode[Pc + 1] : 10;
+            ComPtr<ICpuValue> Al; EmitReg8Read (pE, 0, &Al);
+            ComPtr<ICpuValue> B;  pE->ConstInt (8, Base, &B);
+            ComPtr<ICpuValue> Q;  pE->BinaryOp (BinUDiv, Al, B, &Q);
+            ComPtr<ICpuValue> R;  pE->BinaryOp (BinURem, Al, B, &R);
+            EmitReg8Write (pE, 4, Q);
+            EmitReg8Write (pE, 0, R);
+            EmitZSF8 (pE, R);
+            break;
+        }
+        case 0x27: case 0x2F: {                                    // DAA / DAS: decimal-adjust AL after add/sub
+            bool Sub = (Op == 0x2F);
+            ComPtr<ICpuValue> Al;   EmitReg8Read (pE, 0, &Al);     // Al stays the pre-adjust value
+            ComPtr<ICpuValue> CF;   pE->GetFlag (FlagCarry, &CF);
+            ComPtr<ICpuValue> AF;   pE->GetFlag (FlagAux, &AF);
+            ComPtr<ICpuValue> F0;   pE->ConstInt (8, 0x0F, &F0);
+            ComPtr<ICpuValue> Lo;   pE->BinaryOp (BinAnd, Al, F0, &Lo);
+            ComPtr<ICpuValue> Nine; pE->ConstInt (8, 9, &Nine);
+            ComPtr<ICpuValue> Gt9;  pE->Compare (CmpUGt, Lo, Nine, &Gt9);
+            ComPtr<ICpuValue> CLo;  pE->BinaryOp (BinOr, Gt9, AF, &CLo);          // low nibble needs adjust
+            ComPtr<ICpuValue> Six;  pE->ConstInt (8, 6, &Six);
+            ComPtr<ICpuValue> AlAdj; pE->BinaryOp (Sub ? BinSub : BinAdd, Al, Six, &AlAdj);
+            ComPtr<ICpuValue> Al1;  pE->Select (CLo, AlAdj, Al, &Al1);
+            pE->SetFlag (FlagAux, CLo);
+            ComPtr<ICpuValue> N99;  pE->ConstInt (8, 0x99, &N99);
+            ComPtr<ICpuValue> GtH;  pE->Compare (CmpUGt, Al, N99, &GtH);   // Al = the original value
+            ComPtr<ICpuValue> CHi;  pE->BinaryOp (BinOr, GtH, CF, &CHi);          // high nibble needs adjust
+            ComPtr<ICpuValue> Sixty; pE->ConstInt (8, 0x60, &Sixty);
+            ComPtr<ICpuValue> Al2Adj; pE->BinaryOp (Sub ? BinSub : BinAdd, Al1, Sixty, &Al2Adj);
+            ComPtr<ICpuValue> Al2;  pE->Select (CHi, Al2Adj, Al1, &Al2);
+            pE->SetFlag (FlagCarry, CHi);
+            EmitReg8Write (pE, 0, Al2);
+            EmitZSF8 (pE, Al2); EmitParity (pE, Al2);
+            break;
+        }
+        case 0x37: case 0x3F: {                                    // AAA / AAS: ASCII-adjust AL after add/sub
+            bool Sub = (Op == 0x3F);
+            ComPtr<ICpuValue> Al;  EmitReg8Read (pE, 0, &Al);
+            ComPtr<ICpuValue> Ah;  EmitReg8Read (pE, 4, &Ah);
+            ComPtr<ICpuValue> AF;  pE->GetFlag (FlagAux, &AF);
+            ComPtr<ICpuValue> F0;  pE->ConstInt (8, 0x0F, &F0);
+            ComPtr<ICpuValue> Lo;  pE->BinaryOp (BinAnd, Al, F0, &Lo);
+            ComPtr<ICpuValue> Nine; pE->ConstInt (8, 9, &Nine);
+            ComPtr<ICpuValue> Gt9; pE->Compare (CmpUGt, Lo, Nine, &Gt9);
+            ComPtr<ICpuValue> Cond; pE->BinaryOp (BinOr, Gt9, AF, &Cond);
+            ComPtr<ICpuValue> Six; pE->ConstInt (8, 6, &Six);
+            ComPtr<ICpuValue> AlA; pE->BinaryOp (Sub ? BinSub : BinAdd, Al, Six, &AlA);
+            ComPtr<ICpuValue> Al1; pE->Select (Cond, AlA, Al, &Al1);
+            ComPtr<ICpuValue> One; pE->ConstInt (8, 1, &One);
+            ComPtr<ICpuValue> AhA; pE->BinaryOp (Sub ? BinSub : BinAdd, Ah, One, &AhA);
+            ComPtr<ICpuValue> Ah1; pE->Select (Cond, AhA, Ah, &Ah1);
+            EmitReg8Write (pE, 4, Ah1);
+            ComPtr<ICpuValue> AlMasked; pE->BinaryOp (BinAnd, Al1, F0, &AlMasked);   // AL &= 0x0F
+            EmitReg8Write (pE, 0, AlMasked);
+            pE->SetFlag (FlagAux, Cond);
+            pE->SetFlag (FlagCarry, Cond);
+            break;
+        }
+        case 0x69: case 0x6B: {                                    // IMUL r16, r/m16, imm  (signed)
+            UINT8  M    = m_pCode[Pc + 1];
+            UINT32 Reg  = (M >> 3) & 7;
+            CPU_ADDR ImmPc = Pc + 1 + RmLen (M);
+            INT32  Imm  = (Op == 0x69) ? (INT16) Imm16At (m_pCode, ImmPc) : (INT8) m_pCode[ImmPc];
+            ComPtr<ICpuValue> Rm;  EmitRmRead (pE, M, Pc + 1, &Rm);
+            ComPtr<ICpuValue> Rm32; pE->Cast (CastSExt, Rm, 32, &Rm32);
+            ComPtr<ICpuValue> Im32; pE->ConstInt (32, (UINT32) Imm, &Im32);
+            ComPtr<ICpuValue> P;   pE->BinaryOp (BinMul, Rm32, Im32, &P);
+            ComPtr<ICpuValue> P16; pE->Cast (CastTrunc, P, 16, &P16);
+            pE->PutRegister (Reg, P16, 16, FALSE);
+            ComPtr<ICpuValue> Back; pE->Cast (CastSExt, P16, 32, &Back);            // overflow if it didn't fit
+            ComPtr<ICpuValue> OvW; pE->Compare (CmpNe, Back, P, &OvW);
+            ComPtr<ICpuValue> Ov;  pE->Cast (CastTrunc, OvW, 1, &Ov);
+            pE->SetFlag (FlagCarry, Ov);
+            pE->SetFlag (FlagOverflow, Ov);
             break;
         }
         case 0xE8: {                                               // CALL rel16: push return addr (SS:SP)
@@ -1117,7 +1478,9 @@ public:
             break;
         }
         case 0xEA: {                                               // JMP ptr16:16 (far)
-            // Load CS:IP and trap to the host, which re-translates the new segment.
+            // Load CS:IP and trap to the host, which re-points the frontend at the new code
+            // segment and re-translates from the new IP. The frontend works in IP (offset) space,
+            // so the trap target is the bare IP; the new CS travels in the guest CS register.
             UINT16 NewIp = Imm16At (m_pCode, Pc + 1);
             UINT16 NewCs = Imm16At (m_pCode, Pc + 3);
             ComPtr<ICpuValue> Cs; pE->ConstInt (16, NewCs, &Cs);
@@ -1190,7 +1553,7 @@ public:
             UINT8 Vector = m_pCode[Pc + 1];
             ICpuSyscallEmitter *pSys = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);
+                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);   // return IP (offset in CS)
                 pSys->EmitSyscall (Vector, Ret);
                 pSys->Release ();
             }
@@ -1204,7 +1567,7 @@ public:
             }
             bool Imm8Port = (Op == 0xE4 || Op == 0xE6);            // port in imm8 vs DX
             UINT16 Len = (Imm8Port ? 2 : 1);
-            ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+            ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);   // return IP (offset in CS)
             ComPtr<ICpuValue> Port;
             if (Imm8Port) { pE->ConstInt (16, m_pCode[Pc + 1], &Port); }
             else          { pE->GetRegister (RegV20DX, 16, &Port); }
@@ -1214,7 +1577,7 @@ public:
             } else if (Op == 0xE4 || Op == 0xEC) {                 // IN AL, port
                 pSysm->EmitPortIn (Port, 8, Ret);
             } else {                                               // IRET/HLT/CLI/STI
-                UINT32 Reason = (Op == 0xCF) ? (UINT32) CPU_IO_IRET :
+                UINT32 Reason = (Op == 0xCF) ? (UINT32) X86::CPU_IO_IRET :   // IRET is x86-specific
                                 (Op == 0xF4) ? (UINT32) CPU_IO_HLT  :
                                 (Op == 0xFA) ? (UINT32) CPU_IO_CLI  : (UINT32) CPU_IO_STI;
                 pSysm->EmitSystemTrap (Reason, Ret);
@@ -1367,6 +1730,26 @@ public:
             ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
             return pE->Compare (CmpNe, C, Zero, ppCond);
         }
+        case 0xE1: {                                // LOOPE: CX != 0 AND ZF (CX already decremented)
+            ComPtr<ICpuValue> C;    pE->GetRegister (RegV20CX, 16, &C);
+            ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+            ComPtr<ICpuValue> Nz;   pE->Compare (CmpNe, C, Zero, &Nz);
+            ComPtr<ICpuValue> Z;    pE->GetFlag (FlagZero, &Z);
+            return pE->BinaryOp (BinAnd, Nz, Z, ppCond);
+        }
+        case 0xE0: {                                // LOOPNE: CX != 0 AND !ZF
+            ComPtr<ICpuValue> C;    pE->GetRegister (RegV20CX, 16, &C);
+            ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+            ComPtr<ICpuValue> Nz;   pE->Compare (CmpNe, C, Zero, &Nz);
+            ComPtr<ICpuValue> Z;    pE->GetFlag (FlagZero, &Z);
+            ComPtr<ICpuValue> Nzf;  pE->UnaryOp (UnNot, Z, &Nzf);
+            return pE->BinaryOp (BinAnd, Nz, Nzf, ppCond);
+        }
+        case 0xE3: {                                // JCXZ: taken if CX == 0
+            ComPtr<ICpuValue> C;    pE->GetRegister (RegV20CX, 16, &C);
+            ComPtr<ICpuValue> Zero; pE->ConstInt (16, 0, &Zero);
+            return pE->Compare (CmpEq, C, Zero, ppCond);
+        }
         default:
             return E_NOTIMPL;                       // unimplemented Jcc: driver falls through
         }
@@ -1412,6 +1795,26 @@ private:
     }
 
     // Read / write the r/m operand: a register (mod=11) or memory at the EA.
+    // Push a 16-bit value: SP -= 2; [SS:SP] = value.
+    VOID EmitPush16 (ICpuEmitter *pE, ICpuValue *pValue) {
+        ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+        ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+        ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
+        pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+        ComPtr<ICpuValue> Lin;   EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
+        pE->Store (pValue, Lin, 16);
+    }
+
+    // Pop a 16-bit value: out = [SS:SP]; SP += 2.
+    VOID EmitPop16 (ICpuEmitter *pE, ICpuValue **ppValue) {
+        ComPtr<ICpuValue> SP;    pE->GetRegister (RegV20SP, 16, &SP);
+        ComPtr<ICpuValue> Lin;   EmitSegLinear (pE, RegV20SS, SP, &Lin);
+        pE->Load (Lin, 16, ppValue);
+        ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
+        ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinAdd, SP, Two, &NewSP);
+        pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
+    }
+
     // Form the 20-bit linear address SegReg * 16 + (offset & 0xFFFF), as a 32-bit
     // value. With the segment register 0 this is just the offset (unsegmented).
     VOID EmitSegLinear (ICpuEmitter *pE, UINT32 SegReg, ICpuValue *pOffset, ICpuValue **ppLinear) {
@@ -1569,6 +1972,13 @@ private:
     // pCount is a Width-bit count, masked to 5 bits (V20/V30/186 behaviour); correct for counts
     // 1..Width. CF is the last bit moved out; SHL/SHR/SAR also set Z/S/P. OF (only defined for a
     // 1-bit count on real hardware) is left cleared.
+    // Extract bit Pos of a Width-bit value as a 1-bit value (for the shift/rotate OF rules).
+    VOID EmitBitAt (ICpuEmitter *pE, ICpuValue *pVal, UINT32 Width, UINT32 Pos, ICpuValue **ppBit) {
+        ComPtr<ICpuValue> Sh; pE->ConstInt (Width, Pos, &Sh);
+        ComPtr<ICpuValue> Hi; pE->BinaryOp (BinLShr, pVal, Sh, &Hi);
+        pE->Cast (CastTrunc, Hi, 1, ppBit);
+    }
+
     VOID EmitShift (ICpuEmitter *pE, UINT8 Sub, UINT32 Width, ICpuValue *pVal, ICpuValue *pCountRaw, ICpuValue **ppRes) {
         ComPtr<ICpuValue> M5;    pE->ConstInt (Width, 0x1F, &M5);
         ComPtr<ICpuValue> Count; pE->BinaryOp (BinAnd, pCountRaw, M5, &Count);
@@ -1576,27 +1986,43 @@ private:
         ComPtr<ICpuValue> One;    pE->ConstInt (Width, 1, &One);
         ComPtr<ICpuValue> WmC;    pE->BinaryOp (BinSub, WidthV, Count, &WmC);   // Width - Count
         ComPtr<ICpuValue> Cm1;    pE->BinaryOp (BinSub, Count, One, &Cm1);      // Count - 1
+        // OF is architecturally defined only for single-bit shifts/rotates (undefined for
+        // count != 1); we compute it from the count==1 rule, which is what real BIOSes test.
         bool Shift = (Sub >= 4);
         if (Sub == 4 || Sub == 6) {                                            // SHL
             pE->BinaryOp (BinShl, pVal, Count, ppRes);
             ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, WmC, &Sh);
             ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
-        } else if (Sub == 5 || Sub == 7) {                                     // SHR / SAR
-            pE->BinaryOp (Sub == 5 ? BinLShr : BinAShr, pVal, Count, ppRes);
+            // OF = MSB(result) XOR CF (sign changed by the shift)
+            ComPtr<ICpuValue> Msb; EmitBitAt (pE, *ppRes, Width, Width - 1, &Msb);
+            ComPtr<ICpuValue> OF;  pE->BinaryOp (BinXor, Msb, CF, &OF); pE->SetFlag (FlagOverflow, OF);
+        } else if (Sub == 5) {                                                 // SHR
+            pE->BinaryOp (BinLShr, pVal, Count, ppRes);
             ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, Cm1, &Sh);
             ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            // OF = MSB of the original operand
+            ComPtr<ICpuValue> OF; EmitBitAt (pE, pVal, Width, Width - 1, &OF); pE->SetFlag (FlagOverflow, OF);
+        } else if (Sub == 7) {                                                 // SAR
+            pE->BinaryOp (BinAShr, pVal, Count, ppRes);
+            ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, Cm1, &Sh);
+            ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            ComPtr<ICpuValue> Z; pE->ConstInt (1, 0, &Z); pE->SetFlag (FlagOverflow, Z);   // SAR: OF always 0
         } else if (Sub == 0) {                                                 // ROL
             ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, Count, &L);
             ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, WmC, &R);
             pE->BinaryOp (BinOr, L, R, ppRes);
             ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, *ppRes, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            // OF = MSB(result) XOR CF
+            ComPtr<ICpuValue> Msb; EmitBitAt (pE, *ppRes, Width, Width - 1, &Msb);
+            ComPtr<ICpuValue> OF;  pE->BinaryOp (BinXor, Msb, CF, &OF); pE->SetFlag (FlagOverflow, OF);
         } else if (Sub == 1) {                                                 // ROR
             ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, Count, &R);
             ComPtr<ICpuValue> L; pE->BinaryOp (BinShl, pVal, WmC, &L);
             pE->BinaryOp (BinOr, R, L, ppRes);
-            ComPtr<ICpuValue> ShM; pE->ConstInt (Width, Width - 1, &ShM);
-            ComPtr<ICpuValue> Hi;  pE->BinaryOp (BinLShr, *ppRes, ShM, &Hi);
-            ComPtr<ICpuValue> CF;  pE->Cast (CastTrunc, Hi, 1, &CF); pE->SetFlag (FlagCarry, CF);
+            ComPtr<ICpuValue> CF;  EmitBitAt (pE, *ppRes, Width, Width - 1, &CF); pE->SetFlag (FlagCarry, CF);
+            // OF = top two bits of the result XORed
+            ComPtr<ICpuValue> B2;  EmitBitAt (pE, *ppRes, Width, Width - 2, &B2);
+            ComPtr<ICpuValue> OF;  pE->BinaryOp (BinXor, CF, B2, &OF); pE->SetFlag (FlagOverflow, OF);
         } else {                                                               // RCL (2) / RCR (3) through carry
             ComPtr<ICpuValue> CFin;  pE->GetFlag (FlagCarry, &CFin);
             ComPtr<ICpuValue> CFinW; pE->Cast (CastZExt, CFin, Width, &CFinW);
@@ -1610,6 +2036,9 @@ private:
                 pE->BinaryOp (BinOr, T, R, ppRes);
                 ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, WmC, &Sh);
                 ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+                // OF = MSB(result) XOR CF
+                ComPtr<ICpuValue> Msb; EmitBitAt (pE, *ppRes, Width, Width - 1, &Msb);
+                ComPtr<ICpuValue> OF;  pE->BinaryOp (BinXor, Msb, CF, &OF); pE->SetFlag (FlagOverflow, OF);
             } else {                                                           // RCR
                 ComPtr<ICpuValue> R; pE->BinaryOp (BinLShr, pVal, Count, &R);
                 ComPtr<ICpuValue> Cb; pE->BinaryOp (BinShl, CFinW, WmC, &Cb);
@@ -1618,9 +2047,12 @@ private:
                 pE->BinaryOp (BinOr, T, L, ppRes);
                 ComPtr<ICpuValue> Sh; pE->BinaryOp (BinLShr, pVal, Cm1, &Sh);
                 ComPtr<ICpuValue> CF; pE->Cast (CastTrunc, Sh, 1, &CF); pE->SetFlag (FlagCarry, CF);
+                // OF = top two bits of the result XORed
+                ComPtr<ICpuValue> Msb; EmitBitAt (pE, *ppRes, Width, Width - 1, &Msb);
+                ComPtr<ICpuValue> B2;  EmitBitAt (pE, *ppRes, Width, Width - 2, &B2);
+                ComPtr<ICpuValue> OF;  pE->BinaryOp (BinXor, Msb, B2, &OF); pE->SetFlag (FlagOverflow, OF);
             }
         }
-        ComPtr<ICpuValue> Zero1; pE->ConstInt (1, 0, &Zero1); pE->SetFlag (FlagOverflow, Zero1);
         if (Shift) {
             if (Width == 16) { EmitZSF (pE, *ppRes); } else { EmitZSF8 (pE, *ppRes); }
         }

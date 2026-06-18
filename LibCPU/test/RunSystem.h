@@ -15,6 +15,7 @@
 #include "CpuV20.h"
 #include "LibCPU/CpuState.h"
 #include "../core/System.h"
+#include "../core/X86System.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -91,6 +92,7 @@ RunSystemDemo (ICpuBackend *pBackend)
     pArch->SetCodeMemory (Ram, sizeof (Ram));
 
     System Machine (pArch, pBackend, Ram, sizeof (Ram));
+    InstallX86System (Machine);                              // CPU personality: x86 privileged ops
     SysConsole   Console (0xE9);
     SysDipSwitch Dip (0x64, (UINT8) 'S');
     SysTimer     Timer (1, 3);
@@ -101,7 +103,7 @@ RunSystemDemo (ICpuBackend *pBackend)
     // "BIOS": stack at 0:0x1000, and the timer vector (IRQ0 -> INT 8) -> our ISR.
     Machine.State ()->Reg[4]  = 0x1000;   // SP
     Machine.State ()->Reg[10] = 0x0000;   // SS
-    Machine.SetIvt (0x08, 0x0000, 0x0040);
+    X86SetIvt (Machine, 0x08, 0x0000, 0x0040);
 
     std::printf ("  devices: console@0xE9, dipswitch@0x64='S', timer(IRQ0 x3)\n");
     std::printf ("  --- guest console output ---\n  ");

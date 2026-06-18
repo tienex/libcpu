@@ -28,7 +28,7 @@ enum { Crtc_Index = 0x4, Crtc_Data = 0x5, Cga_Mode = 0x8, Cga_Color = 0x9, Cga_S
 enum { Cga_FbBase = 0xB8000, Cga_Cols = 80, Cga_Rows = 25 };   // colour text page
 enum { Cga_VramSize = 0x4000 };                                // the CGA's 16 KiB of video RAM
 
-class Cga6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost {
+class Cga6845 : public IDevice, public IPortDevice, public IDisplayDevice, public IMemoryDevice, public IHostMemory, public IOptionRomHost, public IDisplayMode {
 public:
     Cga6845 () : m_Ref (1) {}
 
@@ -47,11 +47,41 @@ public:
             *ppvObject = static_cast<IHostMemory *> (this);
         } else if (CompareGuid (&riid, &IID_IOptionRomHost)) {
             *ppvObject = static_cast<IOptionRomHost *> (this);
+        } else if (CompareGuid (&riid, &IID_IDisplayMode)) {
+            *ppvObject = static_cast<IDisplayMode *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
         }
         AddRef ();
+        return S_OK;
+    }
+
+    // --- IDisplayMode: text (the common case) or a CGA graphics mode, per the mode-control register
+    // (0x3D8): bit1 selects graphics, bit4 selects 640x200 mono vs 320x200 4-colour. The framebuffer
+    // is the card's VRAM (the text/graphics page both start at 0xB8000). ---
+    HRESULT STDMETHODCALLTYPE GetMode (UINT32 *pFormat, UINT32 *pWidth, UINT32 *pHeight, UINT32 *pBpp) override
+    {
+        if (m_Mode & 0x02) {                            // graphics
+            bool HiRes = (m_Mode & 0x10) != 0;
+            if (pFormat) { *pFormat = 1; }
+            if (pWidth)  { *pWidth  = HiRes ? 640 : 320; }
+            if (pHeight) { *pHeight = 200; }
+            if (pBpp)    { *pBpp    = HiRes ? 1 : 2; }
+        } else {                                        // text: bit0 = 80-column, else 40
+            if (pFormat) { *pFormat = 0; }
+            if (pWidth)  { *pWidth  = (m_Mode & 0x01) ? 80 : 40; }
+            if (pHeight) { *pHeight = Cga_Rows; }
+            if (pBpp)    { *pBpp    = 0; }
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetFramebuffer (UINT8 CONST **ppBytes, UINT32 *pLength) override
+    {
+        if (ppBytes == nullptr || pLength == nullptr) { return E_POINTER; }
+        *ppBytes = m_Vram.data ();                      // page at 0xB8000 (VRAM offset 0)
+        if (m_Mode & 0x02) { *pLength = Cga_VramSize; } // graphics: the whole 16 KiB page
+        else               { *pLength = ((m_Mode & 0x01) ? 80 : 40) * Cga_Rows * 2; }
         return S_OK;
     }
 

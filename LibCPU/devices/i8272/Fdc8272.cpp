@@ -19,7 +19,9 @@
 
 #include "LibCPU/IDevice.h"
 #include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace LibCPU {
@@ -28,7 +30,10 @@ namespace {
 
 enum { Fdc_Dor = 2, Fdc_Msr = 4, Fdc_Data = 5, Fdc_Ccr = 7 };
 enum { Msr_Rqm = 0x80, Msr_Dio = 0x40, Msr_Ndm = 0x20, Msr_Cb = 0x10 };
-enum { Geo_Spt = 18, Geo_Heads = 2, Sector_Size = 512 };     // 1.44 MB floppy geometry
+enum { Sector_Size = 512 };
+// Default geometry is the 1.44 MB 3.5" drive (80 cyl x 2 heads x 18 spt); the device tree can
+// override it per drive (e.g. a 360 KB 5.25" drive is 40 x 2 x 9).
+enum { Geo_Cyls = 80, Geo_Spt = 18, Geo_Heads = 2 };
 
 // Phases of a controller command.
 enum PHASE { PhaseCommand, PhaseExec, PhaseResult };
@@ -86,15 +91,36 @@ public:
     HRESULT STDMETHODCALLTYPE Configure (IN IDeviceNode *pNode) override
     {
         UINT32 Base = 0x3F0;
-        if (pNode != nullptr) { pNode->GetPropertyCell ("reg", 0, &Base); }
-        m_Base = (UINT16) Base;
+        UINT32 Cyls = Geo_Cyls, Heads = Geo_Heads, Spt = Geo_Spt;
+        std::string ImagePath;
+        if (pNode != nullptr) {
+            pNode->GetPropertyCell ("reg", 0, &Base);
+            pNode->GetPropertyCell ("libcpu,cylinders", 0, &Cyls);   // drive geometry (default 1.44 MB)
+            pNode->GetPropertyCell ("libcpu,heads", 0, &Heads);
+            pNode->GetPropertyCell ("libcpu,sectors", 0, &Spt);
+            UINT8 CONST *pImg = nullptr; UINT32 ImgLen = 0;          // optional backing disk image
+            if (SUCCEEDED (pNode->GetProperty ("libcpu,image", &pImg, &ImgLen)) && pImg != nullptr && ImgLen > 0) {
+                ImagePath.assign ((CHAR8 CONST *) pImg, ImgLen);
+                ImagePath = ImagePath.c_str ();                      // trim at the NUL
+            }
+        }
+        m_Base  = (UINT16) Base;
+        m_Heads = (UINT8) Heads;
+        m_Spt   = (UINT8) Spt;
 
-        // Back the drive with one cylinder; seed sector 0 with a recognizable boot-sector pattern.
-        m_Image.assign ((size_t) Geo_Spt * Geo_Heads * Sector_Size, 0);
-        CHAR8 CONST *pTag = "LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK";
-        std::memcpy (m_Image.data (), pTag, std::strlen (pTag));
-        m_Image[Sector_Size - 2] = 0x55;                     // boot signature
-        m_Image[Sector_Size - 1] = 0xAA;
+        m_Image.assign ((size_t) Cyls * Heads * Spt * Sector_Size, 0);
+        if (!ImagePath.empty ()) {                           // a real diskette image: load it verbatim
+            std::FILE *pF = std::fopen (ImagePath.c_str (), "rb");
+            if (pF != nullptr) {
+                std::fread (m_Image.data (), 1, m_Image.size (), pF);   // short images leave the tail zeroed
+                std::fclose (pF);
+            }
+        } else {                                             // no media attached: seed a recognizable pattern
+            CHAR8 CONST *pTag = "LIBCPU FLOPPY SECTOR 0 - DMA TRANSFER OK";
+            std::memcpy (m_Image.data (), pTag, std::strlen (pTag));
+            m_Image[Sector_Size - 2] = 0x55;                 // boot signature
+            m_Image[Sector_Size - 1] = 0xAA;
+        }
         return Reset ();
     }
 
@@ -139,7 +165,20 @@ public:
     {
         UINT8 V = (UINT8) Value;
         switch (Port - m_Base) {
-            case Fdc_Dor: m_Dor = V; break;                  // drive/motor/reset/DMA select
+            case Fdc_Dor: {                                  // drive/motor/reset/DMA select
+                UINT8 Old = m_Dor;
+                m_Dor = V;
+                // DOR bit 2 is the controller's active-low reset. When the BIOS releases reset
+                // (0 -> 1), a real uPD765 finishes its reset and raises IRQ6; the BIOS's "reset disk
+                // system" (INT 13h AH=0) waits for exactly that, then drains state with Sense
+                // Interrupt Status. Without it the reset times out (status 0x80) and boot fails.
+                if (!(Old & 0x04) && (V & 0x04)) {
+                    m_Phase = PhaseCommand;
+                    m_CmdLen = 0;
+                    m_IrqPending = TRUE;
+                }
+                break;
+            }
             case Fdc_Data:
                 if (m_Phase != PhaseCommand) { break; }      // ignore data writes outside command phase
                 if (m_CmdLen == 0) {                         // first byte: opcode sets the parameter count
@@ -194,7 +233,7 @@ private:
 
     UINT32 Lba (UINT8 C, UINT8 H, UINT8 R) const
     {
-        return ((UINT32) C * Geo_Heads + H) * Geo_Spt + (UINT32) (R > 0 ? R - 1 : 0);
+        return ((UINT32) C * m_Heads + H) * m_Spt + (UINT32) (R > 0 ? R - 1 : 0);
     }
 
     VOID ReadSector (UINT32 Lba)
@@ -253,8 +292,10 @@ private:
     }
 
     std::atomic<INT32> m_Ref;
-    UINT16             m_Base = 0x3F0;
-    UINT8              m_Dor  = 0;
+    UINT16             m_Base  = 0x3F0;
+    UINT8              m_Dor   = 0;
+    UINT8              m_Heads = Geo_Heads;                   // drive geometry (from the device tree)
+    UINT8              m_Spt   = Geo_Spt;
     std::vector<UINT8> m_Image;
     UINT8              m_Sector[Sector_Size] = { 0 };        // the in-flight DMA sector buffer
     UINT8              m_Cmd[16] = { 0 };

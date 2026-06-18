@@ -208,6 +208,10 @@ DECLARE_INTERFACE_ (IDmaController, IUnknown)
     STDMETHOD_ (UINT32, Release)(THIS) PURE;
 
     STDMETHOD (GetChannel)(THIS_ UINT32 Channel, OUT UINT32 *pAddress, OUT UINT32 *pCount, OUT UINT32 *pMode) PURE;
+    // Mark a channel's transfer finished: the controller latches terminal count (sets the TC status
+    // bit and winds the current count to its wrapped value), as the real 8237 does when a peripheral
+    // drives EOP. The BIOS reads the status register after a DMA op to confirm TC was reached.
+    STDMETHOD (SetTerminalCount)(THIS_ UINT32 Channel) PURE;
 };
 
 //
@@ -244,6 +248,89 @@ DECLARE_INTERFACE_ (IOptionRomHost, IUnknown)
 };
 
 //
+// Capability: a keyboard controller that accepts injected key events at run time. A console front
+// end pushes raw scan codes (XT set-1 make/break) as the user types; the controller queues them
+// and delivers each through its interrupt (IRQ1) as the guest reads the previous one. This is the
+// run-time counterpart to the device-tree "libcpu,keystroke" seed.
+//
+DECLARE_INTERFACE_ (IKeyboardSink, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (PushScanCode)(THIS_ UINT8 ScanCode) PURE;
+};
+
+//
+// Capability: a display device that reports its current mode so a console can stream the right
+// kind of frame. GetMode fills the geometry and pixel format (text cells vs a graphics bitmap);
+// GetFramebuffer returns a pointer to the live framebuffer bytes (the card's own VRAM at the
+// active page) and their length. A device exposing this drives the console's MODE/FRAME messages.
+//
+DECLARE_INTERFACE_ (IDisplayMode, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    // Format: 0 = text (Width=cols, Height=rows), 1 = graphics (Width x Height, Bpp bits/pixel).
+    STDMETHOD (GetMode)(THIS_ OUT UINT32 *pFormat, OUT UINT32 *pWidth, OUT UINT32 *pHeight, OUT UINT32 *pBpp) PURE;
+    STDMETHOD (GetFramebuffer)(THIS_ OUT UINT8 CONST **ppBytes, OUT UINT32 *pLength) PURE;
+};
+
+//
+// Capability: a storage MEDIUM -- the platters, independent of the bus that reaches them. The same
+// drive sits behind an ST-506, ESDI, SASI, IDE/ATA, SCSI, ... controller; each controller is just
+// a different protocol in front of this. A medium exposes CHS geometry (for CHS controllers) and a
+// total sector count (for LBA controllers), and reads/writes whole sectors by LBA. SectorSize is
+// usually 512. This is what a generic disk component implements; controllers translate their wire
+// protocol into these calls.
+//
+DECLARE_INTERFACE_ (IBlockMedium, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (GetGeometry)(THIS_ OUT UINT32 *pCylinders, OUT UINT32 *pHeads, OUT UINT32 *pSectors, OUT UINT32 *pSectorSize) PURE;
+    STDMETHOD_ (UINT64, GetSectorCount)(THIS) PURE;
+    STDMETHOD (Read)(THIS_ UINT64 Lba, OUT UINT8 *pBuffer, UINT32 SectorCount) PURE;
+    STDMETHOD (Write)(THIS_ UINT64 Lba, IN UINT8 CONST *pBuffer, UINT32 SectorCount) PURE;
+};
+
+//
+// Capability: a storage CONTROLLER that drives one or more attached media. The machine builder
+// resolves the controller node's "disks = <&drive0>, <&drive1>, ..." phandles to IBlockMedium
+// components and hands each to the controller as a unit (0, 1, ...). The controller keeps the
+// references and serves its bus protocol from them. A controller with no attached media reports
+// an empty bus.
+//
+DECLARE_INTERFACE_ (IStorageController, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (AttachMedium)(THIS_ UINT32 Unit, IN IBlockMedium *pMedium) PURE;
+};
+
+//
+// Capability: the component is driven by the machine's time base. The host calls OnClock with a
+// monotonically increasing cycle count (CPU_STATE.Cycles) as the guest runs, so a peripheral can
+// model real elapsed time -- e.g. the 8253 PIT advances its down-counters by the cycles elapsed
+// since each was loaded, instead of a fixed step per read. Cycles never decreases within a run.
+//
+DECLARE_INTERFACE_ (IClockSink, IUnknown)
+{
+    STDMETHOD (QueryInterface)(THIS_ REFIID riid, OUT VOID **ppvObject) PURE;
+    STDMETHOD_ (UINT32, AddRef)(THIS) PURE;
+    STDMETHOD_ (UINT32, Release)(THIS) PURE;
+
+    STDMETHOD (OnClock)(THIS_ UINT64 Cycles) PURE;
+};
+
+//
 // Interface identifiers. Device family base {1C9A0002-0001-4C50-9A00-0000000000NN}.
 //
 inline constexpr IID IID_IDeviceNode =
@@ -272,6 +359,16 @@ inline constexpr IID IID_IDmaPeripheral =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C } };
 inline constexpr IID IID_IOptionRomHost =
     { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D } };
+inline constexpr IID IID_IKeyboardSink =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E } };
+inline constexpr IID IID_IDisplayMode =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F } };
+inline constexpr IID IID_IBlockMedium =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 } };
+inline constexpr IID IID_IStorageController =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 } };
+inline constexpr IID IID_IClockSink =
+    { 0x1C9A0002, 0x0001, 0x4C50, { 0x9A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12 } };
 
 } // namespace LibCPU
 

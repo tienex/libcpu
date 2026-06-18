@@ -88,7 +88,8 @@ private:
 //
 // The builder: emits LLVM IR for one translation unit (one function "insn").
 //
-class LlvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter {
+class LlvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter,
+                          public ICpuSystemEmitter, public ICpuSyscallEmitter, public ICpuClockEmitter {
 public:
     LlvmEmitter () {
         m_Ctx     = std::make_unique<LLVMContext> ();
@@ -122,6 +123,21 @@ public:
         }
         if (CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuSystemEmitter)) {       // port I/O + system traps (machine emulation)
+            *ppvObject = static_cast<ICpuSystemEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuSyscallEmitter)) {      // software INT n -> host-vectored syscall
+            *ppvObject = static_cast<ICpuSyscallEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuClockEmitter)) {        // per-instruction time base
+            *ppvObject = static_cast<ICpuClockEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -289,6 +305,44 @@ public:
         return S_OK;
     }
 
+    // ---- system-level emulation (ICpuSystemEmitter / ICpuSyscallEmitter) --
+    // Each privileged op records its effect in CPU_STATE and returns to the host (ExecSmc), exactly
+    // like the interpreter's OpPortOut/OpSysTrap/OpSyscall and the same shape as IndirectBranch.
+    // The frontend tags every one of these TagTrap, so the CFG driver emits nothing after them --
+    // the CreateRet here is the block terminator.
+    HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {
+        StoreState (CPU_STATE_IOCTRL_OFFSET, ConstantInt::get (IntTy (64), CPU_IO_MAKE (CPU_IO_OUT, Width)));
+        StoreState (CPU_STATE_IOPORT_OFFSET, To64 (pPort));
+        StoreState (CPU_STATE_IODATA_OFFSET, To64 (pData));
+        return TrapReturn (pReturnPc);
+    }
+    HRESULT STDMETHODCALLTYPE EmitPortIn (ICpuValue *pPort, UINT32 Width, ICpuValue *pReturnPc) override {
+        StoreState (CPU_STATE_IOCTRL_OFFSET, ConstantInt::get (IntTy (64), CPU_IO_MAKE (CPU_IO_IN, Width)));
+        StoreState (CPU_STATE_IOPORT_OFFSET, To64 (pPort));
+        return TrapReturn (pReturnPc);
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrap (UINT32 Reason, ICpuValue *pReturnPc) override {
+        StoreState (CPU_STATE_IOCTRL_OFFSET, ConstantInt::get (IntTy (64), CPU_IO_MAKE (Reason, 0)));
+        return TrapReturn (pReturnPc);
+    }
+    HRESULT STDMETHODCALLTYPE EmitSystemTrapValue (UINT32 Reason, ICpuValue *pValue, ICpuValue *pReturnPc) override {
+        StoreState (CPU_STATE_IOCTRL_OFFSET, ConstantInt::get (IntTy (64), CPU_IO_MAKE (Reason, 0)));
+        StoreState (CPU_STATE_IODATA_OFFSET, To64 (pValue));
+        return TrapReturn (pReturnPc);
+    }
+    HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
+        StoreState (CPU_STATE_SYSCALL_OFFSET, ConstantInt::get (IntTy (64), Vector));
+        return TrapReturn (pReturnPc);
+    }
+
+    // ---- time base (ICpuClockEmitter): Cycles += Count, once per guest instruction --------
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        llvm::Value *pPtr = ElemPtr (StatePtr (CPU_STATE_CYCLES_OFFSET), IntTy (64));
+        llvm::Value *pNew = m_Builder->CreateAdd (m_Builder->CreateLoad (IntTy (64), pPtr), ConstantInt::get (IntTy (64), Count));
+        m_Builder->CreateStore (pNew, pPtr);
+        return S_OK;
+    }
+
     // In-artifact dispatch scratch: write/read CPU_STATE.DispPc (64-bit).
     HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
         llvm::Value *pPc = m_Builder->CreateZExtOrTrunc (ValOf (pTargetPc), IntTy (64));
@@ -364,6 +418,19 @@ private:
     }
     llvm::Value *RegPtr (UINT32 Index) { return StatePtr (CPU_STATE_REG_OFFSET + Index * 8); }
     llvm::Value *FlagPtr (CPU_FLAG Flag) { return StatePtr (CPU_STATE_FLAG_OFFSET + (UINT32) Flag); }
+
+    // Helpers shared by the system/syscall trap emitters: store a 64-bit value into a CPU_STATE
+    // field, widen an ICpuValue to 64 bits, and terminate the block by recording the resume PC and
+    // returning ExecSmc (hand control back to the host machine loop).
+    void StoreState (UINT32 Offset, llvm::Value *pV64) {
+        m_Builder->CreateStore (pV64, ElemPtr (StatePtr (Offset), IntTy (64)));
+    }
+    llvm::Value *To64 (ICpuValue *pVal) { return m_Builder->CreateZExtOrTrunc (ValOf (pVal), IntTy (64)); }
+    HRESULT TrapReturn (ICpuValue *pReturnPc) {
+        StoreState (CPU_STATE_TRAPPC_OFFSET, To64 (pReturnPc));
+        m_Builder->CreateRet (ConstantInt::get (IntTy (32), (UINT32) ExecSmc));
+        return S_OK;
+    }
     llvm::Value *MemPtr (llvm::Value *pAddr) {
         llvm::Value *pIdx = m_Builder->CreateZExtOrTrunc (pAddr, IntTy (64));
         return m_Builder->CreateGEP (IntTy (8), m_pRAM, pIdx);

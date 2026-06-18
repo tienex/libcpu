@@ -1,14 +1,17 @@
 /** @file
-  System-level emulation: a minimal emulated machine.
+  System-level emulation: a minimal, CPU-NEUTRAL emulated machine.
 
-  Where user-level emulation reaches the host through system calls, system-level
-  emulation gives the guest a MACHINE: a flat physical memory, a bus of emulated
-  devices reached by port I/O, and a hardware-interrupt path (a device raises an IRQ,
-  the machine vectors the CPU through the interrupt table to a guest ISR, which
-  returns with IRET). The CPU's privileged instructions -- IN/OUT, STI/CLI, HLT,
-  IRET -- trap to System (via ICpuSystemEmitter), which drives the addressed device
-  or performs the control action and resumes. This is the 8086/PC model (IRQ n ->
-  INT 8+n, real-mode IVT at physical 0).
+  Where user-level emulation reaches the host through system calls, system-level emulation gives
+  the guest a MACHINE: a flat physical memory, a bus of emulated devices reached by port I/O, a
+  translate/run loop, and a hardware-interrupt path. System understands only CPU-neutral traps
+  (port IN/OUT, HALT, interrupt enable/disable) and the generic notion "a device raised an IRQ".
+
+  Everything CPU-architecture-specific -- how FLAGS are laid out, how interrupts vector, the IRET
+  stack frame, BCD/string privileged ops -- belongs to a pluggable CPU "personality", not here. A
+  privileged trap whose reason is >= CPU_IO_ARCH_BASE is forwarded to the personality's handler
+  (SetArchTrap); a pending IRQ is delivered by the personality's deliver hook (SetIrqDeliver). The
+  x86/8086 personality lives in X86System.{h,cpp} (InstallX86System); a different CPU family would
+  supply its own. System itself carries no knowledge of any particular instruction set.
 
   Copyright (c) the LibCPU developers. Distributed under the 2-clause BSD license.
 **/
@@ -18,6 +21,8 @@
 
 #include "LibCPU/ICpu.h"
 #include "LibCPU/CpuState.h"
+#include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace LibCPU {
@@ -34,6 +39,7 @@ public:
     virtual UINT16 ReadPort (UINT16 Port, UINT32 Width) { return 0; }
     virtual void   WritePort (UINT16 Port, UINT32 Width, UINT16 Value) {}
     virtual int    Poll () { return -1; }     // returns an IRQ to raise, or -1
+    virtual void   Clock (UINT64 Cycles) {}   // feed the machine time base to time-driven devices
 };
 
 //
@@ -45,14 +51,52 @@ typedef struct _LC_SYS_RESULT {
     UINT64 Interrupts;     // hardware interrupts delivered
     UINT64 PortWrites;
     UINT64 PortReads;
+    CPU_ADDR FinalPc;      // linear PC where the machine stopped (for post-mortem)
 } LC_SYS_RESULT;
 
 class System {
 public:
     System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UINT64 RamSize);
+    ~System ();
 
     void AddDevice (Device *pDevice);                // borrowed; caller keeps it alive
     void RequestShutdown () { m_Shutdown = true; }
+
+    // Install a pump callback invoked on every execution-window boundary and periodically while
+    // the CPU is halted. A console bridge uses it to stream the framebuffer out and feed injected
+    // keystrokes in, without System knowing anything about the console protocol.
+    void SetPump (std::function<void ()> Pump) { m_Pump = std::move (Pump); }
+
+    // --- CPU personality hook -------------------------------------------------------------------
+    // A trap whose reason is >= CPU_IO_ARCH_BASE is CPU-architecture-specific; System does not
+    // interpret it but forwards (this, reason, IoData, return-pc) to the installed handler, which
+    // returns the PC to resume at. This is how the x86 personality (InstallX86System) implements
+    // IRET/PUSHF/POPF/INTO/BOUND/INS/OUTS without System carrying any x86 knowledge. The accessors
+    // below are the CPU-neutral primitives such a handler works through.
+    void SetArchTrap (std::function<CPU_ADDR (System &, UINT32 Reason, UINT32 Value, CPU_ADDR ReturnPc)> Fn) { m_ArchTrap = std::move (Fn); }
+    // Install how a pending hardware IRQ is delivered. The generic loop calls this with the raw IRQ
+    // number; the personality maps it to a vector and enters the handler, returning the resume PC.
+    // Without it, the machine cannot vector interrupts (a halted guest just idles).
+    void SetIrqDeliver (std::function<CPU_ADDR (System &, UINT32 Irq, CPU_ADDR ReturnPc)> Fn) { m_DeliverIrq = std::move (Fn); }
+    // Install how a software interrupt (INT n) is delivered. A full machine vectors it in-guest
+    // through the IVT so the guest's own BIOS/DOS handlers run (the BIOS provides INT 10h/13h/16h/...
+    // itself). The personality returns the resume PC. Without it, an INT is inert (resumes after it),
+    // which is what the host-intercept (knowledge-library) execution path relies on instead.
+    void SetSyscallDeliver (std::function<CPU_ADDR (System &, UINT32 Vector, CPU_ADDR ReturnPc)> Fn) { m_DeliverSyscall = std::move (Fn); }
+
+    UINT8   *PhysMem () { return m_pRAM; }
+    UINT64   PhysSize () CONST { return m_RamSize; }
+    bool     InterruptsEnabled () CONST { return m_If; }
+    void     SetInterruptsEnabled (bool On) { m_If = On; }
+    UINT16   PortRead (UINT16 Port, UINT32 Width) { Device *p = FindPort (Port); return p ? p->ReadPort (Port, Width) : (UINT16) 0; }
+    void     PortWrite (UINT16 Port, UINT32 Width, UINT16 Val) { if (Device *p = FindPort (Port)) { p->WritePort (Port, Width, Val); } }
+
+    // Enable tiered execution: cold immutable-code regions run on the construction backend (tier 0,
+    // typically the interpreter -- instant to translate); a region executed at least Threshold times
+    // is recompiled once with pHotBackend (tier 1, an optimizing JIT) and cached, so hot loops reach
+    // native speed while a JIT's per-region compile cost is paid only where it amortizes. pHotBackend
+    // is borrowed (the caller keeps it alive for the run). No effect on writable RAM code.
+    void SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold);
 
     // Map a device-owned host buffer over a guest physical region. The guest's flat RAM and the
     // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
@@ -64,9 +108,10 @@ public:
     // and writes to it are discarded. Enforced at execution-window boundaries.
     void MarkOpenBus (UINT32 Base, UINT32 Size);
 
-    // Seed an interrupt-vector-table entry (real-mode IVT at physical 0): vector ->
-    // Seg:Off. Used by the "BIOS" to install a default ISR before running.
-    void SetIvt (UINT32 Vector, UINT16 Seg, UINT16 Off);
+    // Mark a guest-physical range as immutable code (a ROM/BIOS image): translations whose entry
+    // lands here are cached and reused, since the bytes can never change. Read-only device-memory
+    // regions are treated as immutable automatically; this is for firmware loaded into flat RAM.
+    void MarkCodeImmutable (UINT64 Base, UINT64 Size);
 
     CPU_STATE *State () { return &m_State; }
 
@@ -78,7 +123,6 @@ public:
 private:
     Device *FindPort (UINT16 Port) CONST;
     int       PollDevices ();                          // first device asserting an IRQ
-    void      InjectInterrupt (UINT32 Vector, CPU_ADDR ReturnPc);
     void      SyncDeviceMemoryIn ();                   // device buffers -> flat RAM (before a window)
     void      SyncDeviceMemoryOut ();                  // flat RAM -> device buffers (after a window)
 
@@ -99,7 +143,21 @@ private:
     bool                    m_If;          // interrupt-enable flag (8086 IF)
     bool                    m_Halted;      // executed HLT, waiting for an interrupt
     bool                    m_Shutdown;
-    CPU_ADDR                m_NextPc;      // set by InjectInterrupt
+    std::function<void ()>  m_Pump;        // console bridge boundary callback (see SetPump)
+    std::function<CPU_ADDR (System &, UINT32, UINT32, CPU_ADDR)> m_ArchTrap;    // CPU personality trap (SetArchTrap)
+    std::function<CPU_ADDR (System &, UINT32, CPU_ADDR)>         m_DeliverIrq;  // CPU personality IRQ delivery (SetIrqDeliver)
+    std::function<CPU_ADDR (System &, UINT32, CPU_ADDR)>         m_DeliverSyscall; // software-INT delivery (SetSyscallDeliver)
+
+    // In-memory translation cache: compiled code keyed by the burst's linear entry address. Without
+    // it the run loop re-translates every burst, which is cheap for the interpreter but ruinous for a
+    // JIT (an LLVM module compiled per burst). Invalidated when the guest writes to watched code (SMC).
+    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; bool Hot; };   // a cached translation + its heat
+    std::unordered_map<UINT64, CACHED_CODE> m_CodeCache;
+    std::vector<std::pair<UINT64, UINT64>> m_ImmutableCode;   // (base, end) ranges safe to cache
+    ICpuBackend            *m_pHotBackend = nullptr;          // tier-1 (JIT) backend, or null
+    UINT64                  m_HotThreshold = 0;               // runs before a region promotes to tier 1
+    void ClearCodeCache ();
+    bool IsImmutableCode (UINT64 Addr) CONST;                 // in a ROM / marked-immutable region?
 };
 
 } // namespace LibCPU

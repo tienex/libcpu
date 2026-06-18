@@ -192,18 +192,32 @@ if(LIGHTNING_INC AND LIGHTNING_LIB)
   endif()
 endif()
 
-# ---- AsmJit backend (in-process a64 JIT; vendored, arm64 only) ----
+# ---- AsmJit backend (in-process JIT; vendored: AArch64 + x86/x86-64) ----
+# AsmJit is target-specific (unlike the host-agnostic SLJIT/Lightning IRs): the backend file selects
+# its emitter per slice via ASMJIT_ARCH_*. We compile the core + BOTH the arm and x86 instruction
+# backends and let each slice keep only what it needs (asmjit guards them with ASMJIT_ARCH_*), so a
+# universal arm64+x86_64 build yields one fat asmjit.backend whose AArch64 slice runs natively and whose
+# x86-64 slice runs under Rosetta / on Intel hosts. No ASMJIT_NO_* -- every supported host has a backend.
 file(GLOB _aj_src CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/core/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/arm/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/x86/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asmjit/asmjit/support/*.cpp)
-if(_aj_src AND "arm64" IN_LIST LIBCPU_UNIVERSAL_ARCHS)
-  message(STATUS "LibCPU: AsmJit [arm64] -> asmjit.backend")
+# AsmJit emits for AArch64, x86-64 and IA-32 only -- keep the arches the toolchain offers that AsmJit
+# can target (e.g. ppc/ppc64 are dropped; arm64+x86_64 on Apple Silicon, i386+x86_64 on an Intel SDK).
+set(_aj_archs "")
+foreach(_a ${LIBCPU_UNIVERSAL_ARCHS})
+  if(_a STREQUAL "arm64" OR _a STREQUAL "x86_64" OR _a STREQUAL "i386")
+    list(APPEND _aj_archs ${_a})
+  endif()
+endforeach()
+if(_aj_src AND _aj_archs)
+  message(STATUS "LibCPU: AsmJit [${_aj_archs}] -> asmjit.backend")
   libcpu_add_backend(asmjit_backend asmjit
-    ARCHS "arm64"
+    ARCHS "${_aj_archs}"
     SOURCES backends/asmjit/AsmjitBackend.cpp backends/asmjit/AsmjitModule.cpp ${_aj_src}
     INCLUDES backends/asmjit third_party/asmjit
-    DEFINES ASMJIT_STATIC ASMJIT_NO_X86)
+    DEFINES ASMJIT_STATIC)
 endif()
 
 # ---- external-toolchain backends (one bundle per discovered version) ----
@@ -263,7 +277,7 @@ target_include_directories(cachedemo PRIVATE frontends/v20 frontends/i8080 test 
 target_link_libraries(cachedemo PRIVATE LibCPU)
 
 # System-level emulation: an 8086 machine with a device bus and timer interrupts.
-add_executable(sysdemo test/sysdemo.cpp core/System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+add_executable(sysdemo test/sysdemo.cpp core/System.cpp core/X86System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
 target_include_directories(sysdemo PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(sysdemo PRIVATE LibCPU)
 
@@ -301,12 +315,13 @@ endif()
 # across the toolchain's arches, no external dependency) and powers `lcx klib`.
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
-  core/KnowledgeLibrary.cpp core/System.cpp core/NativeAot.cpp core/ZooArchive.cpp
+  core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   core/DeviceNode.cpp core/MachineBuilder.cpp
+  console/ConsoleChannel.cpp console/ConsoleBridge.cpp console/TerminalConsole.cpp
   frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.cpp
   third_party/zstd/zstd.c)
-target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core third_party/zstd)
+target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core console third_party/zstd)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl ${CMAKE_DL_LIBS})   # dl for HeaderParser's dlopen(libclang)
 if(APPLE)
@@ -331,6 +346,9 @@ libcpu_add_device(incolor_device incolor MATCH "hercules,incolor;incolor" SOURCE
 libcpu_add_device(i8272_device i8272 MATCH "intel,i8272;nec,upd765;ibm,pc-fdc;fdc" SOURCES devices/i8272/Fdc8272.cpp)
 libcpu_add_device(st506_device st506 MATCH "xebec,1210;ibm,pc-xt-hdc;st506;hdc" SOURCES devices/st506/HardDisk506.cpp)
 libcpu_add_device(xtide_device xtide MATCH "xtide;xt-ide;ide" SOURCES devices/xtide/Xtide.cpp)
+libcpu_add_device(lpt_device lpt MATCH "ibm,parallel;parallel;centronics;lpt" SOURCES devices/lpt/Lpt.cpp)
+libcpu_add_device(disk_device disk MATCH "libcpu,disk;ata,disk;scsi,disk;st506,disk;disk" SOURCES devices/disk/HardDisk.cpp)
+libcpu_add_device(i8087_device i8087 MATCH "intel,i8087;i8087;fpu;8087" SOURCES devices/i8087/Fpu8087.cpp)
 libcpu_add_device(pcspeaker_device pcspeaker MATCH "ibm,pc-speaker;pc-speaker;speaker" SOURCES devices/pcspeaker/Speaker.cpp)
 libcpu_add_device(cassette_device cassette MATCH "ibm,pc-cassette;cassette" SOURCES devices/cassette/Cassette.cpp)
 libcpu_add_device(ram_device ram MATCH "libcpu,ram" SOURCES devices/ram/Ram.cpp)
@@ -885,6 +903,183 @@ if(TARGET interp_backend)
      grep -q '0x000b8000..0x000bbfff  RW  MC6845 CRTC .CGA.' '${CMAKE_BINARY_DIR}/machine-cga.out' && \
      grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-cga.out'")
 
+  # Olivetti M24 / AT&T PC 6300: an XT-class 8086 machine with enhanced-CGA video and a uPD765
+  # floppy controller. It assembles (CGA framebuffer at 0xB8000, FDC + ST-506 fitted) and runs the
+  # power-on demo to the colour text screen, just like the IBM XT but on the M24's chipset.
+  add_test(NAME machine.m24 COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' --run > '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'Olivetti M24' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'uPD765/8272A FDC' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'Intel 8087 FPU' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'Parallel Port .SPP.' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'ST-506 HDC .20 MB: 615/4/17.' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'Hard Disk .20 MB: 615/4/17.' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'framebuffer 0xb8000' '${CMAKE_BINARY_DIR}/machine-m24.out' && \
+     grep -q 'LIBCPU PC/XT 5160' '${CMAKE_BINARY_DIR}/machine-m24.out'")
+  set_tests_properties(machine.m24 PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # Option-ROM bootstrap: --boot runs a minimal BIOS POST that scans the UMA for the 0x55 0xAA
+  # signature and far-calls each ROM's init (FF /3). With a real Seagate ST-11 disk BIOS loaded on
+  # the M24's controller, the bootstrap finds and enters it -- the scan report confirms it at 0xc8000.
+  add_test(NAME machine.boot COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' --boot --steps 300 --rom 'hdc@320=${CMAKE_CURRENT_SOURCE_DIR}/roms/option-roms/Seagate/Seagate ST11 - BIOS version 2.1.bin' > '${CMAKE_BINARY_DIR}/machine-boot.out' && \
+     grep -q 'loaded 6144 bytes for hdc@320 at 0xc8000' '${CMAKE_BINARY_DIR}/machine-boot.out' && \
+     grep -q 'option ROM found at 0xc8000.*checksum OK' '${CMAKE_BINARY_DIR}/machine-boot.out'")
+  set_tests_properties(machine.boot PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # ST-506 hard disk: the controller is a bus adapter over a generic block medium. A guest programs
+  # DMA channel 3 and writes the 6-byte READ control block; the controller reads sector 0 from the
+  # mounted 20 MB medium, DMAs it to memory, and raises IRQ5. The seeded sector-0 text comes back.
+  add_test(NAME machine.hdc COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-hdc > '${CMAKE_BINARY_DIR}/machine-hdc.out' && \
+     grep -q '1 IRQ5' '${CMAKE_BINARY_DIR}/machine-hdc.out' && \
+     grep -q 'sector 0 at 0x12000 = .LIBCPU HARD DISK SECTOR 0' '${CMAKE_BINARY_DIR}/machine-hdc.out'")
+  set_tests_properties(machine.hdc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # M24 console: the XT/M24-class machine drives the typewriter through the 8255 PPI keyboard (no
+  # 8042) onto the CGA display (which now reports IDisplayMode). Scripted keys "hi" appear on screen.
+  add_test(NAME machine.m24console COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' --console --keys hi > '${CMAKE_BINARY_DIR}/machine-m24c.out' && \
+     grep -q 'headless/scripted' '${CMAKE_BINARY_DIR}/machine-m24c.out' && \
+     grep -q 'TYPE: .*hi' '${CMAKE_BINARY_DIR}/machine-m24c.out'")
+  set_tests_properties(machine.m24console PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # The real Olivetti M24 system BIOS runs its full "Resident Diagnostics" POST on our model and
+  # renders the result screen to CGA. This exercises the whole stack: the cycle-driven PIT (so the
+  # "DMA Timer" test sees a [4,14] latch delta instead of halting at F000:E05B with "DMA Timer Fail"),
+  # in-guest software-INT vectoring (so the BIOS's own INT 10h paints the screen and INT 13h probes
+  # disks), the MC146818 RTC, the DMA/PIC/RAM checks, and FDC presence. We assert the passing report.
+  # (It then tries INT 19h and prints "READ ERROR" -- no bootable floppy image is attached yet.)
+  add_test(NAME machine.m24post COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+       --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+       --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24post.out' 2>&1 && \
+     grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24post.out' && \
+     grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24post.out' && \
+     grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24post.out'")
+  set_tests_properties(machine.m24post PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # Tiered execution: the same M24 POST, but with "--jit" naming an optimizing JIT (LLVM) as tier 1.
+  # The machine runs cold code on the interpreter and promotes hot ROM regions to the JIT (which now
+  # implements the system/syscall emitters, so it drives the device bus). Proves the JIT path produces
+  # identical, correct results -- the full POST screen -- without the per-window compile cost that made
+  # a JIT-only run unusably slow. Only registered when an LLVM backend bundle was built.
+  if (EXISTS "${CMAKE_BINARY_DIR}/llvm-22.backend")
+    add_test(NAME machine.m24jit COMMAND sh -c
+      "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+         --jit '${CMAKE_BINARY_DIR}/llvm-22.backend' \
+         --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+         --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24jit.out' 2>&1 && \
+       grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24jit.out' && \
+       grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit.out' && \
+       grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit.out'")
+    set_tests_properties(machine.m24jit PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+  endif ()
+
+  # The same, with the sljit REGISTER-ASSEMBLER JIT as tier 1. sljit is not an IR builder like LLVM;
+  # its backend now implements the full CFG (CreateBlock/Branch/CondBranch via labels + deferred-jump
+  # patching), the SMC guard / indirect-branch dispatcher, and the port-I/O + system + syscall trap
+  # emitters -- so a register-assembler JIT can drive the whole device-emulated machine, not just the
+  # standalone translation matrix. Cold code runs on the interpreter; hot regions promote to sljit and
+  # produce the identical POST screen.
+  if (EXISTS "${CMAKE_BINARY_DIR}/sljit.backend")
+    add_test(NAME machine.m24jitsl COMMAND sh -c
+      "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+         --jit '${CMAKE_BINARY_DIR}/sljit.backend' \
+         --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+         --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24jitsl.out' 2>&1 && \
+       grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24jitsl.out' && \
+       grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24jitsl.out' && \
+       grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24jitsl.out'")
+    set_tests_properties(machine.m24jitsl PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+  endif ()
+
+  # Same proof for the other register-assembler JITs given full CFG support: GNU Lightning and AsmJit
+  # (both slot/virtual-register assemblers, not IR builders) now drive the device-emulated machine as
+  # tier-1 hot backends and produce the identical POST screen.
+  foreach (_jit lightning asmjit)
+    if (EXISTS "${CMAKE_BINARY_DIR}/${_jit}.backend")
+      add_test(NAME machine.m24jit-${_jit} COMMAND sh -c
+        "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+           --jit '${CMAKE_BINARY_DIR}/${_jit}.backend' \
+           --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+           --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24jit-${_jit}.out' 2>&1 && \
+         grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24jit-${_jit}.out' && \
+         grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-${_jit}.out' && \
+         grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24jit-${_jit}.out'")
+      set_tests_properties(machine.m24jit-${_jit} PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+    endif ()
+  endforeach ()
+
+  # PURE JIT (no interpreter tier): the whole M24 BIOS -- cold code and all -- runs on the JIT. This
+  # is the strongest test: it requires the JIT to be a complete, correct frontend target (every ALU
+  # op incl. division, a bounded temp frame, full CFG + traps) AND the unified per-instruction clock
+  # (ICpuClockEmitter) so PIT timing matches the interpreter. Every register-assembler JIT that drives
+  # the machine -- sljit, GNU Lightning, and AsmJit (rewritten onto the low-level a64::Assembler with a
+  # manual slot frame, since its Compiler's register allocator cannot reconcile our externally-built
+  # CFG) -- POSTs the full screen this way, with no interpreter help.
+  foreach (_jit sljit lightning asmjit)
+    if (EXISTS "${CMAKE_BINARY_DIR}/${_jit}.backend")
+      add_test(NAME machine.m24pure-${_jit} COMMAND sh -c
+        "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+           --backend '${CMAKE_BINARY_DIR}/${_jit}.backend' \
+           --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+           --steps 600000 > '${CMAKE_BINARY_DIR}/machine-m24pure-${_jit}.out' 2>&1 && \
+         grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24pure-${_jit}.out' && \
+         grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24pure-${_jit}.out' && \
+         grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24pure-${_jit}.out'")
+      set_tests_properties(machine.m24pure-${_jit} PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+    endif ()
+  endforeach ()
+
+  # CROSS-ARCH: run the pure AsmJit machine through the backend's x86-64 slice under Rosetta 2. AsmJit
+  # is target-specific, so this exercises a DIFFERENT code path than the native arm64 slice -- the whole
+  # x86-64 emitter (FuncFrame SysV prologue, RDX:RAX division, every ALU op) emitting real x86-64 that
+  # Rosetta executes. Registered only on an Apple Silicon host that built an x86_64 slice and has a
+  # working `arch -x86_64` (Rosetta). Slower (binary translation), so a generous step budget.
+  if (APPLE AND "x86_64" IN_LIST LIBCPU_UNIVERSAL_ARCHS AND EXISTS "${CMAKE_BINARY_DIR}/asmjit.backend")
+    execute_process(COMMAND arch -x86_64 /usr/bin/true RESULT_VARIABLE _rosetta_rc ERROR_QUIET OUTPUT_QUIET)
+    if (_rosetta_rc EQUAL 0)
+      add_test(NAME machine.m24pure-asmjit-x86_64 COMMAND sh -c
+        "arch -x86_64 '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+           --backend '${CMAKE_BINARY_DIR}/asmjit.backend' \
+           --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+           --steps 600000 > '${CMAKE_BINARY_DIR}/machine-m24pure-asmjit-x86_64.out' 2>&1 && \
+         grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24pure-asmjit-x86_64.out' && \
+         grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24pure-asmjit-x86_64.out' && \
+         grep -qE '640 kb RAM +Pass' '${CMAKE_BINARY_DIR}/machine-m24pure-asmjit-x86_64.out'")
+      set_tests_properties(machine.m24pure-asmjit-x86_64 PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:" TIMEOUT 180)
+    endif ()
+  endif ()
+
+  # WINDOWS ABIs via Wine: cross-compile the AsmJit codegen harness for Windows x86-64 and x86 with
+  # MinGW-w64 and run both under Wine, proving the backend executes under the Microsoft x64 (Win64 /
+  # UEFI x64) and cdecl (Win32 / UEFI IA-32) conventions -- the ABIs the native arm64 / Rosetta-SysV
+  # runs cannot exercise. Registered only when both MinGW-w64 cross-compilers and a Wine are present.
+  find_program(_mingw_x64 x86_64-w64-mingw32-g++)
+  find_program(_mingw_x86 i686-w64-mingw32-g++)
+  find_program(_wine_sys wine)
+  if (_mingw_x64 AND _mingw_x86 AND (_wine_sys OR EXISTS "$ENV{HOME}/bin/wine"))
+    add_test(NAME asmjit.windows-wine COMMAND sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/test/run-asmjit-wine.sh" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}")
+    set_tests_properties(asmjit.windows-wine PROPERTIES TIMEOUT 300)
+  endif ()
+
+  # End-to-end M24 boot: attach a bootable 360 KB diskette image (generated by mk_m24boot.py) to the
+  # floppy controller, then let the real M24 BIOS POST, run its INT 13h boot-strap (reset + read C0
+  # H0 S1 to 0000:7C00 over the FDC/DMA), and jump into the loaded boot sector, which prints
+  # "M24 BOOTS LibCPU!" via INT 10h. This exercises FDC reset/IRQ6, DMA terminal-count, the 8237, and
+  # in-guest software-INT vectoring together -- the whole machine from power-on to running guest code.
+  add_test(NAME machine.m24boot COMMAND sh -c
+    "python3 '${CMAKE_CURRENT_SOURCE_DIR}/test/mk_m24boot.py' '${CMAKE_BINARY_DIR}/m24-boot.img' && \
+     sed 's#libcpu,sectors = <9>;#libcpu,sectors = <9>; libcpu,image = \"${CMAKE_BINARY_DIR}/m24-boot.img\";#' \
+       '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' > '${CMAKE_BINARY_DIR}/m24-boot.dts' && \
+     '$<TARGET_FILE:lcx>' machine '${CMAKE_BINARY_DIR}/m24-boot.dts' --bundles '${CMAKE_BINARY_DIR}' \
+       --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+       --steps 1500000 > '${CMAKE_BINARY_DIR}/machine-m24boot.out' 2>&1 && \
+     grep -q 'M24 BOOTS LibCPU' '${CMAKE_BINARY_DIR}/machine-m24boot.out'")
+  set_tests_properties(machine.m24boot PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
   # 8042 keyboard-controller self-test: a guest issues the controller self-test command (0xAA to
   # 0x64) and reads the result from 0x60 -- the 8042 answers 0x55 ('U'), which the program prints as
   # "KBC=U" on the serial console. End to end through the AT-class machine's device bus.
@@ -903,6 +1098,17 @@ if(TARGET interp_backend)
      grep -q 'press a key... [*]' '${CMAKE_BINARY_DIR}/kbd.out' && \
      grep -q '1 interrupt.s. delivered; ISR read scan code 0x1E' '${CMAKE_BINARY_DIR}/kbd.out'")
   set_tests_properties(machine.kbd PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # Console seam end to end: the interactive typewriter guest runs while a headless console scripts
+  # the keys "hello". Each key crosses the in-process console channel as a KEY message, is injected
+  # into the 8042 (IKeyboardSink), fires IRQ1, and the ISR echoes the glyph to VGA text memory; the
+  # bridge streams the framebuffer back as FRAME messages, which the console renders -- so "hello"
+  # appears on the screen the test prints. Proves both directions of the protocol.
+  add_test(NAME machine.console COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --console --keys hello > '${CMAKE_BINARY_DIR}/console.out' && \
+     grep -q 'headless/scripted' '${CMAKE_BINARY_DIR}/console.out' && \
+     grep -q 'TYPE: .*hello' '${CMAKE_BINARY_DIR}/console.out'")
+  set_tests_properties(machine.console PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # MC146818 RTC/CMOS: a guest selects each clock register through 0x70 and reads it from 0x71;
   # the seeded BCD date/time (12:00:00 on 2026-06-16) comes back through the device bus.
@@ -928,7 +1134,7 @@ if(TARGET interp_backend)
   # always read 0). The latch advances the live count once, so 0x1234 reads back as 0x1233.
   add_test(NAME machine.pit COMMAND sh -c
     "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/pcvga.dts' --bundles '${CMAKE_BINARY_DIR}' --demo-pit > '${CMAKE_BINARY_DIR}/pit.out' && \
-     grep -q 'PIT ch0 latched count = 0x1233' '${CMAKE_BINARY_DIR}/pit.out'")
+     grep -q 'PIT ch0 latched count = 0x1231' '${CMAKE_BINARY_DIR}/pit.out'")
   set_tests_properties(machine.pit PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
 
   # DMA-driven floppy read: the guest programs DMA channel 2 and issues the FDC Read Data command;
