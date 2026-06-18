@@ -225,7 +225,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
                 // JIT (tier 1) and the tier-0 (interpreter) artifact is swapped out for it.
                 if (!C.Hot && m_pHotBackend != nullptr && C.Runs >= m_HotThreshold) {
                     ComPtr<ICpuCode> Hot;
-                    if (SUCCEEDED (GenerateAotCfg (m_pArch, m_pHotBackend, Pc, EffEnd, &Hot, nullptr)) && Hot != nullptr) {
+                    if (SUCCEEDED (GenerateAotCfg (m_pArch, m_pHotBackend, Pc, EffEnd, &Hot, nullptr, TRUE)) && Hot != nullptr) {
                         C.pCode->Release ();
                         Hot->AddRef (); C.pCode = Hot.Get ();
                         C.Hot = true;
@@ -238,7 +238,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             }
         }
         if (pCode == nullptr) {
-            if (FAILED (GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr)) || Fresh == nullptr) {
+            if (FAILED (GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE)) || Fresh == nullptr) {
                 R.Reason = LC_SYS_RESULT::Fault;
                 break;
             }
@@ -249,6 +249,9 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         m_State.TrapPc = CPU_SMC_NO_TRAP;
         m_State.IoCtrl = CPU_IO_NONE;
         m_State.SyscallVector = CPU_NO_SYSCALL;
+        m_State.CodeBase = Pc;                          // PIC base: this unit's load address (entry offset),
+                                                        // so the artifact reconstructs code addresses as
+                                                        // CodeBase + (target - Entry) -- valid at any load
         SyncDeviceMemoryIn ();                          // device-owned memory -> flat RAM
         UINT64 CyclesBefore = m_State.Cycles;
         pCode->Execute (m_pRAM, &m_State, nullptr);

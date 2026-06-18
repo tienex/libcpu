@@ -23,6 +23,7 @@ typedef enum _INTERP_OP {
     OpIndirect,     // A = target temp: set TrapPc = target and return (resume there)
     OpSetDisp,      // A = target temp: DispPc = target (in-artifact dispatch scratch)
     OpGetDisp,      // Dest = DispPc
+    OpGetCodeBase,  // Dest = CodeBase (PIC: artifact reconstructs addresses as CodeBase + relative)
     OpEdgeCount,    // Imm = slot: ++EdgeCount[slot] (profiling instrumentation)
     OpSyscall,      // Imm = vector, A = return-pc temp: set SyscallVector + TrapPc, return
     OpPortOut,      // Bits = width, A = port, B = data, C = return-pc: set IoCtrl=OUT, trap
@@ -218,6 +219,9 @@ public:
             case OpGetDisp:                           // read it back for the dispatcher's compares
                 Temp[In.Dest] = pState->DispPc;
                 break;
+            case OpGetCodeBase:                       // PIC: the unit's load base, for address reconstruction
+                Temp[In.Dest] = pState->CodeBase;
+                break;
             case OpEdgeCount:                         // bump this call site's edge counter
                 if (In.Imm < CPU_PROFILE_SLOTS) {
                     pState->EdgeCount[In.Imm]++;
@@ -349,6 +353,7 @@ FormatInterpInsn (INTERP_INSN CONST &In)
     case OpIndirect:   std::snprintf (Buf, sizeof (Buf), "indirect t%u            ; trap -> resume at target", In.A); break;
     case OpSetDisp:    std::snprintf (Buf, sizeof (Buf), "setdisp t%u", In.A); break;
     case OpGetDisp:    std::snprintf (Buf, sizeof (Buf), "t%u = getdisp", In.Dest); break;
+    case OpGetCodeBase: std::snprintf (Buf, sizeof (Buf), "t%u = getcodebase", In.Dest); break;
     case OpEdgeCount:  std::snprintf (Buf, sizeof (Buf), "edgecount[%llu]++", (unsigned long long) In.Imm); break;
     case OpSyscall:    std::snprintf (Buf, sizeof (Buf), "syscall 0x%llx -> t%u    ; trap -> host dispatch", (unsigned long long) In.Imm, In.A); break;
     case OpPortOut:    std::snprintf (Buf, sizeof (Buf), "out.%u port t%u, t%u     ; trap -> device bus", In.Bits, In.A, In.B); break;
@@ -527,6 +532,9 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
         return Produce (64, OpGetDisp, 0, 0, 0, 0, 64, 0, ppValue);
+    }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        return Produce (64, OpGetCodeBase, 0, 0, 0, 0, 64, 0, ppValue);
     }
     HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
         Record (OpEdgeCount, 0, 0, 0, 0, 0, 0, (UINT64) Index);

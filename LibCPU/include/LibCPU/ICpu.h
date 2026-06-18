@@ -263,6 +263,12 @@ DECLARE_INTERFACE_ (ICpuSmcEmitter, IUnknown)
     // to the matching block, resolving the transfer with no host round-trip.
     STDMETHOD (SetDispatchTarget)(THIS_ IN ICpuValue *pTargetPc) PURE;
     STDMETHOD (GetDispatchTarget)(THIS_ OUT ICpuValue **ppValue) PURE;
+
+    // Position-independent code base: reads CPU_STATE.CodeBase (a 64-bit value), the unit's actual load
+    // address set by the host before Execute. The AOT driver materializes every guest code address as
+    // GetCodeBase() + (target - Entry), so the compiled artifact is valid at any load address and can be
+    // cached/persisted by code CONTENT rather than by address.
+    STDMETHOD (GetCodeBase)(THIS_ OUT ICpuValue **ppValue) PURE;
 };
 
 /**
@@ -427,6 +433,13 @@ DECLARE_INTERFACE_ (ICpuSegmentedCode, IUnknown)
     STDMETHOD (SetCodeSegment)(THIS_ UINT32 Selector) PURE;
     // The linear base address of the given code segment (Selector << 4 on the 8086).
     STDMETHOD_ (UINT64, SegmentBase)(THIS_ UINT32 Selector) PURE;
+
+    // Position-independent translation. When Enabled, the frontend materializes code-address values it
+    // bakes (a CALL/INT pushed return, a trap's resume PC) RELATIVE to the unit's Entry, reconstructing
+    // them at run time as GetCodeBase() + (value - Entry) -- so the compiled unit is valid at any load
+    // address and can be cached/persisted by code content. Disabled (the default) emits absolute values.
+    // The AOT driver sets this around a unit when the host requested PIC; it is a no-op for flat archs.
+    STDMETHOD (SetPicTranslation)(THIS_ CPU_ADDR Entry, BOOLEAN Enabled) PURE;
 };
 
 //

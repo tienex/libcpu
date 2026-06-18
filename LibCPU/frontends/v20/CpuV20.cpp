@@ -249,6 +249,29 @@ public:
     // ICpuSegmentedCode: the host re-points the decode base after a CS reload (far flow / INT / IRET).
     HRESULT STDMETHODCALLTYPE SetCodeSegment (UINT32 Selector) override { SetCodeSeg ((UINT16) Selector); return S_OK; }
     UINT64  STDMETHODCALLTYPE SegmentBase (UINT32 Selector) override { return (UINT64) (Selector & 0xFFFF) << 4; }
+    HRESULT STDMETHODCALLTYPE SetPicTranslation (CPU_ADDR Entry, BOOLEAN Enabled) override {
+        m_Pic = (Enabled != FALSE);
+        m_PicEntry = Entry;
+        return S_OK;
+    }
+
+    // Materialize a 16-bit guest code address (a pushed return, a trap resume PC). Absolute by default;
+    // under PIC, relative to the load base: (GetCodeBase() + (Ip - Entry)) & 0xFFFF, so the same compiled
+    // unit yields correct addresses at any load address. (Far/computed targets stay absolute -- they are
+    // the guest's own absolute addresses -- so they are NOT routed through here.)
+    HRESULT EmitCodePc (ICpuEmitter *pE, CPU_ADDR Ip, ICpuValue **ppValue) {
+        if (!m_Pic) {
+            return pE->ConstInt (16, (UINT16) Ip, ppValue);
+        }
+        ComPtr<ICpuSmcEmitter> pSmc;
+        if (FAILED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc)) || pSmc == nullptr) {
+            return pE->ConstInt (16, (UINT16) Ip, ppValue);   // backend without SMC: keep absolute
+        }
+        ComPtr<ICpuValue> Base;  pSmc->GetCodeBase (&Base);
+        ComPtr<ICpuValue> Delta; pE->ConstInt (64, (UINT16) (Ip - m_PicEntry), &Delta);
+        ComPtr<ICpuValue> Sum;   pE->BinaryOp (BinAdd, Base, Delta, &Sum);
+        return pE->Cast (CastTrunc, Sum, 16, ppValue);
+    }
 
     HRESULT STDMETHODCALLTYPE GetInfo (CPU_ARCH_INFO *pInfo) override {
         // The V20 (uPD70108) and V30 (uPD70116) share the instruction set; they differ only in
@@ -909,7 +932,7 @@ public:
                     ComPtr<ICpuValue> Two; pE->ConstInt (16, 2, &Two);
                     ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
                     pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
-                    ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+                    ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + Len), &Ret);
                     ComPtr<ICpuValue> Lin; EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
                     pE->Store (Ret, Lin, 16);
                 }
@@ -937,7 +960,7 @@ public:
                     pE->Store (CurCs, LinCs, 16);
                     ComPtr<ICpuValue> Sp2;   pE->BinaryOp (BinSub, Sp1, Two, &Sp2);
                     pE->PutRegister (RegV20SP, Sp2, 16, FALSE);
-                    ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);
+                    ComPtr<ICpuValue> Ret;   EmitCodePc (pE, (Pc + Len), &Ret);
                     ComPtr<ICpuValue> LinRt; EmitSegLinear (pE, RegV20SS, Sp2, &LinRt);
                     pE->Store (Ret, LinRt, 16);
                 }
@@ -959,7 +982,7 @@ public:
                          (SOp == 0x6E) ? (UINT32) X86::CPU_IO_REP_OUTSB : (UINT32) X86::CPU_IO_REP_OUTSW;
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 2), &Ret);
                 pSysm->EmitSystemTrap (Rsn, Ret);
                 pSysm->Release ();
             }
@@ -1267,7 +1290,7 @@ public:
         case 0x9C: {                                               // PUSHF -> host (the host owns IF)
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1), &Ret);
                 pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_PUSHF, Ret);
                 pSysm->Release ();
             }
@@ -1276,7 +1299,7 @@ public:
         case 0x9D: {                                               // POPF -> host
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1), &Ret);
                 pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_POPF, Ret);
                 pSysm->Release ();
             }
@@ -1285,7 +1308,7 @@ public:
         case 0xCC: {                                               // INT3 -> host (vector 3)
             ICpuSyscallEmitter *pSys = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1), &Ret);
                 pSys->EmitSyscall (3, Ret);
                 pSys->Release ();
             }
@@ -1294,7 +1317,7 @@ public:
         case 0xCE: {                                               // INTO: host raises INT 4 iff OF
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1), &Ret);
                 pSysm->EmitSystemTrap ((UINT32) X86::CPU_IO_INTO, Ret);
                 pSysm->Release ();
             }
@@ -1314,7 +1337,7 @@ public:
             ComPtr<ICpuValue> Oob; pE->BinaryOp (BinOr, Below, Above, &Oob);
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1 + RmLen (M)), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1 + RmLen (M)), &Ret);
                 pSysm->EmitSystemTrapValue ((UINT32) X86::CPU_IO_BOUND, Oob, Ret);
                 pSysm->Release ();
             }
@@ -1325,7 +1348,7 @@ public:
                        (Op == 0x6E) ? (UINT32) X86::CPU_IO_OUTSB : (UINT32) X86::CPU_IO_OUTSW;
             ICpuSystemEmitter *pSysm = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &pSysm)) && pSysm != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 1), &Ret);
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 1), &Ret);
                 pSysm->EmitSystemTrap (R, Ret);
                 pSysm->Release ();
             }
@@ -1458,7 +1481,7 @@ public:
             ComPtr<ICpuValue> Two;   pE->ConstInt (16, 2, &Two);
             ComPtr<ICpuValue> NewSP; pE->BinaryOp (BinSub, SP, Two, &NewSP);
             pE->PutRegister (RegV20SP, NewSP, 16, FALSE);
-            ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + 3), &Ret);   // address after CALL
+            ComPtr<ICpuValue> Ret;   EmitCodePc (pE, (Pc + 3), &Ret);   // address after CALL
             ComPtr<ICpuValue> Lin;   EmitSegLinear (pE, RegV20SS, NewSP, &Lin);
             pE->Store (Ret, Lin, 16);
             break;                                                 // driver branches to the callee (TagCall)
@@ -1509,7 +1532,7 @@ public:
             // push IP: SP -= 2; [SS:SP] = return offset (after the 5-byte CALL)
             ComPtr<ICpuValue> Sp2;   pE->BinaryOp (BinSub, Sp1, Two, &Sp2);
             pE->PutRegister (RegV20SP, Sp2, 16, FALSE);
-            ComPtr<ICpuValue> Ret;   pE->ConstInt (16, (UINT16) (Pc + 5), &Ret);
+            ComPtr<ICpuValue> Ret;   EmitCodePc (pE, (Pc + 5), &Ret);
             ComPtr<ICpuValue> LinIp; EmitSegLinear (pE, RegV20SS, Sp2, &LinIp);
             pE->Store (Ret, LinIp, 16);
             // reload CS and trap to the host at NewIp (in NewCs)
@@ -1553,7 +1576,7 @@ public:
             UINT8 Vector = m_pCode[Pc + 1];
             ICpuSyscallEmitter *pSys = nullptr;
             if (SUCCEEDED (pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
-                ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + 2), &Ret);   // return IP (offset in CS)
+                ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + 2), &Ret);   // return IP (offset in CS)
                 pSys->EmitSyscall (Vector, Ret);
                 pSys->Release ();
             }
@@ -1567,7 +1590,7 @@ public:
             }
             bool Imm8Port = (Op == 0xE4 || Op == 0xE6);            // port in imm8 vs DX
             UINT16 Len = (Imm8Port ? 2 : 1);
-            ComPtr<ICpuValue> Ret; pE->ConstInt (16, (UINT16) (Pc + Len), &Ret);   // return IP (offset in CS)
+            ComPtr<ICpuValue> Ret; EmitCodePc (pE, (Pc + Len), &Ret);   // return IP (offset in CS)
             ComPtr<ICpuValue> Port;
             if (Imm8Port) { pE->ConstInt (16, m_pCode[Pc + 1], &Port); }
             else          { pE->GetRegister (RegV20DX, 16, &Port); }
@@ -2089,6 +2112,12 @@ private:
     UINT64       m_CodeSize = 0;
     UINT16       m_CodeSeg  = 0;   // CS: code is fetched from m_CodeSeg * 16 + IP
     bool         m_IsV30    = false;
+
+    // Position-independent translation (set by the AOT driver via SetPicTranslation). When m_Pic, a baked
+    // code address (a CALL/INT pushed return, a trap resume PC) is emitted as GetCodeBase() + (ip - m_PicEntry)
+    // masked to 16 bits, so the unit is valid at any load address. Off by default -> absolute (current).
+    bool         m_Pic      = false;
+    CPU_ADDR     m_PicEntry  = 0;
 
     // 8080 emulation mode (NEC V20/V30 BRKEM/RETEM): while active, decoding/translation is
     // delegated to a shared Intel 8080 core, so the 8080 instruction set is implemented once.

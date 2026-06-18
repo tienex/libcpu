@@ -593,6 +593,24 @@ public:
         LStore (Dest);
         return Make (Dest, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        UINT32 Dest = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {     // assemble CodeBase's 8 bytes into a long
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_CODEBASE_OFFSET + k));
+            B (0x33);                    // baload
+            PushInt (255);
+            B (0x7e);                    // iand
+            B (0x85);                    // i2l
+            if (k > 0) {
+                PushInt ((INT32) (8 * k));
+                B (0x79);                // lshl
+                B (0x81);                // lor
+            }
+        }
+        LStore (Dest);
+        return Make (Dest, 64, ppValue);
+    }
 
     // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
     // ++EdgeCount[Index]: read the slot's 8 little-endian bytes into a long, add 1,

@@ -350,6 +350,12 @@ public:
         StoreReg (S, a64::x9);
         return Make (S, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        m_a->ldr (a64::x9, a64::ptr (m_Grf, CPU_STATE_CODEBASE_OFFSET));
+        UINT32 S = NewSlot ();
+        StoreReg (S, a64::x9);
+        return Make (S, 64, ppValue);
+    }
 
     // ---- port I/O + system traps (ICpuSystemEmitter / ICpuSyscallEmitter) -
     HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {
@@ -725,6 +731,10 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
         LoadField (m_R0, CPU_STATE_DISPPC_OFFSET);
+        UINT32 S = NewSlot (); StoreReg (S, m_R0); return Make (S, 64, ppValue);
+    }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        LoadField (m_R0, CPU_STATE_CODEBASE_OFFSET);
         UINT32 S = NewSlot (); StoreReg (S, m_R0); return Make (S, 64, ppValue);
     }
 

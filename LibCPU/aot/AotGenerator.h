@@ -40,9 +40,12 @@ HRESULT GenerateAot (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 // requires a backend that implements the ICpuEmitter block ops (e.g. LLVM); on a
 // backend that stubs them it returns the stub's error.
 //
+// Pic: when TRUE, emit a POSITION-INDEPENDENT unit (code addresses materialized relative to a runtime
+// CodeBase, see ICpuSegmentedCode::SetPicTranslation) so the artifact is valid at any load address and
+// can be cached/persisted by code content. The default (FALSE) emits absolute addresses.
 HRESULT GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                         CPU_ADDR Entry, CPU_ADDR End,
-                        OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
+                        OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount, BOOLEAN Pic = FALSE);
 
 //
 // A static call edge discovered in a region: a CALL at Site to Callee, returning to
@@ -84,7 +87,7 @@ typedef struct _CPU_INLINE_SITE {
 HRESULT GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                                CPU_ADDR Entry, CPU_ADDR End,
                                CPU_INLINE_SITE CONST *pInline, UINT32 InlineCount,
-                               OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount);
+                               OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount, BOOLEAN Pic = FALSE);
 
 // Build an INSTRUMENTED CFG for edge profiling: each CALL block bumps
 // CPU_STATE.EdgeCount[i] (i = the call site's discovery order). The discovered call

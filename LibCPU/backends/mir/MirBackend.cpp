@@ -321,6 +321,11 @@ public:
         Emit (MIR_MOV, RegOp (R), MemOp (MIR_T_I64, CPU_STATE_DISPPC_OFFSET, m_Grf, 0));
         return Make (R, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        MIR_reg_t R = NewTemp ();
+        Emit (MIR_MOV, RegOp (R), MemOp (MIR_T_I64, CPU_STATE_CODEBASE_OFFSET, m_Grf, 0));
+        return Make (R, 64, ppValue);
+    }
 
     // ---- port I/O + system traps (ICpuSystemEmitter / ICpuSyscallEmitter) -
     HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {

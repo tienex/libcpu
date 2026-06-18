@@ -456,6 +456,22 @@ public:
         StLoc (Dest);
         return Make (Dest, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        UINT32 Dest = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {                          // CodeBase's 8 bytes -> int64
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_CODEBASE_OFFSET + k));
+            B (0x91);                    // ldelem.u1
+            B (0x6a);                    // conv.i8
+            if (k > 0) {
+                PushI4 ((INT32) (8 * k));
+                B (0x62);                // shl
+                B (0x60);                // or
+            }
+        }
+        StLoc (Dest);
+        return Make (Dest, 64, ppValue);
+    }
 
     // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
     // ++EdgeCount[Index]: assemble the slot's 8 little-endian bytes into an int64,

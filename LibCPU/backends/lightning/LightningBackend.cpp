@@ -286,6 +286,12 @@ public:
         Store (S);
         return Make (S, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        INT32 S = Slot ();
+        jit_ldxi_l (JIT_R0, JIT_V1, CPU_STATE_CODEBASE_OFFSET);
+        Store (S);
+        return Make (S, 64, ppValue);
+    }
 
     // ---- port I/O + system traps (ICpuSystemEmitter / ICpuSyscallEmitter) -
     HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {

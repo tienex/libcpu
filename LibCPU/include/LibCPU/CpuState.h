@@ -65,6 +65,14 @@ typedef struct _CPU_STATE {
     // delta proportional to the work between the latches, instead of a fixed per-read step. Last
     // field of the struct so the codegen field offsets above stay stable; not used by the JITs.
     UINT64 Cycles;
+
+    // Position-independent code base. A translated artifact materializes guest code addresses (trap
+    // return PCs, the indirect-dispatch comparisons, far targets) as CodeBase + (target - Entry) rather
+    // than as absolute literals, where Entry is the unit's first PC at translation time. The host sets
+    // CodeBase to the unit's actual load address before each Execute, so the SAME compiled artifact is
+    // valid at any load address -- which lets the cache be keyed by code CONTENT (and persisted to disk)
+    // instead of by address. Appended after Cycles so every codegen offset above stays stable.
+    UINT64 CodeBase;
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
@@ -93,6 +101,7 @@ typedef struct _CPU_STATE {
 #define CPU_STATE_IOPORT_OFFSET    ((UINT32) (32 * 8 + 104 + 32 * 8))// IoPort
 #define CPU_STATE_IODATA_OFFSET    ((UINT32) (32 * 8 + 112 + 32 * 8))// IoData
 #define CPU_STATE_CYCLES_OFFSET    ((UINT32) (32 * 8 + 120 + 32 * 8))// Cycles (after IoData)
+#define CPU_STATE_CODEBASE_OFFSET  ((UINT32) (32 * 8 + 128 + 32 * 8))// CodeBase (after Cycles)
 
 // Number of per-call-site edge counters (profiling instrumentation).
 #define CPU_PROFILE_SLOTS          ((UINT32) 32)

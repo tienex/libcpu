@@ -75,7 +75,7 @@ HRESULT
 GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                        CPU_ADDR Entry, CPU_ADDR End,
                        CPU_INLINE_SITE CONST *pInline, UINT32 InlineCount,
-                       OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
+                       OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount, BOOLEAN Pic)
 {
     if (pArch == nullptr || pBackend == nullptr || ppCode == nullptr) {
         return E_INVALIDARG;
@@ -110,6 +110,15 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     ICpuClockEmitter *pClk = nullptr;
     if (FAILED (Emitter->QueryInterface (IID_ICpuClockEmitter, (VOID **) &pClk))) {
         pClk = nullptr;
+    }
+
+    // Position-independent translation: ask the (segmented) frontend to materialize the code-address
+    // values it bakes relative to Entry, so this unit is valid at any load address. A no-op for flat
+    // archs (no ICpuSegmentedCode). Reset on every exit path so it never leaks into the next unit.
+    ComPtr<ICpuSegmentedCode> Seg;
+    if (Pic) {
+        pArch->QueryInterface (IID_ICpuSegmentedCode, (VOID **) &Seg);
+        if (Seg != nullptr) { Seg->SetPicTranslation (Entry, TRUE); }
     }
 
     //
@@ -149,6 +158,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         }
     }
     if (Pcs.empty ()) {
+        if (Seg != nullptr) { Seg->SetPicTranslation (0, FALSE); }
         return E_FAIL;
     }
 
@@ -285,6 +295,7 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         if (pExit != nullptr) { pExit->Release (); }
         if (pSmc != nullptr)  { pSmc->Release (); }
         if (pClk != nullptr)  { pClk->Release (); }
+        if (Seg != nullptr)   { Seg->SetPicTranslation (0, FALSE); }
         return BrHr;
     }
 
@@ -395,14 +406,26 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
         for (auto CONST &Pair : Blocks) {
             Emitter->SetInsertBlock (Disp[K]);
             ComPtr<ICpuValue> Pc;   pSmc->GetDispatchTarget (&Pc);
-            ComPtr<ICpuValue> Addr; Emitter->ConstInt (64, (UINT64) Pair.first, &Addr);
-            ComPtr<ICpuValue> Cond; Emitter->Compare (CmpEq, Pc, Addr, &Cond);
+            ComPtr<ICpuValue> Rel;  // the CodeBase-relative target (PIC only); keeps the value alive
+            ComPtr<ICpuValue> Addr;
+            ICpuValue        *Lhs = Pc.Get ();
+            if (Pic) {
+                // Compare in CodeBase-relative space so the dispatcher routes correctly at any load
+                // address: (target - CodeBase) vs (entry - Entry). Modular equality handles entry < Entry.
+                ComPtr<ICpuValue> Base; pSmc->GetCodeBase (&Base);
+                Emitter->BinaryOp (BinSub, Pc, Base, &Rel);
+                Lhs = Rel.Get ();
+                Emitter->ConstInt (64, (UINT64) (Pair.first - Entry), &Addr);
+            } else {
+                Emitter->ConstInt (64, (UINT64) Pair.first, &Addr);
+            }
+            ComPtr<ICpuValue> Cond; Emitter->Compare (CmpEq, Lhs, Addr, &Cond);
             Emitter->CondBranch (Cond, Pair.second, Disp[K + 1]);
             K++;
         }
         Emitter->SetInsertBlock (Disp[K]);
         ComPtr<ICpuValue> Pc; pSmc->GetDispatchTarget (&Pc);
-        pSmc->IndirectBranch (Pc);
+        pSmc->IndirectBranch (Pc);   // no match: the absolute target traps to the host, which re-derives the unit
     }
 
     if (pInstrCount != nullptr) {
@@ -418,15 +441,16 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     if (pExit != nullptr) { pExit->Release (); }
     if (pSmc != nullptr)  { pSmc->Release (); }
     if (pClk != nullptr)  { pClk->Release (); }
+    if (Seg != nullptr)   { Seg->SetPicTranslation (0, FALSE); }
     return hr;
 }
 
 HRESULT
 GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                 CPU_ADDR Entry, CPU_ADDR End,
-                OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount)
+                OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount, BOOLEAN Pic)
 {
-    return GenerateAotCfgInlined (pArch, pBackend, Entry, End, nullptr, 0, ppCode, pInstrCount);
+    return GenerateAotCfgInlined (pArch, pBackend, Entry, End, nullptr, 0, ppCode, pInstrCount, Pic);
 }
 
 HRESULT

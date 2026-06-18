@@ -324,6 +324,12 @@ public:
         StoreReg (S, SLJIT_R0);
         return Make (S, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        sljit_emit_op1 (m_C, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1 (SLJIT_S1), CPU_STATE_CODEBASE_OFFSET);
+        UINT32 S = NewSlot ();
+        StoreReg (S, SLJIT_R0);
+        return Make (S, 64, ppValue);
+    }
 
     // ---- port I/O + system traps (ICpuSystemEmitter / ICpuSyscallEmitter) -
     HRESULT STDMETHODCALLTYPE EmitPortOut (ICpuValue *pPort, ICpuValue *pData, UINT32 Width, ICpuValue *pReturnPc) override {

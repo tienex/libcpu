@@ -352,6 +352,9 @@ public:
     HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
         return Wrap (m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_DISPPC_OFFSET), IntTy (64))), ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        return Wrap (m_Builder->CreateLoad (IntTy (64), ElemPtr (StatePtr (CPU_STATE_CODEBASE_OFFSET), IntTy (64))), ppValue);
+    }
 
     //
     // Finalize: terminate the entry block and JIT-compile. Returns the code object.

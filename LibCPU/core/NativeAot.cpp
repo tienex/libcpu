@@ -184,6 +184,13 @@ public:
         Line ("t%u = disp;", D);
         return Make (D, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        // The native AOT output is a self-contained, position-fixed program (no host sets a load base),
+        // so it does not use PIC address reconstruction; the AOT driver never requests it here.
+        UINT32 D = Decl ();
+        Line ("t%u = 0;", D);
+        return Make (D, 64, ppValue);
+    }
 
 private:
     UINT32 Decl () { return m_Next++; }

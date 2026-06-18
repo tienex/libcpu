@@ -324,6 +324,11 @@ public:
         Line ("t%u=gD()", D);
         return Make (D, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        UINT32 D = Fresh ();
+        Line ("t%u=int.from_bytes(ST[%u:%u],'little')", D, CPU_STATE_CODEBASE_OFFSET, CPU_STATE_CODEBASE_OFFSET + 8);
+        return Make (D, 64, ppValue);
+    }
 
     // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
     HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {

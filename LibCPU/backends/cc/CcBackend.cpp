@@ -461,6 +461,11 @@ public:
         Line ("t%u = *(uint64_t*)((char*)GRF+%u);", D, CPU_STATE_DISPPC_OFFSET);
         return Make (D, 64, ppValue);
     }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        UINT32 D = Decl ();
+        Line ("t%u = *(uint64_t*)((char*)GRF+%u);", D, CPU_STATE_CODEBASE_OFFSET);
+        return Make (D, 64, ppValue);
+    }
 
     // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
     HRESULT STDMETHODCALLTYPE EmitEdgeCounter (UINT32 Index) override {
