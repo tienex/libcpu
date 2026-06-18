@@ -29,7 +29,16 @@ System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UIN
 
 System::~System ()
 {
+    // Join the background queue FIRST so no worker is mid-compile while we free the cache/arch it uses;
+    // then release any artifacts it had already delivered but the run loop had not yet swapped in.
+    delete m_pQueue;
+    m_pQueue = nullptr;
+    for (auto CONST &D : m_Done) {
+        if (D.second != nullptr) { D.second->Release (); }
+    }
+    m_Done.clear ();
     ClearCodeCache ();
+    if (m_pHotArch != nullptr) { m_pHotArch->Release (); m_pHotArch = nullptr; }
 }
 
 void
@@ -42,10 +51,43 @@ System::ClearCodeCache ()
 }
 
 void
-System::SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold)
+System::SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold, ICpuArchitecture *pHotArch)
 {
     m_pHotBackend  = pHotBackend;
     m_HotThreshold = Threshold;
+    // Own the hot arch: it is used by the background worker, which is joined in ~System BEFORE we release
+    // it, so the worker never touches a freed frontend regardless of the caller's own lifetime ordering.
+    if (m_pHotArch != nullptr) { m_pHotArch->Release (); }
+    m_pHotArch = pHotArch;
+    if (m_pHotArch != nullptr) { m_pHotArch->AddRef (); }
+    // A dedicated hot frontend means tier-1 recompiles can run on a background worker (one worker, so the
+    // single hot arch is never used concurrently) instead of blocking the execution thread.
+    if (pHotArch != nullptr && m_pQueue == nullptr) {
+        m_pQueue = new DispatchQueue (1);
+    }
+}
+
+// Swap in any background tier-1 artifacts the worker has finished, at a run-loop safe point (the cache
+// is otherwise touched only by the execution thread). The hot artifact replaces the tier-0 one.
+void
+System::DrainCompiled ()
+{
+    if (m_pQueue == nullptr) {
+        return;
+    }
+    std::unique_lock<std::mutex> Lk (m_DoneMutex);
+    for (auto CONST &D : m_Done) {
+        auto It = m_CodeCache.find (D.first);
+        if (It != m_CodeCache.end ()) {
+            if (It->second.pCode != nullptr) { It->second.pCode->Release (); }   // drop tier 0
+            It->second.pCode     = D.second;                                     // adopt tier 1 (owns ref)
+            It->second.Hot       = true;
+            It->second.Compiling = false;
+        } else {
+            D.second->Release ();   // entry evicted before delivery (does not happen for immutable code)
+        }
+    }
+    m_Done.clear ();
 }
 
 void
@@ -167,6 +209,10 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
                           m_State.Flag[FlagNegative], m_State.Flag[FlagOverflow], m_State.Flag[FlagZero],
                           m_State.Flag[FlagCarry], m_State.Flag[FlagParity], m_Halted ? 1 : 0, m_If ? 1 : 0);
         }
+        // Adopt any tier-1 artifacts the background queue finished since the last burst (safe point: the
+        // cache is touched only here, on the execution thread).
+        DrainCompiled ();
+
         // Service the console (stream the framebuffer out, feed injected keys in) and honour a
         // shutdown the pump may have requested (e.g. the console sent CTRL_QUIT).
         if (m_Pump) { m_Pump (); }
@@ -221,16 +267,37 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             if (It != m_CodeCache.end ()) {
                 CACHED_CODE &C = It->second;
                 C.Runs++;
-                // Tiered promotion: a region that stays hot is recompiled once with the optimizing
-                // JIT (tier 1) and the tier-0 (interpreter) artifact is swapped out for it.
-                if (!C.Hot && m_pHotBackend != nullptr && C.Runs >= m_HotThreshold) {
-                    ComPtr<ICpuCode> Hot;
-                    if (SUCCEEDED (GenerateAotCfg (m_pArch, m_pHotBackend, Pc, EffEnd, &Hot, nullptr, TRUE)) && Hot != nullptr) {
-                        C.pCode->Release ();
-                        Hot->AddRef (); C.pCode = Hot.Get ();
-                        C.Hot = true;
+                // Tiered promotion: a region that stays hot is recompiled with the optimizing JIT (tier 1)
+                // and the tier-0 (interpreter) artifact is swapped out for it.
+                if (!C.Hot && !C.Compiling && m_pHotBackend != nullptr && C.Runs >= m_HotThreshold) {
+                    if (m_pQueue != nullptr && m_pHotArch != nullptr) {
+                        // Asynchronous: queue the recompile on the background worker and keep running tier 0;
+                        // DrainCompiled swaps the artifact in once ready, so the compile never stalls us.
+                        C.Compiling   = true;
+                        UINT64   Key  = CacheKey;
+                        CPU_ADDR JEnt = Pc;
+                        CPU_ADDR JEnd = EffEnd;
+                        UINT16   JCs  = (UINT16) m_State.Reg[S_CS];
+                        m_pQueue->Async ([this, Key, JEnt, JEnd, JCs] {
+                            ComPtr<ICpuSegmentedCode> Seg2;
+                            m_pHotArch->QueryInterface (IID_ICpuSegmentedCode, (VOID **) &Seg2);
+                            if (Seg2 != nullptr) { Seg2->SetCodeSegment (JCs); }
+                            ICpuCode *Hot = nullptr;
+                            if (SUCCEEDED (GenerateAotCfg (m_pHotArch, m_pHotBackend, JEnt, JEnd, &Hot, nullptr, TRUE)) && Hot != nullptr) {
+                                std::unique_lock<std::mutex> Lk (m_DoneMutex);
+                                m_Done.push_back (std::make_pair (Key, Hot));
+                            }
+                        });
                     } else {
-                        C.Hot = true;                   // tier-1 compile failed: stop retrying, keep tier 0
+                        // Legacy inline (blocking) promotion.
+                        ComPtr<ICpuCode> Hot;
+                        if (SUCCEEDED (GenerateAotCfg (m_pArch, m_pHotBackend, Pc, EffEnd, &Hot, nullptr, TRUE)) && Hot != nullptr) {
+                            C.pCode->Release ();
+                            Hot->AddRef (); C.pCode = Hot.Get ();
+                            C.Hot = true;
+                        } else {
+                            C.Hot = true;               // tier-1 compile failed: stop retrying, keep tier 0
+                        }
                     }
                 }
                 pCode = C.pCode;                        // borrowed; the cache owns the ref
@@ -244,7 +311,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             }
             m_StatCompiles++;
             pCode = Fresh.Get ();
-            if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, false }; }
+            if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, false, false }; }
         }
         m_State.TrapPc = CPU_SMC_NO_TRAP;
         m_State.IoCtrl = CPU_IO_NONE;

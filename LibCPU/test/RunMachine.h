@@ -339,7 +339,15 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     pArch->SetCodeMemory (Ram.data (), Ram.size ());
     System Machine (pArch, pBackend, Ram.data (), Ram.size ());
     InstallX86System (Machine);                              // CPU personality: x86 privileged ops
-    if (pHotBackend != nullptr) { Machine.SetHotBackend (pHotBackend, 50); }   // tiered: JIT regions run >=50x
+    if (pHotBackend != nullptr) {
+        // Tiered, COMPILED IN THE BACKGROUND: a dedicated hot frontend over the same RAM lets the tier-1
+        // recompile run on a worker thread (System owns it -> released after the queue joins), so a hot
+        // region promotes to the JIT without ever stalling execution.
+        ICpuArchitecture *pHotArch = CreateV20 ();
+        pHotArch->SetCodeMemory (Ram.data (), Ram.size ());
+        Machine.SetHotBackend (pHotBackend, 50, pHotArch);   // hot regions (>=50 runs) compile asynchronously
+        pHotArch->Release ();                                // System holds its own reference now
+    }
 
     // Port devices onto the bus; one arbiter for interrupts.
     std::vector<std::unique_ptr<ComDeviceAdapter>> Adapters;

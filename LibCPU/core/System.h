@@ -21,7 +21,9 @@
 
 #include "LibCPU/ICpu.h"
 #include "LibCPU/CpuState.h"
+#include "Dispatch.h"
 #include <functional>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -96,7 +98,13 @@ public:
     // is recompiled once with pHotBackend (tier 1, an optimizing JIT) and cached, so hot loops reach
     // native speed while a JIT's per-region compile cost is paid only where it amortizes. pHotBackend
     // is borrowed (the caller keeps it alive for the run). No effect on writable RAM code.
-    void SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold);
+    // pHotArch is a SECOND, dedicated frontend instance (over the same RAM) used ONLY by the background
+    // compile queue, so a tier-1 recompile runs on a worker thread without racing the execution thread's
+    // frontend. When given, hot recompiles happen ASYNCHRONOUSLY: the machine keeps running tier 0 (the
+    // interpreter) and the run loop hot-swaps the optimized artifact in once the worker has produced it,
+    // so the slow optimizing compile never stalls execution. Pass nullptr for the legacy inline (blocking)
+    // promotion. Both pHotBackend and pHotArch are borrowed (kept alive by the caller for the run).
+    void SetHotBackend (ICpuBackend *pHotBackend, UINT64 Threshold, ICpuArchitecture *pHotArch = nullptr);
 
     // Map a device-owned host buffer over a guest physical region. The guest's flat RAM and the
     // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
@@ -151,7 +159,9 @@ private:
     // In-memory translation cache: compiled code keyed by the burst's linear entry address. Without
     // it the run loop re-translates every burst, which is cheap for the interpreter but ruinous for a
     // JIT (an LLVM module compiled per burst). Invalidated when the guest writes to watched code (SMC).
-    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; bool Hot; };   // a cached translation + its heat
+    // Compiling: a background tier-1 recompile of this region has been queued and is still in flight;
+    // the run loop keeps using the tier-0 (interpreter) pCode until the worker delivers the artifact.
+    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; bool Hot; bool Compiling; };
     std::unordered_map<UINT64, CACHED_CODE> m_CodeCache;
     UINT64 m_StatCompiles = 0;   // diagnostic (LCX_CACHE_STATS): translations performed
     UINT64 m_StatHits     = 0;   // diagnostic: cache hits (translations avoided)
@@ -160,6 +170,16 @@ private:
     UINT64                  m_HotThreshold = 0;               // runs before a region promotes to tier 1
     void ClearCodeCache ();
     bool IsImmutableCode (UINT64 Addr) CONST;                 // in a ROM / marked-immutable region?
+
+    // Background (asynchronous) tier-1 compilation. m_pQueue runs recompiles on a worker that uses
+    // m_pHotArch (a dedicated frontend over the same RAM), so the optimizing compile never stalls the
+    // execution thread. Finished artifacts are posted to m_Done under m_DoneMutex and the run loop swaps
+    // them into m_CodeCache at a safe point (so the cache itself stays single-threaded). See Dispatch.h.
+    ICpuArchitecture *m_pHotArch = nullptr;
+    DispatchQueue    *m_pQueue   = nullptr;
+    std::mutex                                m_DoneMutex;
+    std::vector<std::pair<UINT64, ICpuCode *>> m_Done;        // (cache key, finished tier-1 artifact)
+    void DrainCompiled ();                                    // swap in completed background compiles
 };
 
 } // namespace LibCPU
