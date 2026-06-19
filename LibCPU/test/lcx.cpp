@@ -24,6 +24,7 @@
 #include "../core/Debugger.h"
 #include "../core/TranslationCache.h"
 #include "../core/CodeCache.h"
+#include "../aot/ShadowCfg.h"
 #include "../core/KnowledgeLibrary.h"
 #include "../core/System.h"
 #include "../core/NativeAot.h"
@@ -1593,6 +1594,53 @@ CmdHelp ()
     return 0;
 }
 
+// Self-test the shadow CFG: build ONE shadow unit over a hand-assembled V20 basic block and
+// run it through the chosen backend, verifying the shadow ABI -- the data ops landed in the
+// guest registers and the unit left its next-PC in the scratch registers. This proves a
+// backend's straight-line core alone drives control flow, with no native branch capability.
+static int
+CmdShadow (int argc, char **argv, char *pArgv0)
+{
+    ICpuBackend *pBackend = LoadBackendBundle (BackendPath (argc, argv, pArgv0).c_str ());
+    if (pBackend == nullptr) {
+        std::printf ("lcx shadow: cannot load backend\nRESULT: FAIL\n");
+        return 1;
+    }
+
+    static UINT8 Ram[65536];
+    std::memset (Ram, 0, sizeof (Ram));
+    // MOV AX,0x1234 ; MOV BX,0x5678 ; JMP $+0x18  (-> offset 0x20)
+    UINT8 CONST Prog[] = { 0xB8, 0x34, 0x12, 0xBB, 0x78, 0x56, 0xEB, 0x18 };
+    std::memcpy (Ram, Prog, sizeof (Prog));
+
+    CPU_STATE State;
+    std::memset (&State, 0, sizeof (State));
+    State.RamSize = sizeof (Ram);
+    ArchSetup A = MakeArch ("v20", Ram, &State);
+
+    ICpuCode *pCode = nullptr;
+    HRESULT hr = GenerateShadowUnit (A.pArch, pBackend, 0, 0x100, &pCode);
+    int Rc = 1;
+    if (FAILED (hr) || pCode == nullptr) {
+        std::printf ("lcx shadow: GenerateShadowUnit failed (0x%08x)\nRESULT: FAIL\n", (unsigned) hr);
+    } else {
+        pCode->Execute (Ram, &State, nullptr);
+        UINT64 Ax   = State.Reg[0] & 0xFFFF;
+        UINT64 Bx   = State.Reg[3] & 0xFFFF;
+        UINT64 St   = State.Reg[SHADOW_REG_STATUS];
+        UINT64 Next = State.Reg[SHADOW_REG_NEXTPC];
+        bool Pass = (Ax == 0x1234) && (Bx == 0x5678) && (St == SHADOW_ST_NEXT) && (Next == 0x20);
+        std::printf ("backend=%s  AX=0x%04llx BX=0x%04llx  status=%llu nextpc=0x%llx\nRESULT: %s\n",
+                     pBackend->GetName (), (unsigned long long) Ax, (unsigned long long) Bx,
+                     (unsigned long long) St, (unsigned long long) Next, Pass ? "PASS" : "FAIL");
+        Rc = Pass ? 0 : 1;
+        pCode->Release ();
+    }
+    if (A.pArch != nullptr) { A.pArch->Release (); }
+    pBackend->Release ();
+    return Rc;
+}
+
 } // anonymous namespace
 
 int
@@ -1604,6 +1652,7 @@ main (int argc, char **argv)
     std::string Cmd = argv[1];
     int      SubArgc = argc - 2;
     char   **SubArgv = argv + 2;
+    if (Cmd == "shadow")       { return CmdShadow (SubArgc, SubArgv, argv[0]); }
     if (Cmd == "run")          { return CmdRun (SubArgc, SubArgv, argv[0], /*Aot=*/ false); }   // JIT
     if (Cmd == "translate")    { return CmdRun (SubArgc, SubArgv, argv[0], /*Aot=*/ true); }    // AOT
     if (Cmd == "aot")          { return CmdAot (SubArgc, SubArgv, argv[0]); }

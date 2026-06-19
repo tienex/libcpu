@@ -277,7 +277,7 @@ target_include_directories(cachedemo PRIVATE frontends/v20 frontends/i8080 test 
 target_link_libraries(cachedemo PRIVATE LibCPU)
 
 # System-level emulation: an 8086 machine with a device bus and timer interrupts.
-add_executable(sysdemo test/sysdemo.cpp core/System.cpp core/X86System.cpp aot/AotGenerator.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+add_executable(sysdemo test/sysdemo.cpp core/System.cpp core/X86System.cpp aot/AotGenerator.cpp aot/ShadowCfg.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
 target_include_directories(sysdemo PRIVATE frontends/v20 frontends/i8080 test aot core)
 target_link_libraries(sysdemo PRIVATE LibCPU)
 
@@ -314,7 +314,7 @@ endif()
 # single-file amalgamation under third_party/zstd, so it builds from source (universal
 # across the toolchain's arches, no external dependency) and powers `lcx klib`.
 add_executable(lcx test/lcx.cpp
-  aot/AotGenerator.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
+  aot/AotGenerator.cpp aot/ShadowCfg.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp core/CodeCache.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   core/DeviceNode.cpp core/MachineBuilder.cpp
@@ -532,6 +532,19 @@ foreach (_fpbe asmjit llvm-22)
     add_test(NAME cache.fingerprint-${_fpbe} COMMAND lcx cache fingerprint "${CMAKE_BINARY_DIR}/${_fpbe}.backend")
     set_tests_properties(cache.fingerprint-${_fpbe} PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
                                                                FAIL_REGULAR_EXPRESSION "FAIL:")
+  endif ()
+endforeach ()
+
+# Shadow CFG: a MINIMAL straight-line backend drives a guest basic block's control flow via the
+# shadow layer (no native branches, no machine capabilities of its own) -- the universal path
+# that makes any backend machine-capable. Each representative backend across the language span
+# (native JITs, C compilers, scripting, managed runtimes) must pass the same self-test.
+foreach (_sb interp asmjit sljit lightning mir llvm-22 gccjit-15 cc qbe js jscore wasm
+              bash cmd lua perl python ruby tcl fish zsh ksh tcsh pwsh swift java dotnet jvm clr cpython)
+  if (EXISTS "${CMAKE_BINARY_DIR}/${_sb}.backend")
+    add_test(NAME shadow.${_sb} COMMAND lcx shadow --backend "${CMAKE_BINARY_DIR}/${_sb}.backend")
+    set_tests_properties(shadow.${_sb} PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                                                  FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   endif ()
 endforeach ()
 
