@@ -548,6 +548,24 @@ foreach (_sb interp asmjit sljit lightning mir llvm-22 gccjit-15 cc qbe js jscor
   endif ()
 endforeach ()
 
+# Shadow CFG drives the WHOLE machine: force the shadow path (LCX_SHADOW) on the interpreter and
+# run the Olivetti M24 BIOS -- it must reach the POST diagnostics (Resident Diagnostics + DMA Timer
+# Pass) entirely through GenerateShadowUnit + scratch-register dispatch + the interpreter REP
+# fallback. Proves any non-CFG backend can drive the machine (the interp here stands in for the
+# leaf backends, which use the identical path). Bounded budget = the early diagnostics (~25s); the
+# full 640 KB RAM count is left out to keep the test quick.
+if (EXISTS "${CMAKE_BINARY_DIR}/interp.backend"
+    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM")
+  add_test(NAME machine.m24-shadow COMMAND sh -c
+    "LCX_SHADOW=1 '$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' \
+       --bundles '${CMAKE_BINARY_DIR}' --backend '${CMAKE_BINARY_DIR}/interp.backend' \
+       --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+       --steps 1500000 > '${CMAKE_BINARY_DIR}/machine-m24-shadow.out' 2>&1 && \
+     grep -q 'Resident Diagnostics' '${CMAKE_BINARY_DIR}/machine-m24-shadow.out' && \
+     grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24-shadow.out'")
+  set_tests_properties(machine.m24-shadow PROPERTIES TIMEOUT 180 FAIL_REGULAR_EXPRESSION "lcx machine:")
+endif ()
+
 # Symbol reader (knowledge-library v2 step b): derive a library's exported-symbol set
 # from a real toolchain artifact. Two formats, two hermetic fixtures:
 #  - TBD text stub: a checked-in tapi-tbd v4 file; assert a known export is read.
