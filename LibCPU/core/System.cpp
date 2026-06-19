@@ -48,6 +48,77 @@ System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UIN
     // LCX_SHADOW forces the path on even for a CFG-capable backend, to exercise it on a fast one.
     m_ShadowMode = (m_pBackend != nullptr)
                    && (std::getenv ("LCX_SHADOW") != nullptr || !BackendHasNativeCfg (m_pArch, m_pBackend));
+
+    // Persistent translation cache: when $LIBCPU_CODECACHE names a file, compiled artifacts are
+    // stored there and reloaded on a later run instead of being recompiled -- the speed win for
+    // backends whose cold compile is expensive (C compilers, scripting runtimes).
+    if (CHAR8 CONST *pPath = std::getenv ("LIBCPU_CODECACHE")) {
+        m_pCodeCache = new CodeCache (pPath);
+        std::string Err;
+        m_pCodeCache->Load (&Err);
+    }
+}
+
+std::string
+System::PersistKey (ICpuBackend *pBe, UINT64 LinAddr, CPU_ADDR Pc, CPU_ADDR EffEnd, bool Shadow) CONST
+{
+    // Address-folded content hash: the 8-byte linear address followed by a bounded window of the
+    // block's bytes. Folding the address keys non-PIC artifacts (absolute addresses are baked in)
+    // to their load address; the window covers any reasonable basic block. Only immutable code is
+    // cached, so the bytes never change under a stale key.
+    UINT32 Win = (EffEnd > Pc && (UINT64) (EffEnd - Pc) < 256) ? (UINT32) (EffEnd - Pc) : 256;
+    std::vector<UINT8> Buf;
+    Buf.reserve (8 + Win);
+    for (UINT32 I = 0; I < 8; I++) { Buf.push_back ((UINT8) (LinAddr >> (8 * I))); }
+    for (UINT32 I = 0; I < Win; I++) {
+        UINT64 A = LinAddr + I;
+        Buf.push_back (A < m_RamSize ? m_pRAM[A] : 0);
+    }
+    LC_CONTENT_HASH H = CodeCache::Hash (Buf.data (), (UINT32) Buf.size ());
+    UINT64 Fp = 0;                                   // host fingerprint (0 = host-independent, e.g. interp)
+    ICpuBackendTarget *pT = nullptr;
+    if (SUCCEEDED (pBe->QueryInterface (IID_ICpuBackendTarget, (VOID **) &pT)) && pT != nullptr) {
+        Fp = pT->GetTargetFingerprint ();
+        pT->Release ();
+    }
+    std::string Key = CodeCache::MakeKey (pBe->GetName (), "v20", H, Win, FALSE, Fp, 0);
+    return Key + (Shadow ? "/sh" : "/nx");           // shadow vs native variant
+}
+
+bool
+System::PersistLoad (ICpuBackend *pBe, std::string CONST &Key, ComPtr<ICpuCode> &Out)
+{
+    if (m_pCodeCache == nullptr) { return false; }
+    UINT8 CONST     *pBlob = nullptr;
+    UINT64           Len   = 0;
+    LC_CACHE_PROFILE Prof;
+    if (!m_pCodeCache->Lookup (Key, &pBlob, &Len, &Prof)) { return false; }
+    ICpuBackendCache *pLoad = nullptr;
+    if (FAILED (pBe->QueryInterface (IID_ICpuBackendCache, (VOID **) &pLoad)) || pLoad == nullptr) { return false; }
+    HRESULT hr = pLoad->LoadCode (pBlob, (UINT32) Len, &Out);   // adopt straight into the out ComPtr slot
+    pLoad->Release ();
+    return SUCCEEDED (hr) && Out.Get () != nullptr;
+}
+
+void
+System::PersistSave (ICpuBackend *pBe, std::string CONST &Key, ICpuCode *pCode)
+{
+    (VOID) pBe;
+    if (m_pCodeCache == nullptr) { return; }
+    ICpuCodeSerialize *pSer = nullptr;
+    if (FAILED (pCode->QueryInterface (IID_ICpuCodeSerialize, (VOID **) &pSer)) || pSer == nullptr) { return; }
+    UINT32 Needed = 0;
+    pSer->Serialize (nullptr, 0, &Needed);
+    if (Needed > 0) {
+        std::vector<UINT8> Blob (Needed);
+        if (SUCCEEDED (pSer->Serialize (Blob.data (), Needed, nullptr))) {
+            LC_CACHE_PROFILE Prof;
+            std::memset (&Prof, 0, sizeof (Prof));
+            Prof.Runs = 1;
+            m_pCodeCache->Store (Key, Blob.data (), Blob.size (), Prof, TRUE);
+        }
+    }
+    pSer->Release ();
 }
 
 void
@@ -71,6 +142,12 @@ System::~System ()
     ClearCodeCache ();
     if (m_pHotArch != nullptr) { m_pHotArch->Release (); m_pHotArch = nullptr; }
     if (m_pFallback != nullptr) { m_pFallback->Release (); m_pFallback = nullptr; }
+    if (m_pCodeCache != nullptr) {
+        std::string Err;
+        m_pCodeCache->Flush (&Err);              // persist this session's new artifacts
+        delete m_pCodeCache;
+        m_pCodeCache = nullptr;
+    }
 }
 
 void
@@ -368,25 +445,53 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             }
         }
         if (pCode == nullptr) {
-            HRESULT Thr;
-            if (m_ShadowMode) {
-                // Try the shadow path; a block it cannot lower (an intra-instruction loop such as
-                // REP) falls back to the native fallback backend (the interpreter), which runs that
-                // one block correctly -- the hybrid's universal rung. That unit dispatches natively.
-                Thr = GenerateShadowUnit (m_pArch, m_pBackend, Pc, EffEnd, &Fresh);
-                CurShadow = SUCCEEDED (Thr) && Fresh != nullptr;
-                if ((FAILED (Thr) || Fresh == nullptr) && m_pFallback != nullptr) {
-                    Thr = GenerateAotCfg (m_pArch, m_pFallback, Pc, EffEnd, &Fresh, nullptr, TRUE);
+            // 1. Persistent cache (immutable code only): reload a previously-serialized artifact
+            //    instead of recompiling. Try the variant(s) this machine could have produced --
+            //    in shadow mode a block is either a shadow unit (from the base backend) or a
+            //    fallback unit (from the interpreter); reload through the matching backend.
+            if (Cacheable && m_pCodeCache != nullptr) {
+                if (m_ShadowMode) {
+                    if (PersistLoad (m_pBackend, PersistKey (m_pBackend, CacheKey, Pc, EffEnd, true), Fresh)) {
+                        CurShadow = true;
+                    } else if (m_pFallback != nullptr
+                               && PersistLoad (m_pFallback, PersistKey (m_pFallback, CacheKey, Pc, EffEnd, false), Fresh)) {
+                        CurShadow = false;
+                    }
+                } else if (PersistLoad (m_pBackend, PersistKey (m_pBackend, CacheKey, Pc, EffEnd, false), Fresh)) {
                     CurShadow = false;
                 }
+            }
+
+            // 2. Compile if still missing, then persist the fresh artifact.
+            if (Fresh == nullptr) {
+                HRESULT Thr;
+                ICpuBackend *pProd = m_pBackend;
+                if (m_ShadowMode) {
+                    // Shadow path; a block it cannot lower (an intra-instruction loop such as REP)
+                    // falls back to the native fallback backend (interpreter) -- the hybrid's
+                    // universal rung. A shadow unit dispatches via the scratch registers.
+                    Thr = GenerateShadowUnit (m_pArch, m_pBackend, Pc, EffEnd, &Fresh);
+                    CurShadow = SUCCEEDED (Thr) && Fresh != nullptr;
+                    if ((FAILED (Thr) || Fresh == nullptr) && m_pFallback != nullptr) {
+                        Thr = GenerateAotCfg (m_pArch, m_pFallback, Pc, EffEnd, &Fresh, nullptr, TRUE);
+                        CurShadow = false;
+                        pProd     = m_pFallback;
+                    }
+                } else {
+                    Thr = GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE);
+                }
+                if (FAILED (Thr) || Fresh == nullptr) {
+                    R.Reason = LC_SYS_RESULT::Fault;
+                    break;
+                }
+                m_StatCompiles++;
+                if (Cacheable && m_pCodeCache != nullptr) {
+                    PersistSave (pProd, PersistKey (pProd, CacheKey, Pc, EffEnd, CurShadow), Fresh.Get ());
+                }
             } else {
-                Thr = GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE);
+                m_StatHits++;                          // reloaded from the persistent cache
             }
-            if (FAILED (Thr) || Fresh == nullptr) {
-                R.Reason = LC_SYS_RESULT::Fault;
-                break;
-            }
-            m_StatCompiles++;
+
             pCode = Fresh.Get ();
             if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, 0, false, CurShadow }; }
         }

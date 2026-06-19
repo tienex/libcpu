@@ -22,8 +22,10 @@
 #include "LibCPU/ICpu.h"
 #include "LibCPU/CpuState.h"
 #include "Dispatch.h"
+#include "CodeCache.h"
 #include <functional>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -167,6 +169,15 @@ private:
     bool                    m_Shutdown;
     bool                    m_ShadowMode = false;   // base backend lacks native CFG -> shadow translate + dispatch
     ICpuBackend            *m_pFallback  = nullptr;  // native-CFG backend for blocks the shadow path can't lower
+
+    // Optional persistent translation cache ($LIBCPU_CODECACHE): compiled artifacts are
+    // serialized and stored keyed by (address-folded content hash, producing backend, host
+    // fingerprint, shadow/native variant), so a rerun reloads them instead of recompiling --
+    // the speed win for compiler/script backends whose cold compile is expensive.
+    CodeCache              *m_pCodeCache = nullptr;
+    std::string  PersistKey (ICpuBackend *pBe, UINT64 LinAddr, CPU_ADDR Pc, CPU_ADDR EffEnd, bool Shadow) CONST;
+    bool         PersistLoad (ICpuBackend *pBe, std::string CONST &Key, OUT ComPtr<ICpuCode> &Out);
+    void         PersistSave (ICpuBackend *pBe, std::string CONST &Key, ICpuCode *pCode);
     std::function<void ()>  m_Pump;        // console bridge boundary callback (see SetPump)
     std::function<CPU_ADDR (System &, UINT32, UINT32, CPU_ADDR)> m_ArchTrap;    // CPU personality trap (SetArchTrap)
     std::function<CPU_ADDR (System &, UINT32, CPU_ADDR)>         m_DeliverIrq;  // CPU personality IRQ delivery (SetIrqDeliver)
