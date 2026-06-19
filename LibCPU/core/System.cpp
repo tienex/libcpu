@@ -2,6 +2,7 @@
 
 #include "System.h"
 #include "../aot/AotGenerator.h"
+#include "../aot/ShadowCfg.h"
 #include "LibCPU/PCom.h"
 #include <chrono>
 #include <cstdio>
@@ -40,6 +41,13 @@ System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UIN
 {
     std::memset (&m_State, 0, sizeof (m_State));
     m_State.RamSize = RamSize;
+
+    // A backend with no native control flow drives the machine through the shadow path: we
+    // translate one basic block at a time with GenerateShadowUnit and read the outcome from the
+    // scratch registers after each burst. Probed once here (it is a property of the base backend).
+    // LCX_SHADOW forces the path on even for a CFG-capable backend, to exercise it on a fast one.
+    m_ShadowMode = (m_pBackend != nullptr)
+                   && (std::getenv ("LCX_SHADOW") != nullptr || !BackendHasNativeCfg (m_pArch, m_pBackend));
 }
 
 System::~System ()
@@ -344,7 +352,10 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
             }
         }
         if (pCode == nullptr) {
-            if (FAILED (GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE)) || Fresh == nullptr) {
+            HRESULT Thr = m_ShadowMode
+                              ? GenerateShadowUnit (m_pArch, m_pBackend, Pc, EffEnd, &Fresh)
+                              : GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE);
+            if (FAILED (Thr) || Fresh == nullptr) {
                 R.Reason = LC_SYS_RESULT::Fault;
                 break;
             }
@@ -363,6 +374,38 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         pCode->Execute (m_pRAM, &m_State, nullptr);
         SyncDeviceMemoryOut ();                         // flat RAM -> device-owned memory
         R.Steps++;
+
+        // A shadow unit could not write the dedicated dispatch fields; it left its outcome in
+        // the scratch registers. Translate that into the native fields and fall through to the
+        // shared dispatch below, so port I/O, INT, and control transfer reuse one code path.
+        if (m_ShadowMode) {
+            UINT64 St      = m_State.Reg[SHADOW_REG_STATUS];
+            UINT32 ShReason = (UINT32) (St & 0xFF);
+            UINT32 Width    = (UINT32) ((St >> 8) & 0xFF);
+            m_State.TrapPc        = (UINT64) (m_State.Reg[SHADOW_REG_NEXTPC] & UINT64_C (0xFFFFFFFF));
+            m_State.IoCtrl        = CPU_IO_NONE;
+            m_State.SyscallVector = CPU_NO_SYSCALL;
+            switch (ShReason) {
+            case SHADOW_ST_PORTOUT:
+                m_State.IoCtrl = CPU_IO_OUT | ((UINT64) Width << 8);
+                m_State.IoPort = m_State.Reg[SHADOW_REG_A];
+                m_State.IoData = m_State.Reg[SHADOW_REG_B];
+                break;
+            case SHADOW_ST_PORTIN:
+                m_State.IoCtrl = CPU_IO_IN | ((UINT64) Width << 8);
+                m_State.IoPort = m_State.Reg[SHADOW_REG_A];
+                break;
+            case SHADOW_ST_SYSCALL:
+                m_State.SyscallVector = m_State.Reg[SHADOW_REG_A];
+                break;
+            case SHADOW_ST_SYSTRAP:
+                m_State.IoCtrl = m_State.Reg[SHADOW_REG_A];   // a CPU_IO_* reason (HLT/STI/CLI/arch)
+                m_State.IoData = m_State.Reg[SHADOW_REG_B];
+                break;
+            default:                                          // SHADOW_ST_NEXT: plain transfer to TrapPc
+                break;
+            }
+        }
 
         // Advance the machine time base, then hand it to time-driven devices (the PIT) before
         // servicing this burst's trap, so a port access that latches a timer reads a count

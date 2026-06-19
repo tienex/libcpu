@@ -159,6 +159,7 @@ private:
     bool                    m_If;          // interrupt-enable flag (8086 IF)
     bool                    m_Halted;      // executed HLT, waiting for an interrupt
     bool                    m_Shutdown;
+    bool                    m_ShadowMode = false;   // base backend lacks native CFG -> shadow translate + dispatch
     std::function<void ()>  m_Pump;        // console bridge boundary callback (see SetPump)
     std::function<CPU_ADDR (System &, UINT32, UINT32, CPU_ADDR)> m_ArchTrap;    // CPU personality trap (SetArchTrap)
     std::function<CPU_ADDR (System &, UINT32, CPU_ADDR)>         m_DeliverIrq;  // CPU personality IRQ delivery (SetIrqDeliver)

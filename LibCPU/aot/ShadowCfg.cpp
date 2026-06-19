@@ -111,10 +111,11 @@ public:
         return TerminateTrap (SHADOW_ST_PORTIN | ((UINT64) Width << 8), pPort, nullptr, pRet);
     }
     HRESULT STDMETHODCALLTYPE EmitSystemTrap (UINT32 Reason, ICpuValue *pRet) override {
-        return TerminateTrapImm (SHADOW_ST_SYSTRAP, (UINT64) Reason, nullptr, pRet);
+        return TerminateTrapImm (SHADOW_ST_SYSTRAP, (UINT64) Reason, nullptr, pRet);   // A=reason
     }
     HRESULT STDMETHODCALLTYPE EmitSystemTrapValue (UINT32 Reason, ICpuValue *pValue, ICpuValue *pRet) override {
-        return TerminateTrap (SHADOW_ST_SYSTRAP | ((UINT64) Reason << 8), pValue, nullptr, pRet);
+        if (FAILED (PutScratchImm (SHADOW_REG_A, (UINT64) Reason))) { return E_FAIL; }   // A=reason
+        return TerminateTrap (SHADOW_ST_SYSTRAP, nullptr, pValue, pRet);                 // B=value
     }
 
     // --- ICpuSyscallEmitter: INT n -> vector to the host ---------------------------------
