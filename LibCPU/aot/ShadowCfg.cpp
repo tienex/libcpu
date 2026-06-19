@@ -3,6 +3,7 @@
 #include "ShadowCfg.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
+#include <map>
 
 namespace LibCPU {
 
@@ -61,18 +62,28 @@ public:
     UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuEmitter>::AddRef (); }
     UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
-    // --- data ops: forward to the inner emitter (its values flow straight back) -----------
-    HRESULT STDMETHODCALLTYPE ConstInt (UINT32 B, UINT64 V, ICpuValue **pp) override { return m_pInner->ConstInt (B, V, pp); }
-    HRESULT STDMETHODCALLTYPE GetRegister (UINT32 I, UINT32 B, ICpuValue **pp) override { return m_pInner->GetRegister (I, B, pp); }
+    // --- data ops: forward to the inner emitter (its values flow straight back), recording each
+    //     result's bit width so a synthesized Select (below) knows the operand width. ICpuValue is
+    //     an opaque handle with no width accessor, so the shadow layer tracks it here. -----------
+    HRESULT STDMETHODCALLTYPE ConstInt (UINT32 B, UINT64 V, ICpuValue **pp) override { return RW (m_pInner->ConstInt (B, V, pp), pp, B); }
+    HRESULT STDMETHODCALLTYPE GetRegister (UINT32 I, UINT32 B, ICpuValue **pp) override { return RW (m_pInner->GetRegister (I, B, pp), pp, B); }
     HRESULT STDMETHODCALLTYPE PutRegister (UINT32 I, ICpuValue *pV, UINT32 B, BOOLEAN S) override { return m_pInner->PutRegister (I, pV, B, S); }
-    HRESULT STDMETHODCALLTYPE Load (ICpuValue *pA, UINT32 B, ICpuValue **pp) override { return m_pInner->Load (pA, B, pp); }
+    HRESULT STDMETHODCALLTYPE Load (ICpuValue *pA, UINT32 B, ICpuValue **pp) override { return RW (m_pInner->Load (pA, B, pp), pp, B); }
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pV, ICpuValue *pA, UINT32 B) override { return m_pInner->Store (pV, pA, B); }
-    HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP O, ICpuValue *pA, ICpuValue *pB, ICpuValue **pp) override { return m_pInner->BinaryOp (O, pA, pB, pp); }
-    HRESULT STDMETHODCALLTYPE UnaryOp (CPU_UNOP O, ICpuValue *pA, ICpuValue **pp) override { return m_pInner->UnaryOp (O, pA, pp); }
-    HRESULT STDMETHODCALLTYPE Compare (CPU_CMP P, ICpuValue *pA, ICpuValue *pB, ICpuValue **pp) override { return m_pInner->Compare (P, pA, pB, pp); }
-    HRESULT STDMETHODCALLTYPE Cast (CPU_CAST O, ICpuValue *pA, UINT32 B, ICpuValue **pp) override { return m_pInner->Cast (O, pA, B, pp); }
-    HRESULT STDMETHODCALLTYPE Select (ICpuValue *pC, ICpuValue *pT, ICpuValue *pF, ICpuValue **pp) override { return m_pInner->Select (pC, pT, pF, pp); }
-    HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG F, ICpuValue **pp) override { return m_pInner->GetFlag (F, pp); }
+    HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP O, ICpuValue *pA, ICpuValue *pB, ICpuValue **pp) override { return RW (m_pInner->BinaryOp (O, pA, pB, pp), pp, GetW (pA)); }
+    HRESULT STDMETHODCALLTYPE UnaryOp (CPU_UNOP O, ICpuValue *pA, ICpuValue **pp) override { return RW (m_pInner->UnaryOp (O, pA, pp), pp, GetW (pA)); }
+    HRESULT STDMETHODCALLTYPE Compare (CPU_CMP P, ICpuValue *pA, ICpuValue *pB, ICpuValue **pp) override { return RW (m_pInner->Compare (P, pA, pB, pp), pp, 1); }
+    HRESULT STDMETHODCALLTYPE Cast (CPU_CAST O, ICpuValue *pA, UINT32 B, ICpuValue **pp) override { return RW (m_pInner->Cast (O, pA, B, pp), pp, B); }
+    HRESULT STDMETHODCALLTYPE Select (ICpuValue *pC, ICpuValue *pT, ICpuValue *pF, ICpuValue **pp) override {
+        // Synthesize from the core ops when the inner backend has no native Select (it returns
+        // null/E_NOTIMPL); this makes the FRONTEND's Select calls valid on any backend, instead of
+        // handing a null value to the next op. The operand width comes from the tracked map.
+        UINT32 W = GetW (pT);
+        if (W == 0) { W = GetW (pF); }
+        if (W == 0) { W = 16; }
+        return RW (SynthSelect (m_pInner, pC, pT, pF, W, pp), pp, W);
+    }
+    HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG F, ICpuValue **pp) override { return RW (m_pInner->GetFlag (F, pp), pp, 1); }
     HRESULT STDMETHODCALLTYPE SetFlag (CPU_FLAG F, ICpuValue *pV) override { return m_pInner->SetFlag (F, pV); }
 
     // --- control flow: intra-instruction CFG (REP) is unsupported in this step ------------
@@ -145,6 +156,15 @@ public:
     ICpuEmitter *Inner () CONST { return m_pInner; }
 
 private:
+    // Record a freshly-produced value's bit width (keyed by the inner backend's value pointer).
+    HRESULT RW (HRESULT hr, ICpuValue **pp, UINT32 Bits) {
+        if (SUCCEEDED (hr) && pp != nullptr && *pp != nullptr && Bits != 0) { m_Bits[*pp] = Bits; }
+        return hr;
+    }
+    UINT32 GetW (ICpuValue *pV) CONST {
+        std::map<ICpuValue *, UINT32>::const_iterator It = m_Bits.find (pV);
+        return It != m_Bits.end () ? It->second : 0;
+    }
     HRESULT PutScratch (UINT32 Reg, ICpuValue *pV) { return m_pInner->PutRegister (Reg, pV, SHADOW_W, FALSE); }
     HRESULT PutScratchImm (UINT32 Reg, UINT64 V) {
         ComPtr<ICpuValue> C;
@@ -163,10 +183,11 @@ private:
         return TerminateTrap (Status, nullptr, pB, pRet);
     }
 
-    ICpuEmitter *m_pInner;
-    ICpuValue   *m_pDispatch = nullptr;
-    bool         m_UsedCfg   = false;
-    bool         m_Terminated = false;
+    ICpuEmitter                  *m_pInner;
+    ICpuValue                    *m_pDispatch = nullptr;
+    bool                          m_UsedCfg   = false;
+    bool                          m_Terminated = false;
+    std::map<ICpuValue *, UINT32> m_Bits;          // value -> bit width, for synthesizing Select
 };
 
 } // anonymous namespace
