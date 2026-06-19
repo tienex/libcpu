@@ -256,7 +256,7 @@ typedef int (*JittedFn) (void *pRAM, void *pGRF, void *pFRF);
 //
 // The compiled code object: owns the dlopen handle and the temp files.
 //
-class CcCode final : public ComObject<ICpuCode> {
+class CcCode final : public ComObject<ICpuCode>, public ICpuCodeSerialize {
 public:
     CcCode (void *pHandle, JittedFn Fn, std::string Dir, std::string SrcPath, std::string LibPath)
         : m_pHandle (pHandle), m_Fn (Fn), m_Dir (std::move (Dir)),
@@ -268,10 +268,35 @@ public:
         if (!m_Dir.empty ())     rmdir (m_Dir.c_str ());
     }
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuCodeSerialize)) {
+            *ppvObject = static_cast<ICpuCodeSerialize *> (this);
+            AddRef ();
+            return S_OK;
+        }
         return DefaultQuery (riid, IID_ICpuCode, ppvObject);
     }
+    UINT32 STDMETHODCALLTYPE AddRef () override { return ComObject<ICpuCode>::AddRef (); }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuCode>::Release (); }
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID *pFRF) override {
         return (CPU_EXEC_STATUS) m_Fn (pRAM, pGRF, pFRF);
+    }
+    // The artifact is the compiled shared object; serialise its bytes so the persistent cache
+    // can dlopen() it again on a later run instead of re-invoking the C compiler. The .so file
+    // still exists here (the destructor, which unlinks it, has not run while this object lives).
+    HRESULT STDMETHODCALLTYPE Serialize (UINT8 *pBuf, UINT32 BufSize, UINT32 *pNeeded) override {
+        FILE *pf = fopen (m_LibPath.c_str (), "rb");
+        if (!pf) { return E_FAIL; }
+        fseek (pf, 0, SEEK_END);
+        long Sz = ftell (pf);
+        fseek (pf, 0, SEEK_SET);
+        if (Sz < 0) { fclose (pf); return E_FAIL; }
+        if (pNeeded) { *pNeeded = (UINT32) Sz; }
+        HRESULT hr = S_OK;
+        if (pBuf != nullptr && BufSize >= (UINT32) Sz) {
+            if (fread (pBuf, 1, (size_t) Sz, pf) != (size_t) Sz) { hr = E_FAIL; }
+        }
+        fclose (pf);
+        return hr;
     }
 private:
     void       *m_pHandle;
@@ -618,7 +643,7 @@ private:
 // interface, so IUnknown is implemented manually (one set of methods overrides
 // both interfaces' IUnknown).
 //
-class CcBackend final : public ICpuBackend, public ICpuCcCompilers {
+class CcBackend final : public ICpuBackend, public ICpuCcCompilers, public ICpuBackendCache {
 public:
     CcBackend () : m_Ref (1) {
         DiscoverCompilers (m_Compilers);
@@ -642,6 +667,8 @@ public:
             *ppvObject = static_cast<ICpuBackend *> (this);
         } else if (CompareGuid (&riid, &IID_ICpuCcCompilers)) {
             *ppvObject = static_cast<ICpuCcCompilers *> (this);
+        } else if (CompareGuid (&riid, &IID_ICpuBackendCache)) {
+            *ppvObject = static_cast<ICpuBackendCache *> (this);
         } else {
             *ppvObject = nullptr;
             return E_NOINTERFACE;
@@ -670,6 +697,27 @@ public:
         ICpuCode *pCode = static_cast<CcEmitter *> (pEmitter)->Build ();
         *ppCode = pCode;
         return pCode ? S_OK : E_FAIL;
+    }
+
+    // ---- ICpuBackendCache: rebuild a code object from a serialized .so (skips the compiler) ----
+    HRESULT STDMETHODCALLTYPE LoadCode (UINT8 CONST *pBytes, UINT32 Len, ICpuCode **ppCode) override {
+        if (ppCode == nullptr) { return E_POINTER; }
+        *ppCode = nullptr;
+        char DirTmpl[] = "/tmp/libcpu_cc_XXXXXX";        // private 0700 dir, same hygiene as Build()
+        if (mkdtemp (DirTmpl) == nullptr) { return E_FAIL; }
+        std::string Dir     = DirTmpl;
+        std::string LibPath = Dir + "/insn.dylib";
+        int Fd = open (LibPath.c_str (), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+        if (Fd < 0) { rmdir (Dir.c_str ()); return E_FAIL; }
+        bool Ok = (UINT32) write (Fd, pBytes, Len) == Len;
+        close (Fd);
+        if (!Ok) { unlink (LibPath.c_str ()); rmdir (Dir.c_str ()); return E_FAIL; }
+        void *pHandle = dlopen (LibPath.c_str (), RTLD_NOW | RTLD_LOCAL);
+        if (!pHandle) { unlink (LibPath.c_str ()); rmdir (Dir.c_str ()); return E_FAIL; }
+        JittedFn Fn = (JittedFn) dlsym (pHandle, "insn");
+        if (!Fn) { dlclose (pHandle); unlink (LibPath.c_str ()); rmdir (Dir.c_str ()); return E_FAIL; }
+        *ppCode = new CcCode (pHandle, Fn, Dir, std::string (), LibPath);   // no source temp
+        return S_OK;
     }
 
     // ---- ICpuCcCompilers ----
