@@ -83,6 +83,9 @@ libcpu_add_backend(tcl_backend tcl
 libcpu_add_backend(bash_backend bash
   SOURCES backends/bash/BashBackend.cpp backends/bash/BashModule.cpp
   INCLUDES backends/bash)
+libcpu_add_backend(cmake_backend cmake
+  SOURCES backends/cmake/CmakeBackend.cpp backends/cmake/CmakeModule.cpp
+  INCLUDES backends/cmake)
 libcpu_add_backend(zsh_backend zsh
   SOURCES backends/zsh/ZshBackend.cpp backends/zsh/ZshModule.cpp
   INCLUDES backends/zsh)
@@ -540,7 +543,7 @@ endforeach ()
 # that makes any backend machine-capable. Each representative backend across the language span
 # (native JITs, C compilers, scripting, managed runtimes) must pass the same self-test.
 foreach (_sb interp asmjit sljit lightning mir llvm-22 gccjit-15 cc qbe js jscore wasm
-              bash cmd lua perl python ruby tcl fish zsh ksh tcsh pwsh swift java dotnet jvm clr cpython)
+              bash cmake cmd lua perl python ruby tcl fish zsh ksh tcsh pwsh swift java dotnet jvm clr cpython)
   if (EXISTS "${CMAKE_BINARY_DIR}/${_sb}.backend")
     add_test(NAME shadow.${_sb} COMMAND lcx shadow --backend "${CMAKE_BINARY_DIR}/${_sb}.backend")
     set_tests_properties(shadow.${_sb} PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
