@@ -194,6 +194,13 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
     if (FAILED (pInner->CreateEmitter (pArch, &InnerE)) || InnerE == nullptr) { return E_FAIL; }
     ComPtr<ShadowEmitter> Shadow (new ShadowEmitter (InnerE.Get ()));
 
+    // Uniform time base: one tick per retired guest instruction, exactly as GenerateAotCfg does,
+    // so CPU_STATE.Cycles advances identically whether a block ran via the shadow path or natively.
+    // Without it the cycle clock stalls (the host credits a flat per-burst cost) and time-driven
+    // devices (the PIT) drift, which diverges the machine. The tick forwards to the inner backend.
+    ComPtr<ICpuClockEmitter> Clk;
+    Shadow->QueryInterface (IID_ICpuClockEmitter, (VOID **) &Clk);
+
     // Decode ONE guest basic block: emit each instruction's body through the shadow emitter
     // (straight-line into the inner backend) and stop at the first terminator or trap. Every
     // exit leaves the next guest PC / trap outcome in the scratch registers for the host.
@@ -207,6 +214,7 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
 
         if (FAILED (pArch->TranslateInstr (Pc, Shadow.Get ()))) { return E_FAIL; }
         if (Shadow->UsedCfg ()) { return E_FAIL; }              // intra-instruction loop (REP): not yet handled
+        if (Clk != nullptr) { Clk->EmitTick (1); }              // one tick per retired guest instruction
         if (Shadow->Terminated ()) { break; }                  // a trap/indirect instruction ended the unit
 
         if (Tag & TagReturn) {

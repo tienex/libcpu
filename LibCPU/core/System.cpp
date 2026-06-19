@@ -248,13 +248,18 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         if (Trace) {
             UINT64 Lin = SegBase + Pc;
             std::fprintf (stderr, "[%6llu] pc=%05llX cs=%04X ax=%04X op=%02X %02X %02X "
-                          "S%d O%d Z%d C%d P%d halt=%d if=%d\n",
+                          "S%d O%d Z%d C%d P%d halt=%d if=%d "
+                          "cx=%04X dx=%04X bx=%04X sp=%04X bp=%04X si=%04X di=%04X ds=%04X es=%04X ss=%04X\n",
                           (unsigned long long) Step, (unsigned long long) Lin, (UINT16) m_State.Reg[S_CS],
                           (UINT16) m_State.Reg[S_AX],
                           Lin < m_RamSize ? m_pRAM[Lin] : 0, Lin + 1 < m_RamSize ? m_pRAM[Lin + 1] : 0,
                           Lin + 2 < m_RamSize ? m_pRAM[Lin + 2] : 0,
                           m_State.Flag[FlagNegative], m_State.Flag[FlagOverflow], m_State.Flag[FlagZero],
-                          m_State.Flag[FlagCarry], m_State.Flag[FlagParity], m_Halted ? 1 : 0, m_If ? 1 : 0);
+                          m_State.Flag[FlagCarry], m_State.Flag[FlagParity], m_Halted ? 1 : 0, m_If ? 1 : 0,
+                          (UINT16) m_State.Reg[1], (UINT16) m_State.Reg[2], (UINT16) m_State.Reg[3],
+                          (UINT16) m_State.Reg[4], (UINT16) m_State.Reg[5], (UINT16) m_State.Reg[6],
+                          (UINT16) m_State.Reg[7], (UINT16) m_State.Reg[11], (UINT16) m_State.Reg[8],
+                          (UINT16) m_State.Reg[10]);
         }
         // Adopt any tier-1 artifacts the background queue finished since the last burst (safe point: the
         // cache is touched only here, on the execution thread).
