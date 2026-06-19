@@ -80,6 +80,16 @@ libcpu_add_backend(swift_backend swift
 libcpu_add_backend(tcl_backend tcl
   SOURCES backends/tcl/TclBackend.cpp backends/tcl/TclModule.cpp
   INCLUDES backends/tcl)
+# tclemb: the in-process sibling of `tcl` -- embeds libtcl (Tcl_CreateInterp/Tcl_EvalFile)
+# instead of spawning tclsh. Registered only where Tcl is linkable; the spawning `tcl` stays.
+find_library(LIBCPU_TCL_LIB NAMES tcl tcl9.0 tcl8.6 tcl8.5)
+if(LIBCPU_TCL_LIB)
+  find_path(LIBCPU_TCL_INCLUDE tcl.h)
+  libcpu_add_backend(tclemb_backend tclemb
+    SOURCES backends/tclemb/TclEmbBackend.cpp backends/tclemb/TclEmbModule.cpp
+    INCLUDES backends/tclemb ${LIBCPU_TCL_INCLUDE}
+    LIBS ${LIBCPU_TCL_LIB})
+endif()
 libcpu_add_backend(bash_backend bash
   SOURCES backends/bash/BashBackend.cpp backends/bash/BashModule.cpp
   INCLUDES backends/bash)
@@ -543,7 +553,7 @@ endforeach ()
 # that makes any backend machine-capable. Each representative backend across the language span
 # (native JITs, C compilers, scripting, managed runtimes) must pass the same self-test.
 foreach (_sb interp asmjit sljit lightning mir llvm-22 gccjit-15 cc qbe js jscore wasm
-              bash cmake cmd lua perl python ruby tcl fish zsh ksh tcsh pwsh swift java dotnet jvm clr cpython)
+              bash cmake cmd lua perl python ruby tcl tclemb fish zsh ksh tcsh pwsh swift java dotnet jvm clr cpython)
   if (EXISTS "${CMAKE_BINARY_DIR}/${_sb}.backend")
     add_test(NAME shadow.${_sb} COMMAND lcx shadow --backend "${CMAKE_BINARY_DIR}/${_sb}.backend")
     set_tests_properties(shadow.${_sb} PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
