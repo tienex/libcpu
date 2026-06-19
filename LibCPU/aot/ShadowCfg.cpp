@@ -201,12 +201,22 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
     ComPtr<ICpuClockEmitter> Clk;
     Shadow->QueryInterface (IID_ICpuClockEmitter, (VOID **) &Clk);
 
+    // Reject an out-of-window entry up front: a guest that branches to a bad PC (e.g. executing
+    // non-code, like an unbootable boot sector) must FAULT, not read past the code memory and
+    // crash the host. The run loop turns this E_FAIL into a clean machine fault.
+    if (Entry >= End) { return E_FAIL; }
+
     // Decode ONE guest basic block: emit each instruction's body through the shadow emitter
     // (straight-line into the inner backend) and stop at the first terminator or trap. Every
     // exit leaves the next guest PC / trap outcome in the scratch registers for the host.
-    CPU_ADDR Pc       = Entry;
-    bool     Finished = false;
-    for (UINT32 Guard = 0; Guard < 4096 && !Finished; Guard++) {
+    CPU_ADDR Pc = Entry;
+    for (UINT32 Guard = 0; Guard < 4096; Guard++) {
+        if (Pc >= End) {                                       // ran to the window edge: resume there
+            ComPtr<ICpuValue> T;
+            if (FAILED (Shadow->Inner ()->ConstInt (SHADOW_W, (UINT64) Pc, &T)) || T == nullptr) { return E_FAIL; }
+            if (FAILED (Shadow->TerminateNext (T.Get ()))) { return E_FAIL; }
+            break;
+        }
         UINT32   Tag;
         CPU_ADDR NewPc;
         CPU_ADDR NextPc;
@@ -238,15 +248,9 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
             break;
         }
 
-        // TagContinue: straight-line. Advance to the next instruction; if it leaves the window,
-        // end the unit resuming there (the host re-dispatches / re-translates).
+        // TagContinue: straight-line. Advance to the next instruction; the window-edge case is
+        // handled at the top of the loop (resume there for the host to re-dispatch).
         Pc = NextPc;
-        if (Pc >= End) {
-            ComPtr<ICpuValue> T;
-            if (FAILED (Shadow->Inner ()->ConstInt (SHADOW_W, (UINT64) Pc, &T)) || T == nullptr) { return E_FAIL; }
-            if (FAILED (Shadow->TerminateNext (T.Get ()))) { return E_FAIL; }
-            Finished = true;
-        }
     }
 
     return pInner->Compile (Shadow->Inner (), ppCode);
