@@ -50,6 +50,14 @@ System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UIN
                    && (std::getenv ("LCX_SHADOW") != nullptr || !BackendHasNativeCfg (m_pArch, m_pBackend));
 }
 
+void
+System::SetFallback (ICpuBackend *pBackend)
+{
+    if (pBackend != nullptr) { pBackend->AddRef (); }
+    if (m_pFallback != nullptr) { m_pFallback->Release (); }
+    m_pFallback = pBackend;
+}
+
 System::~System ()
 {
     // Join the background queue FIRST so no worker is mid-compile while we free the cache/arch it uses;
@@ -62,6 +70,7 @@ System::~System ()
     m_Done.clear ();
     ClearCodeCache ();
     if (m_pHotArch != nullptr) { m_pHotArch->Release (); m_pHotArch = nullptr; }
+    if (m_pFallback != nullptr) { m_pFallback->Release (); m_pFallback = nullptr; }
 }
 
 void
@@ -299,6 +308,7 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         UINT64           CacheKey  = SegBase + (UINT64) Pc;
         bool             Cacheable = IsImmutableCode (CacheKey);
         ICpuCode        *pCode     = nullptr;
+        bool             CurShadow = false;             // is the unit being run this burst a shadow unit?
         ComPtr<ICpuCode> Fresh;                         // owns a ref only on a cache miss
         if (Cacheable) {
             auto It = m_CodeCache.find (CacheKey);
@@ -347,21 +357,33 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
                         }
                     }
                 }
-                pCode = C.pCode;                        // borrowed; the cache owns the ref
+                pCode    = C.pCode;                     // borrowed; the cache owns the ref
+                CurShadow = C.IsShadow;
                 m_StatHits++;
             }
         }
         if (pCode == nullptr) {
-            HRESULT Thr = m_ShadowMode
-                              ? GenerateShadowUnit (m_pArch, m_pBackend, Pc, EffEnd, &Fresh)
-                              : GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE);
+            HRESULT Thr;
+            if (m_ShadowMode) {
+                // Try the shadow path; a block it cannot lower (an intra-instruction loop such as
+                // REP) falls back to the native fallback backend (the interpreter), which runs that
+                // one block correctly -- the hybrid's universal rung. That unit dispatches natively.
+                Thr = GenerateShadowUnit (m_pArch, m_pBackend, Pc, EffEnd, &Fresh);
+                CurShadow = SUCCEEDED (Thr) && Fresh != nullptr;
+                if ((FAILED (Thr) || Fresh == nullptr) && m_pFallback != nullptr) {
+                    Thr = GenerateAotCfg (m_pArch, m_pFallback, Pc, EffEnd, &Fresh, nullptr, TRUE);
+                    CurShadow = false;
+                }
+            } else {
+                Thr = GenerateAotCfg (m_pArch, m_pBackend, Pc, EffEnd, &Fresh, nullptr, TRUE);
+            }
             if (FAILED (Thr) || Fresh == nullptr) {
                 R.Reason = LC_SYS_RESULT::Fault;
                 break;
             }
             m_StatCompiles++;
             pCode = Fresh.Get ();
-            if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, 0, false }; }
+            if (Cacheable) { pCode->AddRef (); m_CodeCache[CacheKey] = CACHED_CODE { pCode, 1, 0, false, CurShadow }; }
         }
         m_State.TrapPc = CPU_SMC_NO_TRAP;
         m_State.IoCtrl = CPU_IO_NONE;
@@ -378,7 +400,8 @@ System::Run (CPU_ADDR CodeEntry, CPU_ADDR CodeEnd, UINT64 MaxSteps)
         // A shadow unit could not write the dedicated dispatch fields; it left its outcome in
         // the scratch registers. Translate that into the native fields and fall through to the
         // shared dispatch below, so port I/O, INT, and control transfer reuse one code path.
-        if (m_ShadowMode) {
+        // A fallback (interpreter) unit is native, so it is dispatched the normal way.
+        if (CurShadow) {
             UINT64 St      = m_State.Reg[SHADOW_REG_STATUS];
             UINT32 ShReason = (UINT32) (St & 0xFF);
             UINT32 Width    = (UINT32) ((St >> 8) & 0xFF);

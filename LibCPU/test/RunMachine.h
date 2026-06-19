@@ -289,7 +289,8 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
                 bool ConsoleMode = false,                    // run interactively through the console seam
                 std::string CONST &ConsoleKeys = std::string (),  // headless: pre-injected keystrokes (else live TTY)
                 bool BootScan = false,                       // run the option-ROM bootstrap (scan UMA + far-call inits)
-                std::vector<ICpuBackend *> CONST &pHotTiers = std::vector<ICpuBackend *> ())  // tiered JIT ladder (cold->hot)
+                std::vector<ICpuBackend *> CONST &pHotTiers = std::vector<ICpuBackend *> (),  // tiered JIT ladder (cold->hot)
+                ICpuBackend *pFallback = nullptr)            // native-CFG backend for blocks the shadow path can't lower
 {
     // Discover capabilities of every matched component.
     std::vector<IInterruptSource *> Sources;
@@ -339,6 +340,7 @@ RunMachineDemo (MachineBuilder &Builder, ICpuBackend *pBackend, CHAR8 CONST *pIm
     pArch->SetCodeMemory (Ram.data (), Ram.size ());
     System Machine (pArch, pBackend, Ram.data (), Ram.size ());
     InstallX86System (Machine);                              // CPU personality: x86 privileged ops
+    if (pFallback != nullptr) { Machine.SetFallback (pFallback); }   // shadow-path rung A (interpreter)
     if (!pHotTiers.empty ()) {
         // Tiered, COMPILED IN THE BACKGROUND: a dedicated hot frontend over the same RAM lets every tier
         // recompile run on a worker thread (System owns it -> released after the queue joins), so a hot

@@ -1551,8 +1551,16 @@ CmdMachine (int argc, char **argv, CHAR8 CONST *pArgv0)
                 Pos = Comma + 1;
             }
         }
+        // Shadow-path fallback (hybrid rung A): a native-CFG interpreter, loaded from the same
+        // bundle directory, that runs blocks the shadow layer cannot lower (e.g. REP). Used only
+        // when the chosen backend lacks native control flow; held unused otherwise. Best-effort.
+        std::string Bp = BackendPath (argc, argv, pArgv0);
+        std::string FbPath = Bp.substr (0, Bp.find_last_of ('/') + 1) + "interp.backend";
+        ICpuBackend *pFallback = LoadBackendBundle (FbPath.c_str ());
+
         int Rc = RunMachineDemo (Builder, pBackend, pImage, LoadAddr, Demo, CliRoms, BiosBoot, BiosSteps,
-                                 ConsoleMode, ConsoleKeys, BootScan, HotTiers);
+                                 ConsoleMode, ConsoleKeys, BootScan, HotTiers, pFallback);
+        if (pFallback != nullptr) { pFallback->Release (); }
         for (ICpuBackend *pB : HotTiers) { pB->Release (); }
         pBackend->Release ();
         return Rc;

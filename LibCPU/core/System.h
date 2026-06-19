@@ -114,6 +114,12 @@ public:
     void SetHotArch (ICpuArchitecture *pHotArch);
     void AddTier (ICpuBackend *pBackend, UINT64 Threshold, UINT32 OptLevel);
 
+    // Fallback backend for the shadow path: a native-CFG backend (the interpreter) used to
+    // translate blocks the shadow layer cannot lower on its own (e.g. the V20 REP string loop).
+    // The block runs entirely in this backend; the rest of the machine keeps using the shadow
+    // backend. Without a fallback set, such a block faults. Held with an owned reference.
+    void SetFallback (ICpuBackend *pBackend);
+
     // Map a device-owned host buffer over a guest physical region. The guest's flat RAM and the
     // device buffer are kept in sync at execution-window boundaries, so the region is genuinely
     // the device's memory (a card's video RAM, a bankable aperture), not a slice of main RAM.
@@ -160,6 +166,7 @@ private:
     bool                    m_Halted;      // executed HLT, waiting for an interrupt
     bool                    m_Shutdown;
     bool                    m_ShadowMode = false;   // base backend lacks native CFG -> shadow translate + dispatch
+    ICpuBackend            *m_pFallback  = nullptr;  // native-CFG backend for blocks the shadow path can't lower
     std::function<void ()>  m_Pump;        // console bridge boundary callback (see SetPump)
     std::function<CPU_ADDR (System &, UINT32, UINT32, CPU_ADDR)> m_ArchTrap;    // CPU personality trap (SetArchTrap)
     std::function<CPU_ADDR (System &, UINT32, CPU_ADDR)>         m_DeliverIrq;  // CPU personality IRQ delivery (SetIrqDeliver)
@@ -171,7 +178,9 @@ private:
     // Tier: which tier's artifact pCode currently is -- 0 = tier 0 (the base/interpreter backend),
     // t in 1..N = m_Tiers[t-1]. Compiling: a background promotion to a higher tier is in flight; the run
     // loop keeps using the current pCode until the worker delivers the next one.
-    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; UINT32 Tier; bool Compiling; };
+    // IsShadow: this artifact was built by GenerateShadowUnit (a non-CFG backend), so after it runs
+    // the outcome is read from the scratch registers; a native artifact uses the CPU_STATE fields.
+    struct CACHED_CODE { ICpuCode *pCode; UINT64 Runs; UINT32 Tier; bool Compiling; bool IsShadow; };
     std::unordered_map<UINT64, CACHED_CODE> m_CodeCache;
     UINT64 m_StatCompiles = 0;   // diagnostic (LCX_CACHE_STATS): translations performed
     UINT64 m_StatHits     = 0;   // diagnostic: cache hits (translations avoided)
