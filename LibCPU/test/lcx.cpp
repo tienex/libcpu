@@ -39,6 +39,7 @@
 #endif
 #include "../upcl/Parser.h"
 #include "../upcl/UpclArch.h"
+#include "../upcl/RegisterLayout.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "RunHostCall.h"
@@ -517,6 +518,25 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                     }
                 }
                 std::printf ("\n");
+            }
+
+            // The flattened layout the interpreter / codegen consume: physical storage,
+            // sub-registers (aliased bit fields), and flag bits (with their %meta roles).
+            Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
+            std::printf ("    layout: %zu physical, %zu sub-register(s), %zu flag(s)\n",
+                         Layout.Phys.size (), Layout.Subs.size (), Layout.Flags.size ());
+            for (Upcl::RegPhys CONST &P : Layout.Phys) {
+                std::printf ("      r%-3u %-6s #i%-3u%s%s\n", P.Index, P.Name.c_str (), P.Width,
+                             P.IsPc ? " [PC]" : "", P.IsPsr ? " [PSR]" : "");
+            }
+            for (Upcl::RegSub CONST &S : Layout.Subs) {
+                std::printf ("      sub  %-6s = %s[%u:%u]\n", S.Name.c_str (),
+                             Layout.Phys[S.Parent].Name.c_str (), S.Lo + S.Width - 1, S.Lo);
+            }
+            for (Upcl::RegFlag CONST &F : Layout.Flags) {
+                std::printf ("      flag %-6s = %s[%u]%s%s\n", F.Name.c_str (),
+                             Layout.Phys[F.Parent].Name.c_str (), F.Bit,
+                             F.Meta.empty () ? "" : " -> %", F.Meta.c_str ());
             }
         }
         for (Upcl::Feature CONST &Ft : pArch->Features) {

@@ -305,14 +305,14 @@ target_link_libraries(nativedemo PRIVATE LibCPU)
 # diagnostics, a hand-written recursive-descent parser); embeddable, and linked
 # dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
 # and links the LibCPU framework at run time.
-add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/UpclArch.cpp)
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/UpclArch.cpp)
 set_target_properties(upcl PROPERTIES
   OUTPUT_NAME UPCL
   FRAMEWORK TRUE
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/UpclArch.h")
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/UpclArch.h")
 target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
 if(APPLE)
@@ -530,6 +530,17 @@ foreach(_def ${LIBCPU_UPCL_DEFS})
   add_test(NAME upcl.def-${_defname} COMMAND lcx upcl check "${_def}")
   set_tests_properties(upcl.def-${_defname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 endforeach()
+
+# Register layout: flattening 8086.def's register_file must reproduce the real hardware --
+# ah/al are the high/low bytes of ax, and the carry flag lands on FLAGS bit 0 mapped to the
+# meta carry %C. Locks the MSB-first bit-field walk against regressions.
+add_test(NAME upcl.layout COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' > '${CMAKE_BINARY_DIR}/layout.out' && \
+   grep -q 'sub  ah     = ax\\[15:8\\]' '${CMAKE_BINARY_DIR}/layout.out' && \
+   grep -q 'sub  al     = ax\\[7:0\\]'  '${CMAKE_BINARY_DIR}/layout.out' && \
+   grep -q 'flag C      = flags\\[0\\] -> %C' '${CMAKE_BINARY_DIR}/layout.out' && \
+   grep -q 'flag O      = flags\\[11\\] -> %V' '${CMAKE_BINARY_DIR}/layout.out' && \
+   grep -q 'r13  pc     #i24  \\[PC\\]' '${CMAKE_BINARY_DIR}/layout.out'")
 
 # Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
 # (asserting the solid container holds them), then extract one and diff it against the
