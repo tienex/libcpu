@@ -290,8 +290,9 @@ target_include_directories(cachedemo PRIVATE frontends/v20 frontends/i8080 test 
 target_link_libraries(cachedemo PRIVATE LibCPU)
 
 # System-level emulation: an 8086 machine with a device bus and timer interrupts.
-add_executable(sysdemo test/sysdemo.cpp core/System.cpp core/X86System.cpp aot/AotGenerator.cpp aot/ShadowCfg.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
-target_include_directories(sysdemo PRIVATE frontends/v20 frontends/i8080 test aot core)
+add_executable(sysdemo test/sysdemo.cpp core/System.cpp core/X86System.cpp core/CodeCache.cpp core/ZooArchive.cpp third_party/zstd/zstd.c aot/AotGenerator.cpp aot/ShadowCfg.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp)
+target_include_directories(sysdemo PRIVATE frontends/v20 frontends/i8080 test aot core third_party/zstd)
+target_compile_definitions(sysdemo PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(sysdemo PRIVATE LibCPU)
 
 # Native AOT: compile a guest program to a standalone host executable.
