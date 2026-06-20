@@ -245,6 +245,12 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
     // Decode ONE guest basic block: emit each instruction's body through the shadow emitter
     // (straight-line into the inner backend) and stop at the first terminator or trap. Every
     // exit leaves the next guest PC / trap outcome in the scratch registers for the host.
+    // The cycle clock is only ever read by a device at a block boundary (a port-I/O / INT trap ends
+    // the unit), so CPU_STATE.Cycles need only be correct THERE, not after each instruction. Count
+    // the unit's retired instructions and emit a single EmitTick(N) before the unit ends instead of
+    // one tick per instruction -- identical at every boundary, but a fraction of the emitted code
+    // (a real saving for the per-block-compiling backends and the scripted/managed ones).
+    UINT32   Ticks = 0;
     CPU_ADDR Pc = Entry;
     for (UINT32 Guard = 0; Guard < 4096; Guard++) {
         if (Pc >= End) {                                       // ran to the window edge: resume there
@@ -260,7 +266,7 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
 
         if (FAILED (pArch->TranslateInstr (Pc, Shadow.Get ()))) { return E_FAIL; }
         if (Shadow->UsedCfg ()) { return E_FAIL; }              // intra-instruction loop (REP): not yet handled
-        if (Clk != nullptr) { Clk->EmitTick (1); }              // one tick per retired guest instruction
+        Ticks++;                                               // retired one guest instruction
         if (Shadow->Terminated ()) { break; }                  // a trap/indirect instruction ended the unit
 
         if (Tag & TagReturn) {
@@ -288,6 +294,10 @@ GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry
         // handled at the top of the loop (resume there for the host to re-dispatch).
         Pc = NextPc;
     }
+
+    // One batched tick for the whole unit (see above). Cycles is independent of the scratch
+    // registers the terminator wrote, so emitting it last is fine.
+    if (Clk != nullptr && Ticks > 0) { Clk->EmitTick (Ticks); }
 
     return pInner->Compile (Shadow->Inner (), ppCode);
 }
