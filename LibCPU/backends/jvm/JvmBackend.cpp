@@ -114,17 +114,30 @@ public:
 
     UINT16 Count () CONST { return (UINT16) (kFixedCount + m_Ints.size () + 1); }   // pool_count = entries + 1
 
-    // Serialise: the seven fixed entries (using ClassName) then the Integer entries.
+    // Serialise: the fixed entries (using ClassName), then the Integer entries. arg0 is a
+    // java.nio.ByteBuffer (the host's guest RAM wrapped zero-copy), so entries 8..17 give the
+    // ByteBuffer class and the get(I)B / put(IB)Ljava/nio/ByteBuffer; method references the
+    // Load/Store bytecode invokes; the descriptor (entry 6) takes (ByteBuffer, byte[]).
     void Serialise (std::vector<UINT8> &Out, std::string CONST &ClassName) CONST {
         AddU2 (Out, Count ());
-        AddUtf8 (Out, ClassName);            // 1: Utf8 class name
-        AddClass (Out, 1);                   // 2: Class -> 1
-        AddUtf8 (Out, "java/lang/Object");   // 3: Utf8 Object
-        AddClass (Out, 3);                   // 4: Class -> 3
-        AddUtf8 (Out, "insn");               // 5: Utf8 method name
-        AddUtf8 (Out, "([B[B)V");            // 6: Utf8 descriptor
-        AddUtf8 (Out, "Code");               // 7: Utf8 Code
-        for (INT32 Value : m_Ints) {         // 8..: Integer constants
+        AddUtf8 (Out, ClassName);                  // 1: Utf8 class name
+        AddClass (Out, 1);                         // 2: Class -> 1
+        AddUtf8 (Out, "java/lang/Object");         // 3: Utf8 Object
+        AddClass (Out, 3);                         // 4: Class -> 3
+        AddUtf8 (Out, "insn");                     // 5: Utf8 method name
+        AddUtf8 (Out, "(Ljava/nio/ByteBuffer;[B)V"); // 6: Utf8 descriptor
+        AddUtf8 (Out, "Code");                     // 7: Utf8 Code
+        AddUtf8 (Out, "java/nio/ByteBuffer");      // 8: Utf8 ByteBuffer
+        AddClass (Out, 8);                         // 9: Class -> 8
+        AddUtf8 (Out, "get");                      // 10: Utf8 get
+        AddUtf8 (Out, "(I)B");                     // 11: Utf8 get descriptor
+        AddNameAndType (Out, 10, 11);              // 12: NameAndType get
+        AddMethodref (Out, 9, 12);                 // 13: Methodref ByteBuffer.get (kBbGetRef)
+        AddUtf8 (Out, "put");                      // 14: Utf8 put
+        AddUtf8 (Out, "(IB)Ljava/nio/ByteBuffer;");// 15: Utf8 put descriptor
+        AddNameAndType (Out, 14, 15);              // 16: NameAndType put
+        AddMethodref (Out, 9, 16);                 // 17: Methodref ByteBuffer.put (kBbPutRef)
+        for (INT32 Value : m_Ints) {               // 18..: Integer constants
             Out.push_back (3);
             Out.push_back ((UINT8) (Value >> 24));
             Out.push_back ((UINT8) (Value >> 16));
@@ -138,9 +151,11 @@ public:
     static CONST UINT16 kMethodName = 5;
     static CONST UINT16 kMethodDesc = 6;
     static CONST UINT16 kCodeName   = 7;
+    static CONST UINT16 kBbGetRef   = 13;   // java/nio/ByteBuffer.get(I)B
+    static CONST UINT16 kBbPutRef   = 17;   // java/nio/ByteBuffer.put(IB)Ljava/nio/ByteBuffer;
 
 private:
-    static CONST UINT16 kFixedCount = 7;
+    static CONST UINT16 kFixedCount = 17;
 
     static void AddU2 (std::vector<UINT8> &Out, UINT16 V) {
         Out.push_back ((UINT8) (V >> 8));
@@ -154,6 +169,16 @@ private:
     static void AddClass (std::vector<UINT8> &Out, UINT16 NameIndex) {
         Out.push_back (7);
         AddU2 (Out, NameIndex);
+    }
+    static void AddNameAndType (std::vector<UINT8> &Out, UINT16 NameIndex, UINT16 DescIndex) {
+        Out.push_back (12);
+        AddU2 (Out, NameIndex);
+        AddU2 (Out, DescIndex);
+    }
+    static void AddMethodref (std::vector<UINT8> &Out, UINT16 ClassIndex, UINT16 NatIndex) {
+        Out.push_back (10);
+        AddU2 (Out, ClassIndex);
+        AddU2 (Out, NatIndex);
     }
 
     std::vector<INT32>                m_Ints;
@@ -207,9 +232,11 @@ public:
         UINT64 RamSize = ((CPU_STATE *) pGRF)->RamSize;
         if (RamSize == 0) { RamSize = CPU_RAM_DEFAULT; }
 
-        jbyteArray Ram = Env->NewByteArray ((jsize) RamSize);
+        // Guest RAM is wrapped as a direct ByteBuffer over its NATIVE memory (no copy in/out); the
+        // generated code reads/writes it in place via ByteBuffer.get/put. Only the small CPU_STATE
+        // is still marshalled through a byte[].
+        jobject    Ram = Env->NewDirectByteBuffer (pRAM, (jlong) RamSize);
         jbyteArray Grf = Env->NewByteArray ((jsize) sizeof (CPU_STATE));
-        Env->SetByteArrayRegion (Ram, 0, (jsize) RamSize, (CONST jbyte *) pRAM);
         Env->SetByteArrayRegion (Grf, 0, (jsize) sizeof (CPU_STATE), (CONST jbyte *) pGRF);
 
         Env->CallStaticVoidMethod (m_Class, m_Method, Ram, Grf);
@@ -220,7 +247,6 @@ public:
             return ExecTrap;
         }
 
-        Env->GetByteArrayRegion (Ram, 0, (jsize) RamSize, (jbyte *) pRAM);
         Env->GetByteArrayRegion (Grf, 0, (jsize) sizeof (CPU_STATE), (jbyte *) pGRF);
         Env->DeleteLocalRef (Ram);
         Env->DeleteLocalRef (Grf);
@@ -306,12 +332,12 @@ public:
     HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
         for (UINT32 k = 0; k < Bits / 8; k++) {
-            ALoad (0);
+            ALoad (0);                   // ram (java.nio.ByteBuffer)
             LLoad (IdOf (pAddr));
             B (0x88);                    // l2i
             PushInt ((INT32) k);
             B (0x60);                    // iadd  -> index = addr + k
-            B (0x33);                    // baload
+            Invoke (ConstantPool::kBbGetRef);   // ByteBuffer.get(I)B  (in place, no array copy)
             PushInt (255);
             B (0x7e);                    // iand
             B (0x85);                    // i2l
@@ -327,13 +353,14 @@ public:
 
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
         for (UINT32 k = 0; k < Bits / 8; k++) {
-            ALoad (0);
+            ALoad (0);                   // ram (java.nio.ByteBuffer)
             LLoad (IdOf (pAddr));
             B (0x88);                    // l2i
             PushInt ((INT32) k);
             B (0x60);                    // iadd
             StoreByteValue (IdOf (pValue), 8 * k);
-            B (0x54);                    // bastore
+            Invoke (ConstantPool::kBbPutRef);   // ByteBuffer.put(IB)Ljava/nio/ByteBuffer; (in place)
+            B (0x57);                    // pop  (discard the returned buffer reference)
         }
         EmitStoreBarrier (IdOf (pAddr));
         return S_OK;
@@ -753,7 +780,7 @@ public:
             }
             return nullptr;
         }
-        jmethodID Method = Env->GetStaticMethodID (Local, "insn", "([B[B)V");
+        jmethodID Method = Env->GetStaticMethodID (Local, "insn", "(Ljava/nio/ByteBuffer;[B)V");
         jclass Global = (jclass) Env->NewGlobalRef (Local);
         Env->DeleteLocalRef (Local);
         if (Method == nullptr) {
@@ -777,6 +804,7 @@ private:
     void B  (UINT8 Op) { m_Code.push_back (Op); }
     void B2 (UINT16 V) { m_Code.push_back ((UINT8) (V >> 8)); m_Code.push_back ((UINT8) V); }
 
+    void Invoke (UINT16 Ref) { B (0xb6); B2 (Ref); }          // invokevirtual <methodref>
     void ALoad  (UINT8 N)   { B ((UINT8) (0x2a + N)); }       // aload_0 / aload_1
     void LLoad  (UINT32 Id) { WideLocal (0x16, Slot (Id)); }  // lload <slot>
     void LStore (UINT32 Id) { WideLocal (0x37, Slot (Id)); }  // lstore <slot>
