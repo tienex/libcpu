@@ -27,8 +27,11 @@ namespace Upcl {
 
 // Create an ICpuArchitecture that interprets pModule's ArchIndex-th architecture.
 // pModule is borrowed -- the caller must keep it alive for the architecture's life.
-// Returns nullptr if ArchIndex is out of range. Release() when done.
-ICpuArchitecture *CreateUpclArch (Module *pModule, UINT32 ArchIndex);
+// pCpu selects a CPU model (`cpu "..."` in the description): only instructions in the
+// base ISA or in one of that model's features are decoded/translated. nullptr (or an
+// unknown name) enables EVERY declared feature -- the permissive default for development
+// and `lcx upcl check`. Returns nullptr if ArchIndex is out of range. Release() when done.
+ICpuArchitecture *CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu = nullptr);
 
 } // namespace Upcl
 } // namespace LibCPU

@@ -243,6 +243,56 @@ Parser::ParseRegisters (Arch *pArch)
     Expect (TokRBrace, "to close the register list");
 }
 
+// features { <name> ("doc")? ; ... }   -- the ISA features a CPU model may include.
+// An instruction opts into one with the feature(<name>) attribute; ungated instructions
+// are the always-present base ISA.
+void
+Parser::ParseFeatures (Arch *pArch)
+{
+    Advance ();                                     // 'features'
+    if (!Expect (TokLBrace, "to open the features block")) { return; }
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        if (m_Cur.Kind == TokIdent) {
+            Feature F;
+            F.Name = m_Cur.Text;
+            F.Loc = m_Cur.Loc;
+            Advance ();
+            if (m_Cur.Kind == TokString) { F.Doc = m_Cur.Text; Advance (); }
+            pArch->Features.push_back (F);
+        } else {
+            std::string M = std::string ("expected a feature name, found ") + TokenName (m_Cur.Kind);
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M);
+            Advance ();
+        }
+        if (!Accept (TokSemi)) { Accept (TokComma); }   // tolerate ';' or ',' between features
+    }
+    Expect (TokRBrace, "to close the features block");
+}
+
+// cpu "<name>" ("doc")? { <feature> ; ... }   -- a named bundle of features. Selecting it
+// enables exactly those features.
+void
+Parser::ParseCpu (Arch *pArch)
+{
+    Advance ();                                     // 'cpu'
+    Cpu *C = new Cpu ();
+    C->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokString) { C->Name = m_Cur.Text; Advance (); }
+    else { std::string M = std::string ("expected the CPU model name as a string, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    if (m_Cur.Kind == TokString) { C->Doc = m_Cur.Text; Advance (); }
+    if (Expect (TokLBrace, "to open the CPU feature list")) {
+        while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+            if (m_Cur.Kind == TokIdent) { C->Features.push_back (m_Cur.Text); Advance (); }
+            else { std::string M = std::string ("expected a feature name, found ") + TokenName (m_Cur.Kind);
+                   m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); Advance (); }
+            if (!Accept (TokSemi)) { Accept (TokComma); }
+        }
+        Expect (TokRBrace, "to close the CPU feature list");
+    }
+    pArch->Cpus.push_back (C);
+}
+
 // formats { <name> [ <field>:<width> (, ...) ] ; ... }   -- bit layouts, declared once
 // and shared by the instructions that reference them.
 void
@@ -316,6 +366,12 @@ Parser::ParseAttributes (Insn *pInsn)
             else { std::string M = std::string ("expected a format string, found ") + TokenName (m_Cur.Kind);
                    m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
             Expect (TokRParen, "to close 'disasm(...)'");
+        } else if (Attr == "feature") {
+            Expect (TokLParen, "after 'feature'");
+            if (m_Cur.Kind == TokIdent) { pInsn->Feature = m_Cur.Text; pInsn->FeatureLoc = m_Cur.Loc; Advance (); }
+            else { std::string M = std::string ("expected a feature name, found ") + TokenName (m_Cur.Kind);
+                   m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+            Expect (TokRParen, "to close 'feature(...)'");
         } else {
             // Unknown attribute -> capture generically (the escape hatch).
             Directive *D = new Directive ();
@@ -390,6 +446,10 @@ Parser::ParseArchItem (Arch *pArch)
         Expect (TokSemi, "after address_size");
     } else if (AtKeyword ("registers")) {
         ParseRegisters (pArch);
+    } else if (AtKeyword ("features")) {
+        ParseFeatures (pArch);
+    } else if (AtKeyword ("cpu")) {
+        ParseCpu (pArch);
     } else if (AtKeyword ("formats")) {
         ParseFormats (pArch);
     } else if (AtKeyword ("insn") || m_Cur.Kind == TokLBracket) {

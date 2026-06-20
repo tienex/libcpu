@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
+#include <string>
 #include <vector>
 
 namespace LibCPU {
@@ -24,7 +26,8 @@ typedef struct _DECODED {
 
 class UpclArch final : public ComObject<ICpuArchitecture> {
 public:
-    UpclArch (Module *pMod, Arch *pArch) : m_pMod (pMod), m_pArch (pArch)
+    UpclArch (Module *pMod, Arch *pArch, std::set<std::string> Enabled)
+        : m_pMod (pMod), m_pArch (pArch), m_Enabled (std::move (Enabled))
     {
         m_WordBits = m_pArch->WordSize ? m_pArch->WordSize : 16;
         m_AddrBits = m_pArch->AddressSize ? m_pArch->AddressSize : 16;
@@ -32,6 +35,15 @@ public:
         for (Format *F : m_pArch->Formats) { m_Formats[F->Name] = F; }
         for (UINT32 I = 0; I < m_pArch->Registers.size (); I++) {
             m_RegIndex[m_pArch->Registers[I].Name] = I;
+        }
+        // The decodable set: base-ISA instructions (no feature gate) plus those whose
+        // gating feature is enabled by the selected CPU model. Decode/disasm/translate
+        // all run over this filtered list, so a model that lacks a feature never sees its
+        // instructions.
+        for (Insn *I : m_pArch->Insns) {
+            if (I->Feature.empty () || m_Enabled.count (I->Feature) != 0) {
+                m_EnabledInsns.push_back (I);
+            }
         }
     }
 
@@ -161,7 +173,7 @@ private:
     // Decode the instruction at Pc: find the first instruction whose format-extracted
     // fields satisfy its opcode bindings.
     bool Decode (CPU_ADDR Pc, DECODED *pOut) CONST {
-        for (Insn *I : m_pArch->Insns) {
+        for (Insn *I : m_EnabledInsns) {
             auto Fi = m_Formats.find (I->Format);
             if (Fi == m_Formats.end ()) { continue; }
             Format *F = Fi->second;
@@ -335,6 +347,8 @@ private:
 
     Module                          *m_pMod;
     Arch                            *m_pArch;
+    std::set<std::string>            m_Enabled;     // enabled feature names (from the CPU model)
+    std::vector<Insn *>              m_EnabledInsns; // base + feature-enabled instructions
     UINT32                           m_WordBits = 16;
     UINT32                           m_AddrBits = 16;
     UINT8 CONST                     *m_pCode = nullptr;
@@ -343,15 +357,36 @@ private:
     std::map<std::string, UINT32>    m_RegIndex;
 };
 
+// Resolve a CPU-model name to the set of features it enables. A null/unknown model
+// enables EVERY declared feature (the permissive default); a named model enables exactly
+// its feature list.
+static std::set<std::string>
+ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
+{
+    std::set<std::string> Out;
+    if (pCpu != nullptr) {
+        for (Cpu *C : pArch->Cpus) {
+            if (C->Name == pCpu) {
+                for (std::string CONST &F : C->Features) { Out.insert (F); }
+                return Out;
+            }
+        }
+    }
+    // No model named, or it was not found: enable everything so all instructions decode.
+    for (Feature CONST &F : pArch->Features) { Out.insert (F.Name); }
+    return Out;
+}
+
 } // anonymous namespace
 
 ICpuArchitecture *
-CreateUpclArch (Module *pModule, UINT32 ArchIndex)
+CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu)
 {
     if (pModule == nullptr || ArchIndex >= pModule->Archs.size ()) {
         return nullptr;
     }
-    return new UpclArch (pModule, pModule->Archs[ArchIndex]);
+    Arch *pArch = pModule->Archs[ArchIndex];
+    return new UpclArch (pModule, pArch, ResolveFeatures (pArch, pCpu));
 }
 
 } // namespace Upcl

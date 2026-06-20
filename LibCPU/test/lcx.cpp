@@ -150,13 +150,18 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
     A.pArch = nullptr;
     A.Flags = { "N", "V", "Z", "C" };
     if (std::strncmp (pName, "upcl:", 5) == 0) {
-        // --arch upcl:<file> -- interpret a UPCL description as the frontend. The
-        // SourceManager + Module are leaked for the process lifetime (the arch borrows
-        // the module).
+        // --arch upcl:<file>[@<cpu>] -- interpret a UPCL description as the frontend.
+        // An optional @<cpu> selects a CPU model (e.g. upcl:x86.upcl@v30): only base-ISA
+        // and that model's feature instructions decode. The SourceManager + Module are
+        // leaked for the process lifetime (the arch borrows the module).
+        std::string Spec = pName + 5;
+        std::string File = Spec, Cpu;
+        std::string::size_type At = Spec.rfind ('@');
+        if (At != std::string::npos) { File = Spec.substr (0, At); Cpu = Spec.substr (At + 1); }
         Upcl::SourceManager *pSm = new Upcl::SourceManager ();
-        Upcl::Module *pMod = UpclParse (pName + 5, *pSm);
+        Upcl::Module *pMod = UpclParse (File.c_str (), *pSm);
         if (pMod != nullptr) {
-            A.pArch = Upcl::CreateUpclArch (pMod, 0);
+            A.pArch = Upcl::CreateUpclArch (pMod, 0, Cpu.empty () ? nullptr : Cpu.c_str ());
             CPU_ARCH_INFO Info;
             std::memset (&Info, 0, sizeof (Info));
             A.pArch->GetInfo (&Info);
@@ -472,14 +477,55 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             for (Upcl::FormatField CONST &Ff : pFmt->Fields) { std::printf ("%s:%u ", Ff.Name.c_str (), Ff.Width); }
             std::printf (" (%u bits)\n", pFmt->TotalBits ());
         }
+        for (Upcl::Feature CONST &Ft : pArch->Features) {
+            std::printf ("    feature %-10s %s\n", Ft.Name.c_str (), Ft.Doc.c_str ());
+        }
+        for (Upcl::Cpu *pC : pArch->Cpus) {
+            std::printf ("    cpu \"%s\" =", pC->Name.c_str ());
+            for (std::string CONST &F : pC->Features) { std::printf (" %s", F.c_str ()); }
+            std::printf ("\n");
+        }
         for (Upcl::Insn *pInsn : pArch->Insns) {
             std::printf ("    insn %-14s format %-8s ", pInsn->Name.c_str (), pInsn->Format.c_str ());
             for (Upcl::Field *pB : pInsn->Bindings) {
                 std::printf ("%s=0x%llx ", pB->Name.c_str (),
                              (unsigned long long) (pB->Value && pB->Value->Kind == Upcl::ExprInt ? pB->Value->Int : 0));
             }
+            if (!pInsn->Feature.empty ()) { std::printf ("[%s] ", pInsn->Feature.c_str ()); }
             if (!pInsn->Super.empty ()) { std::printf (": %s ", pInsn->Super.c_str ()); }
             std::printf (" disasm \"%s\"  %zu stmt(s)\n", pInsn->Disasm.c_str (), pInsn->Semantics.size ());
+        }
+        // Conflict check: per CPU model, two enabled instructions sharing the same format
+        // AND the same fixed-field bindings would decode the same bytes -- an ambiguity.
+        // (This is what "any of their features, if not conflicting" guards against.)
+        auto Enabled = [] (Upcl::Insn *I, Upcl::Cpu *C) -> bool {
+            if (I->Feature.empty ()) { return true; }
+            for (std::string CONST &F : C->Features) { if (F == I->Feature) { return true; } }
+            return false;
+        };
+        auto SameEncoding = [] (Upcl::Insn *A, Upcl::Insn *B) -> bool {
+            if (A->Format != B->Format || A->Bindings.size () != B->Bindings.size ()) { return false; }
+            for (Upcl::Field *Ba : A->Bindings) {
+                bool Found = false;
+                for (Upcl::Field *Bb : B->Bindings) {
+                    UINT64 Va = (Ba->Value && Ba->Value->Kind == Upcl::ExprInt) ? Ba->Value->Int : 0;
+                    UINT64 Vb = (Bb->Value && Bb->Value->Kind == Upcl::ExprInt) ? Bb->Value->Int : 0;
+                    if (Ba->Name == Bb->Name && Va == Vb) { Found = true; break; }
+                }
+                if (!Found) { return false; }
+            }
+            return true;
+        };
+        for (Upcl::Cpu *pC : pArch->Cpus) {
+            for (size_t I = 0; I < pArch->Insns.size (); I++) {
+                for (size_t J = I + 1; J < pArch->Insns.size (); J++) {
+                    if (Enabled (pArch->Insns[I], pC) && Enabled (pArch->Insns[J], pC)
+                        && SameEncoding (pArch->Insns[I], pArch->Insns[J])) {
+                        std::printf ("    CONFLICT in cpu \"%s\": '%s' and '%s' decode the same bytes\n",
+                                     pC->Name.c_str (), pArch->Insns[I]->Name.c_str (), pArch->Insns[J]->Name.c_str ());
+                    }
+                }
+            }
         }
     }
 

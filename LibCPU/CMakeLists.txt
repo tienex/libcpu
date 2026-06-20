@@ -498,6 +498,27 @@ if(TARGET interp_backend)
   set_tests_properties(upcl.translate PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
 endif()
 
+# Feature / CPU-model selection: ONE description (test/x86.upcl) carries the 8086 base ISA
+# plus the 80186 and NEC V20/V30 additions as selectable features; a `cpu` model bundles
+# the ones it has. `check` reports the models and verifies no two enabled instructions
+# decode the same bytes (no CONFLICT).
+add_test(NAME upcl.features COMMAND lcx upcl check "${CMAKE_CURRENT_SOURCE_DIR}/test/x86.upcl")
+set_tests_properties(upcl.features PROPERTIES
+  PASS_REGULAR_EXPRESSION "cpu \"v30\" = ext_186 nec"
+  FAIL_REGULAR_EXPRESSION "CONFLICT")
+
+# Decode gating: the 80186 PUSH imm16 (0x68) and NEC BRKEM (0F FF) are unknown bytes on an
+# 8086 model but decode on a V30 -- proving the selected model filters the instruction set.
+add_test(NAME upcl.gate-8086 COMMAND sh -c
+  "printf '\\xB8\\x00\\x10\\x68\\x34\\x12\\x0F\\xFF' > '${CMAKE_BINARY_DIR}/x86gate.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/x86gate.bin' --count 4 \
+     --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/x86.upcl@8086' | grep -q 'db 0x68'")
+add_test(NAME upcl.gate-v30 COMMAND sh -c
+  "printf '\\xB8\\x00\\x10\\x68\\x34\\x12\\x0F\\xFF' > '${CMAKE_BINARY_DIR}/x86gate.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/x86gate.bin' --count 3 \
+     --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/x86.upcl@v30' > '${CMAKE_BINARY_DIR}/x86gate.out' && \
+   grep -q 'push 0x1234' '${CMAKE_BINARY_DIR}/x86gate.out' && grep -q 'brkem' '${CMAKE_BINARY_DIR}/x86gate.out'")
+
 # Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
 # (asserting the solid container holds them), then extract one and diff it against the
 # original -- a full create/ls/extract round-trip proving the format is lossless.

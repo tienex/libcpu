@@ -123,6 +123,8 @@ public:
     std::vector<Field *>     Bindings;       // opcode-field bindings from format(.. :: a=b)
     bool                     HasDisasm = false;
     std::string              Disasm;
+    std::string              Feature;        // gating ISA feature (feature(...) attr; "" = base ISA)
+    SRC_LOC                  FeatureLoc = 0;
     std::vector<Stmt *>      Semantics;      // the instruction body (assignment statements)
     std::vector<Directive *> Directives;     // any other attribute (escape hatch)
 
@@ -139,6 +141,27 @@ public:
     SRC_LOC     Loc = 0;
 };
 
+// A named ISA feature -- a unit of behaviour a CPU model may include. Declared once in
+// `features { ... }`; an instruction opts into one via the `feature(<name>)` attribute
+// (no attribute = the always-present base ISA).
+class Feature {
+public:
+    std::string Name;
+    SRC_LOC     Loc = 0;
+    std::string Doc;        // optional "..." description
+};
+
+// A CPU model: a named bundle of features (`cpu "v30" { base; ext_186; nec; }`).
+// Selecting it enables exactly those features; an instruction gated on a feature not in
+// the set is excluded from decode/translate.
+class Cpu {
+public:
+    std::string              Name;
+    SRC_LOC                  Loc = 0;
+    std::string              Doc;
+    std::vector<std::string> Features;
+};
+
 class Arch {
 public:
     std::string              Name;          // arch "<name>"
@@ -148,11 +171,14 @@ public:
     UINT32                   WordSize = 0;
     UINT32                   AddressSize = 0;
     std::vector<Reg>         Registers;
+    std::vector<Feature>     Features;       // declared ISA features (features { ... })
+    std::vector<Cpu *>       Cpus;           // CPU models (cpu "..." { ... })
     std::vector<Format *>    Formats;
     std::vector<Insn *>      Insns;
     std::vector<Directive *> Directives;
 
     ~Arch () {
+        for (Cpu *C : Cpus) { delete C; }
         for (Format *F : Formats) { delete F; }
         for (Insn *I : Insns) { delete I; }
         for (Directive *D : Directives) { delete D; }

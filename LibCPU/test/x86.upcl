@@ -1,0 +1,76 @@
+// The Intel/NEC x86 family in one UPCL description: the 8086 base ISA plus the 80186 and
+// NEC V20/V30 instruction-set additions as selectable FEATURES. A `cpu` model bundles the
+// features it has; an instruction names the feature that introduced it (no name = the base
+// ISA, present on every model). Select a model at load with `--arch upcl:x86.upcl@<cpu>`;
+// only that model's instructions decode. Checked by `lcx upcl check`.
+
+arch "x86" {
+
+    name "Intel/NEC x86 (8086/80186/V20/V30, UPCL subset)";
+    endian little;
+    word_size    16;
+    address_size 16;
+
+    registers { ax, cx, dx, bx, sp, bp, si, di, es, cs, ss, ds }
+
+    // The ISA features beyond the 8086 base. A CPU model below enables a subset; an
+    // instruction gated on a feature only decodes on a model that has it.
+    features {
+        ext_186 "80186 instruction-set additions (PUSH imm16, ...)";
+        nec     "NEC V20/V30 additions (BRKEM, ...)";
+    }
+
+    // CPU models = named bundles of features. The base ISA is implicit on all of them.
+    cpu "8086"  "Intel 8086"            { }
+    cpu "80186" "Intel 80186"           { ext_186; }
+    cpu "v20"   "NEC V20 (8086 + NEC)"  { nec; }
+    cpu "v30"   "NEC V30 (80186 + NEC)" { ext_186; nec; }
+
+    // Bit layouts, declared once and shared by the instructions that reference them.
+    formats {
+        ri16  [ op:5, reg:3, imm:16 ];      // 5-bit opcode, 3-bit reg, 16-bit immediate
+        modrm [ op:8, mod:2, reg:3, rm:3 ]; // 8-bit opcode + a ModR/M byte
+        rel16 [ op:8, disp:16 ];            // 8-bit opcode + 16-bit displacement
+        imm16 [ op:8, imm:16 ];             // 8-bit opcode + 16-bit immediate
+        op2   [ op:8, op2:8 ];              // a two-byte opcode (0F prefix family)
+    }
+
+    // ---- 8086 base ISA (always present) ----
+
+    // MOV r16, imm16  (opcode 10111rrr -> 0xB8..0xBF).
+    [format(ri16 :: op=0b10111), disasm("mov %reg, 0x%imm")]
+    insn mov_r16_imm {
+        reg[reg] = imm;
+    }
+
+    // ADD r16, r16  (the ModR/M selects the two registers).
+    [format(modrm :: op=0x01), disasm("add %rm, %reg")]
+    insn add_r16_r16 {
+        reg[rm] = reg[rm] + reg[reg];
+    }
+
+    // JMP rel16.
+    [format(rel16 :: op=0xE9), disasm("jmp 0x%disp")]
+    insn jmp_rel16 {
+        pc = pc + 3 + disp;
+    }
+
+    // ---- 80186 additions ----
+
+    // PUSH imm16 (0x68): the 8086 had no push-immediate. Only decodes on 80186/V30.
+    [format(imm16 :: op=0x68), disasm("push 0x%imm"), feature(ext_186)]
+    insn push_imm16 {
+        sp = sp - 2;
+        mem[sp] = imm;
+    }
+
+    // ---- NEC V20/V30 additions ----
+
+    // BRKEM (0F FF): enter 8080 emulation mode -- NEC-only. Modelled here as the stack
+    // push of its return frame (placeholder semantics for the decode/gating demo). Only
+    // decodes on V20/V30.
+    [format(op2 :: op=0x0F, op2=0xFF), disasm("brkem"), feature(nec)]
+    insn nec_brkem {
+        sp = sp - 2;
+    }
+}

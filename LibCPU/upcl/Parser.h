@@ -46,6 +46,8 @@ private:
     Arch      *ParseArch ();
     void       ParseArchItem (Arch *pArch);
     void       ParseRegisters (Arch *pArch);
+    void       ParseFeatures (Arch *pArch);      // the `features { ... }` block
+    void       ParseCpu (Arch *pArch);           // a `cpu "..." { ... }` model
     void       ParseFormats (Arch *pArch);      // the `formats { ... }` block
     Insn      *ParseInsnDecl ();                 // optional [attrs] then `insn ...`
     void       ParseAttributes (Insn *pInsn);    // `[ format(..), disasm(..), .. ]`
