@@ -225,6 +225,7 @@ void
 System::AddDevice (Device *pDevice)
 {
     m_Devices.push_back (pDevice);
+    m_PortCache.clear ();                                // a new device may claim ports cached as free
 }
 
 void
@@ -291,12 +292,19 @@ System::SyncDeviceMemoryOut ()
 Device *
 System::FindPort (UINT16 Port) CONST
 {
+    std::unordered_map<UINT16, Device *>::const_iterator It = m_PortCache.find (Port);
+    if (It != m_PortCache.end ()) {
+        return It->second;                               // cached (including a cached "no device")
+    }
+    Device *pFound = nullptr;
     for (Device *p : m_Devices) {
         if (p->HandlesPort (Port)) {
-            return p;
+            pFound = p;
+            break;
         }
     }
-    return nullptr;
+    m_PortCache[Port] = pFound;
+    return pFound;
 }
 
 int

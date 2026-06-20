@@ -164,6 +164,11 @@ private:
     UINT64                  m_RamSize;
     CPU_STATE               m_State;
     std::vector<Device *> m_Devices;
+    // Memoizes FindPort: a port-bound guest (e.g. a BIOS polling a status register) hits the same
+    // few ports millions of times; caching port -> owning device turns the per-access linear scan
+    // over every device into an O(1) lookup. The device set is fixed during a run; AddDevice clears
+    // it. Mutable so the const FindPort can fill it.
+    mutable std::unordered_map<UINT16, Device *> m_PortCache;
     bool                    m_If;          // interrupt-enable flag (8086 IF)
     bool                    m_Halted;      // executed HLT, waiting for an interrupt
     bool                    m_Shutdown;
