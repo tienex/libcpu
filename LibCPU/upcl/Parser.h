@@ -38,6 +38,7 @@ private:
     bool   At (TOKEN_KIND Kind) CONST { return m_Cur.Kind == Kind; }
     bool   AtKeyword (CHAR8 CONST *pWord) CONST;
     bool   Accept (TOKEN_KIND Kind);
+    bool   AcceptListSep ();                     // a ';' or ',' between list items
     bool   Expect (TOKEN_KIND Kind, CHAR8 CONST *pContext);
     void   ErrorAt (SRC_LOC Loc, std::string CONST &Msg);
     void   SyncTo (TOKEN_KIND Kind);            // error recovery
@@ -53,12 +54,22 @@ private:
     void       ParseAttributes (Insn *pInsn);    // `[ format(..), disasm(..), .. ]`
     Directive *ParseGenericDirective ();         // the escape hatch
     Stmt      *ParseStmt ();
+    void       ParseBlock (std::vector<Stmt *> *pOut);   // `{ <stmt>* }`
+    Stmt      *FinishAssignOrExpr (SRC_LOC Loc, Expr *pLhs, Type *pLhsType);
+    Stmt      *ParseSimpleAssign ();                      // a for-loop init/step assignment (no ';')
 
     // expressions (Pratt)
     Expr *ParseExpr (UINT32 MinBp = 0);
     Expr *ParsePrefix ();
     Expr *ParsePrimary ();
+    Expr *ParsePostfix (Expr *pBase);            // bit-slice e[a:b], member e.f
+    Expr *ParseMemRef (SRC_LOC Loc, Type *pVType); // the `[expr]` tail of %M / %MEM (meta consumed)
+    void  ParseCallArgs (Expr *pCall);           // `( <expr> (, <expr>)* )` -> pCall->Args
     static UINT32 InfixBp (TOKEN_KIND Kind);
+
+    // old .def helpers
+    Type *ParseType ();                          // a `#i16` / `#f80` / `#v4:32` literal
+    static TOKEN_KIND AssignOpOf (TOKEN_KIND Kind);   // a compound-assign token -> its op (or TokUnknown)
 
     bool   ExpectInt (UINT64 *pOut, CHAR8 CONST *pContext);
 
