@@ -163,11 +163,66 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     }
 
     //
+    // 1b. Basic-block coalescing. By default every guest instruction is its own CFG block (a
+    //     branch may target any of them, and the RET dispatcher routes to any of them). But with NO
+    //     inlining and NO indirect branch in the unit, the only block leaders are the entry, direct
+    //     branch targets, and the instructions right after a control transfer -- everything else is
+    //     reached solely by fall-through, so a maximal straight-line run can share ONE block. That
+    //     elides the per-instruction branch/tick/SMC-guard the leaf blocks each carried (a big cut
+    //     in emitted code for the per-block-compiling backends, and fewer ops at run time). Runs are
+    //     also split at an SMC page boundary so a single EmitCodeGuard(leader) covers the block.
+    bool Coalesce = (InlineCount == 0 && !HasIndirect);
+    std::set<CPU_ADDR>                        Leaders;
+    std::map<CPU_ADDR, std::vector<CPU_ADDR>> BlockBody;   // leader -> its instruction Pcs, in order
+    if (Coalesce) {
+        Leaders.insert (Entry);
+        for (CPU_ADDR Pc : Pcs) {
+            UINT32 Tag; CPU_ADDR NewPc; CPU_ADDR NextPc;
+            if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) { Coalesce = false; break; }
+            if ((Tag & (TagBranch | TagConditional | TagCall)) && Pcs.count (NewPc) != 0) {
+                Leaders.insert (NewPc);                                  // a direct branch target
+            }
+            if ((Tag & (TagBranch | TagConditional | TagCall | TagReturn | TagTrap)) && Pcs.count (NextPc) != 0) {
+                Leaders.insert (NextPc);                                 // the instruction after a transfer
+            }
+        }
+    }
+    if (Coalesce) {
+        // A fall-through that crosses an SMC page (256 bytes) starts a new block, so each block
+        // stays on one page and a single guard recording the leader as the trap PC is correct.
+        for (CPU_ADDR Pc : Pcs) {
+            UINT32 Tag; CPU_ADDR NewPc; CPU_ADDR NextPc;
+            pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+            if (!(Tag & (TagBranch | TagConditional | TagCall | TagReturn | TagTrap))
+                && Pcs.count (NextPc) != 0 && ((NextPc >> 8) & 255) != ((Pc >> 8) & 255)) {
+                Leaders.insert (NextPc);
+            }
+        }
+        // Group each leader's maximal straight-line run (follow fall-through until a transfer, a
+        // leader, or the window edge).
+        for (CPU_ADDR L : Leaders) {
+            std::vector<CPU_ADDR> Body;
+            CPU_ADDR Pc = L;
+            for (;;) {
+                Body.push_back (Pc);
+                UINT32 Tag; CPU_ADDR NewPc; CPU_ADDR NextPc;
+                pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+                if (Tag & (TagBranch | TagConditional | TagCall | TagReturn | TagTrap)) { break; }
+                if (Pcs.count (NextPc) == 0 || Leaders.count (NextPc) != 0) { break; }
+                Pc = NextPc;
+            }
+            BlockBody[L] = Body;
+        }
+    }
+
+    //
     // 2. Create caller blocks + shared exit. (Inlined callees are NOT shared blocks;
     //    each inlined site gets a private copy, built recursively below.)
+    //    With coalescing on, only block leaders get a block; the rest fall through inside one.
     //
     std::map<CPU_ADDR, ICpuBlock *> Blocks;
-    for (CPU_ADDR Pc : Pcs) {
+    std::set<CPU_ADDR> CONST        &BlockLeaders = Coalesce ? Leaders : Pcs;
+    for (CPU_ADDR Pc : BlockLeaders) {
         char Name[24];
         std::snprintf (Name, sizeof (Name), "pc_%04llx", (unsigned long long) Pc);
         ICpuBlock *pBlock = nullptr;
@@ -304,47 +359,86 @@ GenerateAotCfgInlined (ICpuArchitecture *pArch, ICpuBackend *pBackend,
     //    site's private callee copy.
     //
     UINT32 Count = 0;
-    for (CPU_ADDR Pc : Pcs) {
-        Emitter->SetInsertBlock (Blocks[Pc]);
-        if (pSmc != nullptr) {
-            pSmc->EmitCodeGuard (Pc);
-        }
-        if (pClk != nullptr) {
-            pClk->EmitTick (1);                     // one tick per guest instruction executed
-        }
+    if (Coalesce) {
+        // One block per straight-line run: guard + tick once, the bodies in sequence, then the same
+        // terminator branch the per-instruction path would emit (only the intra-run fall-through
+        // branches are elided -- they were pure no-ops between adjacent blocks).
+        for (auto CONST &Pair : BlockBody) {
+            Emitter->SetInsertBlock (Blocks[Pair.first]);
+            if (pSmc != nullptr) { pSmc->EmitCodeGuard (Pair.first); }            // run is one SMC page
+            if (pClk != nullptr) { pClk->EmitTick ((UINT32) Pair.second.size ()); } // one tick for the run
 
-        UINT32   Tag;
-        CPU_ADDR NewPc;
-        CPU_ADDR NextPc;
-        pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+            std::vector<CPU_ADDR> CONST &Body = Pair.second;
+            for (size_t I = 0; I < Body.size (); I++) {
+                CPU_ADDR Pc = Body[I];
+                UINT32   Tag;
+                CPU_ADDR NewPc;
+                CPU_ADDR NextPc;
+                pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+                pArch->TranslateInstr (Pc, Emitter);
+                Count++;
+                if (I + 1 != Body.size ()) {
+                    continue;                          // interior instruction: fall through to the next body
+                }
+                if (Tag & TagTrap) {
+                    // IndirectBranch already emitted by TranslateInstr (far transfer; traps to host).
+                } else if (Tag & TagConditional) {
+                    ComPtr<ICpuValue> Cond;
+                    if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
+                        Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
+                    } else {
+                        Emitter->Branch (Target (NextPc));
+                    }
+                } else if (Tag & (TagBranch | TagCall)) {
+                    Emitter->Branch (Target (NewPc));
+                } else {
+                    Emitter->Branch (Target (NextPc));   // run ended at a leader/window edge
+                }
+            }
+        }
+    } else {
+        for (CPU_ADDR Pc : Pcs) {
+            Emitter->SetInsertBlock (Blocks[Pc]);
+            if (pSmc != nullptr) {
+                pSmc->EmitCodeGuard (Pc);
+            }
+            if (pClk != nullptr) {
+                pClk->EmitTick (1);                     // one tick per guest instruction executed
+            }
 
-        CPU_ADDR Cal = 0, Ret = 0;
-        if ((Tag & TagCall) && SiteInfo (Pc, &Cal, &Ret)) {
-            Instance CONST &Inst = Instances[SiteToTop[Pc]];
-            Emitter->Branch (Inst.Blocks.at (Inst.Callee));   // no push; enter the copy
+            UINT32   Tag;
+            CPU_ADDR NewPc;
+            CPU_ADDR NextPc;
+            pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc);
+
+            CPU_ADDR Cal = 0, Ret = 0;
+            if ((Tag & TagCall) && SiteInfo (Pc, &Cal, &Ret)) {
+                Instance CONST &Inst = Instances[SiteToTop[Pc]];
+                Emitter->Branch (Inst.Blocks.at (Inst.Callee));   // no push; enter the copy
+                Count++;
+                continue;
+            }
+
+            pArch->TranslateInstr (Pc, Emitter);
             Count++;
-            continue;
-        }
 
-        pArch->TranslateInstr (Pc, Emitter);
-        Count++;
-
-        if (Tag & TagTrap) {
-            // A far transfer (CS:IP reload): TranslateInstr emitted IndirectBranch,
-            // which terminates the block and traps to the host. Nothing to add.
-        } else if (Tag & TagReturn) {
-            Emitter->Branch (pDispatch);
-        } else if (Tag & TagConditional) {
-            ComPtr<ICpuValue> Cond;
-            if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
-                Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
+            if (Tag & TagTrap) {
+                // A far transfer (CS:IP reload): TranslateInstr emitted IndirectBranch,
+                // which terminates the block and traps to the host. Nothing to add.
+            } else if (Tag & TagReturn) {
+                Emitter->Branch (pDispatch);
+            } else if (Tag & TagConditional) {
+                ComPtr<ICpuValue> Cond;
+                if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
+                    Emitter->CondBranch (Cond, Target (NewPc), Target (NextPc));
+                } else {
+                    Emitter->Branch (Target (NextPc));
+                }
+            } else if (Tag & (TagBranch | TagCall)) {
+                Emitter->Branch (Target (NewPc));
             } else {
                 Emitter->Branch (Target (NextPc));
             }
-        } else if (Tag & (TagBranch | TagCall)) {
-            Emitter->Branch (Target (NewPc));
-        } else {
-            Emitter->Branch (Target (NextPc));
         }
     }
 
