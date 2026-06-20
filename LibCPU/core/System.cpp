@@ -42,12 +42,19 @@ System::System (ICpuArchitecture *pArch, ICpuBackend *pBackend, UINT8 *pRAM, UIN
     std::memset (&m_State, 0, sizeof (m_State));
     m_State.RamSize = RamSize;
 
-    // A backend with no native control flow drives the machine through the shadow path: we
-    // translate one basic block at a time with GenerateShadowUnit and read the outcome from the
-    // scratch registers after each burst. Probed once here (it is a property of the base backend).
-    // LCX_SHADOW forces the path on even for a CFG-capable backend, to exercise it on a fast one.
+    // A backend that cannot drive the machine natively goes through the shadow path: we translate
+    // one basic block at a time with GenerateShadowUnit and read the outcome from the scratch
+    // registers after each burst. Two reasons force it, probed once here (both are properties of the
+    // base backend): the backend lacks native control flow (no Branch), OR it lacks the machine
+    // emitters (port I/O / INT / clock) -- a managed backend such as clr/jvm/cpython has native CFG
+    // but no ICpuSystemEmitter, so on the native path the system body of a BIOS block cannot be
+    // emitted and the unit degenerates into a self-modifying-code-guard loop that never returns.
+    // The shadow path synthesizes those capabilities from the basic emitter, so it works for both.
+    // LCX_SHADOW forces the path on even for a fully-capable backend, to exercise it on a fast one.
     m_ShadowMode = (m_pBackend != nullptr)
-                   && (std::getenv ("LCX_SHADOW") != nullptr || !BackendHasNativeCfg (m_pArch, m_pBackend));
+                   && (std::getenv ("LCX_SHADOW") != nullptr
+                       || !BackendHasNativeCfg (m_pArch, m_pBackend)
+                       || !BackendHasSystemEmitter (m_pArch, m_pBackend));
 
     // Persistent translation cache: when $LIBCPU_CODECACHE names a file, compiled artifacts are
     // stored there and reloaded on a later run instead of being recompiled -- the speed win for

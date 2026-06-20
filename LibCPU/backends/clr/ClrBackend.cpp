@@ -134,10 +134,16 @@ private:
     intptr_t m_Handle;
 };
 
-class ClrEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class ClrEmitter final : public ComObject<ICpuEmitter>,
+                         public ICpuSmcEmitter,
+                         public ICpuProfileEmitter,
+                         public ICpuClockEmitter {
 public:
-    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the ComObject base.
+    // Four interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter + ICpuClockEmitter):
+    // resolve QI here, forward refcounting to the ComObject base. The clock emitter matters on the
+    // machine path: a clock-less backend leaves CPU_STATE.Cycles untouched, the host falls back to a
+    // coarse per-burst estimate, and the BIOS's PIT-calibration (DMA-Timer) test fails -- so the
+    // shadow path's per-instruction tick must reach a real Cycles bump here.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuSmcEmitter)) {
             *ppvObject = static_cast<ICpuSmcEmitter *> (this);
@@ -146,6 +152,11 @@ public:
         }
         if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (ppvObject != nullptr && CompareGuid (&riid, &IID_ICpuClockEmitter)) {
+            *ppvObject = static_cast<ICpuClockEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -189,15 +200,19 @@ public:
         return S_OK;
     }
 
+    // Guest RAM is arg0, passed as a NATIVE POINTER (not a managed byte[]): the host's RAM is read
+    // and written in place via ldind/stind, so no per-execution copy of the (up to 640 KiB) address
+    // space is needed -- see Emitter.cs Execute. The byte address is base + (addr + k).
     HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppValue) override {
         UINT32 Dest = Fresh ();
         for (UINT32 k = 0; k < Bits / 8; k++) {
-            LdArg (0);
+            LdArg (0);                   // ram base (native int)
             LdLoc (IdOf (pAddr));
             B (0x69);                    // conv.i4
             PushI4 ((INT32) k);
-            B (0x58);                    // add
-            B (0x91);                    // ldelem.u1
+            B (0x58);                    // add        (addr + k)
+            B (0x58);                    // add        (base + (addr + k) -> native int)
+            B (0x47);                    // ldind.u1
             B (0x6a);                    // conv.i8
             if (k > 0) {
                 PushI4 ((INT32) (8 * k));
@@ -211,13 +226,14 @@ public:
 
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
         for (UINT32 k = 0; k < Bits / 8; k++) {
-            LdArg (0);
+            LdArg (0);                   // ram base (native int)
             LdLoc (IdOf (pAddr));
             B (0x69);                    // conv.i4
             PushI4 ((INT32) k);
-            B (0x58);                    // add
+            B (0x58);                    // add        (addr + k)
+            B (0x58);                    // add        (base + (addr + k) -> native int)
             ByteValue (IdOf (pValue), 8 * k);
-            B (0x9c);                    // stelem.i1
+            B (0x52);                    // stind.i1
         }
         EmitStoreBarrier (IdOf (pAddr));
         return S_OK;
@@ -226,21 +242,41 @@ public:
     HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP Op, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
         UINT32 Bits = BitsOf (pA);
         UINT32 Dest = Fresh ();
-        LdLoc (IdOf (pA));
-        LdLoc (IdOf (pB));
-        switch (Op) {
-        case BinAdd:  B (0x58); break;                       // add
-        case BinSub:  B (0x59); break;                       // sub
-        case BinMul:  B (0x5a); break;                       // mul
-        case BinAnd:  B (0x5f); break;                       // and
-        case BinOr:   B (0x60); break;                       // or
-        case BinXor:  B (0x61); break;                       // xor
-        case BinUDiv: B (0x5c); break;                       // div.un
-        case BinURem: B (0x5e); break;                       // rem.un
-        case BinShl:  B (0x69); B (0x62); break;             // conv.i4; shl
-        case BinLShr: B (0x69); B (0x64); break;             // conv.i4; shr.un
-        case BinAShr: B (0x69); B (0x63); break;             // conv.i4; shr
-        default:      B (0x58); break;
+        if (Op == BinUDiv || Op == BinURem) {
+            // Division is a TOTAL function here (like the interpreter: divisor 0 -> result 0); a raw
+            // div.un would throw DivideByZeroException and abort the host. Branchless guard, with
+            // Z = (B == 0): compute A / (B | Z) so the divisor is never 0, then mask the result with
+            // (Z - 1) -- all-ones when B != 0, zero when B == 0.
+            UINT32 Z = Fresh ();
+            LdLoc (IdOf (pB));
+            PushI8 (0);
+            B (0xfe); B (0x01);          // ceq  -> i4 (1 if B == 0)
+            B (0x6a);                    // conv.i8
+            StLoc (Z);
+            LdLoc (IdOf (pA));
+            LdLoc (IdOf (pB));
+            LdLoc (Z);
+            B (0x60);                    // or   -> B | Z (never 0)
+            B (Op == BinUDiv ? 0x5c : 0x5e);   // div.un / rem.un
+            LdLoc (Z);
+            PushI8 (1);
+            B (0x59);                    // sub  -> Z - 1
+            B (0x5f);                    // and  -> 0 when B was 0
+        } else {
+            LdLoc (IdOf (pA));
+            LdLoc (IdOf (pB));
+            switch (Op) {
+            case BinAdd:  B (0x58); break;                   // add
+            case BinSub:  B (0x59); break;                   // sub
+            case BinMul:  B (0x5a); break;                   // mul
+            case BinAnd:  B (0x5f); break;                   // and
+            case BinOr:   B (0x60); break;                   // or
+            case BinXor:  B (0x61); break;                   // xor
+            case BinShl:  B (0x69); B (0x62); break;         // conv.i4; shl
+            case BinLShr: B (0x69); B (0x64); break;         // conv.i4; shr.un
+            case BinAShr: B (0x69); B (0x63); break;         // conv.i4; shr
+            default:      B (0x58); break;
+            }
         }
         PushI8 ((INT64) Mask (~0ull, Bits));
         B (0x5f);                        // and  -> mask to width
@@ -473,6 +509,38 @@ public:
         return Make (Dest, 64, ppValue);
     }
 
+    // ---- cycle clock (ICpuClockEmitter) -----------------------------------
+    // CPU_STATE.Cycles += Count: assemble the field's 8 little-endian bytes into an int64, add
+    // Count, write the 8 bytes back. The shadow path forwards its per-instruction tick here, giving
+    // the machine a real instruction-retired time base (the PIT reads it), so the BIOS calibration
+    // loops behave the same as on a natively clock-emitting backend.
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        for (UINT32 k = 0; k < 8; k++) {                          // Cycles' 8 bytes -> int64
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_CYCLES_OFFSET + k));
+            B (0x91);                    // ldelem.u1
+            B (0x6a);                    // conv.i8
+            if (k > 0) {
+                PushI4 ((INT32) (8 * k));
+                B (0x62);                // shl
+                B (0x60);                // or
+            }
+        }
+        PushI8 ((INT64) Count);
+        B (0x58);                        // add
+        UINT32 Tmp = ClockTmp ();
+        StLoc (Tmp);
+        for (UINT32 k = 0; k < 8; k++) {                          // int64 -> Cycles' 8 bytes
+            LdArg (1);
+            PushI4 ((INT32) (CPU_STATE_CYCLES_OFFSET + k));
+            LdLoc (Tmp);
+            if (k != 0) { PushI4 ((INT32) (8 * k)); B (0x64); }   // shr.un
+            PushI8 (255); B (0x5f); B (0x69);                     // and ; conv.i4
+            B (0x9c);                                             // stelem.i1
+        }
+        return S_OK;
+    }
+
     // ---- runtime edge profiling (ICpuProfileEmitter) ----------------------
     // ++EdgeCount[Index]: assemble the slot's 8 little-endian bytes into an int64,
     // add 1, write the 8 bytes back. EdgeCount[] starts at CPU_STATE_EDGECOUNT_OFFSET.
@@ -538,6 +606,13 @@ public:
 
 private:
     UINT32 Fresh () { return m_Next++; }
+
+    // One reusable scratch local for the cycle-clock read-modify-write (allocated on first tick), so
+    // the per-instruction EmitTick does not allocate a fresh local each time.
+    UINT32 ClockTmp () {
+        if (m_ClockTmp == 0xFFFFFFFFu) { m_ClockTmp = Fresh (); }
+        return m_ClockTmp;
+    }
 
     void B (UINT8 Op) { m_Code.push_back (Op); }
 
@@ -628,6 +703,7 @@ private:
 
     std::vector<UINT8>                     m_Code;
     UINT32                                 m_Next = 0;
+    UINT32                                 m_ClockTmp = 0xFFFFFFFFu;   // reusable local for EmitTick (lazy)
     std::vector<UINT32>                    m_BlockStart;   // block id -> code offset (0xFFFFFFFF = unset)
     std::vector<std::pair<UINT32, UINT32>> m_Fixups;       // (branch opcode pos, target block id)
 };

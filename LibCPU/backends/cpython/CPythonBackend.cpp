@@ -43,6 +43,8 @@ static CHAR8 CONST *kTemplate =
     "def gD():return int.from_bytes(ST[328:336],'little')\n"
     // EdgeCount[] starts at 336 (CPU_STATE_EDGECOUNT_OFFSET): bump slot i in place.
     "def eC(i):\n o=336+i*8\n v=int.from_bytes(ST[o:o+8],'little')+1\n for k in range(8):ST[o+k]=(v>>(8*k))&0xff\n"
+    // Cycles is at 632 (CPU_STATE_CYCLES_OFFSET): advance the instruction-retired clock in place.
+    "def tk(c):\n v=int.from_bytes(ST[632:640],'little')+c\n for k in range(8):ST[632+k]=(v>>(8*k))&0xff\n"
     "def wM(a,v,b):\n for k in range(b//8):RAM[a+k]=(v>>(8*k))&0xff\n if a>=cS() and a<cE():ST[296+((a>>11)&31)]|=1<<((a>>8)&7)\n"
     "def gF(f):return ST[256+f]&1\n"
     "def sF(f,v):ST[256+f]=v&1\n"
@@ -168,10 +170,15 @@ private:
     PyObject *m_Code;
 };
 
-class PyEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class PyEmitter final : public ComObject<ICpuEmitter>,
+                        public ICpuSmcEmitter,
+                        public ICpuProfileEmitter,
+                        public ICpuClockEmitter {
 public:
-    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the ComObject base.
+    // Four interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter + ICpuClockEmitter):
+    // resolve QI here, forward refcounting to the ComObject base. The clock emitter is required on
+    // the machine path: the shadow path forwards its per-instruction tick here so CPU_STATE.Cycles
+    // advances and the BIOS's PIT-driven (DMA-Timer) calibration passes.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
@@ -183,6 +190,11 @@ public:
         }
         if (CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuClockEmitter)) {
+            *ppvObject = static_cast<ICpuClockEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -232,7 +244,14 @@ public:
         default:      pOp = "+";  break;
         }
         UINT32 D = Fresh ();
-        Line ("t%u=(t%u%st%u)&%llu", D, IdOf (pA), pOp, IdOf (pB), (unsigned long long) Mask (~0ull, Bits));
+        if (Op == BinUDiv || Op == BinURem) {
+            // Division is total (divisor 0 -> 0, as in the interpreter); a bare // or % would raise
+            // ZeroDivisionError and abort the run.
+            Line ("t%u=((t%u%st%u) if t%u else 0)&%llu", D, IdOf (pA), pOp, IdOf (pB), IdOf (pB),
+                  (unsigned long long) Mask (~0ull, Bits));
+        } else {
+            Line ("t%u=(t%u%st%u)&%llu", D, IdOf (pA), pOp, IdOf (pB), (unsigned long long) Mask (~0ull, Bits));
+        }
         return Make (D, Bits, ppValue);
     }
     HRESULT STDMETHODCALLTYPE UnaryOp (CPU_UNOP Op, ICpuValue *pA, ICpuValue **ppValue) override {
@@ -336,6 +355,14 @@ public:
             return S_OK;
         }
         Line ("eC(%u)", Index);   // ++EdgeCount[Index]
+        return S_OK;
+    }
+
+    // ---- cycle clock (ICpuClockEmitter) -----------------------------------
+    // CPU_STATE.Cycles += Count. The shadow path forwards its per-instruction tick here, giving the
+    // machine a real instruction-retired time base (the PIT reads it) so BIOS timing loops behave.
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        Line ("tk(%u)", Count);   // CPU_STATE.Cycles += Count
         return S_OK;
     }
 

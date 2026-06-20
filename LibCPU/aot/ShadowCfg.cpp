@@ -204,6 +204,21 @@ BackendHasNativeCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend)
     return SUCCEEDED (E->Branch (B.Get ()));   // E_NOTIMPL from a leaf backend -> needs the shadow path
 }
 
+bool
+BackendHasSystemEmitter (ICpuArchitecture *pArch, ICpuBackend *pBackend)
+{
+    // The machine path emits port I/O, software interrupts and the per-instruction cycle clock; a
+    // backend that does not implement ICpuSystemEmitter cannot translate those, so even if it has
+    // native CFG it must drive the machine through the shadow path (which synthesises them from the
+    // basic emitter). The three machine emitters travel together in every backend, so the System
+    // one is a sufficient sentinel.
+    ComPtr<ICpuEmitter> E;
+    if (FAILED (pBackend->CreateEmitter (pArch, &E)) || E == nullptr) { return false; }
+    ComPtr<ICpuSystemEmitter> Sys;
+    E->QueryInterface (IID_ICpuSystemEmitter, (VOID **) &Sys);
+    return Sys != nullptr;
+}
+
 HRESULT
 GenerateShadowUnit (ICpuArchitecture *pArch, ICpuBackend *pInner, CPU_ADDR Entry, CPU_ADDR End,
                     OUT ICpuCode **ppCode)

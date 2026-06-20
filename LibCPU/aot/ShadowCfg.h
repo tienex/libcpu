@@ -94,6 +94,14 @@ namespace LibCPU {
 bool BackendHasNativeCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend);
 
 //
+// Probe whether a backend natively implements the machine emitters (port I/O via ICpuSystemEmitter,
+// INT/traps via ICpuSyscallEmitter, the cycle clock via ICpuClockEmitter). A backend lacking them
+// cannot translate system/BIOS code on the native path and must use the shadow path -- which
+// synthesizes those capabilities -- even when it does have a native CFG.
+//
+bool BackendHasSystemEmitter (ICpuArchitecture *pArch, ICpuBackend *pBackend);
+
+//
 // Translate ONE guest basic block starting at Entry through pInner using only its minimal
 // straight-line emitter, synthesizing control flow and the machine trap capabilities as
 // described above. The produced ICpuCode runs the block and leaves the next guest PC (or a

@@ -35,6 +35,18 @@ enum { Sector_Size = 512, Dcb_Len = 6 };
 // Controller status register (0x321) bits.
 enum { Sts_Req = 0x01, Sts_InputOutput = 0x02, Sts_CmdData = 0x04, Sts_Busy = 0x08 };
 
+// The controller is a small state machine; the status register is a pure function of its phase.
+// A select pulse (write to 0x322) moves it from Idle to Command; the final completion-byte read
+// (from 0x320) drops it back to Idle. The two BIOS poll loops watch opposite edges of BUSY --
+// the reset path waits for command-ready (BUSY set, value 0x0D), the post-command path waits
+// for BUSY to clear (Idle, value 0x00) -- so a single static status value cannot satisfy both.
+enum HdcPhase {
+    Phase_Idle,      // deselected: status 0x00 (BUSY clear)
+    Phase_Command,   // selected, accepting the DCB: status 0x0D (REQ | C/D | BUSY)
+    Phase_Execute,   // command/transfer running: status 0x08 (BUSY)
+    Phase_Result,    // a completion byte is waiting: status 0x0F (REQ | I/O | C/D | BUSY)
+};
+
 // Xebec command opcodes (low 5 bits of DCB byte 0).
 enum { Cmd_Read = 0x08, Cmd_Write = 0x0A };
 
@@ -107,7 +119,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Reset (THIS) override
     {
-        m_Mask = 0; m_DcbLen = 0; m_ResultReady = FALSE; m_DmaPending = FALSE; m_IrqPending = FALSE;
+        m_Mask = 0; m_DcbLen = 0; m_Phase = Phase_Idle; m_DmaPending = FALSE; m_IrqPending = FALSE;
         return S_OK;
     }
 
@@ -121,12 +133,28 @@ public:
         if (pValue == nullptr) { return E_POINTER; }
         switch (Port - m_Base) {
             case Hdc_Status:
-                // Result phase: REQ + I/O (to host) + C/D (status) + BUSY; otherwise idle.
-                *pValue = m_ResultReady ? (Sts_Req | Sts_InputOutput | Sts_CmdData | Sts_Busy) : 0;
+                // Pure function of the controller phase (see HdcPhase). Newer M24 BIOSes (>= 1.36)
+                // reset the controller and spin here until it reports command-ready (0x0D) before
+                // issuing a command, then -- after reading the completion byte -- spin again until
+                // BUSY clears (0x00); older BIOSes (1.21) just write the command blind.
+                switch (m_Phase) {
+                    case Phase_Command: *pValue = Sts_Req | Sts_CmdData | Sts_Busy; break;
+                    case Phase_Execute: *pValue = Sts_Busy; break;
+                    case Phase_Result:  *pValue = Sts_Req | Sts_InputOutput | Sts_CmdData | Sts_Busy; break;
+                    default:            *pValue = 0; break;   // Phase_Idle: deselected
+                }
                 break;
             case Hdc_Data:
-                *pValue = m_ResultReady ? m_Completion : 0;   // the completion/status byte
-                m_ResultReady = FALSE;
+                // The completion/status byte; reading it in the result phase ends the command and
+                // returns the controller to Idle, which is the BUSY-clear edge the BIOS waits on.
+                // It is also the service that drops the IRQ line.
+                if (m_Phase == Phase_Result) {
+                    *pValue = m_Completion;
+                    m_Phase = Phase_Idle;
+                    m_IrqPending = FALSE;
+                } else {
+                    *pValue = 0;
+                }
                 break;
             case Hdc_Mask: *pValue = m_Mask; break;
             default:       *pValue = 0; break;
@@ -139,11 +167,20 @@ public:
         UINT8 V = (UINT8) Value;
         switch (Port - m_Base) {
             case Hdc_Data:                                    // accumulate the 6-byte Device Control Block
-                if (m_DcbLen < Dcb_Len) { m_Dcb[m_DcbLen++] = V; }
-                if (m_DcbLen == Dcb_Len) { m_DcbLen = 0; Execute (); }
+                // A select pulse normally precedes the command, but accept the first byte as an
+                // implicit selection too (the 1.21 BIOS clocks the DCB in without polling first).
+                if (m_Phase == Phase_Idle) { m_Phase = Phase_Command; m_DcbLen = 0; }
+                if (m_Phase == Phase_Command) {
+                    if (m_DcbLen < Dcb_Len) { m_Dcb[m_DcbLen++] = V; }
+                    if (m_DcbLen == Dcb_Len) { m_DcbLen = 0; Execute (); }
+                }
                 break;
-            case Hdc_Mask: m_Mask = V; break;                 // DMA/IRQ enable latch
-            default:       break;                             // status-port write (reset) / select: accepted
+            case Hdc_Status:                                              // 0x321 write: controller reset
+                m_Phase = Phase_Idle; m_DcbLen = 0; m_IrqPending = FALSE; break;
+            case Hdc_Select:                                              // 0x322 write: select pulse -> command-ready
+                m_Phase = Phase_Command; m_DcbLen = 0; m_IrqPending = FALSE; break;
+            case Hdc_Mask:   m_Mask = V; break;                           // DMA/IRQ enable latch
+            default:         break;
         }
         return S_OK;
     }
@@ -151,6 +188,11 @@ public:
     HRESULT STDMETHODCALLTYPE PollInterrupt (OUT UINT32 *pIrq) override
     {
         if (pIrq == nullptr) { return E_POINTER; }
+        // A completion raises IRQ5 as a single edge, consumed here once. The M24 BIOS keeps IRQ5
+        // masked while it polls the controller status (see the phase machine in ReadPort), so this
+        // edge lands on a masked line -- the 8259 IRR latches it and delivers it only when the BIOS
+        // later unmasks IRQ5, which is how the disk is detected. A held line would re-fire after
+        // every EOI; the single edge + the PIC's IRR latch is the correct model.
         if (m_IrqPending) { m_IrqPending = FALSE; *pIrq = 5; return S_OK; }   // hard disk -> IRQ5
         return S_FALSE;
     }
@@ -173,7 +215,7 @@ public:
         }
         m_DmaPending  = FALSE;
         m_Completion  = 0x00;                                 // success
-        m_ResultReady = TRUE;
+        m_Phase       = Phase_Result;                        // a completion byte is now waiting
         m_IrqPending  = TRUE;                                 // transfer done -> IRQ5
         return S_OK;
     }
@@ -193,11 +235,12 @@ private:
             m_DmaToMem = (Op == Cmd_Read) ? TRUE : FALSE;
             if (Op == Cmd_Read) { m_pMedium->Read (m_Lba, m_Buf.data (), Count); }   // stage for DMA-out
             m_DmaPending = TRUE;                              // the DMA bridge moves it, then CompleteDma
+            m_Phase      = Phase_Execute;                     // BUSY while the transfer is in flight
             return;
         }
         // Non-transfer commands (test-ready, recalibrate, init drive params, sense, ...): succeed now.
         m_Completion  = 0x00;
-        m_ResultReady = TRUE;
+        m_Phase       = Phase_Result;                        // a completion byte is now waiting
         m_IrqPending  = TRUE;
     }
 
@@ -215,7 +258,7 @@ private:
     BOOLEAN            m_DmaToMem   = FALSE;
     BOOLEAN            m_DmaPending = FALSE;
     BOOLEAN            m_IrqPending = FALSE;
-    BOOLEAN            m_ResultReady = FALSE;
+    HdcPhase           m_Phase = Phase_Idle;
     UINT8              m_Completion = 0;
 };
 

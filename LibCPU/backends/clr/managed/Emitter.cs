@@ -15,25 +15,25 @@ public static class Emitter
         byte[] sig = new byte[sigLen];
         Marshal.Copy(sigPtr, sig, 0, sigLen);
 
+        // arg0 is guest RAM as a native pointer (IntPtr), accessed in place via ldind/stind so the
+        // (up to 640 KiB) address space is never copied; arg1 is the small CPU_STATE as a byte[].
         var dm = new DynamicMethod("insn", typeof(void),
-            new[] { typeof(byte[]), typeof(byte[]) }, typeof(Emitter).Module, true);
+            new[] { typeof(IntPtr), typeof(byte[]) }, typeof(Emitter).Module, true);
         DynamicILInfo info = dm.GetDynamicILInfo();
         info.SetLocalSignature(sig);
         info.SetCode(il, maxStack);
-        var del = dm.CreateDelegate(typeof(Action<byte[], byte[]>));
+        var del = dm.CreateDelegate(typeof(Action<IntPtr, byte[]>));
         return GCHandle.ToIntPtr(GCHandle.Alloc(del));
     }
 
     [UnmanagedCallersOnly]
     public static void Execute(IntPtr handle, IntPtr ramPtr, int ramLen, IntPtr grfPtr, int grfLen)
     {
-        var del = (Action<byte[], byte[]>)GCHandle.FromIntPtr(handle).Target;
-        byte[] ram = new byte[ramLen];
-        Marshal.Copy(ramPtr, ram, 0, ramLen);
+        var del = (Action<IntPtr, byte[]>)GCHandle.FromIntPtr(handle).Target;
+        // RAM is touched in place through ramPtr -- no copy. Only the small CPU_STATE is marshalled.
         byte[] grf = new byte[grfLen];
         Marshal.Copy(grfPtr, grf, 0, grfLen);
-        del(ram, grf);
-        Marshal.Copy(ram, 0, ramPtr, ramLen);
+        del(ramPtr, grf);
         Marshal.Copy(grf, 0, grfPtr, grfLen);
     }
 }

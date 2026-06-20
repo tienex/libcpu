@@ -1184,15 +1184,49 @@ if(TARGET interp_backend)
   # H0 S1 to 0000:7C00 over the FDC/DMA), and jump into the loaded boot sector, which prints
   # "M24 BOOTS LibCPU!" via INT 10h. This exercises FDC reset/IRQ6, DMA terminal-count, the 8237, and
   # in-guest software-INT vectoring together -- the whole machine from power-on to running guest code.
+  # The step budget covers the real BIOS's hard-disk controller probe (it now selects and command-
+  # handshakes the ST-506 before concluding no fixed disk is bootable) ahead of the floppy boot-strap.
   add_test(NAME machine.m24boot COMMAND sh -c
     "python3 '${CMAKE_CURRENT_SOURCE_DIR}/test/mk_m24boot.py' '${CMAKE_BINARY_DIR}/m24-boot.img' && \
      sed 's#libcpu,sectors = <9>;#libcpu,sectors = <9>; libcpu,image = \"${CMAKE_BINARY_DIR}/m24-boot.img\";#' \
        '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' > '${CMAKE_BINARY_DIR}/m24-boot.dts' && \
      '$<TARGET_FILE:lcx>' machine '${CMAKE_BINARY_DIR}/m24-boot.dts' --bundles '${CMAKE_BINARY_DIR}' \
        --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
-       --steps 1500000 > '${CMAKE_BINARY_DIR}/machine-m24boot.out' 2>&1 && \
+       --steps 4000000 > '${CMAKE_BINARY_DIR}/machine-m24boot.out' 2>&1 && \
      grep -q 'M24 BOOTS LibCPU' '${CMAKE_BINARY_DIR}/machine-m24boot.out'")
   set_tests_properties(machine.m24boot PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # M24 BIOS 1.36 fixed-disk detection: unlike 1.21 (which does not drive the ST-506), BIOS >= 1.36
+  # resets the Xebec controller, polls it for the command-ready status, issues init/diagnostic
+  # commands, and waits for the completion interrupt -- exercising the controller phase machine, the
+  # open-bus controller-presence scan, and the 8259 IRR latch that holds the masked completion IRQ5
+  # until the BIOS unmasks it. POST then reports the disk Ready. (A regression here re-hangs the BIOS
+  # at the controller status poll, the original symptom.)
+  add_test(NAME machine.m24hdc COMMAND sh -c
+    "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+       --backend '${CMAKE_BINARY_DIR}/interp.backend' \
+       --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS136-combined.ROM' \
+       --steps 8000000 > '${CMAKE_BINARY_DIR}/machine-m24hdc.out' 2>&1 && \
+     grep -q 'Disk(s) Ready' '${CMAKE_BINARY_DIR}/machine-m24hdc.out'")
+  set_tests_properties(machine.m24hdc PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:")
+
+  # The CLR (.NET) backend drives the full machine. It has native CFG but none of the machine
+  # emitters (port I/O / INT / clock), so the System routes it through the shadow path (which
+  # synthesizes them); it supplies a real cycle clock (ICpuClockEmitter) and a guarded division
+  # (divisor 0 -> 0, never a host trap), and accesses guest RAM through a native pointer (no
+  # per-block copy). With all of that it POSTs the M24 BIOS through its diagnostics. Each regression
+  # has a distinct failure: no shadow routing -> an infinite SMC-guard loop (hang); no clock ->
+  # halts at the DMA-Timer test; unguarded division -> a .NET DivideByZeroException. Guarded only by
+  # the bundle existing, since the backend needs a .NET toolchain at build time.
+  if (EXISTS "${CMAKE_BINARY_DIR}/clr.backend")
+    add_test(NAME machine.m24-clr COMMAND sh -c
+      "'$<TARGET_FILE:lcx>' machine '${CMAKE_CURRENT_SOURCE_DIR}/test/m24.dts' --bundles '${CMAKE_BINARY_DIR}' \
+         --backend '${CMAKE_BINARY_DIR}/clr.backend' \
+         --bios '${CMAKE_CURRENT_SOURCE_DIR}/roms/system-bios/olivetti-m24/BIOS121-combined.ROM' \
+         --steps 500000 > '${CMAKE_BINARY_DIR}/machine-m24-clr.out' 2>&1 && \
+       grep -qE 'DMA Timer +Pass' '${CMAKE_BINARY_DIR}/machine-m24-clr.out'")
+    set_tests_properties(machine.m24-clr PROPERTIES FAIL_REGULAR_EXPRESSION "lcx machine:|Unhandled exception")
+  endif ()
 
   # 8042 keyboard-controller self-test: a guest issues the controller self-test command (0xAA to
   # 0x64) and reads the result from 0x60 -- the 8042 answers 0x55 ('U'), which the program prints as

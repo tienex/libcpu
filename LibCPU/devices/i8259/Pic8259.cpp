@@ -137,15 +137,27 @@ public:
     HRESULT STDMETHODCALLTYPE AcceptInterrupt (UINT32 Irq, UINT32 *pVector) override
     {
         if (pVector == nullptr) { return E_POINTER; }
-        if (Irq > 7 || (m_Imr & (1u << Irq)) != 0) { return S_FALSE; }   // masked (or out of range)
-        m_Irr = (UINT8) (m_Irr | (1u << Irq));                          // line requests service
-        // Priority: a line is acknowledged only if no equal-or-higher-priority line (IRQ0 is
-        // highest) is already in service. Bits 0..Irq of the ISR cover those priorities.
-        if ((m_Isr & (((1u << Irq) << 1) - 1)) != 0) { return S_FALSE; }
-        m_Irr = (UINT8) (m_Irr & ~(1u << Irq));                         // request granted -> in service
-        m_Isr = (UINT8) (m_Isr | (1u << Irq));
-        *pVector = (UINT32) m_VectorBase + Irq;                         // ICW2 base + line
-        return S_OK;
+        if (Irq > 7) { return S_FALSE; }
+        // Latch the request in the IRR FIRST, before testing the mask. The 8259 is edge-triggered:
+        // a line asserted while masked is remembered here and stays pending until software unmasks
+        // it (then delivered by PollPending) -- it is NOT lost. Clearing it only on a grant is what
+        // lets a one-shot peripheral edge (e.g. a disk completion) survive a masked window without
+        // the peripheral re-asserting.
+        m_Irr = (UINT8) (m_Irr | (1u << Irq));                          // line requests service (latched)
+        return GrantPending (Irq, pVector);
+    }
+
+    // Grant the previously-latched request that is highest-priority among those now deliverable,
+    // without any peripheral having to re-assert. This is how a request raised while its line was
+    // masked reaches the CPU once software unmasks it.
+    HRESULT STDMETHODCALLTYPE PollPending (UINT32 *pVector) override
+    {
+        if (pVector == nullptr) { return E_POINTER; }
+        for (UINT32 Irq = 0; Irq < 8; Irq++) {                          // IRQ0 highest priority
+            if ((m_Irr & (1u << Irq)) == 0) { continue; }               // not requested
+            if (GrantPending (Irq, pVector) == S_OK) { return S_OK; }
+        }
+        return S_FALSE;
     }
 
     // Read-only test (no IRR/ISR side effect) of whether a line would be acknowledged right now --
@@ -159,6 +171,19 @@ public:
     }
 
 private:
+    // Grant a latched line (its IRR bit is already set) if it is now deliverable: not masked, and no
+    // equal-or-higher-priority line (IRQ0 is highest) already in service. On a grant the request
+    // moves IRR -> ISR and the vector is returned; otherwise it stays latched in the IRR.
+    HRESULT GrantPending (UINT32 Irq, UINT32 *pVector)
+    {
+        if ((m_Imr & (1u << Irq)) != 0) { return S_FALSE; }            // masked: stays latched
+        if ((m_Isr & (((1u << Irq) << 1) - 1)) != 0) { return S_FALSE; } // blocked by priority
+        m_Irr = (UINT8) (m_Irr & ~(1u << Irq));                       // request granted -> in service
+        m_Isr = (UINT8) (m_Isr | (1u << Irq));
+        *pVector = (UINT32) m_VectorBase + Irq;                       // ICW2 base + line
+        return S_OK;
+    }
+
     std::atomic<INT32> m_Ref;
     UINT16             m_Base       = 0x20;
     UINT8              m_Imr        = 0xFF;

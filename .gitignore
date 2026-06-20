@@ -6,3 +6,7 @@ build/
 
 # CTest output
 Testing/
+
+# .NET managed build output (clr backend Emitter)
+LibCPU/backends/clr/managed/obj/
+LibCPU/backends/clr/managed/bin/

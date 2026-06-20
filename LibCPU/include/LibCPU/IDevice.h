@@ -122,8 +122,13 @@ DECLARE_INTERFACE_ (IHostMemory, IUnknown)
 
 //
 // Capability: the component arbitrates hardware interrupts (the 8259 PIC). A raised IRQ line is
-// presented to AcceptInterrupt; if the line is enabled (not masked) it returns S_OK and the CPU
-// interrupt vector to dispatch (the controller's vector base + the line), otherwise S_FALSE.
+// presented to AcceptInterrupt, which LATCHES the request (the 8259 IRR) -- so an edge raised while
+// the line is masked is remembered, not lost -- and, if the line is enabled (not masked) and not
+// blocked by an equal-or-higher-priority line already in service, returns S_OK with the CPU vector
+// to dispatch (the controller's vector base + the line); otherwise S_FALSE (the request stays
+// latched). PollPending delivers a previously-latched request that has since become deliverable
+// (e.g. its line was unmasked) WITHOUT the peripheral having to re-assert -- the path a one-shot
+// completion interrupt (disk, FDC) takes when software masks the line across the operation.
 //
 DECLARE_INTERFACE_ (IInterruptController, IUnknown)
 {
@@ -133,6 +138,7 @@ DECLARE_INTERFACE_ (IInterruptController, IUnknown)
 
     STDMETHOD (AcceptInterrupt)(THIS_ UINT32 Irq, OUT UINT32 *pVector) PURE;
     STDMETHOD_ (BOOLEAN, CanAccept)(THIS_ UINT32 Irq) PURE;   // read-only: would this line be acknowledged now?
+    STDMETHOD (PollPending)(THIS_ OUT UINT32 *pVector) PURE;  // grant the highest latched line now deliverable
 };
 
 //

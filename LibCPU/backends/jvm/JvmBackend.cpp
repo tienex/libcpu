@@ -232,10 +232,16 @@ private:
     jmethodID m_Method;
 };
 
-class JvmEmitter final : public ComObject<ICpuEmitter>, public ICpuSmcEmitter, public ICpuProfileEmitter {
+class JvmEmitter final : public ComObject<ICpuEmitter>,
+                         public ICpuSmcEmitter,
+                         public ICpuProfileEmitter,
+                         public ICpuClockEmitter {
 public:
-    // Three interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter): resolve
-    // QI here, forward refcounting to the ComObject base.
+    // Four interfaces (ICpuEmitter + ICpuSmcEmitter + ICpuProfileEmitter + ICpuClockEmitter):
+    // resolve QI here, forward refcounting to the ComObject base. The clock emitter is required on
+    // the machine path: the shadow path forwards its per-instruction tick here so CPU_STATE.Cycles
+    // advances and the BIOS's PIT-driven (DMA-Timer) calibration passes -- without it the machine
+    // halts at the timer test.
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
         if (ppvObject == nullptr) {
             return E_POINTER;
@@ -247,6 +253,11 @@ public:
         }
         if (CompareGuid (&riid, &IID_ICpuProfileEmitter)) {
             *ppvObject = static_cast<ICpuProfileEmitter *> (this);
+            AddRef ();
+            return S_OK;
+        }
+        if (CompareGuid (&riid, &IID_ICpuClockEmitter)) {
+            *ppvObject = static_cast<ICpuClockEmitter *> (this);
             AddRef ();
             return S_OK;
         }
@@ -331,21 +342,46 @@ public:
     HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP Op, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
         UINT32 Bits = BitsOf (pA);
         UINT32 Dest = Fresh ();
-        LLoad (IdOf (pA));
-        LLoad (IdOf (pB));
-        switch (Op) {
-        case BinAdd:  B (0x61); break;                       // ladd
-        case BinSub:  B (0x65); break;                       // lsub
-        case BinMul:  B (0x69); break;                       // lmul
-        case BinAnd:  B (0x7f); break;                       // land
-        case BinOr:   B (0x81); break;                       // lor
-        case BinXor:  B (0x83); break;                       // lxor
-        case BinUDiv: B (0x6d); break;                       // ldiv
-        case BinURem: B (0x71); break;                       // lrem
-        case BinShl:  B (0x88); B (0x79); break;             // l2i; lshl
-        case BinLShr: B (0x88); B (0x7d); break;             // l2i; lushr
-        case BinAShr: B (0x88); B (0x7b); break;             // l2i; lshr
-        default:      B (0x61); break;
+        if (Op == BinUDiv || Op == BinURem) {
+            // Division is a TOTAL function here (like the interpreter: divisor 0 -> result 0); a raw
+            // ldiv would throw ArithmeticException and abort the host. Branchless guard: with the
+            // operand non-negative (masked to Bits), nz = (B | -B) >>> 63 is 1 iff B != 0. Divide by
+            // (B | (1 - nz)) so the divisor is never 0, then mask the result with (0 - nz) -- all-ones
+            // when B != 0, zero when B == 0.
+            UINT32 NZ = Fresh ();
+            LLoad (IdOf (pB));
+            LLoad (IdOf (pB));
+            B (0x75);                    // lneg
+            B (0x81);                    // lor   -> B | -B
+            PushInt (63);
+            B (0x7d);                    // lushr -> nz (long 0/1)
+            LStore (NZ);
+            LLoad (IdOf (pA));
+            LLoad (IdOf (pB));
+            PushLong (1);
+            LLoad (NZ);
+            B (0x65);                    // lsub  -> 1 - nz
+            B (0x81);                    // lor   -> B | (1 - nz)  (never 0)
+            B (Op == BinUDiv ? 0x6d : 0x71);   // ldiv / lrem
+            PushLong (0);
+            LLoad (NZ);
+            B (0x65);                    // lsub  -> 0 - nz
+            B (0x7f);                    // land  -> 0 when B was 0
+        } else {
+            LLoad (IdOf (pA));
+            LLoad (IdOf (pB));
+            switch (Op) {
+            case BinAdd:  B (0x61); break;                   // ladd
+            case BinSub:  B (0x65); break;                   // lsub
+            case BinMul:  B (0x69); break;                   // lmul
+            case BinAnd:  B (0x7f); break;                   // land
+            case BinOr:   B (0x81); break;                   // lor
+            case BinXor:  B (0x83); break;                   // lxor
+            case BinShl:  B (0x88); B (0x79); break;         // l2i; lshl
+            case BinLShr: B (0x88); B (0x7d); break;         // l2i; lushr
+            case BinAShr: B (0x88); B (0x7b); break;         // l2i; lshr
+            default:      B (0x61); break;
+            }
         }
         PushLong ((INT64) Mask (~0ull, Bits));
         B (0x7f);                        // land  -> mask to width
@@ -640,6 +676,42 @@ public:
         for (UINT32 k = 0; k < 8; k++) {     // store: long -> grf[Base..Base+8)
             ALoad (1);
             PushInt ((INT32) (Base + k));
+            LLoad (Tmp);
+            PushInt ((INT32) (8 * k));
+            B (0x7d);                    // lushr
+            PushLong (255);
+            B (0x7f);                    // land
+            B (0x88);                    // l2i
+            B (0x54);                    // bastore
+        }
+        return S_OK;
+    }
+
+    // ---- cycle clock (ICpuClockEmitter) -----------------------------------
+    // CPU_STATE.Cycles += Count : read the field's 8 little-endian bytes into a long, add Count,
+    // write the 8 bytes back -- the same in-place RMW as the edge counter. The shadow path forwards
+    // its per-instruction tick here, giving the machine a real instruction-retired time base.
+    HRESULT STDMETHODCALLTYPE EmitTick (UINT32 Count) override {
+        UINT32 Tmp = Fresh ();
+        for (UINT32 k = 0; k < 8; k++) {     // load: grf[Cycles..Cycles+8) -> long
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_CYCLES_OFFSET + k));
+            B (0x33);                    // baload
+            PushInt (255);
+            B (0x7e);                    // iand
+            B (0x85);                    // i2l
+            if (k > 0) {
+                PushInt ((INT32) (8 * k));
+                B (0x79);                // lshl
+                B (0x81);                // lor
+            }
+        }
+        PushLong ((INT64) Count);
+        B (0x61);                        // ladd
+        LStore (Tmp);
+        for (UINT32 k = 0; k < 8; k++) {     // store: long -> grf[Cycles..Cycles+8)
+            ALoad (1);
+            PushInt ((INT32) (CPU_STATE_CYCLES_OFFSET + k));
             LLoad (Tmp);
             PushInt ((INT32) (8 * k));
             B (0x7d);                    // lushr

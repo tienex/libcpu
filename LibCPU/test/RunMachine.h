@@ -103,10 +103,12 @@ public:
 
     int Poll () override
     {
+        UINT32 Vector = 0;
+        // First latch every line asserted this poll into its PIC (AcceptInterrupt records the edge in
+        // the IRR even when the line is masked), delivering immediately if the line is enabled.
         for (IInterruptSource *p : m_Sources) {
             UINT32 Irq = 0;
             if (p->PollInterrupt (&Irq) != S_OK) { continue; }
-            UINT32 Vector = 0;
             if (Irq < 8) {                                          // master line
                 if (m_pMaster != nullptr && m_pMaster->AcceptInterrupt (Irq, &Vector) == S_OK) {
                     return (int) (Vector - 8);
@@ -121,6 +123,20 @@ public:
                     return (int) (Vector - 8);
                 }
             }
+        }
+        // Then deliver any line latched on an earlier poll that has only now become deliverable --
+        // typically a one-shot completion interrupt (disk) raised while software had its line masked,
+        // which the peripheral will not re-assert. The IRR remembered it; release it now.
+        if (m_pMaster != nullptr && m_pMaster->PollPending (&Vector) == S_OK) {
+            return (int) (Vector - 8);
+        }
+        if (m_pSlave != nullptr && (m_pMaster == nullptr || m_pMaster->CanAccept (2))
+            && m_pSlave->PollPending (&Vector) == S_OK) {
+            if (m_pMaster != nullptr) {
+                UINT32 Casc = 0;
+                m_pMaster->AcceptInterrupt (2, &Casc);
+            }
+            return (int) (Vector - 8);
         }
         return -1;
     }
