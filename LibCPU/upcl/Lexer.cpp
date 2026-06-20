@@ -14,6 +14,9 @@ TokenName (TOKEN_KIND Kind)
     case TokIdent:    return "identifier";
     case TokInt:      return "integer";
     case TokString:   return "string";
+    case TokType:     return "type (#i16/#f80/#v...)";
+    case TokMeta:     return "%meta";
+    case TokMacroIdent: return "@macro";
     case TokLBrace:   return "'{'";
     case TokRBrace:   return "'}'";
     case TokLParen:   return "'('";
@@ -31,6 +34,8 @@ TokenName (TOKEN_KIND Kind)
     case TokArrow:    return "'->'";
     case TokDotDot:   return "'..'";
     case TokDot:      return "'.'";
+    case TokBindLeft: return "'<-'";
+    case TokBindBidi: return "'<->'";
     case TokAssign:   return "'='";
     case TokPlus:     return "'+'";
     case TokMinus:    return "'-'";
@@ -52,6 +57,27 @@ TokenName (TOKEN_KIND Kind)
     case TokAndAnd:   return "'&&'";
     case TokOrOr:     return "'||'";
     case TokNot:      return "'!'";
+    case TokRol:      return "'<<>'";
+    case TokRor:      return "'>><'";
+    case TokAndCom:   return "'&~'";
+    case TokOrCom:    return "'|~'";
+    case TokXorCom:   return "'^~'";
+    case TokStarStar: return "'**'";
+    case TokPlusEq:   return "'+='";
+    case TokMinusEq:  return "'-='";
+    case TokStarEq:   return "'*='";
+    case TokSlashEq:  return "'/='";
+    case TokPercentEq: return "'%='";
+    case TokPipeEq:   return "'|='";
+    case TokAmpEq:    return "'&='";
+    case TokCaretEq:  return "'^='";
+    case TokShlEq:    return "'<<='";
+    case TokShrEq:    return "'>>='";
+    case TokRolEq:    return "'<<>='";
+    case TokRorEq:    return "'>><='";
+    case TokAndComEq: return "'&~='";
+    case TokOrComEq:  return "'|~='";
+    case TokXorComEq: return "'^~='";
     default:            return "token";
     }
 }
@@ -141,6 +167,11 @@ Lexer::LexNumber (UINT32 Begin)
         while (Peek () == '0' || Peek () == '1') {
             Value = Value * 2 + (UINT32) (Advance () - '0');
         }
+    } else if (Peek () == '0' && Peek (1) >= '0' && Peek (1) <= '7') {
+        m_Pos++;                                      // leading 0 -> octal (old UPCL convention)
+        while (Peek () >= '0' && Peek () <= '7') {
+            Value = Value * 8 + (UINT32) (Advance () - '0');
+        }
     } else {
         while (IsDigit (Peek ())) {
             Value = Value * 10 + (UINT32) (Advance () - '0');
@@ -205,25 +236,71 @@ Lexer::Next ()
     case ']': return Make (TokRBracket, Begin);
     case ';': return Make (TokSemi, Begin);
     case ',': return Make (TokComma, Begin);
-    case ':': return Eat (':') ? Make (TokColonColon, Begin) : Make (TokColon, Begin);
-    case '@': return Make (TokAt, Begin);
-    case '#': return Make (TokHash, Begin);
     case '$': return Make (TokDollar, Begin);
     case '?': return Make (TokQuestion, Begin);
-    case '+': return Make (TokPlus, Begin);
-    case '*': return Make (TokStar, Begin);
-    case '/': return Make (TokSlash, Begin);
-    case '%': return Make (TokPercent, Begin);
-    case '^': return Make (TokCaret, Begin);
     case '~': return Make (TokTilde, Begin);
-    case '-': return Eat ('>') ? Make (TokArrow, Begin) : Make (TokMinus, Begin);
+    case ':': return Eat (':') ? Make (TokColonColon, Begin) : Make (TokColon, Begin);
     case '.': return Eat ('.') ? Make (TokDotDot, Begin) : Make (TokDot, Begin);
     case '=': return Eat ('=') ? Make (TokEqEq, Begin) : Make (TokAssign, Begin);
     case '!': return Eat ('=') ? Make (TokNotEq, Begin) : Make (TokNot, Begin);
-    case '&': return Eat ('&') ? Make (TokAndAnd, Begin) : Make (TokAmp, Begin);
-    case '|': return Eat ('|') ? Make (TokOrOr, Begin) : Make (TokPipe, Begin);
-    case '<': return Eat ('<') ? Make (TokShl, Begin) : (Eat ('=') ? Make (TokLtEq, Begin) : Make (TokLt, Begin));
-    case '>': return Eat ('>') ? Make (TokShr, Begin) : (Eat ('=') ? Make (TokGtEq, Begin) : Make (TokGt, Begin));
+    case '+': return Eat ('=') ? Make (TokPlusEq, Begin) : Make (TokPlus, Begin);
+    case '/': return Eat ('=') ? Make (TokSlashEq, Begin) : Make (TokSlash, Begin);
+    case '-':
+        if (Eat ('>')) { return Make (TokArrow, Begin); }                         // -> bind-right
+        return Eat ('=') ? Make (TokMinusEq, Begin) : Make (TokMinus, Begin);
+    case '*':
+        if (Eat ('*')) { return Make (TokStarStar, Begin); }                      // ** repetition
+        return Eat ('=') ? Make (TokStarEq, Begin) : Make (TokStar, Begin);
+    case '^':
+        if (Eat ('~')) { return Eat ('=') ? Make (TokXorComEq, Begin) : Make (TokXorCom, Begin); }
+        return Eat ('=') ? Make (TokCaretEq, Begin) : Make (TokCaret, Begin);
+    case '&':
+        if (Eat ('&')) { return Make (TokAndAnd, Begin); }
+        if (Eat ('~')) { return Eat ('=') ? Make (TokAndComEq, Begin) : Make (TokAndCom, Begin); }
+        return Eat ('=') ? Make (TokAmpEq, Begin) : Make (TokAmp, Begin);
+    case '|':
+        if (Eat ('|')) { return Make (TokOrOr, Begin); }
+        if (Eat ('~')) { return Eat ('=') ? Make (TokOrComEq, Begin) : Make (TokOrCom, Begin); }
+        return Eat ('=') ? Make (TokPipeEq, Begin) : Make (TokPipe, Begin);
+    case '<':
+        if (Eat ('-')) { return Eat ('>') ? Make (TokBindBidi, Begin) : Make (TokBindLeft, Begin); }
+        if (Eat ('<')) {
+            if (Eat ('>')) { return Eat ('=') ? Make (TokRolEq, Begin) : Make (TokRol, Begin); }
+            return Eat ('=') ? Make (TokShlEq, Begin) : Make (TokShl, Begin);
+        }
+        return Eat ('=') ? Make (TokLtEq, Begin) : Make (TokLt, Begin);
+    case '>':
+        if (Eat ('>')) {
+            if (Eat ('<')) { return Eat ('=') ? Make (TokRorEq, Begin) : Make (TokRor, Begin); }
+            return Eat ('=') ? Make (TokShrEq, Begin) : Make (TokShr, Begin);
+        }
+        return Eat ('=') ? Make (TokGtEq, Begin) : Make (TokGt, Begin);
+    case '%':
+        if (IsWordStart (Peek ())) {                                             // %CC, %S, %M, %PC, ...
+            while (IsWordCont (Peek ())) { m_Pos++; }
+            Token T = Make (TokMeta, Begin);
+            T.Text = T.Text.substr (1);                                          // strip the '%'
+            return T;
+        }
+        return Eat ('=') ? Make (TokPercentEq, Begin) : Make (TokPercent, Begin);
+    case '@':
+        if (IsWordStart (Peek ())) {                                             // @macro reference
+            while (IsWordCont (Peek ())) { m_Pos++; }
+            Token T = Make (TokMacroIdent, Begin);
+            T.Text = T.Text.substr (1);                                          // strip the '@'
+            return T;
+        }
+        return Make (TokAt, Begin);
+    case '#': {
+        CHAR8 K = Peek ();
+        if ((K == 'i' || K == 'f' || K == 'v') && IsDigit (Peek (1))) {          // #i16 / #f80 / #v4:32
+            m_Pos++;                                                             // the kind letter
+            while (IsDigit (Peek ())) { m_Pos++; }
+            if (K == 'v' && Peek () == ':') { m_Pos++; while (IsDigit (Peek ())) { m_Pos++; } }
+            return Make (TokType, Begin);                                        // Text = "#i16"
+        }
+        return Make (TokHash, Begin);
+    }
     default: {
         std::string Msg = std::string ("unexpected character '") + c + "'";
         m_pDiag->Report (SevError, Loc (Begin), Msg);

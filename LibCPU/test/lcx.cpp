@@ -456,11 +456,27 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     CHAR8 CONST *pFile = Positional (argc, argv, 1);
     bool Produce = pVerb != nullptr && std::strcmp (pVerb, "produce") == 0;
     bool Check   = pVerb != nullptr && std::strcmp (pVerb, "check") == 0;
-    if (pFile == nullptr || (!Check && !Produce)) {
+    bool Lex     = pVerb != nullptr && std::strcmp (pVerb, "lex") == 0;
+    if (pFile == nullptr || (!Check && !Produce && !Lex)) {
         std::printf ("usage: lcx upcl check   <file.upcl>     validate + summarise\n"
                      "       lcx upcl produce <file.upcl>     build the frontend + round-trip its encodings\n"
+                     "       lcx upcl lex     <file.upcl>     dump the token stream (lexer development aid)\n"
                      "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
+    }
+    if (Lex) {
+        Upcl::SourceManager Sm;
+        std::string Err;
+        Upcl::FILE_ID Fid = Sm.LoadFile (pFile, &Err);
+        if (Fid == Upcl::InvalidFile) { std::printf ("lcx upcl: %s\n", Err.c_str ()); return 1; }
+        Upcl::DiagnosticEngine Diag (&Sm, stderr);
+        Upcl::Lexer Lx (&Sm, Fid, &Diag);
+        for (;;) {
+            Upcl::Token T = Lx.Next ();
+            if (T.Kind == Upcl::TokEof) { break; }
+            std::printf ("%-24s %s\n", Upcl::TokenName (T.Kind), T.Text.c_str ());
+        }
+        return Diag.HadError () ? 1 : 0;
     }
     Upcl::SourceManager Sm;
     Upcl::Module *pMod = UpclParse (pFile, Sm);

@@ -23,18 +23,31 @@ namespace Upcl {
 typedef enum _TOKEN_KIND {
     TokEof,
     TokIdent,        // a word (keywords are recognised by the parser, by spelling)
-    TokInt,          // integer literal (decimal or 0x hex)
+    TokInt,          // integer literal (0x hex / 0b binary / 0 octal / decimal)
     TokString,       // "..."
+    TokType,         // a UPCL type literal: #i16, #f80, #v4:32 (Text holds the spelling)
+    TokMeta,         // %word -- an augment (%CC/%S/%U/%M/%MEM/...) or meta-register (%PC/%V/...);
+                     //   Text holds the word after '%'. The parser dispatches by spelling.
+    TokMacroIdent,   // @word -- a macro reference; Text holds the word after '@'.
 
     // punctuation
     TokLBrace, TokRBrace, TokLParen, TokRParen, TokLBracket, TokRBracket,
     TokSemi, TokComma, TokColon, TokColonColon, TokAt, TokHash, TokDollar, TokQuestion,
     TokArrow, TokDotDot, TokDot,
+    TokBindLeft, TokBindBidi,   // <-  <->   ('->' is TokArrow = bind-right)
 
     // operators (the expression parser's precedence table keys on these)
     TokAssign, TokPlus, TokMinus, TokStar, TokSlash, TokPercent,
     TokAmp, TokPipe, TokCaret, TokTilde, TokShl, TokShr,
+    TokRol, TokRor,                    // <<>  >><
+    TokAndCom, TokOrCom, TokXorCom,    // &~  |~  ^~  (op then complement the rhs)
     TokEqEq, TokNotEq, TokLt, TokLtEq, TokGt, TokGtEq, TokAndAnd, TokOrOr, TokNot,
+    TokStarStar,                       // **  (register repetition)
+
+    // compound assignments (insn bodies: al += 6, flags <<= 1, ...)
+    TokPlusEq, TokMinusEq, TokStarEq, TokSlashEq, TokPercentEq,
+    TokPipeEq, TokAmpEq, TokCaretEq, TokShlEq, TokShrEq, TokRolEq, TokRorEq,
+    TokAndComEq, TokOrComEq, TokXorComEq,
 
     TokUnknown
 } TOKEN_KIND;
