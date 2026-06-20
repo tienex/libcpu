@@ -519,6 +519,18 @@ add_test(NAME upcl.gate-v30 COMMAND sh -c
      --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/x86.upcl@v30' > '${CMAKE_BINARY_DIR}/x86gate.out' && \
    grep -q 'push 0x1234' '${CMAKE_BINARY_DIR}/x86gate.out' && grep -q 'brkem' '${CMAKE_BINARY_DIR}/x86gate.out'")
 
+# The hand-written parser implements the original UPCL .def grammar (register_file with
+# sub-register splits and flag bit-maps, macros, decoder_operands, jump insns, the rich
+# semantics language). Parse every reference description -- x86/80386/68k/MIPS/SPARC/m88k/
+# PDP-1/6502 -- with no diagnostics. Drives the normative flex/bison grammar through the
+# new front end.
+file(GLOB LIBCPU_UPCL_DEFS "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/*.def")
+foreach(_def ${LIBCPU_UPCL_DEFS})
+  get_filename_component(_defname ${_def} NAME_WE)
+  add_test(NAME upcl.def-${_defname} COMMAND lcx upcl check "${_def}")
+  set_tests_properties(upcl.def-${_defname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+endforeach()
+
 # Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
 # (asserting the solid container holds them), then extract one and diff it against the
 # original -- a full create/ls/extract round-trip proving the format is lossless.

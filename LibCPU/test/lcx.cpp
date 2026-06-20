@@ -493,6 +493,32 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             for (Upcl::FormatField CONST &Ff : pFmt->Fields) { std::printf ("%s:%u ", Ff.Name.c_str (), Ff.Width); }
             std::printf (" (%u bits)\n", pFmt->TotalBits ());
         }
+        if (pArch->RegFile != nullptr) {
+            for (Upcl::Group *pG : pArch->RegFile->Groups) {
+                std::printf ("    group %-4s", pG->Name.c_str ());
+                for (Upcl::RegDecl *pR : pG->Regs) {
+                    std::printf (" %s%s", pR->VType ? pR->VType->Spelling.c_str () : "?", pR->VType ? "" : "");
+                    if (pR->RepeatCount != nullptr) { std::printf ("[x]"); }
+                    std::printf (":%s", pR->Name.c_str ());
+                    if (pR->Binding != nullptr) {
+                        Upcl::RegBinding *pB = pR->Binding;
+                        if (!pB->Meta.empty ()) { std::printf ("->%%%s", pB->Meta.c_str ()); }
+                        if (pB->Split != nullptr) {
+                            std::printf ("{");
+                            for (size_t i = 0; i < pB->Split->Binds.size (); i++) {
+                                Upcl::BitBind *pBb = pB->Split->Binds[i];
+                                if (i) { std::printf (pB->Split->Union ? "," : ":"); }
+                                std::printf ("%s", pBb->IsConst ? "0" : pBb->Name.c_str ());
+                                if (!pBb->MetaMap.empty ()) { std::printf ("->%%%s", pBb->MetaMap.c_str ()); }
+                                if (!pBb->SrcBind.empty ()) { std::printf ("%s%s", pBb->Bidi ? "<->" : "<-", pBb->SrcBind.c_str ()); }
+                            }
+                            std::printf ("}");
+                        }
+                    }
+                }
+                std::printf ("\n");
+            }
+        }
         for (Upcl::Feature CONST &Ft : pArch->Features) {
             std::printf ("    feature %-10s %s\n", Ft.Name.c_str (), Ft.Doc.c_str ());
         }

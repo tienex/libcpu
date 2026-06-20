@@ -49,14 +49,33 @@ private:
     void       ParseRegisters (Arch *pArch);
     void       ParseFeatures (Arch *pArch);      // the `features { ... }` block
     void       ParseCpu (Arch *pArch);           // a `cpu "..." { ... }` model
+
+    // old .def register_file: register_file { group <id> { [ <reg_decl> ], ... } ... }
+    void        ParseRegisterFile (Arch *pArch);
+    Group      *ParseGroup ();
+    RegDecl    *ParseRegDecl ();                  // `[ (e **)? <type> <name> ( -> bind | <- alias )? ]`
+    RegBinding *ParseRegBinding ();               // after `->` / `<-`
+    Splitter   *ParseSplitter ();                 // `[type]? [explicit]? [evaluate(e)]? ( [..] | (..) )`
+    BitBind    *ParseTypedValueBind ();           // a union entry: `<type> ( vb | [ vb, ... ] )`
+    BitBind    *ParseValueBind ();                // `id ( -> %m | <- src | <-> src | <- (e) )?` | <expr>
+    std::string ParseQualifiedName ();            // `id` or `id.field`
+    void        ConsumeRepeatTail ();             // a repeatable-id tail: `? ( : <count> )?`
+    bool        StartsSplitter () CONST;
     void       ParseFormats (Arch *pArch);      // the `formats { ... }` block
-    Insn      *ParseInsnDecl ();                 // optional [attrs] then `insn ...`
+    Insn      *ParseInsnDecl ();                 // optional [attrs] then `insn ...` (new syntax)
     void       ParseAttributes (Insn *pInsn);    // `[ format(..), disasm(..), .. ]`
+
+    // old .def top-level declarations (after the arch block)
+    Insn      *ParseOldInsn ();                   // `insn <id> : <stmt> ;` | `insn <id> { body }`
+    Macro     *ParseMacro ();                     // `macro <id> ( params ) ...`
+    JumpInsn  *ParseJumpInsn ();                  // `jump insn <id> : type <t> ... { action }`
+    void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
     Directive *ParseGenericDirective ();         // the escape hatch
-    Stmt      *ParseStmt ();
+    Stmt      *ParseStmt ();          // insn_stmts:  { } | flow | <basic> ';'
+    Stmt      *ParseInlineStmt ();     // inline_insn_stmts:  flow | <basic>   (no trailing ';')
+    Stmt      *ParseBasicStmt ();      // an assignment or bare-expression statement (no ';')
+    Stmt      *ParseFlow ();           // if / for / while (their bodies are insn_stmts)
     void       ParseBlock (std::vector<Stmt *> *pOut);   // `{ <stmt>* }`
-    Stmt      *FinishAssignOrExpr (SRC_LOC Loc, Expr *pLhs, Type *pLhsType);
-    Stmt      *ParseSimpleAssign ();                      // a for-loop init/step assignment (no ';')
 
     // expressions (Pratt)
     Expr *ParseExpr (UINT32 MinBp = 0);

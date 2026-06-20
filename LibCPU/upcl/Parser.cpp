@@ -393,57 +393,41 @@ Parser::ParseExpr (UINT32 MinBp)
 
 // ---- statements -----------------------------------------------------------
 
-// An assignment / bare-expression statement: `=`, `+=`, `<<=`, ... make it an assignment;
-// otherwise the parsed expression is a statement on its own (e.g. %CC(..) / @macro(..)).
+// A basic statement WITHOUT its trailing ';': an assignment (`=`, `+=`, `<<=`, ... with an
+// optional lhs type) or a bare expression (e.g. %CC(..) / @macro(..)). The caller decides
+// whether a ';' follows (statement context) or not (inline context).
 Stmt *
-Parser::FinishAssignOrExpr (SRC_LOC Loc, Expr *pLhs, Type *pLhsType)
+Parser::ParseBasicStmt ()
 {
+    SRC_LOC Loc = m_Cur.Loc;
+    Type   *Lt  = nullptr;
+    Expr   *Lhs = nullptr;
+    if (m_Cur.Kind == TokType) {
+        Lt = ParseType ();
+        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM")) {
+            Advance ();                              // typed memory lhs: #t %M[expr]
+            Lhs = ParsePostfix (ParseMemRef (Loc, Lt));
+            Lt = nullptr;
+        }
+    }
+    if (Lhs == nullptr) { Lhs = ParseExpr (0); }    // a typed (Lt set) or plain lhs / expression
     TOKEN_KIND Aop = AssignOpOf (m_Cur.Kind);
     if (Aop != TokUnknown) {
         Advance ();
-        Stmt *S = MakeAssign (Loc, pLhs, Aop, ParseExpr (0), pLhsType);
-        Expect (TokSemi, "after the assignment");
-        return S;
+        return MakeAssign (Loc, Lhs, Aop, ParseExpr (0), Lt);
     }
-    delete pLhsType;
+    delete Lt;
     Stmt *S = new Stmt (StmtExpr);
-    S->Loc = Loc; S->Rhs = pLhs;
-    Expect (TokSemi, "after the statement");
+    S->Loc = Loc; S->Rhs = Lhs;
     return S;
 }
 
-// A for-loop init / step entry: `lhs <op>= rhs` with no trailing ';'.
+// if / for / while. Their bodies are insn_stmts (ParseStmt), so a basic body statement keeps
+// its ';'.
 Stmt *
-Parser::ParseSimpleAssign ()
+Parser::ParseFlow ()
 {
     SRC_LOC Loc = m_Cur.Loc;
-    Expr *Lhs = ParseExpr (0);
-    TOKEN_KIND Aop = AssignOpOf (m_Cur.Kind);
-    if (Aop != TokUnknown) { Advance (); }
-    else { Expect (TokAssign, "in the for-loop assignment"); Aop = TokAssign; }
-    return MakeAssign (Loc, Lhs, Aop, ParseExpr (0), nullptr);
-}
-
-void
-Parser::ParseBlock (std::vector<Stmt *> *pOut)
-{
-    if (!Expect (TokLBrace, "to open the block")) { return; }
-    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
-        pOut->push_back (ParseStmt ());
-    }
-    Expect (TokRBrace, "to close the block");
-}
-
-Stmt *
-Parser::ParseStmt ()
-{
-    SRC_LOC Loc = m_Cur.Loc;
-
-    if (m_Cur.Kind == TokLBrace) {                  // { block }
-        Stmt *S = new Stmt (StmtBlock); S->Loc = Loc;
-        ParseBlock (&S->Body);
-        return S;
-    }
     if (AtKeyword ("if")) {
         Advance ();
         Stmt *S = new Stmt (StmtIf); S->Loc = Loc;
@@ -463,32 +447,52 @@ Parser::ParseStmt ()
         S->Body.push_back (ParseStmt ());
         return S;
     }
-    if (AtKeyword ("for")) {
-        Advance ();
-        Stmt *S = new Stmt (StmtFor); S->Loc = Loc;
-        Expect (TokLParen, "after 'for'");
-        if (m_Cur.Kind != TokSemi) { do { S->Init.push_back (ParseSimpleAssign ()); } while (Accept (TokComma)); }
-        Expect (TokSemi, "after the for-loop init");
-        if (m_Cur.Kind != TokSemi) { S->Cond = ParseExpr (0); }
-        Expect (TokSemi, "after the for-loop condition");
-        if (m_Cur.Kind != TokRParen) { do { S->Step.push_back (ParseSimpleAssign ()); } while (Accept (TokComma)); }
-        Expect (TokRParen, "after the for-loop step");
-        S->Body.push_back (ParseStmt ());
+    // for
+    Advance ();
+    Stmt *S = new Stmt (StmtFor); S->Loc = Loc;
+    Expect (TokLParen, "after 'for'");
+    if (m_Cur.Kind != TokSemi) { do { S->Init.push_back (ParseBasicStmt ()); } while (Accept (TokComma)); }
+    Expect (TokSemi, "after the for-loop init");
+    if (m_Cur.Kind != TokSemi) { S->Cond = ParseExpr (0); }
+    Expect (TokSemi, "after the for-loop condition");
+    if (m_Cur.Kind != TokRParen) { do { S->Step.push_back (ParseBasicStmt ()); } while (Accept (TokComma)); }
+    Expect (TokRParen, "after the for-loop step");
+    S->Body.push_back (ParseStmt ());
+    return S;
+}
+
+void
+Parser::ParseBlock (std::vector<Stmt *> *pOut)
+{
+    if (!Expect (TokLBrace, "to open the block")) { return; }
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        pOut->push_back (ParseStmt ());
+    }
+    Expect (TokRBrace, "to close the block");
+}
+
+// insn_stmts: a block, a flow statement, or a basic statement terminated by ';'.
+Stmt *
+Parser::ParseStmt ()
+{
+    if (m_Cur.Kind == TokLBrace) {
+        Stmt *S = new Stmt (StmtBlock); S->Loc = m_Cur.Loc;
+        ParseBlock (&S->Body);
         return S;
     }
+    if (AtKeyword ("if") || AtKeyword ("while") || AtKeyword ("for")) { return ParseFlow (); }
+    Stmt *S = ParseBasicStmt ();
+    Expect (TokSemi, "after the statement");
+    return S;
+}
 
-    // basic statement: an optional lhs type, then an assignment or a bare expression.
-    if (m_Cur.Kind == TokType) {
-        Type *Lt = ParseType ();
-        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM")) {
-            Advance ();                              // typed memory lhs: #t %M[expr] = ...
-            return FinishAssignOrExpr (Loc, ParsePostfix (ParseMemRef (Loc, Lt)), nullptr);
-        }
-        Expr *Lhs = ParseExpr (0);                  // typed assignment: #t <lhs> = ...
-        return FinishAssignOrExpr (Loc, Lhs, Lt);
-    }
-    Expr *Lhs = ParseExpr (0);
-    return FinishAssignOrExpr (Loc, Lhs, nullptr);
+// inline_insn_stmts: a flow statement, or a basic statement with NO trailing ';' (the inline
+// `insn id : <stmt>`, `macro id() : <stmt>`, and `pre <stmt>` contexts).
+Stmt *
+Parser::ParseInlineStmt ()
+{
+    if (AtKeyword ("if") || AtKeyword ("while") || AtKeyword ("for")) { return ParseFlow (); }
+    return ParseBasicStmt ();
 }
 
 // ---- declarations ---------------------------------------------------------
@@ -584,6 +588,205 @@ Parser::ParseCpu (Arch *pArch)
         Expect (TokRBrace, "to close the CPU feature list");
     }
     pArch->Cpus.push_back (C);
+}
+
+// ---- old .def register_file -----------------------------------------------
+
+// `id` or `id.field` -- the source name of a `<-` / `<->` register-field binding.
+std::string
+Parser::ParseQualifiedName ()
+{
+    std::string Name;
+    if (m_Cur.Kind == TokIdent) { Name = m_Cur.Text; Advance (); }
+    else { std::string M = std::string ("expected a name, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); return Name; }
+    if (Accept (TokDot) && m_Cur.Kind == TokIdent) { Name += "."; Name += m_Cur.Text; Advance (); }
+    return Name;
+}
+
+// A repeatable identifier's tail: an optional `?`, then an optional `: <number>` or
+// `: ( <expr> )` repeat count (e.g. `st?`, `sp?:( sr.state )`). The count is consumed but
+// not yet retained (register repetition is handled at register-file build time).
+void
+Parser::ConsumeRepeatTail ()
+{
+    if (!Accept (TokQuestion)) { return; }
+    if (Accept (TokColon)) {
+        if (Accept (TokLParen)) { delete ParseExpr (0); Expect (TokRParen, "to close the repeat count"); }
+        else { UINT64 V = 0; ExpectInt (&V, "as the repeat count"); }
+    }
+}
+
+// Would the current token begin a register splitter (vs an alias)?  A splitter starts with
+// a type, `explicit`, `evaluate`, or a union `[`; a plain identifier after `->` is an alias.
+bool
+Parser::StartsSplitter () CONST
+{
+    return m_Cur.Kind == TokType || m_Cur.Kind == TokLBracket
+           || AtKeyword ("explicit") || AtKeyword ("evaluate");
+}
+
+// One field of a splitter: `id` optionally bound (`-> %meta`, `<- src`, `<-> src`, `<- (e)`),
+// or a bare expression (a hardwired constant such as the 0s in the flags layout).
+BitBind *
+Parser::ParseValueBind ()
+{
+    BitBind *B = new BitBind ();
+    B->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) {
+        B->Name = m_Cur.Text;
+        Advance ();
+        if (Accept (TokArrow)) {                            // id -> %meta
+            if (m_Cur.Kind == TokMeta) { B->MetaMap = m_Cur.Text; Advance (); }
+            else { std::string M = "expected a %meta target after '->'"; m_pDiag->Report (SevError, B->Loc, M); }
+        } else if (Accept (TokBindLeft)) {                  // id <- src   |   id <- ( expr )
+            if (Accept (TokLParen)) { B->HardExpr = ParseExpr (0); Expect (TokRParen, "to close the hardwired value"); }
+            else { B->SrcBind = ParseQualifiedName (); ConsumeRepeatTail (); }
+        } else if (Accept (TokBindBidi)) {                  // id <-> src   (src may be repeatable)
+            B->Bidi = true; B->SrcBind = ParseQualifiedName (); ConsumeRepeatTail ();
+        }
+        return B;
+    }
+    Expr *E = ParseExpr (0);                                 // a bare constant / expression
+    if (E->Kind == ExprInt) { B->IsConst = true; B->Const = E->Int; delete E; }
+    else { B->HardExpr = E; }
+    return B;
+}
+
+// A union entry: `<type> ( <value-bind> | [ <value-bind>, ... ] )`.
+BitBind *
+Parser::ParseTypedValueBind ()
+{
+    BitBind *B = new BitBind ();
+    B->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokType) { B->SubType = ParseType (); }
+    if (Accept (TokLBracket)) {                              // type [ vb, vb, ... ]
+        if (m_Cur.Kind != TokRBracket) { do { B->Sub.push_back (ParseValueBind ()); } while (Accept (TokComma)); }
+        Expect (TokRBracket, "to close the typed value-bind list");
+    } else {
+        B->Sub.push_back (ParseValueBind ());               // type <single value-bind>
+    }
+    return B;
+}
+
+// [type]? [explicit]? [evaluate(e)]? ( '[' union ']' | '(' field-bind ')' )?
+Splitter *
+Parser::ParseSplitter ()
+{
+    Splitter *S = new Splitter ();
+    S->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokType) { S->FieldType = ParseType (); }
+    if (AtKeyword ("explicit")) { S->Explicit = true; Advance (); }
+    if (AtKeyword ("evaluate")) {
+        Advance ();
+        Expect (TokLParen, "after 'evaluate'");
+        S->Evaluate = ParseExpr (0);
+        Expect (TokRParen, "to close 'evaluate(...)'");
+    }
+    if (Accept (TokLBracket)) {                              // union [ typed-bind, ... ]
+        S->Union = true;
+        if (m_Cur.Kind != TokRBracket) { do { S->Binds.push_back (ParseTypedValueBind ()); } while (Accept (TokComma)); }
+        Expect (TokRBracket, "to close the union");
+    } else if (Accept (TokLParen)) {                        // field-bind ( a : b : c )
+        if (m_Cur.Kind != TokRParen) { do { S->Binds.push_back (ParseValueBind ()); } while (Accept (TokColon)); }
+        Expect (TokRParen, "to close the field bind");
+    }
+    return S;
+}
+
+// The binding after `->` (a meta-register and/or splitter, or a simple `-> id` alias) or
+// the `<- expr` alias.
+RegBinding *
+Parser::ParseRegBinding ()
+{
+    RegBinding *B = new RegBinding ();
+    B->Loc = m_Cur.Loc;
+    if (Accept (TokArrow)) {                                 // ->
+        if (m_Cur.Kind == TokMeta) {
+            B->Meta = m_Cur.Text; Advance ();
+            if (StartsSplitter ()) { B->Split = ParseSplitter (); }
+        } else if (StartsSplitter ()) {
+            B->Split = ParseSplitter ();
+        } else if (m_Cur.Kind == TokIdent) {
+            B->AliasId = m_Cur.Text; Advance ();
+            ConsumeRepeatTail ();                            // a repeatable alias id (sp?:( count ))
+        }
+    } else if (Accept (TokBindLeft)) {                       // <- expr   (e.g. `zero <- 0`)
+        B->AliasExpr = ParseExpr (0);
+    }
+    return B;
+}
+
+// `[ (<expr> **)? <type> <name>(?)? ( -> <binding> | <- <alias> )? ]`
+RegDecl *
+Parser::ParseRegDecl ()
+{
+    Expect (TokLBracket, "to open a register declaration");
+    RegDecl *R = new RegDecl ();
+    R->Loc = m_Cur.Loc;
+    if (m_Cur.Kind != TokType) {                            // `<count> ** <type> ...` repetition
+        R->RepeatCount = ParseExpr (0);
+        Expect (TokStarStar, "after the repetition count");
+    }
+    if (m_Cur.Kind == TokType) { R->VType = ParseType (); }
+    else { std::string M = std::string ("expected a register type, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    if (m_Cur.Kind == TokIdent) {
+        R->Name = m_Cur.Text; Advance ();
+        if (m_Cur.Kind == TokQuestion) { R->Repeatable = true; ConsumeRepeatTail (); }
+    } else { std::string M = std::string ("expected a register name, found ") + TokenName (m_Cur.Kind);
+             m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    if (m_Cur.Kind == TokArrow || m_Cur.Kind == TokBindLeft) { R->Binding = ParseRegBinding (); }
+    Expect (TokRBracket, "to close the register declaration");
+    return R;
+}
+
+// `group <id> : <reg_decl> ;`  |  `group <id> { <reg_decl> , ... }`
+Group *
+Parser::ParseGroup ()
+{
+    Advance ();                                             // 'group'
+    Group *G = new Group ();
+    if (m_Cur.Kind == TokIdent) { G->Name = m_Cur.Text; G->Name_Loc = m_Cur.Loc; Advance (); }
+    else { std::string M = std::string ("expected a group name, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    if (Accept (TokColon)) {                                // simple single-register group
+        G->Regs.push_back (ParseRegDecl ());
+        Expect (TokSemi, "after a simple group");
+    } else if (Accept (TokLBrace)) {                        // brace-delimited register list
+        while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+            G->Regs.push_back (ParseRegDecl ());
+            if (!Accept (TokComma)) { break; }
+        }
+        Expect (TokRBrace, "to close the group");
+        Accept (TokSemi);                                  // optional trailing ';'
+    } else {
+        std::string M = std::string ("expected ':' or '{' after the group name, found ") + TokenName (m_Cur.Kind);
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M);
+        SyncTo (TokSemi);
+    }
+    return G;
+}
+
+void
+Parser::ParseRegisterFile (Arch *pArch)
+{
+    Advance ();                                             // 'register_file'
+    if (!Expect (TokLBrace, "to open register_file")) { return; }
+    RegisterFile *RF = new RegisterFile ();
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        if (AtKeyword ("group")) {
+            RF->Groups.push_back (ParseGroup ());
+            Accept (TokSemi);
+        } else {
+            std::string M = std::string ("expected 'group' in register_file, found ") + TokenName (m_Cur.Kind);
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M);
+            SyncTo (TokSemi);
+        }
+    }
+    Expect (TokRBrace, "to close register_file");
+    delete pArch->RegFile;
+    pArch->RegFile = RF;
 }
 
 // formats { <name> [ <field>:<width> (, ...) ] ; ... }   -- bit layouts, declared once
@@ -720,16 +923,18 @@ Parser::ParseInsnDecl ()
 void
 Parser::ParseArchItem (Arch *pArch)
 {
-    if (AtKeyword ("name")) {
+    if (m_Cur.Kind == TokSemi) {                    // a stray separator (e.g. `register_file { } ;`)
+        Advance ();
+    } else if (AtKeyword ("name")) {
         Advance ();
         if (m_Cur.Kind == TokString) { pArch->FullName = m_Cur.Text; Advance (); }
         else { std::string M = "expected a string after 'name'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
         Expect (TokSemi, "after name");
-    } else if (AtKeyword ("endian")) {
+    } else if (AtKeyword ("endian") || AtKeyword ("default_endian")) {
         Advance ();
-        if (AtKeyword ("little")) { pArch->Little = true; Advance (); }
+        if (AtKeyword ("little") || AtKeyword ("both")) { pArch->Little = true; Advance (); }
         else if (AtKeyword ("big")) { pArch->Little = false; Advance (); }
-        else { std::string M = "expected 'little' or 'big'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
+        else { std::string M = "expected 'little', 'big' or 'both'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
         Expect (TokSemi, "after endian");
     } else if (AtKeyword ("word_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the word size"); pArch->WordSize = (UINT32) V;
@@ -737,6 +942,17 @@ Parser::ParseArchItem (Arch *pArch)
     } else if (AtKeyword ("address_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the address size"); pArch->AddressSize = (UINT32) V;
         Expect (TokSemi, "after address_size");
+    } else if (AtKeyword ("byte_size")) {
+        Advance (); UINT64 V = 0; ExpectInt (&V, "as the byte size"); pArch->ByteSize = (UINT32) V;
+        Expect (TokSemi, "after byte_size");
+    } else if (AtKeyword ("float_size")) {
+        Advance (); UINT64 V = 0; ExpectInt (&V, "as the float size"); pArch->FloatSize = (UINT32) V;
+        Expect (TokSemi, "after float_size");
+    } else if (AtKeyword ("psr_size")) {
+        Advance (); UINT64 V = 0; ExpectInt (&V, "as the psr size"); pArch->PsrSize = (UINT32) V;
+        Expect (TokSemi, "after psr_size");
+    } else if (AtKeyword ("register_file")) {
+        ParseRegisterFile (pArch);
     } else if (AtKeyword ("registers")) {
         ParseRegisters (pArch);
     } else if (AtKeyword ("features")) {
@@ -774,15 +990,132 @@ Parser::ParseArch ()
     return A;
 }
 
+// ---- old .def top-level declarations --------------------------------------
+
+// `insn <id> : ;`  |  `insn <id> : <stmt> ;`  |  `insn <id> { <stmt>* }`. ParseStmt already
+// consumes the trailing ';' of the inline body, so the inline and block forms share it.
+Insn *
+Parser::ParseOldInsn ()
+{
+    Advance ();                                     // 'insn'
+    Insn *I = new Insn ();
+    I->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { I->Name = m_Cur.Text; Advance (); }
+    else { std::string M = std::string ("expected an instruction name, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    if (Accept (TokColon)) {                        // inline body: : <stmt> ;   (or empty `: ;`)
+        if (!Accept (TokSemi)) {
+            I->Semantics.push_back (ParseInlineStmt ());
+            Expect (TokSemi, "after the inline instruction body");
+        }
+    } else if (m_Cur.Kind == TokLBrace) {
+        ParseBlock (&I->Semantics);
+        Accept (TokSemi);
+    }
+    return I;
+}
+
+// `macro <id> ( <params> ) : <stmt> ;`  |  `macro <id> ( <params> ) { body }`.
+Macro *
+Parser::ParseMacro ()
+{
+    Advance ();                                     // 'macro'
+    Macro *M = new Macro ();
+    M->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { M->Name = m_Cur.Text; Advance (); }
+    else { std::string Msg = std::string ("expected a macro name, found ") + TokenName (m_Cur.Kind);
+           m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg); }
+    Expect (TokLParen, "after the macro name");
+    if (m_Cur.Kind != TokRParen) {
+        do { if (m_Cur.Kind == TokIdent) { M->Params.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
+    }
+    Expect (TokRParen, "to close the macro parameters");
+    if (Accept (TokColon)) {                        // inline body: : <stmt> ;
+        if (!Accept (TokSemi)) {
+            M->Body.push_back (ParseInlineStmt ());
+            Expect (TokSemi, "after the inline macro body");
+        }
+    } else if (m_Cur.Kind == TokLBrace) {
+        ParseBlock (&M->Body);
+        Accept (TokSemi);
+    }
+    return M;
+}
+
+// `jump insn <id> : type <t> [delay e] [pre ...] [condition e] { action }`.
+JumpInsn *
+Parser::ParseJumpInsn ()
+{
+    Advance ();                                     // 'jump'
+    if (AtKeyword ("insn")) { Advance (); }
+    else { std::string M = "expected 'insn' after 'jump'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
+    JumpInsn *J = new JumpInsn ();
+    J->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { J->Name = m_Cur.Text; Advance (); }
+    Expect (TokColon, "after the jump-insn name");
+    if (AtKeyword ("type")) { Advance (); }
+    else { std::string M = "expected 'type' in a jump declaration"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
+    if (m_Cur.Kind == TokIdent) { J->JumpType = m_Cur.Text; Advance (); }
+    else if (AtKeyword ("return")) { J->JumpType = "return"; Advance (); }
+    if (AtKeyword ("delay")) { Advance (); J->Delay = ParseExpr (0); }
+    if (AtKeyword ("pre")) {
+        Advance ();
+        if (m_Cur.Kind == TokLBrace) { ParseBlock (&J->Pre); } else { J->Pre.push_back (ParseInlineStmt ()); }
+    }
+    if (AtKeyword ("condition")) { Advance (); J->Condition = ParseExpr (0); }
+    ParseBlock (&J->Action);
+    return J;
+}
+
+// `decoder_operands [ (const|ccflags)? <type> <name>, ... ];`
+void
+Parser::ParseDecoderOperands (Arch *pArch)
+{
+    Advance ();                                     // 'decoder_operands'
+    if (!Expect (TokLBracket, "after decoder_operands")) { return; }
+    while (m_Cur.Kind != TokRBracket && m_Cur.Kind != TokEof) {
+        DecoderOperand *D = new DecoderOperand ();
+        D->Loc = m_Cur.Loc;
+        if (AtKeyword ("const"))        { D->Kind = DecopConst;   Advance (); }
+        else if (AtKeyword ("ccflags")) { D->Kind = DecopCcflags; Advance (); }
+        if (m_Cur.Kind == TokType) { D->VType = ParseType (); }
+        if (m_Cur.Kind == TokIdent) { D->Name = m_Cur.Text; Advance (); }
+        pArch->DecoderOps.push_back (D);
+        if (!Accept (TokComma)) { break; }
+    }
+    Expect (TokRBracket, "to close decoder_operands");
+    Expect (TokSemi, "after decoder_operands");
+}
+
 Module *
 Parser::ParseModule ()
 {
     Module *M = new Module ();
     while (m_Cur.Kind != TokEof) {
-        if (AtKeyword ("arch")) {
+        // The arch block, then the top-level declarations that attach to it (decoder_operands,
+        // macros, instructions, jump instructions, instruction groups -- the old .def order).
+        if (m_Cur.Kind == TokSemi) {                // a stray separator (e.g. `arch { } ;`)
+            Advance ();
+        } else if (AtKeyword ("arch")) {
             M->Archs.push_back (ParseArch ());
-        } else {
+        } else if (M->Archs.empty ()) {
             std::string Msg = std::string ("expected 'arch', found ") + TokenName (m_Cur.Kind);
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
+            Advance ();
+        } else if (AtKeyword ("decoder_operands")) {
+            ParseDecoderOperands (M->Archs.back ());
+        } else if (AtKeyword ("macro")) {
+            M->Archs.back ()->Macros.push_back (ParseMacro ());
+        } else if (AtKeyword ("jump")) {
+            M->Archs.back ()->Jumps.push_back (ParseJumpInsn ());
+        } else if (AtKeyword ("insn")) {
+            M->Archs.back ()->Insns.push_back (ParseOldInsn ());
+        } else if (AtKeyword ("group")) {
+            // `group insn <id> [ ... ] condition <expr> ;` -- an instruction group; the old
+            // compiler discards it, so skip to the terminator.
+            SyncTo (TokSemi);
+        } else {
+            std::string Msg = std::string ("expected a top-level declaration, found ") + TokenName (m_Cur.Kind);
             m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
             Advance ();
         }
