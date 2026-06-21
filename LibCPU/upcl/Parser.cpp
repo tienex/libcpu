@@ -1130,8 +1130,79 @@ Parser::ParseEncField (EncField *pField)
         }
         // -> op rel : the field is a PC-relative displacement (a branch target).
         if (AtKeyword ("rel")) { pField->Relative = true; Advance (); }
+        // -> op @<addrmode> : the field selects through an addressing mode.
+        if (m_Cur.Kind == TokMacroIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
+        else if (Accept (TokAt) && m_Cur.Kind == TokIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
     }
     return true;
+}
+
+// `addrmode <name> ( <params> ) [ disp ( <bits-expr> ) ] { <rule>* }`.
+void
+Parser::ParseAddrMode (Arch *pArch)
+{
+    Advance ();                                     // 'addrmode'
+    AddrMode *A = new AddrMode ();
+    A->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { A->Name = m_Cur.Text; Advance (); }
+    Expect (TokLParen, "after the addrmode name");
+    if (m_Cur.Kind != TokRParen) {
+        do { if (m_Cur.Kind == TokIdent) { A->Params.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
+    }
+    Expect (TokRParen, "to close the addrmode parameters");
+    if (AtKeyword ("disp")) {                        // the default displacement width
+        Advance ();
+        Expect (TokLParen, "after 'disp'");
+        A->DispSize = ParseExpr (0);
+        Expect (TokRParen, "to close disp(...)");
+    }
+    Expect (TokLBrace, "to open the addrmode body");
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        AddrRule *R = ParseAddrRule ();
+        if (R != nullptr) { A->Rules.push_back (R); }
+    }
+    Expect (TokRBrace, "to close the addrmode body");
+    pArch->AddrModes.push_back (A);
+}
+
+// `<cond> => reg [ <regs> ] ;`  or  `<cond> => mem [ <term> (+ <term>)* ] ;`  (`default` = always).
+AddrRule *
+Parser::ParseAddrRule ()
+{
+    AddrRule *R = new AddrRule ();
+    R->Loc = m_Cur.Loc;
+    if (AtKeyword ("default")) { Advance (); }
+    else { R->Cond = ParseExpr (0); }
+    if (Accept (TokAssign)) { Accept (TokGt); }     // the '=>' arrow
+    if (AtKeyword ("reg")) {
+        Advance ();
+        R->IsReg = true;
+        Expect (TokLBracket, "to open the register list");
+        if (m_Cur.Kind != TokRBracket) {
+            do { if (m_Cur.Kind == TokIdent) { R->RegMap.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
+        }
+        Expect (TokRBracket, "to close the register list");
+    } else if (AtKeyword ("mem")) {
+        Advance ();
+        Expect (TokLBracket, "to open the address");
+        do {
+            AddrTerm T;
+            if (m_Cur.Kind == TokIdent) {
+                std::string Id = m_Cur.Text;
+                Advance ();
+                if (Id == "disp")        { T.Disp = true; T.DispBits = 0; }
+                else if (Id == "disp8")  { T.Disp = true; T.DispBits = 8; }
+                else if (Id == "disp16") { T.Disp = true; T.DispBits = 16; }
+                else                     { T.Reg = Id; }
+                R->Mem.push_back (T);
+            }
+        } while (Accept (TokPlus));
+        Expect (TokRBracket, "to close the address");
+    } else {
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected 'reg' or 'mem' in an addrmode rule");
+    }
+    Expect (TokSemi, "after an addrmode rule");
+    return R;
 }
 
 // `macro <id> ( <params> ) : <stmt> ;`  |  `macro <id> ( <params> ) { body }`.
@@ -1375,6 +1446,10 @@ ApplyDisasmProp (DisasmStyle *pSt, std::string CONST &Cat, std::string CONST &Ke
         if (Key == "prefix") { pSt->IntPrefix = Val; }
         else if (Key == "suffix") { pSt->IntSuffix = Val; }
         else if (Key == "call") { pSt->IntMacro = Val; }
+    } else if (Cat == "displacement") {
+        if (Key == "prefix") { pSt->DispPrefix = Val; }
+        else if (Key == "suffix") { pSt->DispSuffix = Val; }
+        else if (Key == "call") { pSt->DispMacro = Val; }
     } else if (Cat == "ordering") {
         if (Key == "reverse") { pSt->ReverseOperands = true; }
     }
@@ -1459,6 +1534,7 @@ Parser::ParseDisasmFeatures (Arch *pArch)
             while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
                 if (AtKeyword ("register")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("register")); }
                 else if (AtKeyword ("integer")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("integer")); }
+                else if (AtKeyword ("displacement")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("displacement")); }
                 else { Advance (); }
             }
             Expect (TokRBrace, "to close operands");
@@ -1618,6 +1694,8 @@ Parser::ParseToplevel (Module *M)
             ParseDisasmFeatures (M->Archs.back ());      // `disasm features { ... }`
         } else if (AtKeyword ("regset")) {
             ParseRegSet (M->Archs.back ());
+        } else if (AtKeyword ("addrmode")) {
+            ParseAddrMode (M->Archs.back ());
         } else if (AtKeyword ("macro")) {
             ParseMacro (M->Archs.back ());
         } else if (AtKeyword ("jump")) {

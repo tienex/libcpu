@@ -21,54 +21,56 @@ macro eval_cc ( cc ) : #i1 %result =
 // ---- data movement -------------------------------------------------------
 
 insn mov : encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src )		// 0xB8+r iw
-	     |  #i16 ( op:8 = 0x89, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x89 /r
+	     |  #i16 ( op:8 = 0x89, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 )	// 0x89 /r  MOV r/m16, r16
+	     |  #i16 ( op:8 = 0x8B, mod:2, reg:3 -> dst[ gpr16 ], rm:3 -> src @modrm16 ),	// 0x8B /r  MOV r16, r/m16
 	disasm ( mnemonic : "mov", size : word, operands : dst, src )
 	=> dst = src;
 
 insn movb : encode #i16 ( op:5 = 0x16, reg:3 -> dst[ gpr8 ], imm:8 -> src )		// 0xB0+r ib
-	     |  #i16 ( op:8 = 0x88, mod:2 = 3, reg:3 -> src[ gpr8 ], rm:3 -> dst[ gpr8 ] ),	// 0x88 /r
+	     |  #i16 ( op:8 = 0x88, mod:2, reg:3 -> src[ gpr8 ], rm:3 -> dst @modrm8 )	// 0x88 /r  MOV r/m8, r8
+	     |  #i16 ( op:8 = 0x8A, mod:2, reg:3 -> dst[ gpr8 ], rm:3 -> src @modrm8 ),	// 0x8A /r  MOV r8, r/m8
 	disasm ( mnemonic : "mov", size : byte, operands : dst, src )
 	=> dst = src;
 
-insn xchg : encode #i16 ( op:8 = 0x87, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x87 /r
+insn xchg : encode #i16 ( op:8 = 0x87, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x87 /r
 	disasm ( mnemonic : "xchg", size : word, operands : dst, src )
 	{ #i16 tmp = dst ; dst = src ; src = tmp ; }
 
 // ---- ALU (register/register, mod = 11) -----------------------------------
 
-insn add : encode #i16 ( op:8 = 0x01, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x01 /r
+insn add : encode #i16 ( op:8 = 0x01, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x01 /r
 	disasm ( mnemonic : "add", size : word, operands : dst, src )
 	=> dst = %CC ( dst + src );
 
-insn adc : encode #i16 ( op:8 = 0x11, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x11 /r
+insn adc : encode #i16 ( op:8 = 0x11, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x11 /r
 	disasm ( mnemonic : "adc", size : word, operands : dst, src )
 	=> dst = %CC ( dst + src + flags.C );
 
-insn sub : encode #i16 ( op:8 = 0x29, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x29 /r
+insn sub : encode #i16 ( op:8 = 0x29, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x29 /r
 	disasm ( mnemonic : "sub", size : word, operands : dst, src )
 	=> dst = %CC ( dst - src );
 
-insn sbb : encode #i16 ( op:8 = 0x19, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x19 /r
+insn sbb : encode #i16 ( op:8 = 0x19, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x19 /r
 	disasm ( mnemonic : "sbb", size : word, operands : dst, src )
 	=> dst = %CC ( dst - src - flags.C );
 
-insn and : encode #i16 ( op:8 = 0x21, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x21 /r
+insn and : encode #i16 ( op:8 = 0x21, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x21 /r
 	disasm ( mnemonic : "and", size : word, operands : dst, src )
 	=> dst = %CC ( dst & src );
 
-insn or : encode #i16 ( op:8 = 0x09, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x09 /r
+insn or : encode #i16 ( op:8 = 0x09, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x09 /r
 	disasm ( mnemonic : "or", size : word, operands : dst, src )
 	=> dst = %CC ( dst | src );
 
-insn xor : encode #i16 ( op:8 = 0x31, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x31 /r
+insn xor : encode #i16 ( op:8 = 0x31, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x31 /r
 	disasm ( mnemonic : "xor", size : word, operands : dst, src )
 	=> dst = %CC ( dst ^ src );
 
-insn cmp : encode #i16 ( op:8 = 0x39, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x39 /r
+insn cmp : encode #i16 ( op:8 = 0x39, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x39 /r
 	disasm ( mnemonic : "cmp", size : word, operands : dst, src )
 	=> %CC ( dst - src );							// sets flags, no write-back
 
-insn test : encode #i16 ( op:8 = 0x85, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x85 /r
+insn test : encode #i16 ( op:8 = 0x85, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x85 /r
 	disasm ( mnemonic : "test", size : word, operands : dst, src )
 	=> %CC ( dst & src );							// sets flags, no write-back
 

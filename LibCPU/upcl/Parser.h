@@ -87,6 +87,8 @@ private:
     JumpInsn  *ParseJumpInsn ();                  // `jump insn <id> : type <t> ... { action }`
     void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
     void       ParseRegSet (Arch *pArch);         // `regset <name> [ <reg>, ... ];`
+    void       ParseAddrMode (Arch *pArch);       // `addrmode <name> ( p ) disp(e) { rules }`
+    AddrRule  *ParseAddrRule ();                   // `<cond> => reg [ .. ] | mem [ .. ] ;`
     Directive *ParseGenericDirective ();         // the escape hatch
     Stmt      *ParseStmt ();          // insn_stmts:  { } | flow | <basic> ';'
     Stmt      *ParseInlineStmt ();     // inline_insn_stmts:  flow | <basic>   (no trailing ';')

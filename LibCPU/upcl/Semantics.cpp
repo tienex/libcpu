@@ -203,7 +203,7 @@ Translator::WidthOf (Expr *pExpr) CONST
         if (O != m_Operands.end ()) {
             Operand CONST &Op = O->second;
             if (Op.Kind == Operand::Reg && Op.SubWidth == 0) { return m_Layout.Phys[Op.RegIndex].Width; }
-            return Op.Bits;
+            return Op.Bits ? Op.Bits : m_WordBits;
         }
         auto E = m_Env.find (Name);
         if (E != m_Env.end ()) { return E->second.Bits; }
@@ -225,10 +225,34 @@ Translator::WidthOf (Expr *pExpr) CONST
 
 // Read a decoded operand: an immediate is a constant; a register operand loads from its
 // physical register (extracting the sub-window for a sub-register operand).
+// The effective address of a memory operand: its displacement plus its base register(s).
+Value
+Translator::MemAddress (Operand CONST &Op)
+{
+    Value Addr = Const (m_WordBits, (UINT64) Op.Disp);
+    if (Op.Base1 != ~(UINT32) 0) {
+        RegPhys CONST &B = m_Layout.Phys[Op.Base1];
+        ComPtr<ICpuValue> V; m_pE->GetRegister (B.Index, B.Width, &V);
+        Addr = Bin (BinAdd, Addr, Coerce (Pool (std::move (V), B.Width), m_WordBits, false));
+    }
+    if (Op.Base2 != ~(UINT32) 0) {
+        RegPhys CONST &B = m_Layout.Phys[Op.Base2];
+        ComPtr<ICpuValue> V; m_pE->GetRegister (B.Index, B.Width, &V);
+        Addr = Bin (BinAdd, Addr, Coerce (Pool (std::move (V), B.Width), m_WordBits, false));
+    }
+    return Addr;
+}
+
 Value
 Translator::ReadOperand (Operand CONST &Op)
 {
     if (Op.Kind == Operand::Imm) { return Const (Op.Bits ? Op.Bits : m_WordBits, Op.ImmValue); }
+    if (Op.Kind == Operand::Mem) {
+        UINT32 Bits = Op.Bits ? Op.Bits : m_WordBits;
+        Value Addr = MemAddress (Op);
+        ComPtr<ICpuValue> V; m_pE->Load (Addr.V, Bits, &V);
+        return Pool (std::move (V), Bits);
+    }
     RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
     ComPtr<ICpuValue> V;
     m_pE->GetRegister (Phys.Index, Phys.Width, &V);
@@ -852,6 +876,13 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
     if (O != m_Operands.end ()) {
         Operand CONST &Op = O->second;
         if (Op.Kind == Operand::Imm) { return; }     // an immediate has no write-back
+        if (Op.Kind == Operand::Mem) {               // store to the computed address
+            UINT32 Bits = Op.Bits ? Op.Bits : m_WordBits;
+            Value Addr = MemAddress (Op);
+            Value V = Coerce (Rhs, Bits, false);
+            m_pE->Store (V.V, Addr.V, Bits);
+            return;
+        }
         RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
         if (Op.SubWidth != 0 && Op.SubWidth != Phys.Width) {
             ComPtr<ICpuValue> Reg;

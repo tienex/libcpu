@@ -50,7 +50,13 @@ public:
 private:
     bool MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextBase, DecodedInsn *pOut) CONST;
     bool ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, Operand *pOut) CONST;
+    bool ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> CONST &Fields,
+                          UINT8 CONST *pTail, UINT64 TailAvail, UINT32 *pExtraBytes, Operand *pOut) CONST;
+    bool ResolveRegName (std::string CONST &Name, UINT32 Bits, Operand *pOut) CONST;
     void ExpandRegMap (std::vector<std::string> CONST &Map, std::vector<std::string> *pOut) CONST;
+    AddrMode *FindAddrMode (std::string CONST &Name) CONST;
+    UINT32 AddrModeBits (AddrMode CONST *pMode) CONST;   // the operand data width
+    UINT64 EvalFieldExpr (Expr *pExpr, std::map<std::string, UINT64> CONST &Fields) CONST;
 
     bool IsEnabled (std::string CONST &Feature) CONST {
         return Feature.empty () || m_pEnabled == nullptr || m_pEnabled->count (Feature) != 0;

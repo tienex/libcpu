@@ -726,6 +726,70 @@ private:
     std::string                      m_PcName;            // the program-counter register's name
     std::string                      m_DisasmStyle;       // active disassembly syntax style
 
+    // Render one register name for a style (its `register` macro, else prefix + casing).
+    std::string RenderReg (DisasmStyle CONST *pS, std::string CONST &Name) CONST {
+        if (!pS->RegMacro.empty ()) {
+            std::map<std::string, RVal> Env;
+            Env["name"] = RVal::Of (Name);
+            return RenderMacro (pS->RegMacro, Env);
+        }
+        return pS->RegPrefix + Cased (Name, pS->RegCasing);
+    }
+
+    // Render one integer value for a style (its `integer` macro, else prefix + hex + suffix).
+    std::string RenderInt (DisasmStyle CONST *pS, UINT64 Value, UINT32 Bits) CONST {
+        if (!pS->IntMacro.empty ()) {
+            std::map<std::string, RVal> Env;
+            Env["value"] = RVal::Of (Value);
+            Env["bits"]  = RVal::Of ((UINT64) Bits);
+            return RenderMacro (pS->IntMacro, Env);
+        }
+        char B[24];
+        std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Value);
+        return pS->IntPrefix + std::string (B) + pS->IntSuffix;
+    }
+
+    // Render a memory-displacement value: its dedicated `displacement` rule when the style gives
+    // one (AT&T omits the `$` immediate marker here), otherwise the plain integer formatting.
+    std::string RenderDisp (DisasmStyle CONST *pS, UINT64 Value, UINT32 Bits) CONST {
+        if (!pS->DispMacro.empty ()) {
+            std::map<std::string, RVal> Env;
+            Env["value"] = RVal::Of (Value);
+            Env["bits"]  = RVal::Of ((UINT64) Bits);
+            return RenderMacro (pS->DispMacro, Env);
+        }
+        if (!pS->DispPrefix.empty () || !pS->DispSuffix.empty ()) {
+            char B[24];
+            std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Value);
+            return pS->DispPrefix + std::string (B) + pS->DispSuffix;
+        }
+        return RenderInt (pS, Value, Bits);
+    }
+
+    // Render a memory operand for the active style from its structured base/index + displacement.
+    // Intel writes the bracket form [base+index+disp]; AT&T writes disp(base,index).
+    std::string RenderMem (DisasmStyle CONST *pS, Operand CONST &Op) CONST {
+        std::vector<std::string> Bases;
+        if (Op.Base1 != ~(UINT32) 0) { Bases.push_back (RenderReg (pS, m_Layout.Phys[Op.Base1].Name)); }
+        if (Op.Base2 != ~(UINT32) 0) { Bases.push_back (RenderReg (pS, m_Layout.Phys[Op.Base2].Name)); }
+        bool HasDisp = (Op.Disp != 0) || Bases.empty ();   // a bare [disp] keeps the displacement
+        std::string Disp = HasDisp ? RenderDisp (pS, (UINT64) Op.Disp, Op.Bits ? Op.Bits : 16) : std::string ();
+
+        if (pS->Name == "att") {
+            std::string Out = Disp;
+            if (!Bases.empty ()) {
+                Out += "(";
+                for (size_t I = 0; I < Bases.size (); I++) { Out += (I ? "," : "") + Bases[I]; }
+                Out += ")";
+            }
+            return Out;
+        }
+        std::string Out = "[";
+        for (size_t I = 0; I < Bases.size (); I++) { Out += (I ? "+" : "") + Bases[I]; }
+        if (HasDisp) { Out += (Bases.empty () ? "" : "+") + Disp; }
+        return Out + "]";
+    }
+
     // Render a declarative disassembly (mnemonic + operands) for the active style, applying
     // its mnemonic casing/size-suffix, operand ordering, and register/immediate formatting.
     std::string RenderDisasm (DisasmSpec *pDecl, DecodedInsn CONST &D) CONST {
@@ -752,26 +816,12 @@ private:
             auto It = D.Operands.find (Ops[I]);
             if (It == D.Operands.end ()) { continue; }
             Operand CONST &Op = It->second;
-            if (Op.Kind == Operand::Reg) {
-                std::string Name = Op.RegName.empty () ? m_Layout.Phys[Op.RegIndex].Name : Op.RegName;
-                if (!pS->RegMacro.empty ()) {
-                    std::map<std::string, RVal> Env;
-                    Env["name"] = RVal::Of (Name);
-                    Out += RenderMacro (pS->RegMacro, Env);
-                } else {
-                    Out += pS->RegPrefix + Cased (Name, pS->RegCasing);
-                }
+            if (Op.Kind == Operand::Mem) {
+                Out += RenderMem (pS, Op);
+            } else if (Op.Kind == Operand::Reg) {
+                Out += RenderReg (pS, Op.RegName.empty () ? m_Layout.Phys[Op.RegIndex].Name : Op.RegName);
             } else {
-                if (!pS->IntMacro.empty ()) {
-                    std::map<std::string, RVal> Env;
-                    Env["value"] = RVal::Of (Op.ImmValue);
-                    Env["bits"]  = RVal::Of ((UINT64) Op.Bits);
-                    Out += RenderMacro (pS->IntMacro, Env);
-                } else {
-                    char B[24];
-                    std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Op.ImmValue);
-                    Out += pS->IntPrefix + std::string (B) + pS->IntSuffix;
-                }
+                Out += RenderInt (pS, Op.ImmValue, Op.Bits);
             }
         }
         return Out;

@@ -50,6 +50,37 @@ decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
 regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
 regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
 
+// The 16-bit ModR/M addressing modes: a register-direct operand (mod = 3) or a memory
+// operand whose effective address is a base/index sum plus a displacement (8- or 16-bit,
+// per the mod field). This is the variable-length-decode table; an `rm:3 -> op @modrm16`
+// operand binding selects through it.
+addrmode modrm16 ( mod, rm ) disp ( mod == 1 ? 8 : mod == 2 ? 16 : 0 ) {
+	mod == 3            => reg [ ax, cx, dx, bx, sp, bp, si, di ] ;	// register-direct
+	mod == 0 && rm == 6 => mem [ disp16 ] ;				// [disp16]
+	rm == 0             => mem [ bx + si + disp ] ;
+	rm == 1             => mem [ bx + di + disp ] ;
+	rm == 2             => mem [ bp + si + disp ] ;
+	rm == 3             => mem [ bp + di + disp ] ;
+	rm == 4             => mem [ si + disp ] ;
+	rm == 5             => mem [ di + disp ] ;
+	rm == 6             => mem [ bp + disp ] ;
+	rm == 7             => mem [ bx + disp ] ;
+}
+
+// The byte-width ModR/M: identical address computation, but mod = 3 selects an 8-bit register.
+addrmode modrm8 ( mod, rm ) disp ( mod == 1 ? 8 : mod == 2 ? 16 : 0 ) {
+	mod == 3            => reg [ al, cl, dl, bl, ah, ch, dh, bh ] ;	// register-direct (byte)
+	mod == 0 && rm == 6 => mem [ disp16 ] ;				// [disp16]
+	rm == 0             => mem [ bx + si + disp ] ;
+	rm == 1             => mem [ bx + di + disp ] ;
+	rm == 2             => mem [ bp + si + disp ] ;
+	rm == 3             => mem [ bp + di + disp ] ;
+	rm == 4             => mem [ si + disp ] ;
+	rm == 5             => mem [ di + disp ] ;
+	rm == 6             => mem [ bp + disp ] ;
+	rm == 7             => mem [ bx + disp ] ;
+}
+
 // Shared semantics: effective address, near/far jump, push/pop on the stack.
 macro ea ( seg, off ) : #i24 %result = ( [ #i16 seg ] << 4 ) + [ #i16 off ];
 

@@ -166,6 +166,42 @@ public:
     }
 };
 
+// ---- addressing modes (generic ModR/M-style operand resolution) -----------
+//
+// addrmode modrm16 ( mod, rm ) disp ( mod == 1 ? 8 : mod == 2 ? 16 : 0 ) {
+//     mod == 3          => reg [ ax, cx, dx, bx, sp, bp, si, di ] ;   // register-direct
+//     mod == 0 & rm == 6 => mem [ disp16 ] ;                          // [disp16]
+//     rm == 0           => mem [ bx + si + disp ] ;                   // [BX+SI(+disp)]
+//     ...
+//   }
+// A rule's condition (over the selector fields) picks it; the operand is then a register
+// (the bound field indexes the regset) or memory at the sum of the base registers plus a
+// displacement (bare `disp` = the default-size clause, or `disp8` / `disp16` fixed).
+class AddrTerm {
+public:
+    std::string Reg;     // a base register name ("" if a displacement term)
+    bool        Disp = false;   // a displacement term
+    UINT32      DispBits = 0;    // 0 = the addrmode's default disp clause; else fixed (8/16)
+};
+class AddrRule {
+public:
+    SRC_LOC                  Loc = 0;
+    Expr                    *Cond = nullptr;     // the selecting condition (null = always)
+    bool                     IsReg = false;
+    std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
+    std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
+    ~AddrRule () { delete Cond; }
+};
+class AddrMode {
+public:
+    SRC_LOC                  Loc = 0;
+    std::string              Name;
+    std::vector<std::string> Params;             // the selector field names, e.g. ( mod, rm )
+    Expr                    *DispSize = nullptr;  // the default displacement width (bits) expr
+    std::vector<AddrRule *>  Rules;
+    ~AddrMode () { delete DispSize; for (AddrRule *R : Rules) { delete R; } }
+};
+
 // One field of an encoding word: a named slice of `Width` bits, laid out MSB-first. It is
 // either MATCHED to a constant (an opcode bit-pattern), BOUND to a decoder operand (the
 // field's bits become that operand's value), or left free (a reserved / don't-care field).
@@ -186,6 +222,9 @@ public:
                                           //   displacement -- the operand value is the NEXT
                                           //   instruction's address plus the sign-extended
                                           //   field (a branch target). Architecture-neutral.
+    std::string              AddrMode;    // `-> op @ <addrmode>`: the field selects through an
+                                          //   addressing mode (a register or a memory address,
+                                          //   reading a variable-length displacement).
 };
 
 // One encoding alternative: a word of `WordBits` bits split into fields. An instruction may
@@ -222,6 +261,9 @@ public:
     std::string IntSuffix;                // "h" / ""
     std::string IntMacro;                 // `integer { style X { call : <macro> } }`
     std::string RegMacro;                 // `register { style X { call : <macro> } }`
+    std::string DispPrefix;               // memory-displacement prefix ("0x" / "")  -- AT&T: no `$`
+    std::string DispSuffix;               // memory-displacement suffix ("h" / "")
+    std::string DispMacro;                // `displacement { style X { call : <macro> } }`
     bool        ReverseOperands = false;  // AT&T prints operands source-first
 };
 
@@ -490,6 +532,7 @@ public:
     std::vector<JumpInsn *>  Jumps;          // old-syntax jump instructions (owned)
     std::vector<DecoderOperand *> DecoderOps; // old-syntax decoder_operands (owned)
     std::vector<RegSet *>    RegSets;        // named register lists (regset) (owned)
+    std::vector<AddrMode *>  AddrModes;      // addressing-mode tables (addrmode) (owned)
     DisasmFeatures          *Disasm = nullptr;  // `disasm features { ... }` (owned)
     std::vector<DisasmMacro *> DisasmMacros;  // `macro disasm ...` formatters (owned)
     std::vector<Directive *> Directives;
@@ -503,6 +546,7 @@ public:
         for (JumpInsn *J : Jumps) { delete J; }
         for (DecoderOperand *D : DecoderOps) { delete D; }
         for (RegSet *R : RegSets) { delete R; }
+        for (AddrMode *A : AddrModes) { delete A; }
         delete Disasm;
         for (DisasmMacro *D : DisasmMacros) { delete D; }
         for (Directive *D : Directives) { delete D; }

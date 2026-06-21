@@ -601,6 +601,19 @@ if(TARGET interp_backend)
      printf '\\x0F\\xFF\\x07' > '${CMAKE_BINARY_DIR}/brkem.bin' && \
      LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/brkem.bin' --count 1 --arch \"upcl:$X@v30\"  | grep -q 'BRKEM 07h' && \
      \"$E\" disasm '${CMAKE_BINARY_DIR}/brkem.bin' --count 1 --arch \"upcl:$X@8086\" | grep -q 'db 0x0f'")
+
+  # ModR/M variable-length memory addressing via the generic `addrmode modrm16/modrm8` tables.
+  # mov ax,0x1111 ; mov [0x50],ax ; mov bx,[0x50] ; add [0x50],bx ; mov cx,[0x50] ; movb dl,[0x50] ; hlt
+  # The store/load round-trips through memory (cx = 0x2222 proves add [mem],bx wrote back) and the
+  # byte load reads dl = 0x22. Disasm renders the EA per style: Intel [0050h], AT&T 0x0050 (a memory
+  # displacement, so NO `$` -- distinct from an immediate $0x1234).
+  add_test(NAME upcl.x86-modrm COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x11\\x11\\x89\\x06\\x50\\x00\\x8B\\x1E\\x50\\x00\\x01\\x1E\\x50\\x00\\x8B\\x0E\\x50\\x00\\x8A\\x16\\x50\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x86modrm.bin' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86modrm.bin' --count 4 --arch \"upcl:$X@8086\" | grep -q 'MOV \\[0050h\\], AX' && \
+     LCX_SYNTAX=att   \"$E\" disasm '${CMAKE_BINARY_DIR}/x86modrm.bin' --count 3 --arch \"upcl:$X@8086\" | grep -q 'movw %ax, 0x0050' && \
+     OUT=$(\"$E\" run '${CMAKE_BINARY_DIR}/x86modrm.bin' --arch \"upcl:$X@8086\") && \
+     echo \"$OUT\" | grep -q 'cx =2222' && echo \"$OUT\" | grep -q 'dx =0022'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

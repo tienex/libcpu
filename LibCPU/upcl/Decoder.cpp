@@ -111,38 +111,175 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
     return false;                                    // a map naming an unknown register
 }
 
+// Resolve a register name to a register operand (a physical register or a sub-register).
+bool
+Decoder::ResolveRegName (std::string CONST &Name, UINT32 /*Bits*/, Operand *pOut) CONST
+{
+    auto P = m_pLayout->PhysIndex.find (Name);
+    if (P != m_pLayout->PhysIndex.end ()) {
+        pOut->Kind = Operand::Reg; pOut->RegIndex = P->second;
+        pOut->Bits = m_pLayout->Phys[P->second].Width; pOut->SubWidth = 0; pOut->RegName = Name;
+        return true;
+    }
+    for (RegSub CONST &Sub : m_pLayout->Subs) {
+        if (Sub.Name == Name) {
+            pOut->Kind = Operand::Reg; pOut->RegIndex = Sub.Parent;
+            pOut->Bits = Sub.Width; pOut->SubLo = Sub.Lo; pOut->SubWidth = Sub.Width; pOut->RegName = Name;
+            return true;
+        }
+    }
+    return false;
+}
+
+AddrMode *
+Decoder::FindAddrMode (std::string CONST &Name) CONST
+{
+    for (AddrMode *A : m_pArch->AddrModes) { if (A->Name == Name) { return A; } }
+    return nullptr;
+}
+
+// The data width of an addressing mode's operands -- the width of the registers its
+// register-direct rule selects (so modrm16 is 16-bit, modrm8 is 8-bit).
+UINT32
+Decoder::AddrModeBits (AddrMode CONST *pMode) CONST
+{
+    for (AddrRule *R : pMode->Rules) {
+        if (R->IsReg && !R->RegMap.empty ()) {
+            std::vector<std::string> Regs;
+            ExpandRegMap (R->RegMap, &Regs);
+            Operand Tmp;
+            if (!Regs.empty () && ResolveRegName (Regs[0], 0, &Tmp)) { return Tmp.Bits; }
+        }
+    }
+    return m_pArch->WordSize ? m_pArch->WordSize : 16;
+}
+
+// Evaluate an addrmode condition / disp-size expression over the decoded field values.
+UINT64
+Decoder::EvalFieldExpr (Expr *E, std::map<std::string, UINT64> CONST &F) CONST
+{
+    switch (E->Kind) {
+    case ExprInt:  return E->Int;
+    case ExprName: { auto It = F.find (E->Name); return (It != F.end ()) ? It->second : 0; }
+    case ExprUnary: {
+        UINT64 A = EvalFieldExpr (E->Args[0], F);
+        return (E->Op == TokTilde) ? ~A : (E->Op == TokNot) ? (UINT64) (!A)
+             : (E->Op == TokMinus) ? (UINT64) (-(INT64) A) : A;
+    }
+    case ExprSelect:                                  // cond ? a : b
+        return EvalFieldExpr (E->Args[0], F) ? EvalFieldExpr (E->Args[1], F) : EvalFieldExpr (E->Args[2], F);
+    case ExprBinary: {
+        UINT64 A = EvalFieldExpr (E->Args[0], F), B = EvalFieldExpr (E->Args[1], F);
+        switch (E->Op) {
+        case TokPlus:  return A + B;  case TokMinus: return A - B;  case TokStar: return A * B;
+        case TokAmp:   return A & B;  case TokPipe:  return A | B;  case TokCaret: return A ^ B;
+        case TokShl:   return A << B; case TokShr:   return A >> B;
+        case TokEqEq:  return A == B; case TokNotEq: return A != B;
+        case TokLt:    return A < B;  case TokLtEq:  return A <= B;
+        case TokGt:    return A > B;  case TokGtEq:  return A >= B;
+        case TokAndAnd:return A && B; case TokOrOr:  return A || B;
+        default:       return 0;
+        }
+    }
+    default: return 0;
+    }
+}
+
+// Resolve an addressing-mode operand: pick the rule whose condition holds, then produce a
+// register operand or a memory operand (reading a variable-length displacement from the
+// tail and reporting the bytes consumed).
+bool
+Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> CONST &Fields,
+                          UINT8 CONST *pTail, UINT64 TailAvail, UINT32 *pExtraBytes, Operand *pOut) CONST
+{
+    AddrMode *AM = FindAddrMode (Field.AddrMode);
+    if (AM == nullptr) { return false; }
+    UINT64 Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
+    UINT32 DataBits = AddrModeBits (AM);
+
+    for (AddrRule *R : AM->Rules) {
+        if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Fields) == 0) { continue; }
+        if (R->IsReg) {
+            std::vector<std::string> Regs;
+            ExpandRegMap (R->RegMap, &Regs);
+            if (Sel >= Regs.size ()) { return false; }
+            return ResolveRegName (Regs[(size_t) Sel], DataBits, pOut);
+        }
+        // memory: base registers + an optional displacement
+        pOut->Kind = Operand::Mem;
+        pOut->Bits = DataBits;
+        pOut->Base1 = ~(UINT32) 0; pOut->Base2 = ~(UINT32) 0; pOut->Disp = 0;
+        std::string Text;
+        UINT32 NBases = 0;
+        for (AddrTerm CONST &T : R->Mem) {
+            if (T.Disp) {
+                UINT32 DispBits = T.DispBits ? T.DispBits
+                                : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Fields) : 0);
+                if (DispBits > 0) {
+                    UINT32 DispBytes = DispBits / 8;
+                    if (DispBytes > TailAvail) { return false; }
+                    pOut->Disp = SignExtend (ExtractField (pTail, 0, DispBits, m_pArch->Little), DispBits);
+                    *pExtraBytes += DispBytes;
+                    if (!Text.empty ()) { Text += "+"; }
+                    char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) pOut->Disp);
+                    Text += B;
+                }
+            } else {
+                auto P = m_pLayout->PhysIndex.find (T.Reg);
+                if (P != m_pLayout->PhysIndex.end ()) {
+                    if (NBases == 0) { pOut->Base1 = P->second; NBases++; }
+                    else if (NBases == 1) { pOut->Base2 = P->second; NBases++; }
+                    if (!Text.empty ()) { Text += "+"; }
+                    Text += T.Reg;
+                }
+            }
+        }
+        pOut->MemText = Text;
+        return true;
+    }
+    return false;
+}
+
 bool
 Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextBase, DecodedInsn *pOut) CONST
 {
-    UINT32 Bits = pAlt->WordBits;
-    UINT32 Len  = (Bits + 7) / 8;
-    if (Len == 0 || Len > Avail) { return false; }
-    UINT64 NextPc = NextBase + Len;             // the successor address (for PC-relative fields)
+    UINT32 Bits    = pAlt->WordBits;
+    UINT32 WordLen = (Bits + 7) / 8;
+    if (WordLen == 0 || WordLen > Avail) { return false; }
 
-    // First pass: every constant field must match. Second pass: resolve operands.
+    // Extract every field value, checking the constant (opcode) fields.
+    std::map<std::string, UINT64> FV;
     UINT32 BitOff = 0;
     for (EncField CONST &F : pAlt->Fields) {
-        if (F.HasConst) {
-            UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
-            if (V != F.Const) { return false; }
-        }
+        UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
+        if (F.HasConst && V != F.Const) { return false; }
+        FV[F.Name] = V;
         BitOff += F.Width;
     }
 
     pOut->Operands.clear ();
-    BitOff = 0;
+    UINT32 Extra = 0;
+
+    // Addressing-mode operands first: they read the trailing displacement (variable length).
     for (EncField CONST &F : pAlt->Fields) {
-        if (!F.Operand.empty ()) {
-            UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
+        if (!F.Operand.empty () && !F.AddrMode.empty ()) {
             Operand Op;
-            if (!ResolveOperand (F, V, NextPc, &Op)) { return false; }
+            if (!ResolveAddrMode (F, FV, pBytes + WordLen + Extra, Avail - WordLen - Extra, &Extra, &Op)) { return false; }
             pOut->Operands[F.Operand] = Op;
         }
-        BitOff += F.Width;
+    }
+
+    UINT64 NextPc = NextBase + WordLen + Extra;       // the successor address (for PC-relative fields)
+    for (EncField CONST &F : pAlt->Fields) {
+        if (!F.Operand.empty () && F.AddrMode.empty ()) {
+            Operand Op;
+            if (!ResolveOperand (F, FV[F.Name], NextPc, &Op)) { return false; }
+            pOut->Operands[F.Operand] = Op;
+        }
     }
 
     pOut->pAlt   = pAlt;
-    pOut->Length = Len;
+    pOut->Length = WordLen + Extra;
     return true;
 }
 

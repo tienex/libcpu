@@ -51,7 +51,7 @@ public:
 // no write-back; a register operand may be a sub-register window of its physical parent.
 class Operand {
 public:
-    enum KIND { Imm, Reg } Kind = Imm;
+    enum KIND { Imm, Reg, Mem } Kind = Imm;
     UINT32      Bits     = 0;   // operand width
     UINT64      ImmValue = 0;   // Imm
     UINT32      RegIndex = 0;   // Reg: physical register index (RegisterLayout)
@@ -59,6 +59,11 @@ public:
     UINT32      SubWidth = 0;   // Reg: window width (0 => the whole physical register)
     std::string RegName;        // Reg: the register's name as written (a sub-register's own
                                 //   name, e.g. "b", not its parent "bc") -- for disassembly
+    // Mem: the operand is the memory cell at Base1 (+ Base2) + Disp -- a computed address.
+    UINT32      Base1    = ~(UINT32) 0;   // first base register index (~0 = none)
+    UINT32      Base2    = ~(UINT32) 0;   // second base register index (~0 = none)
+    INT64       Disp     = 0;             // signed displacement
+    std::string MemText;                  // address rendering for disassembly, e.g. "bx+si"
 };
 
 class Translator {
@@ -105,6 +110,7 @@ private:
     Value EvalExpr (Expr *pExpr);
     Value EvalName (std::string CONST &Name);
     Value ReadOperand (Operand CONST &Op);   // read a decoded operand location
+    Value MemAddress (Operand CONST &Op);     // the effective address of a memory operand
     Value EvalMember (Expr *pExpr);          // a.b  -> a sub-field of register a
     Value EvalCC (Expr *pExpr);              // %CC ( expr [, flags] )
     Value EvalMacroCall (Expr *pExpr);       // @macro(args) used as a value (returns %result)
