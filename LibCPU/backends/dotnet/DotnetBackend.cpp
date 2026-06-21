@@ -148,6 +148,8 @@ public:
         case UnNeg: Line ("long t%u=(-t%u)&%llu;", D, IdOf (pA), M); return Make (D, Bits, ppValue);
         case UnCom: Line ("long t%u=(~t%u)&%llu;", D, IdOf (pA), M); return Make (D, Bits, ppValue);
         case UnNot: Line ("long t%u=(t%u==0)?1:0;", D, IdOf (pA)); return Make (D, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -164,6 +166,8 @@ public:
         case CmpSLe: Line ("long t%u=(t%u<=t%u)?1:0;", D, A, B); break;
         case CmpSGt: Line ("long t%u=(t%u>t%u)?1:0;", D, A, B); break;
         case CmpSGe: Line ("long t%u=(t%u>=t%u)?1:0;", D, A, B); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (D, 1, ppValue);
     }
@@ -174,6 +178,8 @@ public:
         case CastTrunc: Line ("long t%u=t%u&%llu;", D, IdOf (pA), M); break;
         case CastZExt:  Line ("long t%u=t%u;", D, IdOf (pA)); break;
         case CastSExt:  Line ("long t%u=((t%u<<%u)>>%u)&%llu;", D, IdOf (pA), 64 - SrcBits, 64 - SrcBits, M); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (D, Bits, ppValue);
     }

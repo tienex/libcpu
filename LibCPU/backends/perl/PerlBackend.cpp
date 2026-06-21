@@ -187,6 +187,8 @@ public:
         case UnNot:
             Line ("my $t%u=($t%u==0)?1:0;", Dest, IdOf (pA));
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -221,6 +223,8 @@ public:
         case CastSExt:
             Line ("my $t%u=sx($t%u,%u)&%llu;", Dest, IdOf (pA), SrcBits, FullMask);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (Dest, Bits, ppValue);
     }

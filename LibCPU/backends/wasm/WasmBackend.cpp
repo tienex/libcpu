@@ -155,6 +155,8 @@ public:
         case UnNeg: Const (0); Get (LocOf (pA)); B (0x7D); MaskTop (Bits); { UINT32 L = Set (); return Make (L, Bits, ppValue); }
         case UnCom: Get (LocOf (pA)); Const (-1); B (0x85); MaskTop (Bits); { UINT32 L = Set (); return Make (L, Bits, ppValue); }
         case UnNot: Get (LocOf (pA)); B (0x50); B (0xAD); { UINT32 L = Set (); return Make (L, 1, ppValue); }  // i64.eqz; extend_i32_u
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -182,6 +184,8 @@ public:
             else if (SrcBits == 32) B (0xC4);  // i64.extend32_s
             MaskTop (Bits);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         UINT32 L = Set (); return Make (L, Bits, ppValue);
     }

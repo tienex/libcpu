@@ -281,6 +281,8 @@ public:
         case UnNot:
             Line ("if(${t%u} EQUAL 0)\n  set(t%u 1)\nelse()\n  set(t%u 0)\nendif()", IdOf (pA), Dest, Dest);
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -324,6 +326,8 @@ public:
             Line ("sx(t%u ${t%u} %u)\nmath(EXPR t%u \"${t%u} & %llu\")",
                   Dest, IdOf (pA), SrcBits, Dest, Dest, FullMask);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (Dest, Bits, ppValue);
     }

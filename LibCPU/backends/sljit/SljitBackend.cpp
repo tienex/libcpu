@@ -183,6 +183,8 @@ public:
             sljit_emit_op2u (m_C, SLJIT_SUB | SLJIT_SET_Z, SLJIT_R0, 0, SLJIT_IMM, 0);
             sljit_emit_op_flags (m_C, SLJIT_MOV, SLJIT_R0, 0, SLJIT_EQUAL);
             OutBits = 1; break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         Mask (SLJIT_R0, OutBits);
         UINT32 S = NewSlot ();
@@ -229,6 +231,8 @@ public:
         case CastTrunc: Mask (SLJIT_R0, Bits); break;
         case CastZExt:  Mask (SLJIT_R0, SrcBits); break;   // already masked; no-op
         case CastSExt:  SignExtend (SLJIT_R0, SrcBits); Mask (SLJIT_R0, Bits); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         UINT32 S = NewSlot ();
         StoreReg (S, SLJIT_R0);

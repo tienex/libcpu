@@ -30,7 +30,10 @@ typedef enum _CPU_BINOP {
     BinUDiv, BinSDiv, BinURem, BinSRem,
     BinAnd, BinOr, BinXor,
     BinShl, BinLShr, BinAShr,
-    BinRol, BinRor
+    BinRol, BinRor,
+    // Floating-point arithmetic: the operands and result are IEEE floats of the operation's
+    // width (an FPU like the 8087 emits these). Appended so the integer opcodes keep their values.
+    BinFAdd, BinFSub, BinFMul, BinFDiv
 } CPU_BINOP;
 
 //
@@ -39,7 +42,10 @@ typedef enum _CPU_BINOP {
 typedef enum _CPU_UNOP {
     UnNeg,   // arithmetic negate (-x)
     UnCom,   // bitwise complement (~x)
-    UnNot    // logical not (!x), producing an i1
+    UnNot,   // logical not (!x), producing an i1
+    UnFNeg,  // floating-point negate (8087 FCHS)
+    UnFAbs,  // floating-point absolute value (8087 FABS)
+    UnFSqrt  // floating-point square root (8087 FSQRT)
 } CPU_UNOP;
 
 //
@@ -48,7 +54,10 @@ typedef enum _CPU_UNOP {
 typedef enum _CPU_CMP {
     CmpEq, CmpNe,
     CmpULt, CmpULe, CmpUGt, CmpUGe,
-    CmpSLt, CmpSLe, CmpSGt, CmpSGe
+    CmpSLt, CmpSLe, CmpSGt, CmpSGe,
+    // Floating-point compares (operands are IEEE floats). The ordered forms are false if either
+    // operand is NaN; CmpFUno is true exactly when an operand is NaN (the 8087 "unordered").
+    CmpFOEq, CmpFOLt, CmpFOGt, CmpFUno
 } CPU_CMP;
 
 //
@@ -57,7 +66,13 @@ typedef enum _CPU_CMP {
 typedef enum _CPU_CAST {
     CastTrunc,   // narrow
     CastZExt,    // widen, zero-extend
-    CastSExt     // widen, sign-extend
+    CastSExt,    // widen, sign-extend
+    // Integer <-> floating-point and float-width conversions (the operand/result widths are the
+    // source/destination bit widths). The integer side of I<->F is two's-complement signed.
+    CastSIToF,   // signed integer -> float
+    CastFToSI,   // float -> signed integer (truncating toward zero)
+    CastFExt,    // float -> wider float
+    CastFTrunc   // float -> narrower float
 } CPU_CAST;
 
 //

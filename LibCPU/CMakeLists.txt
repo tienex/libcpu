@@ -581,6 +581,20 @@ if(TARGET interp_backend)
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 
+  # Floating-point foundation: 80-bit (long double) FP registers, BinF* arithmetic, and int<->float
+  # casts through the emitter ABI + interpreter. fp.upcl loads small integers as floats, computes,
+  # and stores the result back to an integer register. The decisive program is (5 / 2) * 2: real
+  # floats give (2.5) * 2 = 5, integer arithmetic would give (2) * 2 = 4 -- so r0 = 5 proves the
+  # values are genuine floating point. Also checks 5 + 3 = 8 and 5 * 3 = 15.
+  add_test(NAME upcl.fp COMMAND sh -c
+    "F='${CMAKE_CURRENT_SOURCE_DIR}/test/fp.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x10\\x05\\x11\\x02\\x23\\x22\\x30\\xFF' > '${CMAKE_BINARY_DIR}/fpdiv.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/fpdiv.bin' --arch \"upcl:$F\" | grep -q 'r0 =0005' && \
+     printf '\\x10\\x05\\x11\\x03\\x20\\x30\\xFF' > '${CMAKE_BINARY_DIR}/fpadd.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/fpadd.bin' --arch \"upcl:$F\" | grep -q 'r0 =0008' && \
+     printf '\\x10\\x05\\x11\\x03\\x22\\x30\\xFF' > '${CMAKE_BINARY_DIR}/fpmul.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/fpmul.bin' --arch \"upcl:$F\" | grep -q 'r0 =000f'")
+
   # The Intel 8080 (i8080.upcl) -- the set the V20/V30 emulate. Decode must distinguish HLT
   # (0x76, a full opcode) from the general MOV r,r pattern (most-specific match) and render
   # sub-registers by their own name (MVI B, not MVI BC). Runs MVI A,5 ; MVI B,3 ; ADD B ; HLT

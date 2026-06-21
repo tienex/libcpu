@@ -35,6 +35,7 @@ public:
     UINT32      Width = 0;       // bits
     bool        IsPc  = false;   // bound to the meta PC
     bool        IsPsr = false;   // bound to the meta PSR (the flags word)
+    bool        Float = false;   // a floating-point register (#f<width>, e.g. an 8087 st)
 };
 
 // A sub-register: a contiguous bit field of a physical register (e.g. ah = ax bits [15:8]).

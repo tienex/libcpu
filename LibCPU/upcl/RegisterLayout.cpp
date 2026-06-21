@@ -100,6 +100,7 @@ BuildRegisterLayout (Arch *pArch)
                 Phys.Name  = (Count > 1) ? (pDecl->Name + std::to_string (Copy)) : pDecl->Name;
                 Phys.Index = (UINT32) Layout.Phys.size ();
                 Phys.Width = Width;
+                Phys.Float = (pDecl->VType != nullptr && pDecl->VType->Kind == TypeFloat);
 
                 if (pDecl->Binding != nullptr) {
                     Phys.IsPc  = (pDecl->Binding->Meta == "PC");

@@ -225,6 +225,8 @@ public:
         case UnNot:
             Line ("@ t%u = ($t%u == 0)", Dest, IdOf (pA));
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -262,6 +264,8 @@ public:
                   (unsigned long long) (1ull << (SrcBits - 1)), Dest, Dest, (unsigned long long) (1ull << SrcBits));
             Line ("@ t%u = ($t%u & %llu)", Dest, Dest, FullMask);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (Dest, Bits, ppValue);
     }

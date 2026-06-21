@@ -446,6 +446,8 @@ public:
             B (0x83);                    // lxor
             LStore (Dest);
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -511,6 +513,8 @@ public:
             PushLong ((INT64) Mask (~0ull, Bits));
             B (0x7f);                    // land
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         LStore (Dest);
         return Make (Dest, Bits, ppValue);

@@ -310,6 +310,8 @@ public:
             B (0x6a);                    // conv.i8
             StLoc (Dest);
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -357,6 +359,8 @@ public:
             PushI8 ((INT64) Mask (~0ull, Bits));
             B (0x5f);                    // and
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         StLoc (Dest);
         return Make (Dest, Bits, ppValue);

@@ -163,6 +163,8 @@ public:
         case UnNeg: jit_negr (JIT_R0, JIT_R0); MaskReg (Bits); Store (S); return Make (S, Bits, ppValue);
         case UnCom: jit_comr (JIT_R0, JIT_R0); MaskReg (Bits); Store (S); return Make (S, Bits, ppValue);
         case UnNot: jit_eqi (JIT_R0, JIT_R0, 0); Store (S); return Make (S, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -181,6 +183,8 @@ public:
         case CmpSLe: jit_ler (JIT_R0, JIT_R0, JIT_R1); break;
         case CmpSGt: jit_gtr (JIT_R0, JIT_R0, JIT_R1); break;
         case CmpSGe: jit_ger (JIT_R0, JIT_R0, JIT_R1); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         Store (S); return Make (S, 1, ppValue);
     }
@@ -196,6 +200,8 @@ public:
             else if (SrcBits == 32) jit_extr_i (JIT_R0, JIT_R0);
             MaskReg (Bits);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         Store (S); return Make (S, Bits, ppValue);
     }

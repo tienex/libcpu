@@ -111,8 +111,8 @@ public:
         case UnNeg: Line ("t%u = (-t%u) & 0x%llxULL;", D, Id (pA), (unsigned long long) Mask (Bits)); return Make (D, Bits, ppValue);
         case UnCom: Line ("t%u = (~t%u) & 0x%llxULL;", D, Id (pA), (unsigned long long) Mask (Bits)); return Make (D, Bits, ppValue);
         case UnNot: Line ("t%u = (t%u == 0) ? 1 : 0;", D, Id (pA)); return Make (D, 1, ppValue);
+        default:    return E_INVALIDARG;          // floating-point unary ops: not generated to C
         }
-        return E_INVALIDARG;
     }
     HRESULT STDMETHODCALLTYPE Compare (CPU_CMP Pred, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
         CHAR8 CONST *pOp; bool Signed = false;
@@ -144,6 +144,7 @@ public:
         case CastZExt:  Line ("t%u = t%u;", D, Id (pA)); break;
         case CastSExt:  Line ("t%u = (uint64_t)(((int64_t)(t%u << %u)) >> %u) & 0x%llxULL;",
                               D, Id (pA), 64 - SrcBits, 64 - SrcBits, (unsigned long long) Mask (Bits)); break;
+        default:        return E_INVALIDARG;      // int<->float / float-width casts: not generated to C
         }
         return Make (D, Bits, ppValue);
     }

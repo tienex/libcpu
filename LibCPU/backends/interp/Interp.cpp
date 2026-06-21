@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <cmath>
 
 namespace LibCPU {
 namespace {
@@ -147,7 +148,8 @@ public:
     CPU_EXEC_STATUS STDMETHODCALLTYPE Execute (VOID *pRAM, VOID *pGRF, VOID * /*pFRF*/) override {
         UINT8        *pRam   = (UINT8 *) pRAM;
         INTERP_STATE *pState = (INTERP_STATE *) pGRF;
-        std::vector<UINT64> Temp (m_TempCount, 0);
+        std::vector<UINT64>      Temp  (m_TempCount, 0);
+        std::vector<long double> FTemp (m_TempCount, 0.0L);   // parallel float bank (80-bit values)
 
         for (UINT32 Ip = 0; Ip < m_Insns.size (); ) {
             INTERP_INSN CONST &In = m_Insns[Ip];
@@ -156,13 +158,16 @@ public:
                 Temp[In.Dest] = MaskBits (In.Imm, In.Bits);
                 break;
             case OpGetReg:
-                Temp[In.Dest] = MaskBits (pState->Reg[In.Imm], In.Bits);
+                if (In.Bits > 64) { FTemp[In.Dest] = pState->Fpu[In.Imm & 31]; }   // an 80-bit FP register
+                else { Temp[In.Dest] = MaskBits (pState->Reg[In.Imm], In.Bits); }
                 break;
-            case OpPutReg: {
-                UINT64 Value = In.Aux ? SignExtend (Temp[In.A], In.C) : Temp[In.A];
-                pState->Reg[In.Imm] = MaskBits (Value, In.Bits);
+            case OpPutReg:
+                if (In.Bits > 64) { pState->Fpu[In.Imm & 31] = FTemp[In.A]; }       // an 80-bit FP register
+                else {
+                    UINT64 Value = In.Aux ? SignExtend (Temp[In.A], In.C) : Temp[In.A];
+                    pState->Reg[In.Imm] = MaskBits (Value, In.Bits);
+                }
                 break;
-            }
             case OpLoad:
                 Temp[In.Dest] = RamRead (pRam, Temp[In.A], In.Bits);
                 break;
@@ -173,16 +178,37 @@ public:
                 }
                 break;
             case OpBinary:
-                Temp[In.Dest] = ApplyBinary ((CPU_BINOP) In.Aux, Temp[In.A], Temp[In.B], In.Bits);
+                if (IsFloatBinop ((CPU_BINOP) In.Aux)) {
+                    FTemp[In.Dest] = ApplyBinaryF ((CPU_BINOP) In.Aux, FTemp[In.A], FTemp[In.B]);
+                } else {
+                    Temp[In.Dest] = ApplyBinary ((CPU_BINOP) In.Aux, Temp[In.A], Temp[In.B], In.Bits);
+                }
                 break;
             case OpUnary:
-                Temp[In.Dest] = ApplyUnary ((CPU_UNOP) In.Aux, Temp[In.A], In.Bits);
+                if (IsFloatUnop ((CPU_UNOP) In.Aux)) {
+                    FTemp[In.Dest] = ApplyUnaryF ((CPU_UNOP) In.Aux, FTemp[In.A]);
+                } else {
+                    Temp[In.Dest] = ApplyUnary ((CPU_UNOP) In.Aux, Temp[In.A], In.Bits);
+                }
                 break;
             case OpCompare:
-                Temp[In.Dest] = ApplyCompare ((CPU_CMP) In.Aux, Temp[In.A], Temp[In.B], In.Bits) ? 1 : 0;
+                if (IsFloatCmp ((CPU_CMP) In.Aux)) {
+                    Temp[In.Dest] = ApplyCompareF ((CPU_CMP) In.Aux, FTemp[In.A], FTemp[In.B]) ? 1 : 0;
+                } else {
+                    Temp[In.Dest] = ApplyCompare ((CPU_CMP) In.Aux, Temp[In.A], Temp[In.B], In.Bits) ? 1 : 0;
+                }
                 break;
             case OpCast:
-                Temp[In.Dest] = ApplyCast ((CPU_CAST) In.Aux, Temp[In.A], In.C, In.Bits);
+                // The float casts move between the integer and float banks; the others stay integer.
+                switch ((CPU_CAST) In.Aux) {
+                case CastSIToF:  FTemp[In.Dest] = (long double) (INT64) SignExtend (Temp[In.A], In.C); break;
+                case CastFToSI:  Temp[In.Dest]  = MaskBits ((UINT64) (INT64) FTemp[In.A], In.Bits); break;
+                case CastFExt:   FTemp[In.Dest] = FTemp[In.A]; break;   // already the widest internally
+                case CastFTrunc: FTemp[In.Dest] = (In.Bits == 32) ? (long double) (float) FTemp[In.A]
+                                                : (In.Bits == 64) ? (long double) (double) FTemp[In.A]
+                                                :                   FTemp[In.A]; break;
+                default:         Temp[In.Dest]  = ApplyCast ((CPU_CAST) In.Aux, Temp[In.A], In.C, In.Bits); break;
+                }
                 break;
             case OpSelect:
                 Temp[In.Dest] = (Temp[In.A] & 1) ? Temp[In.B] : Temp[In.C];
@@ -282,6 +308,7 @@ private:
         case BinAShr: R = (UINT64)(SignExtend (A, Bits) >> (B & 63)); break;
         case BinRol:  { UINT32 S = (UINT32)(B % Bits); R = (A << S) | (MaskBits (A, Bits) >> (Bits - S)); break; }
         case BinRor:  { UINT32 S = (UINT32)(B % Bits); R = (MaskBits (A, Bits) >> S) | (A << (Bits - S)); break; }
+        case BinFAdd: case BinFSub: case BinFMul: case BinFDiv: break;   // float ops: the FTemp path
         }
         return MaskBits (R, Bits);
     }
@@ -290,6 +317,7 @@ private:
         case UnNeg: return MaskBits ((UINT64) 0 - A, Bits);
         case UnCom: return MaskBits (~A, Bits);
         case UnNot: return (MaskBits (A, Bits) == 0) ? 1 : 0;
+        case UnFNeg: case UnFAbs: case UnFSqrt: break;   // float ops: the FTemp path
         }
         return 0;
     }
@@ -307,6 +335,7 @@ private:
         case CmpSLe: return Sa <= Sb;
         case CmpSGt: return Sa > Sb;
         case CmpSGe: return Sa >= Sb;
+        case CmpFOEq: case CmpFOLt: case CmpFOGt: case CmpFUno: break;   // float compares: the FTemp path
         }
         return false;
     }
@@ -315,8 +344,41 @@ private:
         case CastTrunc: return MaskBits (A, DstBits);
         case CastZExt:  return MaskBits (A, SrcBits);
         case CastSExt:  return MaskBits (SignExtend (A, SrcBits), DstBits);
+        default:        return A;          // the float casts are handled on the long double path
         }
-        return A;
+    }
+
+    // Floating-point execution on the host long double (80-bit extended on x86). FP values live in
+    // a parallel temp/register bank, so these mirror the integer apply helpers for the FP opcodes.
+    static bool IsFloatBinop (CPU_BINOP Op) { return Op >= BinFAdd; }
+    static bool IsFloatUnop  (CPU_UNOP Op)  { return Op >= UnFNeg; }
+    static bool IsFloatCmp   (CPU_CMP Op)   { return Op >= CmpFOEq; }
+
+    static long double ApplyBinaryF (CPU_BINOP Op, long double A, long double B) {
+        switch (Op) {
+        case BinFAdd: return A + B;
+        case BinFSub: return A - B;
+        case BinFMul: return A * B;
+        case BinFDiv: return A / B;        // IEEE: division by zero yields +/-inf or NaN, no trap
+        default:      return 0;
+        }
+    }
+    static long double ApplyUnaryF (CPU_UNOP Op, long double A) {
+        switch (Op) {
+        case UnFNeg:  return -A;
+        case UnFAbs:  return std::fabsl (A);
+        case UnFSqrt: return std::sqrtl (A);
+        default:      return 0;
+        }
+    }
+    static bool ApplyCompareF (CPU_CMP Pred, long double A, long double B) {
+        switch (Pred) {
+        case CmpFOEq: return A == B;       // ordered: false if either is NaN (== is already so)
+        case CmpFOLt: return A < B;
+        case CmpFOGt: return A > B;
+        case CmpFUno: return std::isnan ((double) A) || std::isnan ((double) B);
+        default:      return false;
+        }
     }
 
     std::vector<INTERP_INSN> m_Insns;

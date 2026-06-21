@@ -196,6 +196,8 @@ public:
         case UnNot:
             Line ("set t%u (test $t%u -eq 0; and echo 1; or echo 0)", Dest, IdOf (pA));
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -231,6 +233,8 @@ public:
             Line ("set t%u (sx $t%u %u)", Dest, IdOf (pA), SrcBits);
             Line ("set t%u (math \"$t%u %% %llu\")", Dest, Dest, Mod);
             break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (Dest, Bits, ppValue);
     }

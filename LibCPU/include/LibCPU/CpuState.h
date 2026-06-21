@@ -73,6 +73,14 @@ typedef struct _CPU_STATE {
     // valid at any load address -- which lets the cache be keyed by code CONTENT (and persisted to disk)
     // instead of by address. Appended after Cycles so every codegen offset above stays stable.
     UINT64 CodeBase;
+
+    // Floating-point register file -- a parallel bank to Reg[], holding the 80-bit extended values
+    // an FPU (the 8087) needs and the UINT64 Reg[] cannot. A register index addresses EITHER Reg[]
+    // (integer, <= 64-bit) OR Fpu[] (an 80-bit float), never both, so the host long double carries
+    // the full extended precision. Appended last (after all the codegen field offsets above) so the
+    // backends that use those offsets are unaffected; only FP-aware backends (the interpreter) touch
+    // it. host long double is the 80-bit extended type on x86; elsewhere it is the widest available.
+    long double Fpu[32];
 } CPU_STATE;
 
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address

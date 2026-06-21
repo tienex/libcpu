@@ -194,6 +194,8 @@ public:
         case UnNeg: Emit (MIR_NEG, RegOp (R), RegOp (RegOf (pA))); MaskReg (R, Bits); return Make (R, Bits, ppValue);
         case UnCom: Emit3 (MIR_XOR, RegOp (R), RegOp (RegOf (pA)), MIR_new_int_op (m_Ctx, -1)); MaskReg (R, Bits); return Make (R, Bits, ppValue);
         case UnNot: Emit3 (MIR_EQ, RegOp (R), RegOp (RegOf (pA)), MIR_new_int_op (m_Ctx, 0)); return Make (R, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -233,6 +235,8 @@ public:
         case CastTrunc: MaskReg (R, Bits); break;
         case CastZExt:  MaskReg (R, SrcBits); break;  // already masked
         case CastSExt:  SignExtend (R, SrcBits); MaskReg (R, Bits); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (R, Bits, ppValue);
     }

@@ -42,8 +42,9 @@ namespace Upcl {
 // the expression tree so casts, bit-fields and flag tests use the right size.
 class Value {
 public:
-    ICpuValue *V    = nullptr;
-    UINT32     Bits = 0;
+    ICpuValue *V     = nullptr;
+    UINT32     Bits  = 0;
+    bool       Float = false;    // the value is an IEEE float (drives BinF*/CastF* selection)
 };
 
 // A decoded operand: the storage a decoder operand (src/dst/...) resolved to. The location

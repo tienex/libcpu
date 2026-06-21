@@ -275,7 +275,9 @@ Translator::EvalName (std::string CONST &Name)
         RegPhys CONST &Phys = m_Layout.Phys[P->second];
         ComPtr<ICpuValue> V;
         m_pE->GetRegister (Phys.Index, Phys.Width, &V);
-        return Pool (std::move (V), Phys.Width);
+        Value Out = Pool (std::move (V), Phys.Width);
+        Out.Float = Phys.Float;                          // a floating-point register (8087 st)
+        return Out;
     }
 
     RegSub CONST *pSub;
@@ -354,6 +356,31 @@ MapBinop (TOKEN_KIND Op, bool Signed)
     }
 }
 
+// The floating-point binary op for an arithmetic operator (operands are IEEE floats).
+static CPU_BINOP
+MapBinopF (TOKEN_KIND Op)
+{
+    switch (Op) {
+    case TokPlus:  return BinFAdd;
+    case TokMinus: return BinFSub;
+    case TokStar:  return BinFMul;
+    case TokSlash: return BinFDiv;
+    default:       return BinFAdd;
+    }
+}
+
+// The floating-point compare predicate for a relational operator, if it is one.
+static bool
+MapCompareF (TOKEN_KIND Op, CPU_CMP *pPred)
+{
+    switch (Op) {
+    case TokEqEq: *pPred = CmpFOEq; return true;
+    case TokLt:   *pPred = CmpFOLt; return true;
+    case TokGt:   *pPred = CmpFOGt; return true;
+    default:      return false;
+    }
+}
+
 static bool
 MapCompare (TOKEN_KIND Op, bool Signed, CPU_CMP *pPred)
 {
@@ -398,6 +425,13 @@ Translator::EvalExpr (Expr *pExpr)
         CPU_CMP Pred;
         Value A = EvalExpr (pExpr->Args[0]);
         Value B = EvalExpr (pExpr->Args[1]);
+        // A floating-point operand makes this a float operation (the 8087's arithmetic).
+        if (A.Float || B.Float) {
+            if (MapCompareF (pExpr->Op, &Pred)) { return Cmp (Pred, A, B); }
+            Value R = Bin (MapBinopF (pExpr->Op), A, B);
+            R.Float = true;
+            return R;
+        }
         // Compares and AndCom/OrCom/XorCom need shaping before the op.
         if (MapCompare (pExpr->Op, Signed, &Pred)) {
             B = Coerce (B, A.Bits, false);
@@ -438,7 +472,20 @@ Translator::EvalExpr (Expr *pExpr)
 
     case ExprCast: {
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
-        Value A = EvalExpr (pExpr->Args[0]);
+        bool   ToFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
+        Value  A = EvalExpr (pExpr->Args[0]);
+        if (ToFloat) {
+            // [ #fN x ]: an int converts to float (FILD), a float re-rounds to the new width.
+            Value R = A.Float ? CastTo ((Bits >= A.Bits) ? CastFExt : CastFTrunc, A, Bits)
+                              : CastTo (CastSIToF, A, Bits);
+            R.Float = true;
+            return R;
+        }
+        if (A.Float) {                                   // [ #iN x ] of a float: truncate to int (FIST)
+            Value R = CastTo (CastFToSI, A, Bits);
+            R.Float = false;
+            return R;
+        }
         return Coerce (A, Bits, false);
     }
 

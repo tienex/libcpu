@@ -117,6 +117,8 @@ public:
         case UnNeg: Line ("var t%u=((-t%u)&%llu)>>>0;", D, IdOf (pA), (unsigned long long) Mask (~0ull, Bits)); return Make (D, Bits, ppValue);
         case UnCom: Line ("var t%u=((~t%u)&%llu)>>>0;", D, IdOf (pA), (unsigned long long) Mask (~0ull, Bits)); return Make (D, Bits, ppValue);
         case UnNot: Line ("var t%u=(t%u==0)?1:0;", D, IdOf (pA)); return Make (D, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -141,6 +143,8 @@ public:
         case CastTrunc: Line ("var t%u=t%u&%llu;", D, IdOf (pA), (unsigned long long) Mask (~0ull, Bits)); break;
         case CastZExt:  Line ("var t%u=t%u;", D, IdOf (pA)); break;
         case CastSExt:  Line ("var t%u=(((t%u<<%u)>>%u)&%llu)>>>0;", D, IdOf (pA), 32 - SrcBits, 32 - SrcBits, (unsigned long long) Mask (~0ull, Bits)); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (D, Bits, ppValue);
     }

@@ -199,6 +199,8 @@ public:
         case BinAShr: R = m_Builder->CreateAShr (A, B); break;
         case BinRol:  R = m_Builder->CreateOr (m_Builder->CreateShl (A, B), m_Builder->CreateLShr (A, B)); break;
         case BinRor:  R = m_Builder->CreateOr (m_Builder->CreateLShr (A, B), m_Builder->CreateShl (A, B)); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Wrap (R, ppValue);
     }
@@ -208,6 +210,8 @@ public:
         case UnNeg: R = m_Builder->CreateNeg (A); break;
         case UnCom: R = m_Builder->CreateNot (A); break;
         case UnNot: R = m_Builder->CreateICmpEQ (A, ConstantInt::get (A->getType (), 0)); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Wrap (R, ppValue);
     }
@@ -224,6 +228,8 @@ public:
         case CmpSLe: R = m_Builder->CreateICmpSLE (A, B); break;
         case CmpSGt: R = m_Builder->CreateICmpSGT (A, B); break;
         case CmpSGe: R = m_Builder->CreateICmpSGE (A, B); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Wrap (R, ppValue);
     }
@@ -233,6 +239,8 @@ public:
         case CastTrunc: R = m_Builder->CreateTrunc (A, IntTy (Bits)); break;
         case CastZExt:  R = m_Builder->CreateZExt  (A, IntTy (Bits)); break;
         case CastSExt:  R = m_Builder->CreateSExt  (A, IntTy (Bits)); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Wrap (R, ppValue);
     }

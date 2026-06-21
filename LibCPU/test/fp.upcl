@@ -1,0 +1,44 @@
+// A minimal floating-point test architecture -- exercises the emitter/interp FP foundation
+// (80-bit long double registers, BinF* arithmetic, int<->float casts) without the full 8087.
+//
+// Registers f0/f1/f2 are #f80 (floating-point); r0 is an integer result register. The program
+// loads small integers as floats, computes, and stores a float back to an integer so the result
+// is observable in a register dump. The decisive check is (5 / 2) * 2 == 5: integer arithmetic
+// would give (2) * 2 == 4, so a result of 5 proves the values are real floats.
+
+arch "fptest" {
+	name "Floating-point test";
+	byte_size 8;
+	word_size 16;
+	address_size 16;
+	default_endian little;
+
+	register_file {
+		group F {
+			[ #f80 f0 ], [ #f80 f1 ], [ #f80 f2 ]
+		}
+		group R {
+			[ #i16 r0 ], [ #i16 r1 ]
+		}
+		group S {
+			[ #i16 pc -> %PC ]
+		}
+	}
+}
+
+decoder_operands [ #i16 imm ];
+
+// Load an integer immediate, converted to floating point, into f0 / f1.
+insn fld0 : encode #i16 ( op:8 = 0x10, imm:8 -> imm ) => f0 = [ #f80 imm ];
+insn fld1 : encode #i16 ( op:8 = 0x11, imm:8 -> imm ) => f1 = [ #f80 imm ];
+
+// Floating-point arithmetic on the f registers.
+insn fadd : encode #i8 ( op:8 = 0x20 ) => f0 = f0 + f1;
+insn fsub : encode #i8 ( op:8 = 0x21 ) => f0 = f0 - f1;
+insn fmul : encode #i8 ( op:8 = 0x22 ) => f0 = f0 * f1;
+insn fdiv : encode #i8 ( op:8 = 0x23 ) => f0 = f0 / f1;
+
+// Store f0, truncated to an integer, into r0 (so the result shows in a register dump).
+insn fst  : encode #i8 ( op:8 = 0x30 ) => r0 = [ #i16 f0 ];
+
+insn hlt  : encode #i8 ( op:8 = 0xFF ) => @trap ( 0 );

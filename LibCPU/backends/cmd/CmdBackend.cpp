@@ -244,6 +244,8 @@ public:
             Line ("set t%u=0", Dest);
             Line ("if !t%u! EQU 0 set t%u=1", IdOf (pA), Dest);
             return Make (Dest, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -285,6 +287,8 @@ public:
             Line ("set /a \"t%u=t%u & %llu\"", Dest, Dest, FullMask);
             break;
         }
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (Dest, Bits, ppValue);
     }

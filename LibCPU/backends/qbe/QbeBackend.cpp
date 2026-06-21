@@ -143,6 +143,8 @@ public:
         case UnCom: Line ("\t%%t%u =l xor %%t%u, -1", R, IdOf (pA)); return Make (MaskTemp (R, Bits), Bits, ppValue);
         case UnNot: { UINT32 C = Fresh (); Line ("\t%%t%u =w ceql %%t%u, 0", C, IdOf (pA));
                       Line ("\t%%t%u =l extuw %%t%u", R, C); return Make (R, 1, ppValue); }
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -176,6 +178,8 @@ public:
             R = MaskTemp (R, Bits);
             break;
         }
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (R, Bits, ppValue);
     }

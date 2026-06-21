@@ -154,6 +154,8 @@ public:
             gcc_jit_rvalue *pCmp  = gcc_jit_context_new_comparison (m_C, nullptr, GCC_JIT_COMPARISON_EQ, RvalOf (pA), pZero);
             return Make (gcc_jit_context_new_cast (m_C, nullptr, pCmp, m_U8), 1, ppValue);
         }
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }

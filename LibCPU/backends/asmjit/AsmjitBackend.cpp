@@ -252,6 +252,8 @@ public:
         case CastTrunc: MaskReg (a64::x9, Bits); break;
         case CastZExt:  MaskReg (a64::x9, SrcBits); break;   // already masked; no-op
         case CastSExt:  SignExtend (a64::x9, SrcBits); MaskReg (a64::x9, Bits); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         UINT32 S = NewSlot ();
         StoreReg (S, a64::x9);
@@ -641,6 +643,8 @@ public:
         case CastTrunc: MaskReg (m_R0, Bits); break;
         case CastZExt:  MaskReg (m_R0, SrcBits); break;       // already masked; no-op
         case CastSExt:  SignExtend (m_R0, SrcBits); MaskReg (m_R0, Bits); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         UINT32 S = NewSlot (); StoreReg (S, m_R0); return Make (S, Bits, ppValue);
     }

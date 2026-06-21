@@ -385,6 +385,8 @@ public:
         case UnNeg: Line ("t%u = (-t%u) & 0x%llxULL;", D, IdOf (pA), (unsigned long long) Mask (~0ull, Bits)); return Make (D, Bits, ppValue);
         case UnCom: Line ("t%u = (~t%u) & 0x%llxULL;", D, IdOf (pA), (unsigned long long) Mask (~0ull, Bits)); return Make (D, Bits, ppValue);
         case UnNot: Line ("t%u = (t%u == 0) ? 1 : 0;", D, IdOf (pA)); return Make (D, 1, ppValue);
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return E_INVALIDARG;
     }
@@ -418,6 +420,8 @@ public:
         case CastZExt:  Line ("t%u = t%u;", D, IdOf (pA)); break;
         case CastSExt:  Line ("t%u = (uint64_t)(((int64_t)(t%u << %u)) >> %u) & 0x%llxULL;",
                               D, IdOf (pA), 64 - SrcBits, 64 - SrcBits, (unsigned long long) Mask (~0ull, Bits)); break;
+        // floating-point ops: unsupported by this backend
+        default: return E_INVALIDARG;
         }
         return Make (D, Bits, ppValue);
     }
