@@ -164,12 +164,13 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
         Upcl::SourceManager *pSm = new Upcl::SourceManager ();
         Upcl::Module *pMod = UpclParse (File.c_str (), *pSm);
         if (pMod != nullptr) {
-            A.pArch = Upcl::CreateUpclArch (pMod, 0, Cpu.empty () ? nullptr : Cpu.c_str ());
+            // The arch flattens the register file once; take its register names back out
+            // for DumpRegs rather than building the layout a second time here.
+            A.pArch = Upcl::CreateUpclArch (pMod, 0, Cpu.empty () ? nullptr : Cpu.c_str (), &A.Regs);
             CPU_ARCH_INFO Info;
             std::memset (&Info, 0, sizeof (Info));
             A.pArch->GetInfo (&Info);
             A.RegBytes = (Info.GprBits + 7) / 8;
-            for (Upcl::Reg CONST &R : pMod->Archs[0]->Registers) { A.Regs.push_back (R.Name); }
         }
     } else if (std::strcmp (pName, "6502") == 0) {
         A.pArch = Create6502 ();

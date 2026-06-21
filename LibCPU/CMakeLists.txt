@@ -493,9 +493,21 @@ if(TARGET interp_backend)
   add_test(NAME upcl.run COMMAND lcx run "${CMAKE_CURRENT_SOURCE_DIR}/test/add.v20.bin"
     --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
   set_tests_properties(upcl.run PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
+  set_tests_properties(upcl.run PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
   add_test(NAME upcl.translate COMMAND lcx translate "${CMAKE_CURRENT_SOURCE_DIR}/test/add.v20.bin"
     --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
   set_tests_properties(upcl.translate PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
+
+  # The standard 8086.def -- register_file + `encode` + semantics -- run as a live frontend
+  # through the generic decoder + translator: MOV AX,0x1234 (B8 34 12); INC CX (41); HLT (F4)
+  # must leave ax=0x1234 and cx=1. Proves a .upcl description executes on a real backend.
+  add_test(NAME upcl.run-8086 COMMAND sh -c
+    "printf '\\xB8\\x34\\x12\\x41\\xF4' > '${CMAKE_BINARY_DIR}/prog8086.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | \
+     grep -q 'ax =1234' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0001'")
 endif()
 
 # Feature / CPU-model selection: ONE description (test/x86.upcl) carries the 8086 base ISA

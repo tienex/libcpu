@@ -1,11 +1,15 @@
 /** @file  A live ICpuArchitecture that interprets a UPCL description. See UpclArch.h. */
 
 #include "UpclArch.h"
+#include "RegisterLayout.h"
+#include "Decoder.h"
+#include "Semantics.h"
 #include "LibCPU/PCom.h"
 #include "LibCPU/CpuState.h"
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,6 +35,14 @@ public:
     {
         m_WordBits = m_pArch->WordSize ? m_pArch->WordSize : 16;
         m_AddrBits = m_pArch->AddressSize ? m_pArch->AddressSize : 16;
+        // Standard UPCL (a register_file with `encode` clauses) drives the main path: a
+        // flattened register layout + the generic decoder + the semantics translator. (The
+        // formats-based path below is the experimental variant.)
+        m_Standard = (m_pArch->RegFile != nullptr);
+        if (m_Standard) {
+            m_Layout   = BuildRegisterLayout (m_pArch);
+            m_pDecoder.reset (new Decoder (m_pArch, &m_Layout));
+        }
         // Index formats by name and register names by spelling.
         for (Format *F : m_pArch->Formats) { m_Formats[F->Name] = F; }
         for (UINT32 I = 0; I < m_pArch->Registers.size (); I++) {
@@ -51,6 +63,16 @@ public:
         return DefaultQuery (riid, IID_ICpuArchitecture, ppvObject);
     }
 
+    // The register names in index order -- from the flattened register file (standard path)
+    // or the flat register list. Lets the host label registers without re-deriving them.
+    void RegisterNames (std::vector<std::string> *pOut) CONST {
+        if (m_Standard) {
+            for (RegPhys CONST &P : m_Layout.Phys) { pOut->push_back (P.Name); }
+        } else {
+            for (Reg CONST &R : m_pArch->Registers) { pOut->push_back (R.Name); }
+        }
+    }
+
     HRESULT STDMETHODCALLTYPE GetInfo (CPU_ARCH_INFO *pInfo) override {
         pInfo->pName       = m_pArch->Name.c_str ();
         pInfo->pFullName   = m_pArch->FullName.c_str ();
@@ -59,7 +81,8 @@ public:
         pInfo->AddressSize = m_AddrBits;
         pInfo->PsrSize     = (UINT8) m_WordBits;
         pInfo->IsBigEndian = m_pArch->Little ? FALSE : TRUE;
-        pInfo->GprCount    = (UINT32) m_pArch->Registers.size ();
+        pInfo->GprCount    = m_Standard ? (UINT32) m_Layout.Phys.size ()
+                                         : (UINT32) m_pArch->Registers.size ();
         pInfo->GprBits     = m_WordBits;
         return S_OK;
     }
@@ -71,6 +94,15 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
+        if (m_Standard) {
+            DecodedInsn D;
+            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) {
+                *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + 1;   // unknown: skip a byte
+                return S_OK;
+            }
+            *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + D.Length;
+            return S_OK;
+        }
         DECODED D;
         if (!Decode (Pc, &D)) {
             *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + 1;   // unknown: skip a byte
@@ -90,6 +122,26 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Disassemble (CPU_ADDR Pc, CHAR8 *pLine, UINT32 MaxLine) override {
+        if (m_Standard) {
+            DecodedInsn D;
+            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) {
+                std::snprintf (pLine, MaxLine, "db 0x%02x", m_pCode[Pc]);
+                return S_OK;
+            }
+            std::string Out = D.pInsn->Name;
+            for (auto CONST &Kv : D.Operands) {
+                Operand CONST &Op = Kv.second;
+                char B[32];
+                if (Op.Kind == Operand::Reg) {
+                    std::snprintf (B, sizeof (B), " %s", m_Layout.Phys[Op.RegIndex].Name.c_str ());
+                } else {
+                    std::snprintf (B, sizeof (B), " 0x%llx", (unsigned long long) Op.ImmValue);
+                }
+                Out += B;
+            }
+            std::snprintf (pLine, MaxLine, "%s", Out.c_str ());
+            return S_OK;
+        }
         DECODED D;
         if (!Decode (Pc, &D)) {
             std::snprintf (pLine, MaxLine, "db 0x%02x", m_pCode[Pc]);
@@ -121,6 +173,14 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE TranslateInstr (CPU_ADDR Pc, ICpuEmitter *pE) override {
+        if (m_Standard) {
+            DecodedInsn D;
+            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
+            Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
+            for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
+            Tr.Emit (D.pInsn->Semantics);
+            return S_OK;
+        }
         DECODED D;
         if (!Decode (Pc, &D)) {
             return S_OK;
@@ -355,6 +415,9 @@ private:
     UINT64                           m_CodeSize = 0;
     std::map<std::string, Format *>  m_Formats;
     std::map<std::string, UINT32>    m_RegIndex;
+    bool                             m_Standard = false; // register_file + encode (standard .upcl)
+    RegisterLayout                   m_Layout;            // standard-path register layout
+    std::unique_ptr<Decoder>         m_pDecoder;          // standard-path generic decoder
 };
 
 // Resolve a CPU-model name to the set of features it enables. A null/unknown model
@@ -380,13 +443,16 @@ ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
 } // anonymous namespace
 
 ICpuArchitecture *
-CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu)
+CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
+                std::vector<std::string> *pRegNamesOut)
 {
     if (pModule == nullptr || ArchIndex >= pModule->Archs.size ()) {
         return nullptr;
     }
     Arch *pArch = pModule->Archs[ArchIndex];
-    return new UpclArch (pModule, pArch, ResolveFeatures (pArch, pCpu));
+    UpclArch *pUpcl = new UpclArch (pModule, pArch, ResolveFeatures (pArch, pCpu));
+    if (pRegNamesOut != nullptr) { pUpcl->RegisterNames (pRegNamesOut); }
+    return pUpcl;
 }
 
 } // namespace Upcl
