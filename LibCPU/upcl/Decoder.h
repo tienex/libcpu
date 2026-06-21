@@ -18,6 +18,7 @@
 #include "RegisterLayout.h"
 #include "Semantics.h"
 #include <map>
+#include <set>
 #include <string>
 
 namespace LibCPU {
@@ -37,7 +38,9 @@ public:
 
 class Decoder {
 public:
-    Decoder (Arch *pArch, RegisterLayout CONST *pLayout);
+    // pEnabled is the set of enabled ISA-feature names (from the selected CPU model); an
+    // instruction gated on a feature not in the set is skipped. nullptr enables everything.
+    Decoder (Arch *pArch, RegisterLayout CONST *pLayout, std::set<std::string> CONST *pEnabled = nullptr);
 
     // Decode the instruction at pBytes[Pos]. Returns true and fills pOut on a match; false
     // if no encoding matches (or the bytes run short). pEnabled, if set, restricts the
@@ -49,8 +52,13 @@ private:
     bool ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, Operand *pOut) CONST;
     void ExpandRegMap (std::vector<std::string> CONST &Map, std::vector<std::string> *pOut) CONST;
 
-    Arch                 *m_pArch;
-    RegisterLayout CONST *m_pLayout;
+    bool IsEnabled (std::string CONST &Feature) CONST {
+        return Feature.empty () || m_pEnabled == nullptr || m_pEnabled->count (Feature) != 0;
+    }
+
+    Arch                          *m_pArch;
+    RegisterLayout CONST          *m_pLayout;
+    std::set<std::string> CONST   *m_pEnabled;
 };
 
 } // namespace Upcl

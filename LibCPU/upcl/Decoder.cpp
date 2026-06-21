@@ -5,8 +5,8 @@
 namespace LibCPU {
 namespace Upcl {
 
-Decoder::Decoder (Arch *pArch, RegisterLayout CONST *pLayout)
-    : m_pArch (pArch), m_pLayout (pLayout)
+Decoder::Decoder (Arch *pArch, RegisterLayout CONST *pLayout, std::set<std::string> CONST *pEnabled)
+    : m_pArch (pArch), m_pLayout (pLayout), m_pEnabled (pEnabled)
 {
 }
 
@@ -152,6 +152,7 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
     UINT64 Avail = Len - Pos;
 
     for (Insn *I : m_pArch->Insns) {
+        if (!IsEnabled (I->Feature)) { continue; }   // gated on a feature the model lacks
         for (EncAlt *A : I->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, pOut)) {
                 pOut->pInsn = I; pOut->pJump = nullptr;
@@ -160,6 +161,7 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
         }
     }
     for (JumpInsn *J : m_pArch->Jumps) {
+        if (!IsEnabled (J->Feature)) { continue; }
         for (EncAlt *A : J->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, pOut)) {
                 pOut->pInsn = nullptr; pOut->pJump = J;

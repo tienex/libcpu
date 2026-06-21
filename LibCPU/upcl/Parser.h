@@ -34,6 +34,7 @@ public:
 private:
     void ParseToplevel (Module *pModule);        // the top-level declaration loop (reused by include)
     void ParseInclude (Module *pModule);         // `include "<file>";` -- splice another file's decls
+    void ParseFeatureBlock (Module *pModule);    // `feature <name> { <insns> }` -- gate a group
 
 private:
     // token stream

@@ -459,6 +459,7 @@ public:
     bool                  HasDisasm = false;
     std::string           Disasm;            // `disasm "..."` override format string
     DisasmSpec           *DisasmDecl = nullptr;  // declarative `disasm ( ... )` (owned)
+    std::string           Feature;           // gating ISA feature ("" = base ISA)
     ~JumpInsn () {
         delete Delay; delete Condition;
         for (Stmt *S : Pre) { delete S; }

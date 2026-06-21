@@ -1535,6 +1535,40 @@ Parser::ParseInclude (Module *pModule)
     m_CurFilePath = SavedPath;
 }
 
+// `feature <name> { <insn> | <jump insn> | <macro> ... }` -- every instruction declared in
+// the block is gated on <name>, so a whole ISA extension lives in one block (or one file).
+void
+Parser::ParseFeatureBlock (Module *M)
+{
+    Advance ();                                     // 'feature'
+    std::string Name;
+    if (m_Cur.Kind == TokIdent || m_Cur.Kind == TokString) { Name = m_Cur.Text; Advance (); }
+    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a feature name"); }
+    if (!Expect (TokLBrace, "to open the feature block")) { return; }
+    Arch *pArch = M->Archs.empty () ? nullptr : M->Archs.back ();
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        if (m_pDiag->Overflowed ()) { break; }
+        if (m_Cur.Kind == TokSemi) {
+            Advance ();
+        } else if (AtKeyword ("insn")) {
+            Insn *I = ParseOldInsn ();
+            I->Feature = Name;
+            if (pArch != nullptr) { pArch->Insns.push_back (I); } else { delete I; }
+        } else if (AtKeyword ("jump")) {
+            JumpInsn *J = ParseJumpInsn ();
+            J->Feature = Name;
+            if (pArch != nullptr) { pArch->Jumps.push_back (J); } else { delete J; }
+        } else if (AtKeyword ("macro")) {
+            if (pArch != nullptr) { ParseMacro (pArch); }
+        } else {
+            std::string Msg = std::string ("expected an instruction in a feature block, found ") + TokenName (m_Cur.Kind);
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
+            Advance ();
+        }
+    }
+    Expect (TokRBrace, "to close the feature block");
+}
+
 Module *
 Parser::ParseModule ()
 {
@@ -1556,6 +1590,12 @@ Parser::ParseToplevel (Module *M)
             ParseInclude (M);
         } else if (AtKeyword ("arch")) {
             M->Archs.push_back (ParseArch ());
+        } else if (!M->Archs.empty () && AtKeyword ("features")) {
+            ParseFeatures (M->Archs.back ());            // declare ISA features
+        } else if (!M->Archs.empty () && AtKeyword ("cpu")) {
+            ParseCpu (M->Archs.back ());                 // a CPU model bundling features
+        } else if (!M->Archs.empty () && AtKeyword ("feature")) {
+            ParseFeatureBlock (M);                       // gate a group of instructions
         } else if (M->Archs.empty ()) {
             std::string Msg = std::string ("expected 'arch', found ") + TokenName (m_Cur.Kind);
             m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);

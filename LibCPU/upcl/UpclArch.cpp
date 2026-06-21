@@ -44,7 +44,7 @@ public:
         m_Standard = (m_pArch->RegFile != nullptr);
         if (m_Standard) {
             m_Layout   = BuildRegisterLayout (m_pArch);
-            m_pDecoder.reset (new Decoder (m_pArch, &m_Layout));
+            m_pDecoder.reset (new Decoder (m_pArch, &m_Layout, &m_Enabled));
             UINT32 Pc = m_Layout.PcIndex ();
             if (Pc != ~(UINT32) 0) { m_PcName = m_Layout.Phys[Pc].Name; }
         }
