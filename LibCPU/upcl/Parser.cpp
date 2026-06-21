@@ -1091,6 +1091,8 @@ Parser::ParseEncField (EncField *pField)
             }
             Expect (TokRBracket, "to close the register map");
         }
+        // -> op rel : the field is a PC-relative displacement (a branch target).
+        if (AtKeyword ("rel")) { pField->Relative = true; Advance (); }
     }
     return true;
 }
@@ -1144,6 +1146,15 @@ Parser::ParseJumpInsn ()
     }
     if (AtKeyword ("condition")) { Advance (); J->Condition = ParseExpr (0); }
     ParseBlock (&J->Action);
+    // optional `encode <alt> | ...` for the byte pattern, then an optional trailing ';'
+    if (AtKeyword ("encode")) {
+        Advance ();                                 // 'encode'
+        do {
+            EncAlt *A = ParseEncAlt ();
+            if (A != nullptr) { J->Encodings.push_back (A); }
+        } while (Accept (TokPipe));
+    }
+    Accept (TokSemi);
     return J;
 }
 

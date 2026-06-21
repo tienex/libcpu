@@ -181,6 +181,10 @@ public:
     std::vector<std::string> RegMap;      // `-> op[r0, r1, ...]`: field value SELECTS a register
                                           //   (the operand is that register location); empty =>
                                           //   the operand is the immediate field value.
+    bool                     Relative = false; // `-> op rel`: the field is a PC-relative
+                                          //   displacement -- the operand value is the NEXT
+                                          //   instruction's address plus the sign-extended
+                                          //   field (a branch target). Architecture-neutral.
 };
 
 // One encoding alternative: a word of `WordBits` bits split into fields. An instruction may
@@ -361,17 +365,19 @@ public:
 // jump insn <name> : type <t> [delay e] [pre {...}] [condition e] { action }
 class JumpInsn {
 public:
-    SRC_LOC             Loc = 0;
-    std::string         Name;
-    std::string         JumpType;          // branch / call / return / trap
-    Expr               *Delay = nullptr;    // owned
-    Expr               *Condition = nullptr;// owned
-    std::vector<Stmt *> Pre;
-    std::vector<Stmt *> Action;
+    SRC_LOC               Loc = 0;
+    std::string           Name;
+    std::string           JumpType;          // branch / call / return / trap
+    Expr                 *Delay = nullptr;    // owned
+    Expr                 *Condition = nullptr;// owned
+    std::vector<Stmt *>   Pre;
+    std::vector<Stmt *>   Action;
+    std::vector<EncAlt *> Encodings;          // `encode <alt> | ...` byte patterns (owned)
     ~JumpInsn () {
         delete Delay; delete Condition;
         for (Stmt *S : Pre) { delete S; }
         for (Stmt *S : Action) { delete S; }
+        for (EncAlt *E : Encodings) { delete E; }
     }
 };
 

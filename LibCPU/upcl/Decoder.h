@@ -24,12 +24,14 @@ namespace LibCPU {
 namespace Upcl {
 
 // A successfully decoded instruction: which insn/encoding matched, its byte length, and
-// the resolved operand locations keyed by decoder-operand name (dst, src, ...).
+// the resolved operand locations keyed by decoder-operand name (dst, src, ...). Exactly one
+// of pInsn / pJump is set -- a jump insn carries its branch type, condition and action.
 class DecodedInsn {
 public:
-    Insn   *pInsn  = nullptr;
-    EncAlt *pAlt   = nullptr;
-    UINT32  Length = 0;
+    Insn     *pInsn  = nullptr;
+    JumpInsn *pJump  = nullptr;
+    EncAlt   *pAlt   = nullptr;
+    UINT32    Length = 0;
     std::map<std::string, Operand> Operands;
 };
 
@@ -43,8 +45,8 @@ public:
     bool Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut) CONST;
 
 private:
-    bool MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, DecodedInsn *pOut) CONST;
-    bool ResolveOperand (EncField CONST &Field, UINT64 FieldVal, Operand *pOut) CONST;
+    bool MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextBase, DecodedInsn *pOut) CONST;
+    bool ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, Operand *pOut) CONST;
     void ExpandRegMap (std::vector<std::string> CONST &Map, std::vector<std::string> *pOut) CONST;
 
     Arch                 *m_pArch;

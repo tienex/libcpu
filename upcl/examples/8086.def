@@ -232,6 +232,7 @@ insn rcl  : ( dst : flags.C ) = %CC ( ( dst : flags.C ) <<> src );
 insn rcr  : ( dst : flags.C ) = %CC ( ( dst : flags.C ) >>< src );
 
 jump insn jmp : type branch { @i8086_jump( src ); }
+	encode #i16 ( op:8 = 0xEB, disp:8 -> src rel );		// 0xEB cb  JMP rel8 (near, relative)
 jump insn fjmp : type branch { @i8086_jump( src ); }
 jump insn fcall : type call {
 	@i8086_push ( cs );

@@ -509,6 +509,16 @@ if(TARGET interp_backend)
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0001'")
 
+  # The 8086 `jump insn jmp : type branch { @i8086_jump(src) }` declaration, given an `encode`
+  # with a PC-relative displacement, decodes and executes: mov ax,0x1234 ; jmp +2 ; inc cx ;
+  # inc cx ; inc cx ; hlt -- the jump skips two of the three incs, so cx = 1 (not 3), ax stays
+  # 0x1234. Proves the segmented jump-insn model runs near relative branches.
+  add_test(NAME upcl.run-8086-jmp COMMAND sh -c
+    "printf '\\xB8\\x34\\x12\\xEB\\x02\\x41\\x41\\x41\\xF4' > '${CMAKE_BINARY_DIR}/jmp8086.bin' && \
+     OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/jmp8086.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def') && \
+     echo \"$OUT\" | grep -q 'ax =1234' && echo \"$OUT\" | grep -q 'cx =0001'")
+
   # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
   # CFG wires the edge. Program: movi r0,0x1111 ; jmp +3 ; movi r0,0x9999 ; hlt -- the jump
   # skips the second movi, so r0 must stay 0x1111 (a NOT-taken branch would leave 0x9999).

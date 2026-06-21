@@ -52,11 +52,30 @@ Decoder::ExpandRegMap (std::vector<std::string> CONST &Map, std::vector<std::str
     }
 }
 
-// Build the operand a field feeds: a register selected from the (expanded) map by the field
-// value, or -- with no map -- the immediate field value.
-bool
-Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, Operand *pOut) CONST
+// Sign-extend Value from Width bits.
+static INT64
+SignExtend (UINT64 Value, UINT32 Width)
 {
+    if (Width == 0 || Width >= 64) { return (INT64) Value; }
+    UINT64 Sign = UINT64_C (1) << (Width - 1);
+    return (INT64) ((Value ^ Sign) - Sign);
+}
+
+// Build the operand a field feeds: a PC-relative branch target, a register selected from
+// the (expanded) map by the field value, or -- with no map -- the immediate field value.
+bool
+Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, Operand *pOut) CONST
+{
+    if (Field.Relative) {
+        // The operand is the branch target: this instruction's successor plus the signed
+        // displacement. (Under segmentation a near relative target's segment base cancels.)
+        UINT32 Bits = m_pArch->AddressSize ? m_pArch->AddressSize : 16;
+        pOut->Kind     = Operand::Imm;
+        pOut->Bits     = Bits;
+        pOut->ImmValue = (UINT64) ((INT64) NextPc + SignExtend (FieldVal, Field.Width));
+        return true;
+    }
+
     if (Field.RegMap.empty ()) {
         pOut->Kind     = Operand::Imm;
         pOut->Bits     = Field.Width;
@@ -91,11 +110,12 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, Operand *pOut) 
 }
 
 bool
-Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, DecodedInsn *pOut) CONST
+Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextBase, DecodedInsn *pOut) CONST
 {
     UINT32 Bits = pAlt->WordBits;
     UINT32 Len  = (Bits + 7) / 8;
     if (Len == 0 || Len > Avail) { return false; }
+    UINT64 NextPc = NextBase + Len;             // the successor address (for PC-relative fields)
 
     // First pass: every constant field must match. Second pass: resolve operands.
     UINT32 BitOff = 0;
@@ -113,7 +133,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, DecodedInsn 
         if (!F.Operand.empty ()) {
             UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
             Operand Op;
-            if (!ResolveOperand (F, V, &Op)) { return false; }
+            if (!ResolveOperand (F, V, NextPc, &Op)) { return false; }
             pOut->Operands[F.Operand] = Op;
         }
         BitOff += F.Width;
@@ -133,8 +153,16 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
 
     for (Insn *I : m_pArch->Insns) {
         for (EncAlt *A : I->Encodings) {
-            if (MatchAlt (A, p, Avail, pOut)) {
-                pOut->pInsn = I;
+            if (MatchAlt (A, p, Avail, Pos, pOut)) {
+                pOut->pInsn = I; pOut->pJump = nullptr;
+                return true;
+            }
+        }
+    }
+    for (JumpInsn *J : m_pArch->Jumps) {
+        for (EncAlt *A : J->Encodings) {
+            if (MatchAlt (A, p, Avail, Pos, pOut)) {
+                pOut->pInsn = nullptr; pOut->pJump = J;
                 return true;
             }
         }

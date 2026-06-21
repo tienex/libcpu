@@ -103,6 +103,21 @@ public:
                 return S_OK;
             }
             *pNextPc = Pc + D.Length;
+            // A jump insn: tag by its declared type (a conditional branch carries a
+            // condition). The transfer target is the resolved branch-target operand.
+            if (D.pJump != nullptr) {
+                UINT64 Target = 0;
+                std::string CONST &Ty = D.pJump->JumpType;
+                if ((Ty == "branch" || Ty == "call") && JumpTarget (D, &Target)) {
+                    *pNewPc = (CPU_ADDR) Target;
+                    *pTag = (D.pJump->Condition != nullptr) ? TagConditional
+                          : (Ty == "call")                  ? TagCall
+                          :                                   TagBranch;
+                } else {
+                    *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;   // return/computed: a later step
+                }
+                return S_OK;
+            }
             // A pc-write with a constant-foldable target is a branch; an `if (c) pc=...` is a
             // conditional branch (taken target in NewPc, fall-through in NextPc). The edge is
             // wired from the tag (the pc-write itself is not emitted).
@@ -140,7 +155,7 @@ public:
                 std::snprintf (pLine, MaxLine, "db 0x%02x", m_pCode[Pc]);
                 return S_OK;
             }
-            std::string Out = D.pInsn->Name;
+            std::string Out = (D.pJump != nullptr) ? D.pJump->Name : D.pInsn->Name;
             for (auto CONST &Kv : D.Operands) {
                 Operand CONST &Op = Kv.second;
                 char B[32];
@@ -190,11 +205,21 @@ public:
             if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
-            // The branch statement (an unconditional pc-write or an `if (c) pc=...`) is the
-            // edge, wired from the tag -- emit the rest of the body straight-line.
             std::vector<Stmt *> Body;
-            for (Stmt *S : D.pInsn->Semantics) {
-                if (!IsStdPcWrite (S) && !IsCondBranchStmt (S)) { Body.push_back (S); }
+            if (D.pJump != nullptr) {
+                // A jump's pre-actions run; the transfer macro itself is the edge (the run
+                // loop wires it from the tag), so it is omitted.
+                std::string TgtOp = JumpTargetOperand (D.pJump);
+                for (Stmt *S : D.pJump->Pre) { Body.push_back (S); }
+                for (Stmt *S : D.pJump->Action) {
+                    if (!IsJumpMacroStmt (S, TgtOp)) { Body.push_back (S); }
+                }
+            } else {
+                // The branch statement (an unconditional pc-write or `if (c) pc=...`) is the
+                // edge, wired from the tag -- emit the rest of the body straight-line.
+                for (Stmt *S : D.pInsn->Semantics) {
+                    if (!IsStdPcWrite (S) && !IsCondBranchStmt (S)) { Body.push_back (S); }
+                }
             }
             Tr.Emit (Body);
             return S_OK;
@@ -218,9 +243,14 @@ public:
         if (m_Standard) {
             DecodedInsn D;
             if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return E_NOTIMPL; }
-            UINT64 Target = 0;
-            Expr  *Cond = nullptr;
-            if (StdBranchInfo (D, Pc, &Target, &Cond) != StdBrCond || Cond == nullptr) { return E_NOTIMPL; }
+            Expr *Cond = nullptr;
+            if (D.pJump != nullptr) {
+                Cond = D.pJump->Condition;          // a conditional jump (jcc)
+            } else {
+                UINT64 Target = 0;
+                if (StdBranchInfo (D, Pc, &Target, &Cond) != StdBrCond) { Cond = nullptr; }
+            }
+            if (Cond == nullptr) { return E_NOTIMPL; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
             return Tr.EmitCondition (Cond, ppCond);
@@ -315,6 +345,48 @@ private:
         default:
             return false;
         }
+    }
+
+    // ---- jump-insn support ------------------------------------------------
+    //
+    // Is Name a declared decoder operand?
+    bool IsOperandName (std::string CONST &Name) CONST {
+        for (DecoderOperand *D : m_pArch->DecoderOps) { if (D->Name == Name) { return true; } }
+        return false;
+    }
+
+    // The branch-target operand of a jump: the decoder-operand argument to the action's
+    // jump macro (the address it transfers to, e.g. `src` in `@i8086_jump(src)`).
+    std::string JumpTargetOperand (JumpInsn *J) CONST {
+        for (Stmt *S : J->Action) {
+            Expr *E = (S->Kind == StmtExpr) ? S->Rhs : nullptr;
+            if (E != nullptr && E->Kind == ExprCall) {
+                for (Expr *A : E->Args) {
+                    if (A->Kind == ExprName && IsOperandName (A->Name)) { return A->Name; }
+                }
+            }
+        }
+        return std::string ();
+    }
+
+    // The action statement that performs the transfer (the macro called with the target
+    // operand) -- the branch edge, omitted from translation.
+    bool IsJumpMacroStmt (Stmt *S, std::string CONST &TgtOp) CONST {
+        if (S->Kind != StmtExpr || S->Rhs == nullptr || S->Rhs->Kind != ExprCall) { return false; }
+        for (Expr *A : S->Rhs->Args) {
+            if (A->Kind == ExprName && A->Name == TgtOp) { return true; }
+        }
+        return false;
+    }
+
+    // A decoded jump's static target (the resolved branch-target operand), if any.
+    bool JumpTarget (DecodedInsn CONST &D, UINT64 *pTarget) CONST {
+        std::string Op = JumpTargetOperand (D.pJump);
+        if (Op.empty ()) { return false; }
+        auto It = D.Operands.find (Op);
+        if (It == D.Operands.end () || It->second.Kind != Operand::Imm) { return false; }
+        *pTarget = It->second.ImmValue;
+        return true;
     }
 
     // A conditional-branch statement: `if (cond) <pc-write>` with a single then-statement
