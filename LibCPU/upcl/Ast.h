@@ -165,6 +165,36 @@ public:
     }
 };
 
+// One field of an encoding word: a named slice of `Width` bits, laid out MSB-first. It is
+// either MATCHED to a constant (an opcode bit-pattern), BOUND to a decoder operand (the
+// field's bits become that operand's value), or left free (a reserved / don't-care field).
+// This is architecture-neutral: a RISC word is one list of fields (op/rs/rt/...), and any
+// fixed-width form of any ISA is described the same way -- no byte/ModR/M assumptions.
+class EncField {
+public:
+    std::string Name;            // field name (e.g. op, rs, imm) -- for diagnostics/disasm
+    SRC_LOC     Loc = 0;
+    UINT32      Width = 0;
+    bool        HasConst = false;
+    UINT64      Const = 0;       // `= <value>`  : the opcode match
+    std::string Operand;         // `-> <operand>`: the decoder operand this field feeds
+};
+
+// One encoding alternative: a word of `WordBits` bits split into fields. An instruction may
+// list several alternatives (e.g. register-form vs immediate-form) separated by `|`.
+class EncAlt {
+public:
+    SRC_LOC                Loc = 0;
+    UINT32                 WordBits = 0;   // total instruction width (from the `#iN` word type)
+    std::vector<EncField>  Fields;         // MSB-first; widths sum to WordBits
+
+    UINT32 TotalBits () CONST {
+        UINT32 N = 0;
+        for (EncField CONST &F : Fields) { N += F.Width; }
+        return N;
+    }
+};
+
 class Insn {
 public:
     std::string              Name;
@@ -179,11 +209,13 @@ public:
     std::string              Feature;        // gating ISA feature (feature(...) attr; "" = base ISA)
     SRC_LOC                  FeatureLoc = 0;
     std::vector<Stmt *>      Semantics;      // the instruction body (assignment statements)
+    std::vector<EncAlt *>    Encodings;      // old .def: `encode <alt> | <alt> ...` byte patterns
     std::vector<Directive *> Directives;     // any other attribute (escape hatch)
 
     ~Insn () {
         for (Field *F : Bindings) { delete F; }
         for (Stmt *S : Semantics) { delete S; }
+        for (EncAlt *E : Encodings) { delete E; }
         for (Directive *D : Directives) { delete D; }
     }
 };

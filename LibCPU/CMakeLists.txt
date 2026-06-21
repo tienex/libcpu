@@ -542,6 +542,20 @@ add_test(NAME upcl.layout COMMAND sh -c
    grep -q 'flag O      = flags\\[11\\] -> %V' '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'r13  pc     #i24  \\[PC\\]' '${CMAKE_BINARY_DIR}/layout.out'")
 
+# Encoding is architecture-NEUTRAL bit-fields: the same `encode #iN ( field:width [=const |
+# ->operand] )` describes a 32-bit big-endian RISC R-type/I-type word AND an x86 form (whose
+# +r register is just the opcode's low 3 bits as a field) -- no byte / ModR/M notion in the
+# language. Field widths must sum to the word.
+add_test(NAME upcl.encoding COMMAND sh -c
+  "set -e; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/test/risc.upcl' > '${CMAKE_BINARY_DIR}/enc.risc' && \
+   grep -q 'encode #i32 ( op:6=0x0 rs:5->rs rt:5->rt rd:5->rd shamt:5=0x0 funct:6=0x20 )' '${CMAKE_BINARY_DIR}/enc.risc' && \
+   grep -q 'encode #i32 ( op:6=0x8 rs:5->rs rt:5->rt imm:16->imm )' '${CMAKE_BINARY_DIR}/enc.risc' && \
+   \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' > '${CMAKE_BINARY_DIR}/enc.8086' && \
+   grep -q 'encode #i24 ( op:5=0x17 reg:3->dst imm:16->src )' '${CMAKE_BINARY_DIR}/enc.8086' && \
+   grep -q 'encode #i8 ( op:8=0xf4 )' '${CMAKE_BINARY_DIR}/enc.8086'")
+set_tests_properties(upcl.encoding PROPERTIES FAIL_REGULAR_EXPRESSION "error|bits but the word is")
+
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-

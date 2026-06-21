@@ -749,6 +749,16 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             if (!pInsn->Feature.empty ()) { std::printf ("[%s] ", pInsn->Feature.c_str ()); }
             if (!pInsn->Super.empty ()) { std::printf (": %s ", pInsn->Super.c_str ()); }
             std::printf (" disasm \"%s\"  %zu stmt(s)\n", pInsn->Disasm.c_str (), pInsn->Semantics.size ());
+            for (Upcl::EncAlt *pEnc : pInsn->Encodings) {
+                std::printf ("        encode #i%u (", pEnc->WordBits);
+                for (size_t I = 0; I < pEnc->Fields.size (); I++) {
+                    Upcl::EncField CONST &F = pEnc->Fields[I];
+                    std::printf ("%s%s:%u", I ? " " : " ", F.Name.c_str (), F.Width);
+                    if (F.HasConst)            { std::printf ("=0x%llx", (unsigned long long) F.Const); }
+                    else if (!F.Operand.empty ()) { std::printf ("->%s", F.Operand.c_str ()); }
+                }
+                std::printf (" )\n");
+            }
         }
         // Conflict check: per CPU model, two enabled instructions sharing the same format
         // AND the same fixed-field bindings would decode the same bytes -- an ambiguity.

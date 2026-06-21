@@ -176,7 +176,7 @@ insn divw {
 	ax = %CC ( %U ( ax / src ) );
 
 }
-insn hlt  : ;
+insn hlt  : encode #i8 ( op:8 = 0xF4 );
 insn idivb {
 	
 	t = %S ( ax % src );
@@ -196,7 +196,8 @@ insn inb   : al = @call ( i8086_input_byte, [ #i32 src ] );
 insn inb_dx: al = @call ( i8086_input_byte, [ #i32 dx ] );
 insn inw   : ax = @call ( i8086_input_word, [ #i32 src ] );
 insn inw_dx: ax = @call ( i8086_input_word, [ #i32 dx ] );
-insn inc   : dst = %CC ( dst + 1, !C );
+insn inc   : dst = %CC ( dst + 1, !C )
+	encode #i8 ( op:5 = 0x08, reg:3 -> dst );		// 0x40+r  INC r16
 insn int   : @i8086_interrupt ( intno );
 insn into  : if ( flags.O ) @i8086_interrupt ( 4 );;
 insn iret {
@@ -244,7 +245,8 @@ jump insn jcc : type branch
 			    condition @eval_cc ( cond )
 			    { @i8086_jump ( src ); }
 
-insn mov : dst = src;
+insn mov : dst = src
+	encode #i24 ( op:5 = 0x17, reg:3 -> dst, imm:16 -> src );	// 0xB8+r iw  MOV r16, imm16
 insn movsb {
 
 	#i8 %M[ @i8086_str_dst () ] = #i8 %M[ @i8086_str_src () ];

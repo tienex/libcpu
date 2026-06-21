@@ -1004,15 +1004,84 @@ Parser::ParseOldInsn ()
     else { std::string M = std::string ("expected an instruction name, found ") + TokenName (m_Cur.Kind);
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
     if (Accept (TokColon)) {                        // inline body: : <stmt> ;   (or empty `: ;`)
-        if (!Accept (TokSemi)) {
+        if (m_Cur.Kind != TokSemi && !AtKeyword ("encode")) {
             I->Semantics.push_back (ParseInlineStmt ());
-            Expect (TokSemi, "after the inline instruction body");
         }
+        if (AtKeyword ("encode")) { ParseEncodeClause (I); }
+        Expect (TokSemi, "after the inline instruction body");
     } else if (m_Cur.Kind == TokLBrace) {
         ParseBlock (&I->Semantics);
+        if (AtKeyword ("encode")) { ParseEncodeClause (I); }
         Accept (TokSemi);
     }
     return I;
+}
+
+// `encode <alt> ( | <alt> )*` -- one or more bit-field word patterns for the same insn.
+void
+Parser::ParseEncodeClause (Insn *pInsn)
+{
+    Advance ();                                     // 'encode'
+    do {
+        EncAlt *A = ParseEncAlt ();
+        if (A != nullptr) { pInsn->Encodings.push_back (A); }
+    } while (Accept (TokPipe));
+}
+
+// `#iN ( <field> (, <field>)* )` -- the instruction word and its MSB-first field layout.
+EncAlt *
+Parser::ParseEncAlt ()
+{
+    EncAlt *A = new EncAlt ();
+    A->Loc = m_Cur.Loc;
+    Type *pWord = ParseType ();                     // the #iN word width
+    if (pWord != nullptr) { A->WordBits = pWord->Width; delete pWord; }
+    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "an encoding needs a word type, e.g. #i32"); }
+
+    Expect (TokLParen, "to open the encoding field list");
+    if (m_Cur.Kind != TokRParen) {
+        do {
+            EncField F;
+            if (ParseEncField (&F)) { A->Fields.push_back (F); }
+        } while (Accept (TokComma));
+    }
+    Expect (TokRParen, "to close the encoding field list");
+
+    if (A->WordBits != 0 && A->TotalBits () != A->WordBits) {
+        std::string Msg = "encoding fields total " + std::to_string (A->TotalBits ())
+                        + " bits but the word is " + std::to_string (A->WordBits);
+        m_pDiag->Report (SevError, A->Loc, m_Cur.Range (), Msg);
+    }
+    return A;
+}
+
+// `<name> : <width> ( = <const> | -> <operand> )?` -- one field: a matched constant, an
+// operand binding, or a free (reserved) field.
+bool
+Parser::ParseEncField (EncField *pField)
+{
+    if (m_Cur.Kind != TokIdent) {
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a field name");
+        return false;
+    }
+    pField->Name = m_Cur.Text;
+    pField->Loc  = m_Cur.Loc;
+    Advance ();
+    if (!Expect (TokColon, "after the field name")) { return false; }
+    UINT64 W = 0;
+    if (!ExpectInt (&W, "as the field width")) { return false; }
+    pField->Width = (UINT32) W;
+
+    if (Accept (TokAssign)) {                        // = <const>  : the opcode match
+        UINT64 V = 0;
+        ExpectInt (&V, "as the field's matched value");
+        pField->HasConst = true;
+        pField->Const = V;
+    } else if (Accept (TokArrow)) {                  // -> <operand>  : bind the field's bits
+        if (m_Cur.Kind == TokIdent) { pField->Operand = m_Cur.Text; Advance (); }
+        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an operand name after '->'"); }
+    }
+    return true;
 }
 
 // `macro <id> ( <params> ) : <stmt> ;`  |  `macro <id> ( <params> ) { body }`.
