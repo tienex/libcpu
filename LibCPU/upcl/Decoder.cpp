@@ -76,6 +76,13 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
         return true;
     }
 
+    if (Field.HasImplicitImm) {                      // an implicit operand: a fixed immediate
+        pOut->Kind = Operand::Imm;
+        pOut->Bits = 8;
+        pOut->ImmValue = Field.ImplicitImm;
+        return true;
+    }
+
     if (Field.RegMap.empty ()) {
         pOut->Kind = Operand::Imm;
         if (Field.SignExt) {

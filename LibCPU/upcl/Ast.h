@@ -225,6 +225,11 @@ public:
     std::string              AddrMode;    // `-> op @ <addrmode>`: the field selects through an
                                           //   addressing mode (a register or a memory address,
                                           //   reading a variable-length displacement).
+    bool                     HasImplicitImm = false; // an implicit operand carrying no encoding
+    UINT64                   ImplicitImm = 0;     //   bits: `name = <const>` binds the operand to
+                                          //   a fixed immediate (e.g. a shift-by-1's count), and
+                                          //   `name <- <reg>` (a single-entry RegMap, width 0)
+                                          //   binds it to a fixed register (a shift-by-CL count).
     bool                     SignExt = false; // `-> op sx`: sign-extend the field value to the
                                           //   machine word width (e.g. `0x83 /digit ib`'s imm8
                                           //   becomes a 16-bit operand). Architecture-neutral.

@@ -1101,7 +1101,9 @@ Parser::ParseEncAlt ()
 }
 
 // `<name> : <width> ( = <const> | -> <operand> )?` -- one field: a matched constant, an
-// operand binding, or a free (reserved) field.
+// operand binding, or a free (reserved) field. A name with no `: width` is an implicit operand
+// that occupies no encoding bits: `name = <const>` binds it to a fixed immediate, `name <- <reg>`
+// to a fixed register (an x86 shift's by-1 / by-CL count, say).
 bool
 Parser::ParseEncField (EncField *pField)
 {
@@ -1112,6 +1114,23 @@ Parser::ParseEncField (EncField *pField)
     pField->Name = m_Cur.Text;
     pField->Loc  = m_Cur.Loc;
     Advance ();
+    if (m_Cur.Kind != TokColon) {                    // implicit operand: no encoding bits
+        pField->Width   = 0;
+        pField->Operand = pField->Name;
+        if (Accept (TokAssign)) {                    // name = <const>  : a fixed immediate
+            UINT64 V = 0;
+            ExpectInt (&V, "as the implicit operand value");
+            pField->HasImplicitImm = true;
+            pField->ImplicitImm = V;
+        } else if (Accept (TokBindLeft)) {           // name <- <reg>   : a fixed register
+            if (m_Cur.Kind == TokIdent) { pField->RegMap.push_back (m_Cur.Text); Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a register name after '<-'"); }
+        } else {
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (),
+                             "expected ': width', '= value', or '<- reg' after a field name");
+        }
+        return true;
+    }
     if (!Expect (TokColon, "after the field name")) { return false; }
     UINT64 W = 0;
     if (!ExpectInt (&W, "as the field width")) { return false; }

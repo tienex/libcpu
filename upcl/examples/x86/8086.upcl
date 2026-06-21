@@ -145,6 +145,42 @@ insn idiv : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 7, rm:3 -> src @modrm16 ),
 	  ax = [ #i16 %S ( n / [ #i32 src ] ) ] ;				// quotient -> AX
 	  dx = [ #i16 %S ( n % [ #i32 src ] ) ] ; }				// remainder -> DX
 
+// ---- shifts and rotates: 0xD1 (by 1) / 0xD3 (by CL) /digit -----------------
+//
+//     /0 rol   /1 ror   /4 shl (= sal)   /5 shr   /7 sar
+//
+// The shift count is an IMPLICIT operand -- a fixed 1 for the 0xD1 by-1 forms,
+// the CL register for the 0xD3 variable forms -- so it occupies no encoding bits
+// yet still disassembles (ROL AX, 1 / ROL AX, CL). The flags set are the result
+// flags (Z/S/P) via %CC; the carry/overflow shift semantics and the RCL/RCR
+// rotate-through-carry (/2,/3) and the 0xC0/0xC1 imm8 forms (an 80186 addition)
+// are not yet modelled.
+
+insn rol : encode #i16 ( op:8 = 0xD1, mod:2, reg:3 = 0, rm:3 -> dst @modrm16, cnt = 1 )		// 0xD1 /0  ROL r/m16, 1
+	 |  #i16 ( op:8 = 0xD3, mod:2, reg:3 = 0, rm:3 -> dst @modrm16, cnt <- cl ),		// 0xD3 /0  ROL r/m16, CL
+	disasm ( mnemonic : "rol", size : word, operands : dst, cnt )
+	=> dst = %CC ( dst <<> cnt );
+
+insn ror : encode #i16 ( op:8 = 0xD1, mod:2, reg:3 = 1, rm:3 -> dst @modrm16, cnt = 1 )		// 0xD1 /1  ROR r/m16, 1
+	 |  #i16 ( op:8 = 0xD3, mod:2, reg:3 = 1, rm:3 -> dst @modrm16, cnt <- cl ),		// 0xD3 /1  ROR r/m16, CL
+	disasm ( mnemonic : "ror", size : word, operands : dst, cnt )
+	=> dst = %CC ( dst >>< cnt );
+
+insn shl : encode #i16 ( op:8 = 0xD1, mod:2, reg:3 = 4, rm:3 -> dst @modrm16, cnt = 1 )		// 0xD1 /4  SHL r/m16, 1
+	 |  #i16 ( op:8 = 0xD3, mod:2, reg:3 = 4, rm:3 -> dst @modrm16, cnt <- cl ),		// 0xD3 /4  SHL r/m16, CL
+	disasm ( mnemonic : "shl", size : word, operands : dst, cnt )
+	=> dst = %CC ( dst << cnt );
+
+insn shr : encode #i16 ( op:8 = 0xD1, mod:2, reg:3 = 5, rm:3 -> dst @modrm16, cnt = 1 )		// 0xD1 /5  SHR r/m16, 1
+	 |  #i16 ( op:8 = 0xD3, mod:2, reg:3 = 5, rm:3 -> dst @modrm16, cnt <- cl ),		// 0xD3 /5  SHR r/m16, CL
+	disasm ( mnemonic : "shr", size : word, operands : dst, cnt )
+	=> dst = %CC ( dst >> cnt );
+
+insn sar : encode #i16 ( op:8 = 0xD1, mod:2, reg:3 = 7, rm:3 -> dst @modrm16, cnt = 1 )		// 0xD1 /7  SAR r/m16, 1
+	 |  #i16 ( op:8 = 0xD3, mod:2, reg:3 = 7, rm:3 -> dst @modrm16, cnt <- cl ),		// 0xD3 /7  SAR r/m16, CL
+	disasm ( mnemonic : "sar", size : word, operands : dst, cnt )
+	=> dst = %CC ( %S ( dst >> cnt ) );						// arithmetic right shift
+
 // ---- increment / decrement -----------------------------------------------
 
 // INC/DEC have the 0x40+r / 0x48+r short register forms and the 0xFF /0, /1 r/m forms

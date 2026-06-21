@@ -660,6 +660,22 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x86icall.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0012' && \
      printf '\\xB8\\x01\\x00\\xBB\\x0C\\x00\\xFF\\xE3\\xB8\\xFF\\x00\\x90\\xB8\\x99\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x86ijmp.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x86ijmp.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0099'")
+
+  # Shifts/rotates: 0xD1 (by 1) and 0xD3 (by CL) /digit. The shift count is an IMPLICIT operand --
+  # a fixed 1 (no encoding bits) for 0xD1, the CL register for 0xD3 -- so it disassembles (SHL AX,
+  # 01h / SHL AX, CL) without occupying instruction bits. Execution checks SAR (arithmetic, sign
+  # preserved: 0x8000 -> 0xF800) is distinct from SHR (logical: 0x8000 -> 0x0800), plus SHL by CL.
+  add_test(NAME upcl.x86-shift COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xD1\\xE0\\xD3\\xE0\\xD1\\xC0\\xD3\\xF8' > '${CMAKE_BINARY_DIR}/x86sh.bin' && \
+     D=$(LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86sh.bin' --count 4 --arch \"upcl:$X@8086\") && \
+     echo \"$D\" | grep -q 'SHL AX, 01h' && echo \"$D\" | grep -q 'SHL AX, CL' && echo \"$D\" | grep -q 'SAR AX, CL' && \
+     printf '\\xB8\\x01\\x00\\xB1\\x04\\xD3\\xE0\\xF4' > '${CMAKE_BINARY_DIR}/x86shl.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86shl.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0010' && \
+     printf '\\xB8\\x00\\x80\\xB1\\x04\\xD3\\xF8\\xF4' > '${CMAKE_BINARY_DIR}/x86sar.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86sar.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =f800' && \
+     printf '\\xB8\\x00\\x80\\xB1\\x04\\xD3\\xE8\\xF4' > '${CMAKE_BINARY_DIR}/x86shr.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86shr.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0800'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

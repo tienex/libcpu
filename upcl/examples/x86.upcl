@@ -45,7 +45,7 @@ arch "x86" {
 	}
 }
 
-decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
+decoder_operands [ #i16 src, #i16 dst, #i8 cnt, ccflags #i16 cond, const #i1 rep ];
 
 regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
 regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
