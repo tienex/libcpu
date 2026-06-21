@@ -180,7 +180,8 @@ insn cmpsw {
 }
 insn cwd  : ( dx : ax ) = %S ( [ #i32 ax ] );
 insn dec  : dst = %CC ( dst - 1, !C )
-	encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] );		// 0x48+r  DEC r16
+	encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] ),		// 0x48+r  DEC r16
+	disasm "dec %dst";
 insn divb {
 	
 	t = %U ( ax % src );
@@ -194,7 +195,7 @@ insn divw {
 	ax = %CC ( %U ( ax / src ) );
 
 }
-insn hlt  : encode #i8 ( op:8 = 0xF4 );
+insn hlt  : encode #i8 ( op:8 = 0xF4 ), disasm "hlt";
 insn idivb {
 	
 	t = %S ( ax % src );
@@ -215,7 +216,8 @@ insn inb_dx: al = @call ( i8086_input_byte, [ #i32 dx ] );
 insn inw   : ax = @call ( i8086_input_word, [ #i32 src ] );
 insn inw_dx: ax = @call ( i8086_input_word, [ #i32 dx ] );
 insn inc   : dst = %CC ( dst + 1, !C )
-	encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] );		// 0x40+r  INC r16
+	encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] ),		// 0x40+r  INC r16
+	disasm "inc %dst";
 insn int   : @i8086_interrupt ( intno );
 insn into  : if ( flags.O ) @i8086_interrupt ( 4 );;
 insn iret {
@@ -253,12 +255,14 @@ jump insn fcall : type call {
 	@i8086_push ( ip );
 	@i8086_jump ( src );
 }
-jump insn ncall : type call {
+jump insn ncall : type call, encode #i24 ( op:8 = 0xE8, disp:16 -> src rel )	// 0xE8 cw  CALL rel16
+{
 	@i8086_push ( ip );
 	@i8086_jump ( src );
 }
 
-jump insn nret : type return { @i8086_jump ( @i8086_pop () ); }
+jump insn nret : type return, encode #i8 ( op:8 = 0xC3 )			// 0xC3  RET (near)
+	{ @i8086_jump ( @i8086_pop () ); }
 
 jump insn jcc : type branch,
 			    condition @eval_cc ( cond ),
@@ -266,7 +270,8 @@ jump insn jcc : type branch,
 			    { @i8086_jump ( src ); }
 
 insn mov : dst = src
-	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src );	// 0xB8+r iw  MOV r16, imm16
+	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src ),	// 0xB8+r iw  MOV r16, imm16
+	disasm "mov %dst, 0x%src";
 insn movsb {
 
 	#i8 %M[ @i8086_str_dst () ] = #i8 %M[ @i8086_str_src () ];

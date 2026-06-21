@@ -69,6 +69,7 @@ private:
     // old .def top-level declarations (after the arch block)
     Insn      *ParseOldInsn ();                   // `insn <id> : <stmt> ;` | `insn <id> { body }`
     void       ParseEncodeClause (Insn *pInsn);   // `encode <alt> ( | <alt> )*`
+    void       ParseInsnTail (Insn *pInsn);        // post-body clauses: encode / disasm
     EncAlt    *ParseEncAlt ();                     // `#iN ( <field> (, <field>)* )`
     bool       ParseEncField (EncField *pField);   // `<name> : <width> ( = <const> | -> <operand> )?`
     Macro     *ParseMacro ();                     // `macro <id> ( params ) ...`

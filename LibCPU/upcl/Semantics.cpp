@@ -10,7 +10,18 @@ Translator::Translator (RegisterLayout CONST &Layout, Arch *pArch, ICpuEmitter *
                         UINT32 WordBits)
     : m_Layout (Layout), m_pArch (pArch), m_pE (pEmitter), m_WordBits (WordBits)
 {
-    for (Macro *M : pArch->Macros) { m_Macros[M->Name] = M; }
+    for (Macro *M : pArch->Macros) { m_Macros[M->Name].push_back (M); }
+}
+
+// Resolve a macro call to its overload with the matching parameter count (i8086_jump has a
+// near (address) form and a far (seg, off) form); fall back to the first if none matches.
+Macro *
+Translator::FindMacro (std::string CONST &Name, size_t ArgCount) CONST
+{
+    auto It = m_Macros.find (Name);
+    if (It == m_Macros.end () || It->second.empty ()) { return nullptr; }
+    for (Macro *M : It->second) { if (M->Params.size () == ArgCount) { return M; } }
+    return It->second.front ();
 }
 
 void
@@ -257,9 +268,35 @@ Translator::EvalName (std::string CONST &Name)
     return Const (m_WordBits, 0);          // unbound: a zero of word width
 }
 
+// pc.<field> where <field> is a composition field (off/seg) -> the source register it maps
+// to (ip/cs). Sets *pReg and returns true for that shape.
+bool
+Translator::PcField (Expr *pExpr, std::string *pReg) CONST
+{
+    if (pExpr->Kind != ExprMember || pExpr->Args.empty () || pExpr->Args[0]->Kind != ExprName) { return false; }
+    if (pExpr->Args[0]->Name != m_Layout.PcName ()) { return false; }
+    auto It = m_Layout.PcFields.find (pExpr->Name);
+    if (It == m_Layout.PcFields.end ()) { return false; }
+    *pReg = It->second;
+    return true;
+}
+
+// Is this LHS a write to the program counter: pc, the %PC meta, or pc.<composition-field>?
+bool
+Translator::IsPcTarget (Expr *pLhs) CONST
+{
+    if (pLhs->Kind == ExprName && pLhs->Name == m_Layout.PcName () && !m_Layout.PcName ().empty ()) { return true; }
+    if (pLhs->Kind == ExprMeta && pLhs->Name == "PC") { return true; }
+    std::string Reg;
+    return PcField (pLhs, &Reg);
+}
+
 Value
 Translator::EvalMember (Expr *pExpr)
 {
+    // pc.off / pc.seg -- resolve through the PC composition to the source register (ip/cs).
+    std::string Reg;
+    if (PcField (pExpr, &Reg)) { return EvalName (Reg); }
     // a.b -- b names a sub-field of register a. Field names are unique across the file,
     // so resolving the member directly gives the same storage.
     if (!pExpr->Name.empty ()) { return EvalName (pExpr->Name); }
@@ -618,12 +655,32 @@ Translator::NewBlock (CHAR8 CONST *pName)
     return ComPtr<ICpuBlock> (pBlock);
 }
 
+// A condition known at translation time -- a literal, or a type test `e is #t` whose width
+// is fixed (the `address is #i16` in i8086_jump). Lets EmitIf skip the CFG diamond.
+bool
+Translator::TryConstCond (Expr *pCond, bool *pResult) CONST
+{
+    if (pCond->Kind == ExprInt) { *pResult = (pCond->Int != 0); return true; }
+    if (pCond->Kind == ExprIs && pCond->VType != nullptr && !pCond->Args.empty ()) {
+        *pResult = (WidthOf (pCond->Args[0]) == pCond->VType->Width);
+        return true;
+    }
+    return false;
+}
+
 // if (Cond) Then [else Else].  Register state lives in the register file (memory), not in
 // SSA values, so the branches need no PHI nodes: each block reads and writes registers
 // afresh -- the merge block simply continues.
 bool
 Translator::EmitIf (Stmt *pStmt)
 {
+    // A compile-time-known condition collapses to its taken branch -- no diamond, so a
+    // captured value (a ret's pc.off write) stays in the current block.
+    bool Known = false;
+    if (TryConstCond (pStmt->Cond, &Known)) {
+        return Known ? Emit (pStmt->Then) : Emit (pStmt->Else);
+    }
+
     Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
 
     ComPtr<ICpuBlock> Then = NewBlock ("if.then");
@@ -737,6 +794,14 @@ Translator::EmitAssign (Stmt *pStmt)
 void
 Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
 {
+    // A computed write to the program counter (a ret popping its target) is captured as the
+    // branch target; the caller emits the IndirectBranch after the body runs. The value is
+    // pooled, so it stays alive until the translation ends.
+    if (m_IndirectPc && IsPcTarget (pLhs)) {
+        m_IndirectTarget = Rhs.V;
+        return;
+    }
+
     switch (pLhs->Kind) {
     case ExprName:
         WriteName (pLhs->Name, Rhs);
@@ -746,9 +811,12 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         m_Env[pLhs->Name] = Rhs;             // %result and other inlined-macro locals
         return;
 
-    case ExprMember:
+    case ExprMember: {
+        std::string Reg;
+        if (PcField (pLhs, &Reg)) { WriteName (Reg, Rhs); return; }  // pc.off = ... -> ip
         WriteName (pLhs->Name, Rhs);         // flags.C = ...  ->  the named field
         return;
+    }
 
     case ExprMem: {
         UINT32 Bits = (pLhs->VType != nullptr) ? pLhs->VType->Width : Rhs.Bits;
@@ -828,9 +896,8 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
 bool
 Translator::EmitMacroStmt (Expr *pCall)
 {
-    auto It = m_Macros.find (pCall->Name);
-    if (It == m_Macros.end ()) { return false; }
-    Macro *M = It->second;
+    Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
+    if (M == nullptr) { return false; }
 
     std::map<std::string, Value> Saved;
     std::vector<std::string> Names = M->Params;
@@ -854,9 +921,8 @@ Translator::EmitMacroStmt (Expr *pCall)
 Value
 Translator::EvalMacroCall (Expr *pCall)
 {
-    auto It = m_Macros.find (pCall->Name);
-    if (It == m_Macros.end ()) { return Const (m_WordBits, 0); }
-    Macro *M = It->second;
+    Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
+    if (M == nullptr) { return Const (m_WordBits, 0); }
 
     std::map<std::string, Value> Saved;
     std::vector<std::string> Names = M->Params;

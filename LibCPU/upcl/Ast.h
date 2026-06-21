@@ -373,6 +373,8 @@ public:
     std::vector<Stmt *>   Pre;
     std::vector<Stmt *>   Action;
     std::vector<EncAlt *> Encodings;          // `encode <alt> | ...` byte patterns (owned)
+    bool                  HasDisasm = false;
+    std::string           Disasm;            // `disasm "..."` format string
     ~JumpInsn () {
         delete Delay; delete Condition;
         for (Stmt *S : Pre) { delete S; }

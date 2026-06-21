@@ -62,10 +62,21 @@ public:
     std::vector<RegFlag> Flags;
     std::map<std::string, UINT32> PhysIndex;   // name -> Phys index (fast lookup)
 
+    // The program counter's composition fields -> their source register. From the PC's
+    // `evaluate (...) ( seg <- cs : off <-> ip )` binding: PcFields["off"] == "ip",
+    // PcFields["seg"] == "cs". So `pc.off` resolves to the offset register (ip).
+    std::map<std::string, std::string> PcFields;
+
     // The physical register holding the program counter (or ~0 if none).
     UINT32 PcIndex () CONST {
         for (RegPhys CONST &P : Phys) { if (P.IsPc) { return P.Index; } }
         return ~(UINT32) 0;
+    }
+
+    // The program counter's register name ("" if none).
+    std::string PcName () CONST {
+        UINT32 I = PcIndex ();
+        return (I != ~(UINT32) 0) ? Phys[I].Name : std::string ();
     }
 };
 

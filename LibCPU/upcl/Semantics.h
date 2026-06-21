@@ -87,6 +87,13 @@ public:
     // Emit one statement (public face of the statement walker), for selective translation.
     bool EmitOne (Stmt *pStmt) { return EmitStmt (pStmt); }
 
+    // In indirect-PC mode, a write to the program counter (pc or pc.off) is CAPTURED as the
+    // computed branch target rather than stored -- a ret popping its return address. The
+    // caller emits the IndirectBranch after the whole body (so the stack adjust around the
+    // pop still runs). IndirectTarget() returns the captured value (null if none).
+    void       SetIndirectPc (bool On) { m_IndirectPc = On; }
+    ICpuValue *IndirectTarget () CONST { return m_IndirectTarget; }
+
 private:
     // expressions
     Value EvalExpr (Expr *pExpr);
@@ -100,8 +107,12 @@ private:
     bool  EmitStmt (Stmt *pStmt);
     bool  EmitAssign (Stmt *pStmt);
     void  StoreTo (Expr *pLhs, Value CONST &Rhs);
+    bool  IsPcTarget (Expr *pLhs) CONST;     // pc / %PC / pc.<composition-field>
+    bool  PcField (Expr *pLhs, std::string *pReg) CONST;  // pc.off -> its source register (ip)
     bool  EmitMacroStmt (Expr *pCall);       // @macro(args) as a statement
+    Macro *FindMacro (std::string CONST &Name, size_t ArgCount) CONST;  // overload by arity
     bool  EmitIf (Stmt *pStmt);              // if (Cond) Then [else Else]  -> a CFG diamond
+    bool  TryConstCond (Expr *pCond, bool *pResult) CONST;  // a compile-time-known condition
     bool  EmitWhile (Stmt *pStmt);           // while (Cond) Body           -> head/body/end
     bool  EmitFor (Stmt *pStmt);             // for (Init; Cond; Step) Body
     ComPtr<ICpuBlock> NewBlock (CHAR8 CONST *pName);
@@ -135,9 +146,11 @@ private:
     Arch                            *m_pArch;
     ICpuEmitter                     *m_pE;
     UINT32                           m_WordBits;
+    bool                             m_IndirectPc = false; // pc-write -> captured as a branch
+    ICpuValue                       *m_IndirectTarget = nullptr; // the captured computed target
     std::map<std::string, Value>     m_Env;        // bound values / locals / %result
     std::map<std::string, Operand>   m_Operands;   // decoded operand locations (decoder path)
-    std::map<std::string, Macro *>   m_Macros;
+    std::map<std::string, std::vector<Macro *>> m_Macros;  // name -> overloads (by arity)
     std::vector<ComPtr<ICpuValue>>   m_Pool;       // keeps every emitted value alive
 };
 

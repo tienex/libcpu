@@ -157,16 +157,46 @@ public:
                 std::snprintf (pLine, MaxLine, "db 0x%02x", m_pCode[Pc]);
                 return S_OK;
             }
-            std::string Out = (D.pJump != nullptr) ? D.pJump->Name : D.pInsn->Name;
-            for (auto CONST &Kv : D.Operands) {
-                Operand CONST &Op = Kv.second;
-                char B[32];
-                if (Op.Kind == Operand::Reg) {
-                    std::snprintf (B, sizeof (B), " %s", m_Layout.Phys[Op.RegIndex].Name.c_str ());
-                } else {
-                    std::snprintf (B, sizeof (B), " 0x%llx", (unsigned long long) Op.ImmValue);
+            bool        HasFmt = (D.pJump != nullptr) ? D.pJump->HasDisasm : D.pInsn->HasDisasm;
+            std::string Fmt    = (D.pJump != nullptr) ? D.pJump->Disasm    : D.pInsn->Disasm;
+            std::string Name   = (D.pJump != nullptr) ? D.pJump->Name      : D.pInsn->Name;
+            std::string Out;
+            if (HasFmt) {
+                // Render the format: a %<operand> placeholder becomes the operand's register
+                // name (a register operand) or its hex value (an immediate).
+                for (size_t I = 0; I < Fmt.size (); ) {
+                    if (Fmt[I] == '%' && I + 1 < Fmt.size () && IsWord (Fmt[I + 1])) {
+                        size_t J = I + 1;
+                        while (J < Fmt.size () && IsWord (Fmt[J])) { J++; }
+                        std::string Op = Fmt.substr (I + 1, J - (I + 1));
+                        auto It = D.Operands.find (Op);
+                        if (It != D.Operands.end ()) {
+                            char B[24];
+                            if (It->second.Kind == Operand::Reg) {
+                                Out += m_Layout.Phys[It->second.RegIndex].Name;
+                            } else {
+                                std::snprintf (B, sizeof (B), "%llx", (unsigned long long) It->second.ImmValue);
+                                Out += B;
+                            }
+                        }
+                        I = J;
+                    } else {
+                        Out.push_back (Fmt[I++]);
+                    }
                 }
-                Out += B;
+            } else {
+                // No format given: the mnemonic followed by the decoded operands.
+                Out = Name;
+                for (auto CONST &Kv : D.Operands) {
+                    Operand CONST &Op = Kv.second;
+                    char B[32];
+                    if (Op.Kind == Operand::Reg) {
+                        std::snprintf (B, sizeof (B), " %s", m_Layout.Phys[Op.RegIndex].Name.c_str ());
+                    } else {
+                        std::snprintf (B, sizeof (B), " 0x%llx", (unsigned long long) Op.ImmValue);
+                    }
+                    Out += B;
+                }
             }
             std::snprintf (pLine, MaxLine, "%s", Out.c_str ());
             return S_OK;
@@ -208,27 +238,29 @@ public:
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
             // The program counter reads as the NEXT instruction's address (so a call pushes
-            // the right return address); pc-writes are branch edges, handled below.
-            if (!m_PcName.empty ()) {
-                Operand PcOp; PcOp.Kind = Operand::Imm;
-                PcOp.Bits = m_AddrBits; PcOp.ImmValue = (UINT64) (Pc + D.Length);
-                Tr.BindOperand (m_PcName, PcOp);
-            }
+            // the right return address); pc-writes are branch edges, handled below. The PC's
+            // offset register (ip, from the seg:off composition) reads the same, so a near
+            // call that pushes `ip` pushes the return offset.
+            Operand PcOp; PcOp.Kind = Operand::Imm;
+            PcOp.Bits = m_AddrBits; PcOp.ImmValue = (UINT64) (Pc + D.Length);
+            if (!m_PcName.empty ()) { Tr.BindOperand (m_PcName, PcOp); }
+            auto OffIt = m_Layout.PcFields.find ("off");
+            if (OffIt != m_Layout.PcFields.end ()) { Tr.BindOperand (OffIt->second, PcOp); }
+
             std::vector<Stmt *> Body;
             if (D.pJump != nullptr) {
                 if (D.pJump->JumpType == "return") {
-                    // Computed return: run the pop (pre + non-pc statements), capture the
-                    // pc-write's value, and indirect-branch to it (terminating the block).
+                    // Computed return: translate the action in indirect-PC mode -- the pop
+                    // runs (stack adjust included), the pc/pc.off write is captured, and the
+                    // IndirectBranch is emitted last (resuming at the popped address).
+                    Tr.SetIndirectPc (true);
                     for (Stmt *S : D.pJump->Pre) { Tr.EmitOne (S); }
-                    ComPtr<ICpuValue> Target;
-                    for (Stmt *S : D.pJump->Action) {
-                        if (IsStdPcWrite (S) && S->Rhs != nullptr) { Tr.EmitExpr (S->Rhs, &Target); }
-                        else { Tr.EmitOne (S); }
-                    }
+                    Tr.Emit (D.pJump->Action);
+                    ICpuValue *Target = Tr.IndirectTarget ();
                     ICpuSmcEmitter *pFlow = nullptr;
                     if (Target != nullptr
                         && SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
-                        pFlow->IndirectBranch (Target.Get ());
+                        pFlow->IndirectBranch (Target);
                         pFlow->Release ();
                     }
                     return S_OK;

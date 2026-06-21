@@ -528,6 +528,16 @@ if(TARGET interp_backend)
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/jcc8086.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0000'")
 
+  # 8086 segmented subroutine: ncall (E8) pushes ip via @i8086_push, nret (C3) pops it via
+  # @i8086_jump(@i8086_pop()) -- exercising macro-overload resolution (near vs far i8086_jump),
+  # the pc.off->ip composition, and the indirect-branch return. ncall func ; inc cx ; jmp end ;
+  # func: inc dx ; ret ; end: hlt -- func runs once (dx=1) and control returns (cx=1).
+  add_test(NAME upcl.run-8086-call COMMAND sh -c
+    "printf '\\xE8\\x03\\x00\\x41\\xEB\\x02\\x42\\xC3\\xF4' > '${CMAKE_BINARY_DIR}/call8086.bin' && \
+     OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/call8086.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def') && \
+     echo \"$OUT\" | grep -q 'cx =0001' && echo \"$OUT\" | grep -q 'dx =0001'")
+
   # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
   # CFG wires the edge. Program: movi r0,0x1111 ; jmp +3 ; movi r0,0x9999 ; hlt -- the jump
   # skips the second movi, so r0 must stay 0x1111 (a NOT-taken branch would leave 0x9999).
@@ -557,6 +567,14 @@ if(TARGET interp_backend)
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 endif()
+
+# Disassembly format strings: a `disasm "mov %dst, 0x%src"` clause renders the operands by
+# name (a register operand as its name, an immediate as hex). B8 34 12 must disassemble to
+# "mov ax, 0x1234".
+add_test(NAME upcl.disasm COMMAND sh -c
+  "printf '\\xB8\\x34\\x12' > '${CMAKE_BINARY_DIR}/disasm.bin' && \
+   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 \
+     --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'mov ax, 0x1234'")
 
 # Clang-style diagnostics: a stray top-level token resyncs at the next declaration (no
 # cascade), and the error count is capped. One bad line + a good insn after it => exactly

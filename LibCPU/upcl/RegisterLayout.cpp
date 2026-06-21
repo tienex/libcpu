@@ -54,8 +54,13 @@ SplitColonList (RegisterLayout *pLayout, RegPhys CONST &Phys, Splitter CONST *pS
             continue;
         }
 
-        // A composition bind (pc's seg/off) names no storage of its own -- skip it.
-        if (IsComposition (pBind)) { continue; }
+        // A composition bind (pc's seg/off) names no storage of its own. Record the PC's
+        // field-to-source mapping (off -> ip, seg -> cs) so pc.off resolves to the offset
+        // register, then skip it as a storage field.
+        if (IsComposition (pBind)) {
+            if (Phys.IsPc && !pBind->SrcBind.empty ()) { pLayout->PcFields[pBind->Name] = pBind->SrcBind; }
+            continue;
+        }
 
         RegSub Sub;
         Sub.Name   = pBind->Name;

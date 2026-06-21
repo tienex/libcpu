@@ -1004,17 +1004,36 @@ Parser::ParseOldInsn ()
     else { std::string M = std::string ("expected an instruction name, found ") + TokenName (m_Cur.Kind);
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
     if (Accept (TokColon)) {                        // inline body: : <stmt> ;   (or empty `: ;`)
-        if (m_Cur.Kind != TokSemi && !AtKeyword ("encode")) {
+        if (m_Cur.Kind != TokSemi && !AtKeyword ("encode") && !AtKeyword ("disasm")) {
             I->Semantics.push_back (ParseInlineStmt ());
         }
-        if (AtKeyword ("encode")) { ParseEncodeClause (I); }
+        ParseInsnTail (I);
         Expect (TokSemi, "after the inline instruction body");
     } else if (m_Cur.Kind == TokLBrace) {
         ParseBlock (&I->Semantics);
-        if (AtKeyword ("encode")) { ParseEncodeClause (I); }
+        ParseInsnTail (I);
         Accept (TokSemi);
     }
     return I;
+}
+
+// Post-body instruction clauses, in any order with an optional comma between them:
+//   `encode <alt> (| <alt>)*`  and  `disasm "<format>"`.
+void
+Parser::ParseInsnTail (Insn *pInsn)
+{
+    for (;;) {
+        Accept (TokComma);
+        if (AtKeyword ("encode")) {
+            ParseEncodeClause (pInsn);
+        } else if (AtKeyword ("disasm")) {
+            Advance ();
+            if (m_Cur.Kind == TokString) { pInsn->Disasm = m_Cur.Text; pInsn->HasDisasm = true; Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string"); }
+        } else {
+            break;
+        }
+    }
 }
 
 // `encode <alt> ( | <alt> )*` -- one or more bit-field word patterns for the same insn.
@@ -1150,6 +1169,10 @@ Parser::ParseJumpInsn ()
                 EncAlt *A = ParseEncAlt ();
                 if (A != nullptr) { J->Encodings.push_back (A); }
             } while (Accept (TokPipe));
+        } else if (AtKeyword ("disasm")) {
+            Advance ();
+            if (m_Cur.Kind == TokString) { J->Disasm = m_Cur.Text; J->HasDisasm = true; Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string"); }
         } else if (AtKeyword ("condition")) {
             Advance (); J->Condition = ParseExpr (0);
         } else if (AtKeyword ("delay")) {
