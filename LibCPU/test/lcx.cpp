@@ -40,6 +40,7 @@
 #include "../upcl/Parser.h"
 #include "../upcl/UpclArch.h"
 #include "../upcl/RegisterLayout.h"
+#include "../upcl/Semantics.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "RunHostCall.h"
@@ -450,6 +451,145 @@ UpclSynthesize (Upcl::Arch *pArch, Upcl::Insn *pInsn, UINT8 *pBytes, UINT32 *pLe
     }
 }
 
+// ---- a recording ICpuEmitter: prints each builder call as readable SSA ---------------
+//
+// Used by `lcx upcl emit` to inspect what the UPCL semantics translator produces for an
+// instruction body, without needing a real backend. Every value gets an SSA number; each
+// operation prints its result and operands. This is a development aid for the translator.
+
+namespace {
+
+class RecValue final : public ComObject<ICpuValue> {
+public:
+    explicit RecValue (UINT32 Id) : m_Id (Id) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppv) override {
+        return DefaultQuery (riid, IID_IUnknown, ppv);
+    }
+    UINT32 m_Id;
+};
+
+class RecBlock final : public ComObject<ICpuBlock> {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppv) override {
+        return DefaultQuery (riid, IID_IUnknown, ppv);
+    }
+};
+
+class RecordingEmitter final : public ComObject<ICpuEmitter> {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppv) override {
+        return DefaultQuery (riid, IID_IUnknown, ppv);
+    }
+
+    // Make an SSA input for a decoder operand / parameter (returned to the caller to bind).
+    ICpuValue *Input (CHAR8 CONST *pName, UINT32 Bits) {
+        RecValue *V = new RecValue (m_Next++);
+        std::printf ("  v%u = operand %-6s i%u\n", V->m_Id, pName, Bits);
+        return V;
+    }
+
+    HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Val, ICpuValue **ppV) override {
+        UINT32 Id = Make (ppV);
+        std::printf ("  v%u = const.i%u 0x%llx\n", Id, Bits, (unsigned long long) Val);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetRegister (UINT32 Index, UINT32 Bits, ICpuValue **ppV) override {
+        UINT32 Id = Make (ppV);
+        std::printf ("  v%u = get r%u:i%u\n", Id, Index, Bits);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE PutRegister (UINT32 Index, ICpuValue *pV, UINT32 Bits, BOOLEAN Sext) override {
+        std::printf ("  put r%u <- v%u  (i%u%s)\n", Index, Id (pV), Bits, Sext ? " sext" : "");
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = load.i%u [v%u]\n", R, Bits, Id (pAddr));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Store (ICpuValue *pV, ICpuValue *pAddr, UINT32 Bits) override {
+        std::printf ("  store.i%u [v%u] <- v%u\n", Bits, Id (pAddr), Id (pV));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP Op, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = %s v%u, v%u\n", R, BinopName (Op), Id (pA), Id (pB));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE UnaryOp (CPU_UNOP Op, ICpuValue *pA, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = %s v%u\n", R, UnopName (Op), Id (pA));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Compare (CPU_CMP Pred, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = %s v%u, v%u\n", R, CmpName (Pred), Id (pA), Id (pB));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Cast (CPU_CAST Op, ICpuValue *pA, UINT32 Bits, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = %s.i%u v%u\n", R, CastName (Op), Bits, Id (pA));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Select (ICpuValue *pC, ICpuValue *pT, ICpuValue *pF, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = select v%u ? v%u : v%u\n", R, Id (pC), Id (pT), Id (pF));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG Flag, ICpuValue **ppV) override {
+        UINT32 R = Make (ppV);
+        std::printf ("  v%u = getflag %s\n", R, FlagName (Flag));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetFlag (CPU_FLAG Flag, ICpuValue *pV) override {
+        std::printf ("  setflag %s <- v%u\n", FlagName (Flag), Id (pV));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *pName, ICpuBlock **ppB) override {
+        *ppB = new RecBlock (); std::printf ("  block %s:\n", pName ? pName : "");
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppB) override { *ppB = nullptr; return S_OK; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { std::printf ("  br\n"); return S_OK; }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pC, ICpuBlock *, ICpuBlock *) override {
+        std::printf ("  condbr v%u\n", Id (pC)); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override {
+        std::printf ("  setpc 0x%llx\n", (unsigned long long) Pc); return S_OK;
+    }
+
+private:
+    UINT32 Make (ICpuValue **ppV) { RecValue *V = new RecValue (m_Next++); *ppV = V; return V->m_Id; }
+    static UINT32 Id (ICpuValue *pV) { return pV ? static_cast<RecValue *> (pV)->m_Id : ~(UINT32) 0; }
+
+    static CHAR8 CONST *BinopName (CPU_BINOP Op) {
+        static CHAR8 CONST *N[] = { "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
+                                    "and", "or", "xor", "shl", "lshr", "ashr", "rol", "ror" };
+        return N[Op];
+    }
+    static CHAR8 CONST *UnopName (CPU_UNOP Op) {
+        static CHAR8 CONST *N[] = { "neg", "com", "not" };
+        return N[Op];
+    }
+    static CHAR8 CONST *CmpName (CPU_CMP Pred) {
+        static CHAR8 CONST *N[] = { "eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge" };
+        return N[Pred];
+    }
+    static CHAR8 CONST *CastName (CPU_CAST Op) {
+        static CHAR8 CONST *N[] = { "trunc", "zext", "sext" };
+        return N[Op];
+    }
+    static CHAR8 CONST *FlagName (CPU_FLAG Flag) {
+        static CHAR8 CONST *N[] = { "N", "O", "Z", "C", "P", "D", "A" };
+        return N[Flag];
+    }
+
+    UINT32 m_Next = 0;
+};
+
+} // anonymous namespace
+
 static int
 CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
 {
@@ -458,12 +598,47 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     bool Produce = pVerb != nullptr && std::strcmp (pVerb, "produce") == 0;
     bool Check   = pVerb != nullptr && std::strcmp (pVerb, "check") == 0;
     bool Lex     = pVerb != nullptr && std::strcmp (pVerb, "lex") == 0;
-    if (pFile == nullptr || (!Check && !Produce && !Lex)) {
-        std::printf ("usage: lcx upcl check   <file.upcl>     validate + summarise\n"
-                     "       lcx upcl produce <file.upcl>     build the frontend + round-trip its encodings\n"
-                     "       lcx upcl lex     <file.upcl>     dump the token stream (lexer development aid)\n"
+    bool Emit    = pVerb != nullptr && std::strcmp (pVerb, "emit") == 0;
+    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit)) {
+        std::printf ("usage: lcx upcl check   <file.upcl>          validate + summarise\n"
+                     "       lcx upcl produce <file.upcl>          build the frontend + round-trip its encodings\n"
+                     "       lcx upcl lex     <file.upcl>          dump the token stream (lexer development aid)\n"
+                     "       lcx upcl emit    <file.upcl> <insn>   translate one instruction body to emitter SSA\n"
                      "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
+    }
+    if (Emit) {
+        CHAR8 CONST *pInsnName = Positional (argc, argv, 2);
+        if (pInsnName == nullptr) { std::printf ("lcx upcl emit: need an instruction name\n"); return 2; }
+        Upcl::SourceManager Sm;
+        Upcl::Module *pMod = UpclParse (pFile, Sm);
+        if (pMod == nullptr || pMod->Archs.empty ()) { return 1; }
+        Upcl::Arch *pArch = pMod->Archs[0];
+        Upcl::Insn *pInsn = nullptr;
+        for (Upcl::Insn *I : pArch->Insns) {
+            if (I->Name == pInsnName) { pInsn = I; break; }
+        }
+        if (pInsn == nullptr) { std::printf ("lcx upcl emit: no instruction '%s'\n", pInsnName); return 1; }
+
+        Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
+        UINT32 WordBits = pArch->WordSize ? pArch->WordSize : 16;
+        RecordingEmitter Em;
+        Upcl::Translator Tr (Layout, pArch, &Em, WordBits);
+
+        // Decoder operands (src, dst, ...) are the instruction's inputs: bind each to a
+        // recorded SSA operand so the body can read and write them.
+        std::vector<ComPtr<ICpuValue>> Inputs;
+        std::printf ("insn %s:\n", pInsn->Name.c_str ());
+        for (Upcl::DecoderOperand *D : pArch->DecoderOps) {
+            UINT32 Bits = (D->VType != nullptr) ? D->VType->Width : WordBits;
+            ComPtr<ICpuValue> V (Em.Input (D->Name.c_str (), Bits));
+            Upcl::Value Bound; Bound.V = V.Get (); Bound.Bits = Bits;
+            Tr.Bind (D->Name, Bound);
+            Inputs.push_back (std::move (V));
+        }
+        bool Ok = Tr.Emit (pInsn->Semantics);
+        if (!Ok) { std::printf ("  ; (some statements not yet translated -- e.g. control flow)\n"); }
+        return 0;
     }
     if (Lex) {
         Upcl::SourceManager Sm;

@@ -305,14 +305,14 @@ target_link_libraries(nativedemo PRIVATE LibCPU)
 # diagnostics, a hand-written recursive-descent parser); embeddable, and linked
 # dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
 # and links the LibCPU framework at run time.
-add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/UpclArch.cpp)
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/Semantics.cpp upcl/UpclArch.cpp)
 set_target_properties(upcl PROPERTIES
   OUTPUT_NAME UPCL
   FRAMEWORK TRUE
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/UpclArch.h")
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/Semantics.h;upcl/UpclArch.h")
 target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
 if(APPLE)
@@ -541,6 +541,24 @@ add_test(NAME upcl.layout COMMAND sh -c
    grep -q 'flag C      = flags\\[0\\] -> %C' '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'flag O      = flags\\[11\\] -> %V' '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'r13  pc     #i24  \\[PC\\]' '${CMAKE_BINARY_DIR}/layout.out'")
+
+# Semantics translation: drive an emitter from an instruction body. `add` must derive the
+# full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
+# but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-
+# extend al into ax. Proves the translator emits hardware-correct x86 semantics.
+set(_def8086 "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def")
+add_test(NAME upcl.emit COMMAND sh -c
+  "set -e; E='$<TARGET_FILE:lcx>'; D='${_def8086}'; \
+   \"$E\" upcl emit \"$D\" add > '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'add v1, v0'   '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'ult v4, v1'   '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'setflag C'    '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'setflag O'    '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'setflag A'    '${CMAKE_BINARY_DIR}/emit.add' && \
+   \"$E\" upcl emit \"$D\" inc > '${CMAKE_BINARY_DIR}/emit.inc' && \
+   grep -q 'setflag Z'    '${CMAKE_BINARY_DIR}/emit.inc' && \
+   ! grep -q 'setflag C'  '${CMAKE_BINARY_DIR}/emit.inc' && \
+   \"$E\" upcl emit \"$D\" cbw | grep -q 'sext.i16'")
 
 # Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
 # (asserting the solid container holds them), then extract one and diff it against the
