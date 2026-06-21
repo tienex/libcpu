@@ -108,13 +108,15 @@ public:
             if (D.pJump != nullptr) {
                 UINT64 Target = 0;
                 std::string CONST &Ty = D.pJump->JumpType;
-                if ((Ty == "branch" || Ty == "call") && JumpTarget (D, &Target)) {
+                if (Ty == "return") {
+                    *pTag = TagTrap; *pNewPc = (CPU_ADDR) -1;       // computed: pops + indirect-branches
+                } else if ((Ty == "branch" || Ty == "call") && JumpTarget (D, Pc, &Target)) {
                     *pNewPc = (CPU_ADDR) Target;
                     *pTag = (D.pJump->Condition != nullptr) ? TagConditional
                           : (Ty == "call")                  ? TagCall
                           :                                   TagBranch;
                 } else {
-                    *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;   // return/computed: a later step
+                    *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;   // computed target: a later step
                 }
                 return S_OK;
             }
@@ -205,14 +207,38 @@ public:
             if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
+            // The program counter reads as the NEXT instruction's address (so a call pushes
+            // the right return address); pc-writes are branch edges, handled below.
+            if (!m_PcName.empty ()) {
+                Operand PcOp; PcOp.Kind = Operand::Imm;
+                PcOp.Bits = m_AddrBits; PcOp.ImmValue = (UINT64) (Pc + D.Length);
+                Tr.BindOperand (m_PcName, PcOp);
+            }
             std::vector<Stmt *> Body;
             if (D.pJump != nullptr) {
-                // A jump's pre-actions run; the transfer macro itself is the edge (the run
-                // loop wires it from the tag), so it is omitted.
+                if (D.pJump->JumpType == "return") {
+                    // Computed return: run the pop (pre + non-pc statements), capture the
+                    // pc-write's value, and indirect-branch to it (terminating the block).
+                    for (Stmt *S : D.pJump->Pre) { Tr.EmitOne (S); }
+                    ComPtr<ICpuValue> Target;
+                    for (Stmt *S : D.pJump->Action) {
+                        if (IsStdPcWrite (S) && S->Rhs != nullptr) { Tr.EmitExpr (S->Rhs, &Target); }
+                        else { Tr.EmitOne (S); }
+                    }
+                    ICpuSmcEmitter *pFlow = nullptr;
+                    if (Target != nullptr
+                        && SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
+                        pFlow->IndirectBranch (Target.Get ());
+                        pFlow->Release ();
+                    }
+                    return S_OK;
+                }
+                // A branch/call: pre-actions run; the transfer (a static pc-write or the
+                // transfer macro) is the edge (wired from the tag), so it is omitted.
                 std::string TgtOp = JumpTargetOperand (D.pJump);
                 for (Stmt *S : D.pJump->Pre) { Body.push_back (S); }
                 for (Stmt *S : D.pJump->Action) {
-                    if (!IsJumpMacroStmt (S, TgtOp)) { Body.push_back (S); }
+                    if (!IsStdPcWrite (S) && !IsJumpMacroStmt (S, TgtOp)) { Body.push_back (S); }
                 }
             } else {
                 // The branch statement (an unconditional pc-write or `if (c) pc=...`) is the
@@ -379,8 +405,16 @@ private:
         return false;
     }
 
-    // A decoded jump's static target (the resolved branch-target operand), if any.
-    bool JumpTarget (DecodedInsn CONST &D, UINT64 *pTarget) CONST {
+    // A decoded jump's static target: either a direct pc-write in the action (pc = dst) or
+    // the branch-target operand passed to the action's transfer macro (@i8086_jump(src)).
+    bool JumpTarget (DecodedInsn CONST &D, CPU_ADDR Pc, UINT64 *pTarget) CONST {
+        INT64 NextPc = (INT64) (Pc + D.Length);
+        for (Stmt *S : D.pJump->Action) {
+            if (IsStdPcWrite (S) && S->Rhs != nullptr) {
+                INT64 T = 0;
+                if (FoldStd (S->Rhs, D, NextPc, &T)) { *pTarget = (UINT64) T; return true; }
+            }
+        }
         std::string Op = JumpTargetOperand (D.pJump);
         if (Op.empty ()) { return false; }
         auto It = D.Operands.find (Op);

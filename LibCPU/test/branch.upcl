@@ -17,7 +17,8 @@ arch "flat" {
 		}
 
 		group S {
-			[ #i16 pc -> %PC ]
+			[ #i16 pc -> %PC ],
+			[ #i16 sp ]
 		}
 	}
 }
@@ -45,6 +46,14 @@ insn jmp : pc = pc + disp
 // jnz rN, +disp      -- branch (signed displacement) if register rN is non-zero
 insn jnz : if ( dst ) pc = pc + %S ( [ #i8 disp ] ) ;
 	encode #i16 ( op:6 = 0x11, reg:2 -> dst[ r ], disp:8 -> disp );
+
+// call +disp         -- push the return address (the next instruction) and jump
+jump insn call : type call, encode #i16 ( op:8 = 0x20, disp:8 -> dst rel )
+	{ sp = sp - 2 ; #i16 %M[ sp ] = pc ; pc = dst ; }
+
+// ret                -- pop the return address into %PC (a computed branch)
+jump insn ret : type return, encode #i8 ( op:8 = 0x21 )
+	{ pc = #i16 %M[ sp ] ; sp = sp + 2 ; }
 
 // hlt
 insn hlt :

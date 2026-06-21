@@ -80,6 +80,13 @@ public:
     // non-zero test, the C-like `if (x)`). Ownership of *ppOut transfers to the caller.
     HRESULT EmitCondition (Expr *pExpr, ICpuValue **ppOut);
 
+    // Emit an expression, returning its value (ownership of *ppOut transfers to the caller) --
+    // for a computed branch target (a return address popped off the stack).
+    HRESULT EmitExpr (Expr *pExpr, ICpuValue **ppOut);
+
+    // Emit one statement (public face of the statement walker), for selective translation.
+    bool EmitOne (Stmt *pStmt) { return EmitStmt (pStmt); }
+
 private:
     // expressions
     Value EvalExpr (Expr *pExpr);

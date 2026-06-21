@@ -245,8 +245,8 @@ insn ror  : dst = %CC ( dst >>< src );
 insn rcl  : ( dst : flags.C ) = %CC ( ( dst : flags.C ) <<> src );
 insn rcr  : ( dst : flags.C ) = %CC ( ( dst : flags.C ) >>< src );
 
-jump insn jmp : type branch { @i8086_jump( src ); }
-	encode #i16 ( op:8 = 0xEB, disp:8 -> src rel );		// 0xEB cb  JMP rel8 (near, relative)
+jump insn jmp : type branch, encode #i16 ( op:8 = 0xEB, disp:8 -> src rel )	// 0xEB cb  JMP rel8
+	{ @i8086_jump( src ); }
 jump insn fjmp : type branch { @i8086_jump( src ); }
 jump insn fcall : type call {
 	@i8086_push ( cs );
@@ -260,10 +260,10 @@ jump insn ncall : type call {
 
 jump insn nret : type return { @i8086_jump ( @i8086_pop () ); }
 
-jump insn jcc : type branch
-			    condition @eval_cc ( cond )
+jump insn jcc : type branch,
+			    condition @eval_cc ( cond ),
+			    encode #i16 ( op:4 = 0x7, tttn:4 -> cond, disp:8 -> src rel )	// 0x70..0x7F  Jcc rel8
 			    { @i8086_jump ( src ); }
-	encode #i16 ( op:4 = 0x7, tttn:4 -> cond, disp:8 -> src rel );	// 0x70..0x7F cb  Jcc rel8
 
 insn mov : dst = src
 	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src );	// 0xB8+r iw  MOV r16, imm16

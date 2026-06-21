@@ -546,7 +546,25 @@ if(TARGET interp_backend)
      OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/loop.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r1 =001e' && echo \"$OUT\" | grep -q 'r0 =0000'")
+
+  # Subroutines: call pushes the return address + branches; ret pops it + indirect-branches.
+  # movi r0,5 ; call func ; movi r1,7 ; jmp done ; func: addi r0,10 ; ret ; done: hlt. func
+  # leaves r0=15 (0x0f) and -- proving the return -- control resumes after the call to set
+  # r1=7. Exercises TagCall, the return-address push, and the IndirectBranch return.
+  add_test(NAME upcl.run-call COMMAND sh -c
+    "printf '\\x04\\x05\\x00\\x20\\x05\\x05\\x07\\x00\\x10\\x04\\x08\\x0A\\x00\\x21\\x00' > '${CMAKE_BINARY_DIR}/call.bin' && \
+     OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/call.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
+     echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 endif()
+
+# Clang-style diagnostics: a stray top-level token resyncs at the next declaration (no
+# cascade), and the error count is capped. One bad line + a good insn after it => exactly
+# one error, and the good declaration still parses.
+add_test(NAME upcl.diag-recover COMMAND sh -c
+  "printf 'arch \\\"x\\\" { word_size 16; }\\n%% bogus garbage\\ninsn good : ;\\n' > '${CMAKE_BINARY_DIR}/diag.upcl' && \
+   N=$('$<TARGET_FILE:lcx>' upcl check '${CMAKE_BINARY_DIR}/diag.upcl' 2>&1 | grep -c 'error:') && \
+   test \"$N\" -eq 1")
 
 # Feature / CPU-model selection: ONE description (test/x86.upcl) carries the 8086 base ISA
 # plus the 80186 and NEC V20/V30 additions as selectable features; a `cpu` model bundles

@@ -42,6 +42,7 @@ private:
     bool   Expect (TOKEN_KIND Kind, CHAR8 CONST *pContext);
     void   ErrorAt (SRC_LOC Loc, std::string CONST &Msg);
     void   SyncTo (TOKEN_KIND Kind);            // error recovery
+    void   SyncToTopLevel ();                    // skip to the next top-level declaration keyword
 
     // grammar
     Arch      *ParseArch ();

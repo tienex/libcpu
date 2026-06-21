@@ -150,6 +150,18 @@ DiagnosticEngine::Render (SEVERITY Sev, SRC_LOC Loc, SRC_RANGE Range, bool HasRa
     if (Sev == SevError)        { m_Errors++; }
     else if (Sev == SevWarning) { m_Warnings++; }
 
+    // Clang-style cascade control: once past the error limit, render nothing further except a
+    // single "too many errors" line, so the first (real) errors are not buried.
+    if (m_ErrorLimit != 0 && m_Errors > m_ErrorLimit) {
+        if (m_Errors == m_ErrorLimit + 1) {
+            CHAR8 CONST *pBold  = m_Color ? A_BOLD : "";
+            CHAR8 CONST *pReset = m_Color ? A_RESET : "";
+            std::fprintf (m_pOut, "%s%u errors generated; too many errors emitted, stopping now.%s\n",
+                          pBold, m_ErrorLimit, pReset);
+        }
+        return;
+    }
+
     UINT32 Line = 0, Col = 0;
     m_pSm->LineCol (Loc, &Line, &Col);
     FILE_ID Id = m_pSm->FileOf (Loc);

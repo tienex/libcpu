@@ -568,6 +568,16 @@ Translator::EmitCondition (Expr *pExpr, ICpuValue **ppOut)
     return S_OK;
 }
 
+HRESULT
+Translator::EmitExpr (Expr *pExpr, ICpuValue **ppOut)
+{
+    Value V = EvalExpr (pExpr);
+    if (V.V == nullptr) { *ppOut = nullptr; return E_FAIL; }
+    V.V->AddRef ();                                  // ownership transferred to the caller
+    *ppOut = V.V;
+    return S_OK;
+}
+
 bool
 Translator::EmitStmt (Stmt *pStmt)
 {

@@ -1124,7 +1124,8 @@ Parser::ParseMacro ()
     return M;
 }
 
-// `jump insn <id> : type <t> [delay e] [pre ...] [condition e] { action }`.
+// `jump insn <id> : <clause> (, <clause>)* { action }` where a clause is, in any order,
+//   `type <t>` | `encode <alt> (| <alt>)*` | `condition <e>` | `delay <e>` | `pre {...}`.
 JumpInsn *
 Parser::ParseJumpInsn ()
 {
@@ -1135,25 +1136,32 @@ Parser::ParseJumpInsn ()
     J->Loc = m_Cur.Loc;
     if (m_Cur.Kind == TokIdent) { J->Name = m_Cur.Text; Advance (); }
     Expect (TokColon, "after the jump-insn name");
-    if (AtKeyword ("type")) { Advance (); }
-    else { std::string M = "expected 'type' in a jump declaration"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
-    if (m_Cur.Kind == TokIdent) { J->JumpType = m_Cur.Text; Advance (); }
-    else if (AtKeyword ("return")) { J->JumpType = "return"; Advance (); }
-    if (AtKeyword ("delay")) { Advance (); J->Delay = ParseExpr (0); }
-    if (AtKeyword ("pre")) {
-        Advance ();
-        if (m_Cur.Kind == TokLBrace) { ParseBlock (&J->Pre); } else { J->Pre.push_back (ParseInlineStmt ()); }
+    // The header clauses, in any order, ending at the action block. A comma between clauses
+    // is optional (so both `type branch, encode ...` and `type branch condition ...` parse).
+    for (;;) {
+        Accept (TokComma);
+        if (AtKeyword ("type")) {
+            Advance ();
+            if (m_Cur.Kind == TokIdent) { J->JumpType = m_Cur.Text; Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a jump type"); }
+        } else if (AtKeyword ("encode")) {
+            Advance ();
+            do {
+                EncAlt *A = ParseEncAlt ();
+                if (A != nullptr) { J->Encodings.push_back (A); }
+            } while (Accept (TokPipe));
+        } else if (AtKeyword ("condition")) {
+            Advance (); J->Condition = ParseExpr (0);
+        } else if (AtKeyword ("delay")) {
+            Advance (); J->Delay = ParseExpr (0);
+        } else if (AtKeyword ("pre")) {
+            Advance ();
+            if (m_Cur.Kind == TokLBrace) { ParseBlock (&J->Pre); } else { J->Pre.push_back (ParseInlineStmt ()); }
+        } else {
+            break;                                  // the action block (or end)
+        }
     }
-    if (AtKeyword ("condition")) { Advance (); J->Condition = ParseExpr (0); }
     ParseBlock (&J->Action);
-    // optional `encode <alt> | ...` for the byte pattern, then an optional trailing ';'
-    if (AtKeyword ("encode")) {
-        Advance ();                                 // 'encode'
-        do {
-            EncAlt *A = ParseEncAlt ();
-            if (A != nullptr) { J->Encodings.push_back (A); }
-        } while (Accept (TokPipe));
-    }
     Accept (TokSemi);
     return J;
 }
@@ -1199,11 +1207,27 @@ Parser::ParseRegSet (Arch *pArch)
     pArch->RegSets.push_back (R);
 }
 
+// Skip forward to the next top-level declaration keyword (or EOF), so a stray token does not
+// cascade into a diagnostic per following token -- the parser resynchronises at a boundary.
+void
+Parser::SyncToTopLevel ()
+{
+    while (m_Cur.Kind != TokEof) {
+        if (AtKeyword ("arch") || AtKeyword ("insn") || AtKeyword ("jump") || AtKeyword ("macro")
+            || AtKeyword ("regset") || AtKeyword ("decoder_operands") || AtKeyword ("group")
+            || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")) {
+            return;
+        }
+        Advance ();
+    }
+}
+
 Module *
 Parser::ParseModule ()
 {
     Module *M = new Module ();
     while (m_Cur.Kind != TokEof) {
+        if (m_pDiag->Overflowed ()) { break; }      // too many errors: stop churning
         // The arch block, then the top-level declarations that attach to it (decoder_operands,
         // macros, instructions, jump instructions, instruction groups -- the old .def order).
         if (m_Cur.Kind == TokSemi) {                // a stray separator (e.g. `arch { } ;`)
@@ -1231,7 +1255,7 @@ Parser::ParseModule ()
         } else {
             std::string Msg = std::string ("expected a top-level declaration, found ") + TokenName (m_Cur.Kind);
             m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
-            Advance ();
+            SyncToTopLevel ();                       // resync at a declaration boundary
         }
     }
     return M;

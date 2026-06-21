@@ -100,6 +100,11 @@ public:
     UINT32 WarningCount () CONST { return m_Warnings; }
     bool   HadError () CONST { return m_Errors != 0; }
     void   SetColor (bool On) { m_Color = On; }
+    // After this many errors, further diagnostics are suppressed (a clang-style stop, so one
+    // mistake does not bury the real one under a cascade). 0 disables the limit.
+    void   SetErrorLimit (UINT32 N) { m_ErrorLimit = N; }
+    // True once the limit is hit -- the parser can stop early instead of churning on garbage.
+    bool   Overflowed () CONST { return m_ErrorLimit != 0 && m_Errors > m_ErrorLimit; }
 
 private:
     void Render (SEVERITY Sev, SRC_LOC Loc, SRC_RANGE Range, bool HasRange, std::string CONST &Message);
@@ -109,6 +114,7 @@ private:
     bool           m_Color;
     UINT32         m_Errors;
     UINT32         m_Warnings;
+    UINT32         m_ErrorLimit = 20;        // clang's default -ferror-limit
 };
 
 } // namespace Upcl
