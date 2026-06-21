@@ -19,6 +19,12 @@ Translator::Bind (std::string CONST &Name, Value CONST &Val)
     m_Env[Name] = Val;
 }
 
+void
+Translator::BindOperand (std::string CONST &Name, Operand CONST &Op)
+{
+    m_Operands[Name] = Op;
+}
+
 // ---- emitter helpers ------------------------------------------------------
 
 Value
@@ -182,6 +188,12 @@ Translator::WidthOf (Expr *pExpr) CONST
     case ExprName:
     case ExprMember: {
         std::string CONST &Name = pExpr->Name;
+        auto O = m_Operands.find (Name);
+        if (O != m_Operands.end ()) {
+            Operand CONST &Op = O->second;
+            if (Op.Kind == Operand::Reg && Op.SubWidth == 0) { return m_Layout.Phys[Op.RegIndex].Width; }
+            return Op.Bits;
+        }
         auto E = m_Env.find (Name);
         if (E != m_Env.end ()) { return E->second.Bits; }
         auto P = m_Layout.PhysIndex.find (Name);
@@ -200,9 +212,26 @@ Translator::WidthOf (Expr *pExpr) CONST
     }
 }
 
+// Read a decoded operand: an immediate is a constant; a register operand loads from its
+// physical register (extracting the sub-window for a sub-register operand).
+Value
+Translator::ReadOperand (Operand CONST &Op)
+{
+    if (Op.Kind == Operand::Imm) { return Const (Op.Bits ? Op.Bits : m_WordBits, Op.ImmValue); }
+    RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
+    ComPtr<ICpuValue> V;
+    m_pE->GetRegister (Phys.Index, Phys.Width, &V);
+    Value Whole = Pool (std::move (V), Phys.Width);
+    if (Op.SubWidth != 0 && Op.SubWidth != Phys.Width) { return Extract (Whole, Op.SubLo, Op.SubWidth); }
+    return Whole;
+}
+
 Value
 Translator::EvalName (std::string CONST &Name)
 {
+    auto O = m_Operands.find (Name);
+    if (O != m_Operands.end ()) { return ReadOperand (O->second); }
+
     auto E = m_Env.find (Name);
     if (E != m_Env.end ()) { return E->second; }
 
@@ -728,6 +757,23 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
 void
 Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
 {
+    auto O = m_Operands.find (Name);
+    if (O != m_Operands.end ()) {
+        Operand CONST &Op = O->second;
+        if (Op.Kind == Operand::Imm) { return; }     // an immediate has no write-back
+        RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
+        if (Op.SubWidth != 0 && Op.SubWidth != Phys.Width) {
+            ComPtr<ICpuValue> Reg;
+            m_pE->GetRegister (Phys.Index, Phys.Width, &Reg);
+            Value Merged = Insert (Pool (std::move (Reg), Phys.Width), Rhs, Op.SubLo, Op.SubWidth);
+            m_pE->PutRegister (Phys.Index, Merged.V, Phys.Width, FALSE);
+        } else {
+            Value V = Coerce (Rhs, Phys.Width, false);
+            m_pE->PutRegister (Phys.Index, V.V, Phys.Width, FALSE);
+        }
+        return;
+    }
+
     if (m_Env.find (Name) != m_Env.end ()) { m_Env[Name] = Rhs; return; }
 
     auto P = m_Layout.PhysIndex.find (Name);

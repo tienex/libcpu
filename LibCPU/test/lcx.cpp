@@ -41,6 +41,7 @@
 #include "../upcl/UpclArch.h"
 #include "../upcl/RegisterLayout.h"
 #include "../upcl/Semantics.h"
+#include "../upcl/Decoder.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
 #include "RunHostCall.h"
@@ -617,13 +618,64 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     bool Check   = pVerb != nullptr && std::strcmp (pVerb, "check") == 0;
     bool Lex     = pVerb != nullptr && std::strcmp (pVerb, "lex") == 0;
     bool Emit    = pVerb != nullptr && std::strcmp (pVerb, "emit") == 0;
-    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit)) {
-        std::printf ("usage: lcx upcl check   <file.upcl>          validate + summarise\n"
-                     "       lcx upcl produce <file.upcl>          build the frontend + round-trip its encodings\n"
-                     "       lcx upcl lex     <file.upcl>          dump the token stream (lexer development aid)\n"
-                     "       lcx upcl emit    <file.upcl> <insn>   translate one instruction body to emitter SSA\n"
+    bool Decode  = pVerb != nullptr && std::strcmp (pVerb, "decode") == 0;
+    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit && !Decode)) {
+        std::printf ("usage: lcx upcl check   <file.upcl>            validate + summarise\n"
+                     "       lcx upcl produce <file.upcl>            build the frontend + round-trip its encodings\n"
+                     "       lcx upcl lex     <file.upcl>            dump the token stream (lexer development aid)\n"
+                     "       lcx upcl emit    <file.upcl> <insn>     translate one instruction body to emitter SSA\n"
+                     "       lcx upcl decode  <file.upcl> <bytes..>  decode a byte stream + translate each insn\n"
                      "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
+    }
+    if (Decode) {
+        Upcl::SourceManager Sm;
+        Upcl::Module *pMod = UpclParse (pFile, Sm);
+        if (pMod == nullptr || pMod->Archs.empty ()) { return 1; }
+        Upcl::Arch *pArch = pMod->Archs[0];
+        Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
+        Upcl::Decoder Dec (pArch, &Layout);
+        UINT32 WordBits = pArch->WordSize ? pArch->WordSize : 16;
+
+        // The byte stream follows the file name: each positional is one byte (0x.. or dec).
+        std::vector<UINT8> Bytes;
+        for (int I = 2; ; I++) {
+            CHAR8 CONST *pTok = Positional (argc, argv, I);
+            if (pTok == nullptr) { break; }
+            Bytes.push_back ((UINT8) std::strtoul (pTok, nullptr, 0));
+        }
+        if (Bytes.empty ()) { std::printf ("lcx upcl decode: need at least one byte\n"); return 2; }
+
+        UINT64 Pos = 0;
+        while (Pos < Bytes.size ()) {
+            Upcl::DecodedInsn D;
+            if (!Dec.Decode (Bytes.data (), Bytes.size (), Pos, &D)) {
+                std::printf ("0x%04llx: db 0x%02x  (no encoding matched)\n",
+                             (unsigned long long) Pos, Bytes[(size_t) Pos]);
+                Pos += 1;
+                continue;
+            }
+            // Disassembly line: the instruction and each resolved operand.
+            std::printf ("0x%04llx: %-6s", (unsigned long long) Pos, D.pInsn->Name.c_str ());
+            for (auto CONST &Kv : D.Operands) {
+                Upcl::Operand CONST &Op = Kv.second;
+                if (Op.Kind == Upcl::Operand::Reg) {
+                    std::printf (" %s=%s", Kv.first.c_str (), Layout.Phys[Op.RegIndex].Name.c_str ());
+                } else {
+                    std::printf (" %s=0x%llx", Kv.first.c_str (), (unsigned long long) Op.ImmValue);
+                }
+            }
+            std::printf ("   (%u byte(s))\n", D.Length);
+
+            // Translate the body with the decoded operands bound to their locations.
+            RecordingEmitter Em;
+            Upcl::Translator Tr (Layout, pArch, &Em, WordBits);
+            for (auto CONST &Kv : D.Operands) { Upcl::Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
+            Tr.Emit (D.pInsn->Semantics);
+
+            Pos += D.Length;
+        }
+        return 0;
     }
     if (Emit) {
         CHAR8 CONST *pInsnName = Positional (argc, argv, 2);

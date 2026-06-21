@@ -46,6 +46,19 @@ public:
     UINT32     Bits = 0;
 };
 
+// A decoded operand: the storage a decoder operand (src/dst/...) resolved to. The location
+// model -- so `dst = src` in the semantics reads and writes real storage. An immediate has
+// no write-back; a register operand may be a sub-register window of its physical parent.
+class Operand {
+public:
+    enum KIND { Imm, Reg } Kind = Imm;
+    UINT32 Bits     = 0;        // operand width
+    UINT64 ImmValue = 0;        // Imm
+    UINT32 RegIndex = 0;        // Reg: physical register index (RegisterLayout)
+    UINT32 SubLo    = 0;        // Reg: sub-register window low bit
+    UINT32 SubWidth = 0;        // Reg: window width (0 => the whole physical register)
+};
+
 class Translator {
 public:
     Translator (RegisterLayout CONST &Layout, Arch *pArch, ICpuEmitter *pEmitter,
@@ -55,6 +68,10 @@ public:
     // of the given width. Shadows any register of the same name for this translation.
     void Bind (std::string CONST &Name, Value CONST &Val);
 
+    // Make Name resolve to a decoded operand LOCATION (register or immediate). Reads emit a
+    // register/const load; writes store back through the location. Used by the decoder.
+    void BindOperand (std::string CONST &Name, Operand CONST &Op);
+
     // Translate a body (an instruction's Semantics or a macro's Body). Returns false on a
     // construct not yet handled (the caller can report it); already-emitted work stays.
     bool Emit (std::vector<Stmt *> CONST &Body);
@@ -63,6 +80,7 @@ private:
     // expressions
     Value EvalExpr (Expr *pExpr);
     Value EvalName (std::string CONST &Name);
+    Value ReadOperand (Operand CONST &Op);   // read a decoded operand location
     Value EvalMember (Expr *pExpr);          // a.b  -> a sub-field of register a
     Value EvalCC (Expr *pExpr);              // %CC ( expr [, flags] )
     Value EvalMacroCall (Expr *pExpr);       // @macro(args) used as a value (returns %result)
@@ -106,7 +124,8 @@ private:
     Arch                            *m_pArch;
     ICpuEmitter                     *m_pE;
     UINT32                           m_WordBits;
-    std::map<std::string, Value>     m_Env;        // bound operands / locals / %result
+    std::map<std::string, Value>     m_Env;        // bound values / locals / %result
+    std::map<std::string, Operand>   m_Operands;   // decoded operand locations (decoder path)
     std::map<std::string, Macro *>   m_Macros;
     std::vector<ComPtr<ICpuValue>>   m_Pool;       // keeps every emitted value alive
 };

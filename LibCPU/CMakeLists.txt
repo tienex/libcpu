@@ -305,14 +305,14 @@ target_link_libraries(nativedemo PRIVATE LibCPU)
 # diagnostics, a hand-written recursive-descent parser); embeddable, and linked
 # dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
 # and links the LibCPU framework at run time.
-add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/Semantics.cpp upcl/UpclArch.cpp)
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/Semantics.cpp upcl/Decoder.cpp upcl/UpclArch.cpp)
 set_target_properties(upcl PROPERTIES
   OUTPUT_NAME UPCL
   FRAMEWORK TRUE
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/Semantics.h;upcl/UpclArch.h")
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/Semantics.h;upcl/Decoder.h;upcl/UpclArch.h")
 target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
 if(APPLE)
@@ -555,6 +555,23 @@ add_test(NAME upcl.encoding COMMAND sh -c
    grep -q 'encode #i24 ( op:5=0x17 reg:3->dst.gpr16. imm:16->src )' '${CMAKE_BINARY_DIR}/enc.8086' && \
    grep -q 'encode #i8 ( op:8=0xf4 )' '${CMAKE_BINARY_DIR}/enc.8086'")
 set_tests_properties(upcl.encoding PROPERTIES FAIL_REGULAR_EXPRESSION "error|bits but the word is")
+
+# Decode: a real 8086 byte stream through the generic decoder, each insn translated with its
+# decoded operands bound. B8 34 12 = MOV AX,0x1234 (the LE immediate must byte-swap to 0x1234
+# and the +r register resolve to ax); 41 = INC CX (reg field 1 -> cx, read+written as a
+# location operand); F4 = HLT. Proves decode -> operand resolution -> semantics end to end.
+add_test(NAME upcl.decode COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' \
+     0xB8 0x34 0x12 0x41 0xF4 > '${CMAKE_BINARY_DIR}/decode.out' && \
+   grep -q 'mov    dst=ax src=0x1234' '${CMAKE_BINARY_DIR}/decode.out' && \
+   grep -q 'put r1 <- v0'             '${CMAKE_BINARY_DIR}/decode.out' && \
+   grep -q 'inc    dst=cx'            '${CMAKE_BINARY_DIR}/decode.out' && \
+   grep -q 'put r2 <- v2'             '${CMAKE_BINARY_DIR}/decode.out' && \
+   grep -q '0x0004: hlt'              '${CMAKE_BINARY_DIR}/decode.out' && \
+   '$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/test/risc.upcl' \
+     0x00 0x22 0x18 0x20 0x00 0x22 0x28 0x25 > '${CMAKE_BINARY_DIR}/decode.risc' && \
+   grep -q 'add    rd=0x3 rs=0x1 rt=0x2' '${CMAKE_BINARY_DIR}/decode.risc' && \
+   grep -q 'or     rd=0x5 rs=0x1 rt=0x2' '${CMAKE_BINARY_DIR}/decode.risc'")
 
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
