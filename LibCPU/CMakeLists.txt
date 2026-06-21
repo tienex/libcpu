@@ -508,6 +508,15 @@ if(TARGET interp_backend)
      grep -q 'ax =1234' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0001'")
+
+  # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
+  # CFG wires the edge. Program: movi r0,0x1111 ; jmp +3 ; movi r0,0x9999 ; hlt -- the jump
+  # skips the second movi, so r0 must stay 0x1111 (a NOT-taken branch would leave 0x9999).
+  add_test(NAME upcl.run-branch COMMAND sh -c
+    "printf '\\x04\\x11\\x11\\x10\\x03\\x04\\x99\\x99\\x00' > '${CMAKE_BINARY_DIR}/branch.bin' && \
+     OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/branch.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
+     echo \"$OUT\" | grep -q 'r0 =1111' && ! echo \"$OUT\" | grep -q 'r0 =9999'")
 endif()
 
 # Feature / CPU-model selection: ONE description (test/x86.upcl) carries the 8086 base ISA

@@ -1,0 +1,43 @@
+// A flat-PC demo CPU -- exercises BRANCHES in the standard-UPCL run path without the 8086's
+// segmented pc.[seg,off] composition. A relative jump writes %PC; the decoder folds its
+// static target so the run loop wires the control-flow edge.
+
+arch "flat" {
+
+	name "Flat-PC demo";
+	byte_size 8;
+	word_size 16;
+	address_size 16;
+	default_endian little;
+
+	register_file {
+
+		group R {
+			[ #i16 r0 ], [ #i16 r1 ], [ #i16 r2 ], [ #i16 r3 ]
+		}
+
+		group S {
+			[ #i16 pc -> %PC ]
+		}
+	}
+}
+
+decoder_operands [ #i16 dst, #i16 imm, #i16 disp ];
+
+regset r [ r0, r1, r2, r3 ];
+
+// movi rN, imm16     -- load an immediate
+insn movi : dst = imm
+	encode #i24 ( op:6 = 0x01, reg:2 -> dst[ r ], imm:16 -> imm );
+
+// addi rN, imm16     -- add an immediate
+insn addi : dst = dst + imm
+	encode #i24 ( op:6 = 0x02, reg:2 -> dst[ r ], imm:16 -> imm );
+
+// jmp +disp          -- relative jump (forward); %PC reads as the next instruction
+insn jmp : pc = pc + disp
+	encode #i16 ( op:8 = 0x10, disp:8 -> disp );
+
+// hlt
+insn hlt :
+	encode #i8 ( op:8 = 0x00 );

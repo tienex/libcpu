@@ -42,6 +42,8 @@ public:
         if (m_Standard) {
             m_Layout   = BuildRegisterLayout (m_pArch);
             m_pDecoder.reset (new Decoder (m_pArch, &m_Layout));
+            UINT32 Pc = m_Layout.PcIndex ();
+            if (Pc != ~(UINT32) 0) { m_PcName = m_Layout.Phys[Pc].Name; }
         }
         // Index formats by name and register names by spelling.
         for (Format *F : m_pArch->Formats) { m_Formats[F->Name] = F; }
@@ -100,7 +102,15 @@ public:
                 *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + 1;   // unknown: skip a byte
                 return S_OK;
             }
-            *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + D.Length;
+            *pNextPc = Pc + D.Length;
+            // A write to the program counter whose target folds to a constant is a branch;
+            // the run loop wires the edge from the tag (the pc-write itself is not emitted).
+            UINT64 Target = 0;
+            if (StdBranchTarget (D, Pc, &Target)) {
+                *pTag = TagBranch; *pNewPc = (CPU_ADDR) Target;
+            } else {
+                *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;
+            }
             return S_OK;
         }
         DECODED D;
@@ -178,7 +188,13 @@ public:
             if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
-            Tr.Emit (D.pInsn->Semantics);
+            // A constant-target pc-write is the branch edge (wired from the tag) -- emit the
+            // rest of the body; everything else translates as straight-line.
+            std::vector<Stmt *> Body;
+            for (Stmt *S : D.pInsn->Semantics) {
+                if (!IsStdPcWrite (S)) { Body.push_back (S); }
+            }
+            Tr.Emit (Body);
             return S_OK;
         }
         DECODED D;
@@ -228,6 +244,64 @@ private:
 
     static bool IsPcWrite (Stmt *S) {
         return S->Kind == StmtAssign && S->Lhs != nullptr && S->Lhs->Kind == ExprName && S->Lhs->Name == "pc";
+    }
+
+    // ---- standard-path branch detection -----------------------------------
+    //
+    // A statement that assigns the program counter (by its register name or the %PC meta).
+    bool IsStdPcWrite (Stmt *S) CONST {
+        if (S->Kind != StmtAssign || S->Lhs == nullptr) { return false; }
+        Expr *L = S->Lhs;
+        if (L->Kind == ExprName && !m_PcName.empty () && L->Name == m_PcName) { return true; }
+        if (L->Kind == ExprMeta && L->Name == "PC") { return true; }
+        return false;
+    }
+
+    // Constant-fold a branch target from a decoded instruction: the program counter reads
+    // as the NEXT instruction's address (the usual relative-branch convention), immediate
+    // operands as their values. Returns false if the target is not a compile-time constant
+    // (a computed/register branch -- handled at run time, a later increment).
+    bool FoldStd (Expr *E, DecodedInsn CONST &D, INT64 NextPc, INT64 *pOut) CONST {
+        switch (E->Kind) {
+        case ExprInt:
+            *pOut = (INT64) E->Int;
+            return true;
+        case ExprName: {
+            if (!m_PcName.empty () && E->Name == m_PcName) { *pOut = NextPc; return true; }
+            auto It = D.Operands.find (E->Name);
+            if (It != D.Operands.end () && It->second.Kind == Operand::Imm) {
+                *pOut = (INT64) It->second.ImmValue;
+                return true;
+            }
+            return false;
+        }
+        case ExprBinary: {
+            INT64 A = 0, B = 0;
+            if (!FoldStd (E->Args[0], D, NextPc, &A) || !FoldStd (E->Args[1], D, NextPc, &B)) { return false; }
+            switch (E->Op) {
+            case TokPlus:  *pOut = A + B; return true;
+            case TokMinus: *pOut = A - B; return true;
+            default:       return false;
+            }
+        }
+        case ExprCast:
+            return FoldStd (E->Args[0], D, NextPc, pOut);          // width is irrelevant to folding
+        case ExprAugment:
+            return !E->Args.empty () && FoldStd (E->Args[0], D, NextPc, pOut);
+        default:
+            return false;
+        }
+    }
+
+    bool StdBranchTarget (DecodedInsn CONST &D, CPU_ADDR Pc, UINT64 *pTarget) CONST {
+        INT64 NextPc = (INT64) (Pc + D.Length);
+        for (Stmt *S : D.pInsn->Semantics) {
+            if (IsStdPcWrite (S) && S->Rhs != nullptr) {
+                INT64 T = 0;
+                if (FoldStd (S->Rhs, D, NextPc, &T)) { *pTarget = (UINT64) T; return true; }
+            }
+        }
+        return false;
     }
 
     // Decode the instruction at Pc: find the first instruction whose format-extracted
@@ -418,6 +492,7 @@ private:
     bool                             m_Standard = false; // register_file + encode (standard .upcl)
     RegisterLayout                   m_Layout;            // standard-path register layout
     std::unique_ptr<Decoder>         m_pDecoder;          // standard-path generic decoder
+    std::string                      m_PcName;            // the program-counter register's name
 };
 
 // Resolve a CPU-model name to the set of features it enables. A null/unknown model
