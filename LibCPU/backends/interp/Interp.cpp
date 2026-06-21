@@ -268,9 +268,12 @@ private:
         case BinSub:  R = A - B; break;
         case BinMul:  R = A * B; break;
         case BinUDiv: R = B ? A / B : 0; break;
-        case BinSDiv: R = B ? (UINT64)(SignExtend (A, Bits) / SignExtend (B, Bits)) : 0; break;
+        // Signed divide/remainder: the operands are sign-extended bit patterns, but the operator
+        // itself must be signed too -- a UINT64 `/` would divide their full 64-bit magnitudes
+        // unsigned (2^64-n / m), so reinterpret as INT64 before dividing.
+        case BinSDiv: R = B ? (UINT64)((INT64) SignExtend (A, Bits) / (INT64) SignExtend (B, Bits)) : 0; break;
         case BinURem: R = B ? A % B : 0; break;
-        case BinSRem: R = B ? (UINT64)(SignExtend (A, Bits) % SignExtend (B, Bits)) : 0; break;
+        case BinSRem: R = B ? (UINT64)((INT64) SignExtend (A, Bits) % (INT64) SignExtend (B, Bits)) : 0; break;
         case BinAnd:  R = A & B; break;
         case BinOr:   R = A | B; break;
         case BinXor:  R = A ^ B; break;

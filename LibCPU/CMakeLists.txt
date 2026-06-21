@@ -627,6 +627,23 @@ if(TARGET interp_backend)
      LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86immrm.bin' --count 6 --arch \"upcl:$X@8086\" | grep -q 'ADD \\[0060h\\], 0010h' && \
      OUT=$(\"$E\" run '${CMAKE_BINARY_DIR}/x86immrm.bin' --arch \"upcl:$X@8086\") && \
      echo \"$OUT\" | grep -q 'ax =0004' && echo \"$OUT\" | grep -q 'bx =010f' && echo \"$OUT\" | grep -q 'cx =0014'")
+
+  # The 0xF7 /digit group: the unary/multiply/divide opcodes whose ModR/M `reg` field is an opcode
+  # extension. NOT/NEG (/2,/3), MUL/IMUL (/4,/5: 16x16->32-bit DX:AX product), DIV/IDIV (/6,/7:
+  # 32-bit DX:AX dividend), and TEST imm (/0, a tail immediate). The signed IDIV is a regression
+  # guard for the interp backend's BinSDiv (it must divide as INT64, not on the sign-extended
+  # UINT64 bit pattern): -20/3 must give ax=0xFFFA (-6), dx=0xFFFE (-2), not the unsigned 0x554E.
+  add_test(NAME upcl.x86-f7group COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xF7\\xD0\\xF7\\xD8\\xF7\\xE3\\xF7\\xEB\\xF7\\xF3\\xF7\\xFB\\xF7\\x06\\x40\\x00\\x34\\x12' > '${CMAKE_BINARY_DIR}/x86f7.bin' && \
+     D=$(LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86f7.bin' --count 7 --arch \"upcl:$X@8086\") && \
+     echo \"$D\" | grep -q 'NOT AX' && echo \"$D\" | grep -q 'MUL BX' && echo \"$D\" | grep -q 'IDIV BX' && \
+     echo \"$D\" | grep -q 'TEST \\[0040h\\], 1234h' && \
+     printf '\\xBA\\xFF\\xFF\\xB8\\xEC\\xFF\\xBB\\x03\\x00\\xF7\\xFB\\xF4' > '${CMAKE_BINARY_DIR}/x86idiv.bin' && \
+     OUT=$(\"$E\" run '${CMAKE_BINARY_DIR}/x86idiv.bin' --arch \"upcl:$X@8086\") && \
+     echo \"$OUT\" | grep -q 'ax =fffa' && echo \"$OUT\" | grep -q 'dx =fffe' && \
+     printf '\\xB8\\x00\\x10\\xBB\\x10\\x00\\xF7\\xE3\\xF4' > '${CMAKE_BINARY_DIR}/x86mul.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86mul.bin' --arch \"upcl:$X@8086\" | grep -q 'dx =0001'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

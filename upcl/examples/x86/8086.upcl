@@ -98,9 +98,52 @@ insn cmp : encode #i16 ( op:8 = 0x39, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst 
 	disasm ( mnemonic : "cmp", size : word, operands : dst, src )
 	=> %CC ( dst - src );							// sets flags, no write-back
 
-insn test : encode #i16 ( op:8 = 0x85, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 ),	// 0x85 /r
+insn test : encode #i16 ( op:8 = 0x85, mod:2, reg:3 -> src[ gpr16 ], rm:3 -> dst @modrm16 )	// 0x85 /r
+	     |  #i16 ( op:8 = 0xF7, mod:2, reg:3 = 0, rm:3 -> dst @modrm16, imm:16 -> src ),	// 0xF7 /0 iw
 	disasm ( mnemonic : "test", size : word, operands : dst, src )
 	=> %CC ( dst & src );							// sets flags, no write-back
+
+// ---- unary r/m group: 0xF7 /digit (word) ----------------------------------
+//
+// The other grouped opcode whose ModR/M `reg` field is an opcode extension:
+//
+//     /0 test (above)  /2 not  /3 neg  /4 mul  /5 imul  /6 div  /7 idiv
+//
+// MUL/DIV use the implicit AX (and DX for the upper half) -- the 16x16 product
+// is 32 bits wide (DX:AX), and the 32-bit dividend DX:AX divides by the operand.
+// The operands are widened to 32 bits ([ #i32 .. ] zero-extends, %S sign-extends)
+// so the full product / dividend survives, then sliced back into AX and DX.
+
+insn not : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 2, rm:3 -> dst @modrm16 ),		// 0xF7 /2
+	disasm ( mnemonic : "not", size : word, operands : dst )
+	=> dst = ~ dst;								// one's complement, no flags
+
+insn neg : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 3, rm:3 -> dst @modrm16 ),		// 0xF7 /3
+	disasm ( mnemonic : "neg", size : word, operands : dst )
+	=> dst = %CC ( 0 - dst );						// two's complement, sets flags
+
+insn mul : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 4, rm:3 -> src @modrm16 ),		// 0xF7 /4
+	disasm ( mnemonic : "mul", size : word, operands : src )
+	{ #i32 p = [ #i32 ax ] * [ #i32 src ] ;					// unsigned 16x16 -> 32
+	  ax = p[ 15:0 ] ; dx = p[ 31:16 ] ;					// DX:AX = product
+	  flags.C = p[ 31:16 ] != 0 ; flags.O = p[ 31:16 ] != 0 ; }		// CF=OF if upper half used
+
+insn imul : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 5, rm:3 -> src @modrm16 ),	// 0xF7 /5
+	disasm ( mnemonic : "imul", size : word, operands : src )
+	{ #i32 p = %S ( [ #i32 ax ] ) * %S ( [ #i32 src ] ) ;			// signed 16x16 -> 32
+	  ax = p[ 15:0 ] ; dx = p[ 31:16 ] ; }					// DX:AX = product
+
+insn div : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 6, rm:3 -> src @modrm16 ),		// 0xF7 /6
+	disasm ( mnemonic : "div", size : word, operands : src )
+	{ #i32 n = ( dx : ax ) ;						// unsigned DX:AX / r/m16
+	  ax = [ #i16 n / [ #i32 src ] ] ;					// quotient -> AX
+	  dx = [ #i16 n % [ #i32 src ] ] ; }					// remainder -> DX
+
+insn idiv : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 7, rm:3 -> src @modrm16 ),	// 0xF7 /7
+	disasm ( mnemonic : "idiv", size : word, operands : src )
+	{ #i32 n = ( dx : ax ) ;						// signed DX:AX / r/m16
+	  ax = [ #i16 %S ( n / [ #i32 src ] ) ] ;				// quotient -> AX
+	  dx = [ #i16 %S ( n % [ #i32 src ] ) ] ; }				// remainder -> DX
 
 // ---- increment / decrement -----------------------------------------------
 
