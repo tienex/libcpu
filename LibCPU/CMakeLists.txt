@@ -519,6 +519,15 @@ if(TARGET interp_backend)
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def') && \
      echo \"$OUT\" | grep -q 'ax =1234' && echo \"$OUT\" | grep -q 'cx =0001'")
 
+  # 8086 conditional jump (Jcc) + a real countdown loop: mov cx,3 ; loop: dec cx ; jnz loop ;
+  # hlt. JNZ (0x75) decodes via the single jcc encoding (cond=5); @eval_cc(cond) computes !ZF
+  # from the flags dec set; the loop runs three times, so cx ends at 0. Proves Jcc condition
+  # evaluation + flag flow across the loop edge, all from the .def.
+  add_test(NAME upcl.run-8086-jcc COMMAND sh -c
+    "printf '\\xB9\\x03\\x00\\x49\\x75\\xFD\\xF4' > '${CMAKE_BINARY_DIR}/jcc8086.bin' && \
+     '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/jcc8086.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0000'")
+
   # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
   # CFG wires the edge. Program: movi r0,0x1111 ; jmp +3 ; movi r0,0x9999 ; hlt -- the jump
   # skips the second movi, so r0 must stay 0x1111 (a NOT-taken branch would leave 0x9999).
