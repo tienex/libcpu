@@ -115,6 +115,14 @@ typedef struct _CPU_ARCH_INFO {
     BOOLEAN      IsBigEndian;
     UINT32       GprCount;
     UINT32       GprBits;
+    //
+    // Code-address display. When AddrSegShift is non-zero the address is shown segmented as
+    // seg:off -- off is the low AddrOffBits bits, seg is the rest shifted down by AddrSegShift
+    // (so seg*2^AddrSegShift + off == the linear address). Real-mode x86 is shift 4, offset 16
+    // (CS:IP). Zero AddrSegShift means a flat hexadecimal address.
+    //
+    UINT32       AddrSegShift;
+    UINT32       AddrOffBits;
 } CPU_ARCH_INFO;
 
 //

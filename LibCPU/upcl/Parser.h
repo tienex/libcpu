@@ -88,6 +88,7 @@ private:
     void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
     void       ParseRegSet (Arch *pArch);         // `regset <name> [ <reg>, ... ];`
     void       ParseAddrMode (Arch *pArch);       // `addrmode <name> ( p ) disp(e) { rules }`
+    void       ParseAddressDisplay (Arch *pArch); // `address_display segmented shift N offset M;`
     AddrRule  *ParseAddrRule ();                   // `<cond> => reg [ .. ] | mem [ .. ] ;`
     Directive *ParseGenericDirective ();         // the escape hatch
     Stmt      *ParseStmt ();          // insn_stmts:  { } | flow | <basic> ';'

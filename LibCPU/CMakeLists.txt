@@ -676,6 +676,19 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x86sar.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =f800' && \
      printf '\\xB8\\x00\\x80\\xB1\\x04\\xD3\\xE8\\xF4' > '${CMAKE_BINARY_DIR}/x86shr.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x86shr.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0800'")
+
+  # `address_display`: how a code address is shown in a disassembly listing. x86 declares it
+  # segmented (shift 4, offset 16), so addresses render as the real-mode CS:IP pair (0000:0002);
+  # the i8080, with no declaration, keeps the default flat form ($0002:).
+  add_test(NAME upcl.addr-display COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; I='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/i8080.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x89\\xC1\\x89\\xC1\\xEB\\xFE' > '${CMAKE_BINARY_DIR}/x86seg.bin' && \
+     S=$(\"$E\" disasm '${CMAKE_BINARY_DIR}/x86seg.bin' --count 3 --arch \"upcl:$X@8086\") && \
+     echo \"$S\" | grep -q '0000:0000:' && echo \"$S\" | grep -q '0000:0002:' && echo \"$S\" | grep -q '0000:0004:' && \
+     ! echo \"$S\" | grep -q '[$]0000:' && \
+     printf '\\x3E\\x05\\x06\\x03' > '${CMAKE_BINARY_DIR}/i80seg.bin' && \
+     F=$(\"$E\" disasm '${CMAKE_BINARY_DIR}/i80seg.bin' --count 2 --arch \"upcl:$I\") && \
+     echo \"$F\" | grep -q '[$]0000:' && ! echo \"$F\" | grep -q '0000:0000:'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

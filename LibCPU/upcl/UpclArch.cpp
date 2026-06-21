@@ -95,6 +95,8 @@ public:
         pInfo->GprCount    = m_Standard ? (UINT32) m_Layout.Phys.size ()
                                          : (UINT32) m_pArch->Registers.size ();
         pInfo->GprBits     = m_WordBits;
+        pInfo->AddrSegShift = m_pArch->AddrSegShift;   // segmented (CS:IP) vs flat address display
+        pInfo->AddrOffBits  = m_pArch->AddrOffBits;
         return S_OK;
     }
 

@@ -47,6 +47,10 @@ arch "x86" {
 
 decoder_operands [ #i16 src, #i16 dst, #i8 cnt, ccflags #i16 cond, const #i1 rep ];
 
+// Show code addresses as the real-mode CS:IP pair (segment << 4 + offset): the offset is the
+// low 16 bits, the segment the rest divided by 16. (A flat 16/20-bit linear address otherwise.)
+address_display segmented shift 4 offset 16;
+
 regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
 regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
 

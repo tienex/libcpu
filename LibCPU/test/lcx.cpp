@@ -294,6 +294,27 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     return 0;
 }
 
+// Render a code address per the arch's display rule (CPU_ARCH_INFO). Flat is "$%04x:"; a
+// segmented arch (AddrSegShift != 0, e.g. x86 real-mode CS:IP) is "seg:off:" -- off is the low
+// AddrOffBits bits, seg is the rest shifted down by AddrSegShift (so seg*2^shift + off == linear).
+static void
+FormatAddr (CPU_ARCH_INFO CONST &Info, UINT64 Linear, char *pBuf, size_t Max)
+{
+    if (Info.AddrSegShift == 0 || Info.AddrOffBits == 0) {
+        std::snprintf (pBuf, Max, "$%04llx:", (unsigned long long) Linear);
+        return;
+    }
+    UINT32 B       = Info.AddrOffBits;
+    UINT64 OffMask = (B >= 64) ? ~UINT64_C (0) : ((UINT64_C (1) << B) - 1);
+    UINT64 Off     = Linear & OffMask;
+    UINT64 Seg     = (Linear & ~OffMask) >> Info.AddrSegShift;
+    // The segment is shown the same width as the offset (CS and IP are both 16-bit); the field
+    // width is only a minimum, so a larger segment still prints in full.
+    int Digits = (int) ((B + 3) / 4);
+    std::snprintf (pBuf, Max, "%0*llx:%0*llx:", Digits, (unsigned long long) Seg,
+                   Digits, (unsigned long long) Off);
+}
+
 static int
 CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
 {
@@ -312,17 +333,21 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
     ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    CPU_ARCH_INFO Info;
+    std::memset (&Info, 0, sizeof (Info));
+    A.pArch->GetInfo (&Info);
     CPU_ADDR Pc = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     UINT32 Count = (UINT32) std::strtoul (Opt (argc, argv, "--count", "16"), nullptr, 0);
     for (UINT32 I = 0; I < Count; I++) {
-        char Line[64];
+        char Line[64], Addr[32];
         A.pArch->Disassemble (Pc, Line, sizeof (Line));
+        FormatAddr (Info, Pc, Addr, sizeof (Addr));
         UINT32 Tag = 0; CPU_ADDR NewPc = 0, NextPc = 0;
         if (FAILED (A.pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc)) || NextPc <= Pc || NextPc > Len) {
-            std::printf ("  $%04llx:  %s\n", (unsigned long long) Pc, Line);
+            std::printf ("  %s  %s\n", Addr, Line);
             break;
         }
-        std::printf ("  $%04llx:  %s\n", (unsigned long long) Pc, Line);
+        std::printf ("  %s  %s\n", Addr, Line);
         Pc = NextPc;
     }
     A.pArch->Release ();

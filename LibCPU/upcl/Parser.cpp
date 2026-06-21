@@ -1423,6 +1423,37 @@ Parser::ParseDecoderOperands (Arch *pArch)
     Expect (TokSemi, "after decoder_operands");
 }
 
+// `address_display flat;` (the default) or `address_display segmented shift <N> offset <M>;` --
+// how a code address is shown. Segmented renders it as seg:off (e.g. x86 real-mode CS:IP): off is
+// the low <M> bits, seg is the rest divided by 2^<N>, so seg*2^N + off recovers the linear address.
+void
+Parser::ParseAddressDisplay (Arch *pArch)
+{
+    Advance ();                                     // 'address_display'
+    if (AtKeyword ("flat")) {
+        Advance ();
+        pArch->AddrSegShift = 0;
+    } else if (AtKeyword ("segmented")) {
+        Advance ();
+        UINT64 Shift = 0, Off = 0;
+        // `shift <N>` and `offset <M>` in either order.
+        for (int I = 0; I < 2; I++) {
+            if (AtKeyword ("shift"))       { Advance (); ExpectInt (&Shift, "as the segment shift"); }
+            else if (AtKeyword ("offset")) { Advance (); ExpectInt (&Off, "as the offset width in bits"); }
+            else { break; }
+        }
+        if (Shift == 0 || Off == 0) {
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (),
+                             "a segmented address_display needs a non-zero shift and offset width");
+        }
+        pArch->AddrSegShift = (UINT32) Shift;
+        pArch->AddrOffBits  = (UINT32) Off;
+    } else {
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected 'flat' or 'segmented' after address_display");
+    }
+    Expect (TokSemi, "after address_display");
+}
+
 // `regset <name> [ <reg> (, <reg>)* ];` -- a named register list reused by encodings.
 void
 Parser::ParseRegSet (Arch *pArch)
@@ -1453,7 +1484,8 @@ Parser::SyncToTopLevel ()
         if (AtKeyword ("arch") || AtKeyword ("insn") || AtKeyword ("jump") || AtKeyword ("macro")
             || AtKeyword ("regset") || AtKeyword ("decoder_operands") || AtKeyword ("group")
             || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")
-            || AtKeyword ("include") || AtKeyword ("disasm")) {
+            || AtKeyword ("include") || AtKeyword ("disasm") || AtKeyword ("addrmode")
+            || AtKeyword ("address_display")) {
             return;
         }
         Advance ();
@@ -1725,6 +1757,8 @@ Parser::ParseToplevel (Module *M)
             ParseRegSet (M->Archs.back ());
         } else if (AtKeyword ("addrmode")) {
             ParseAddrMode (M->Archs.back ());
+        } else if (AtKeyword ("address_display")) {
+            ParseAddressDisplay (M->Archs.back ());
         } else if (AtKeyword ("macro")) {
             ParseMacro (M->Archs.back ());
         } else if (AtKeyword ("jump")) {

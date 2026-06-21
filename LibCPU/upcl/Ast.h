@@ -542,6 +542,9 @@ public:
     UINT32                   FloatSize = 0;  // old .def: float_size
     UINT32                   AddressSize = 0;
     UINT32                   PsrSize = 0;    // old .def: psr_size
+    UINT32                   AddrSegShift = 0;  // `address_display segmented shift N offset M`:
+    UINT32                   AddrOffBits = 0;   //   show code addresses as seg:off (e.g. CS:IP);
+                                          //   0 shift = a flat hexadecimal address (the default).
     std::vector<Reg>         Registers;     // new-syntax flat register list
     RegisterFile            *RegFile = nullptr;  // old-syntax register_file (owned)
     std::vector<Feature>     Features;       // declared ISA features (features { ... })
