@@ -16,7 +16,7 @@ MakeAssign (SRC_LOC Loc, Expr *pLhs, TOKEN_KIND Op, Expr *pRhs, Type *pLhsType)
 }
 
 Parser::Parser (SourceManager *pSm, FILE_ID File, DiagnosticEngine *pDiag)
-    : m_pSm (pSm), m_pDiag (pDiag), m_Lexer (pSm, File, pDiag)
+    : m_pSm (pSm), m_pDiag (pDiag), m_Lexer (pSm, File, pDiag), m_CurFilePath (pSm->Name (File))
 {
     Advance ();
 }
@@ -1340,7 +1340,8 @@ Parser::SyncToTopLevel ()
     while (m_Cur.Kind != TokEof) {
         if (AtKeyword ("arch") || AtKeyword ("insn") || AtKeyword ("jump") || AtKeyword ("macro")
             || AtKeyword ("regset") || AtKeyword ("decoder_operands") || AtKeyword ("group")
-            || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")) {
+            || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")
+            || AtKeyword ("include") || AtKeyword ("disasm")) {
             return;
         }
         Advance ();
@@ -1488,16 +1489,71 @@ Parser::ParseDisasmDecl ()
     return D;
 }
 
+// Strip the file name from a path, leaving the directory (or "." if none) for resolving a
+// relative include against the file that issued it.
+static std::string
+DirOf (std::string CONST &Path)
+{
+    std::string::size_type Slash = Path.find_last_of ("/\\");
+    return (Slash == std::string::npos) ? std::string (".") : Path.substr (0, Slash);
+}
+
+// `include "<file>";` -- load the file and splice its top-level declarations into the same
+// module (so they attach to the current arch). The path is relative to the including file.
+void
+Parser::ParseInclude (Module *pModule)
+{
+    SRC_LOC Loc = m_Cur.Loc;
+    Advance ();                                     // 'include'
+    std::string Rel;
+    if (m_Cur.Kind == TokString) { Rel = m_Cur.Text; Advance (); }
+    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a quoted file name after 'include'"); }
+    Accept (TokSemi);
+    if (Rel.empty ()) { return; }
+
+    bool Absolute = (!Rel.empty () && (Rel[0] == '/' || Rel[0] == '\\'));
+    std::string Path = Absolute ? Rel : (DirOf (m_CurFilePath) + "/" + Rel);
+
+    std::string Err;
+    FILE_ID Fid = m_pSm->LoadFile (Path, &Err);
+    if (Fid == InvalidFile) {
+        m_pDiag->Report (SevError, Loc, std::string ("cannot include '") + Rel + "': " + Err);
+        return;
+    }
+
+    // Swap in a lexer over the included file (a deque keeps existing texts stable), parse its
+    // declarations into the same module, then restore the outer file.
+    Lexer       SavedLexer = m_Lexer;
+    Token       SavedCur   = m_Cur;
+    std::string SavedPath  = m_CurFilePath;
+    m_Lexer       = Lexer (m_pSm, Fid, m_pDiag);
+    m_CurFilePath = m_pSm->Name (Fid);
+    Advance ();
+    ParseToplevel (pModule);
+    m_Lexer       = SavedLexer;
+    m_Cur         = SavedCur;
+    m_CurFilePath = SavedPath;
+}
+
 Module *
 Parser::ParseModule ()
 {
     Module *M = new Module ();
+    ParseToplevel (M);
+    return M;
+}
+
+void
+Parser::ParseToplevel (Module *M)
+{
     while (m_Cur.Kind != TokEof) {
         if (m_pDiag->Overflowed ()) { break; }      // too many errors: stop churning
         // The arch block, then the top-level declarations that attach to it (decoder_operands,
         // macros, instructions, jump instructions, instruction groups -- the old .def order).
         if (m_Cur.Kind == TokSemi) {                // a stray separator (e.g. `arch { } ;`)
             Advance ();
+        } else if (AtKeyword ("include")) {
+            ParseInclude (M);
         } else if (AtKeyword ("arch")) {
             M->Archs.push_back (ParseArch ());
         } else if (M->Archs.empty ()) {
@@ -1526,7 +1582,6 @@ Parser::ParseModule ()
             SyncToTopLevel ();                       // resync at a declaration boundary
         }
     }
-    return M;
 }
 
 } // namespace Upcl

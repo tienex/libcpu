@@ -83,7 +83,7 @@ TokenName (TOKEN_KIND Kind)
 }
 
 Lexer::Lexer (SourceManager *pSm, FILE_ID File, DiagnosticEngine *pDiag)
-    : m_pSm (pSm), m_pDiag (pDiag), m_Text (pSm->Text (File)),
+    : m_pSm (pSm), m_pDiag (pDiag), m_pText (&pSm->Text (File)),
       m_Base (pSm->FileBegin (File)), m_Pos (0)
 {
 }
@@ -92,13 +92,13 @@ CHAR8
 Lexer::Peek (UINT32 Ahead) CONST
 {
     UINT32 P = m_Pos + Ahead;
-    return (P < m_Text.size ()) ? m_Text[P] : '\0';
+    return (P < m_pText->size ()) ? (*m_pText)[P] : '\0';
 }
 
 CHAR8
 Lexer::Advance ()
 {
-    return (m_Pos < m_Text.size ()) ? m_Text[m_Pos++] : '\0';
+    return (m_Pos < m_pText->size ()) ? (*m_pText)[m_Pos++] : '\0';
 }
 
 bool
@@ -134,7 +134,7 @@ Lexer::Make (TOKEN_KIND Kind, UINT32 Begin)
     T.Kind = Kind;
     T.Loc  = Loc (Begin);
     T.End  = Loc (m_Pos);
-    T.Text = m_Text.substr (Begin, m_Pos - Begin);
+    T.Text = m_pText->substr (Begin, m_Pos - Begin);
     T.Int  = 0;
     return T;
 }

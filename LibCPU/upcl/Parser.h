@@ -32,6 +32,10 @@ public:
     Module *ParseModule ();
 
 private:
+    void ParseToplevel (Module *pModule);        // the top-level declaration loop (reused by include)
+    void ParseInclude (Module *pModule);         // `include "<file>";` -- splice another file's decls
+
+private:
     // token stream
     void   Advance ();
     Token CONST &Cur () CONST { return m_Cur; }
@@ -108,6 +112,7 @@ private:
     DiagnosticEngine *m_pDiag;
     Lexer             m_Lexer;
     Token        m_Cur;
+    std::string       m_CurFilePath;             // the file being lexed (for relative includes)
 };
 
 } // namespace Upcl

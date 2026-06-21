@@ -25,6 +25,7 @@
 #define LIBCPU_UPCL_DIAGNOSTIC_H
 
 #include "LibCPU/Base.h"
+#include <deque>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -81,7 +82,9 @@ private:
         std::vector<UINT32> LineStart;       // local offsets of each line's first char
     } ENTRY;
 
-    std::vector<ENTRY> m_Files;
+    // A deque, not a vector, so loading a file (during `include`) never reallocates the
+    // existing entries -- an active Lexer holds a pointer into one entry's text.
+    std::deque<ENTRY>  m_Files;
     SRC_LOC            m_Next;               // next free base in the global space
 };
 

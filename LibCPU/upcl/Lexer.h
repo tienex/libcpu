@@ -38,9 +38,10 @@ private:
 
     SourceManager     *m_pSm;
     DiagnosticEngine  *m_pDiag;
-    std::string CONST &m_Text;
+    std::string CONST *m_pText;  // the file's text (a pointer, so a Lexer can be reassigned --
+                                 // the parser swaps lexers in and out for `include`)
     SRC_LOC       m_Base;       // global location of this file's first char
-    UINT32             m_Pos;        // local offset into m_Text
+    UINT32             m_Pos;        // local offset into m_pText
 };
 
 } // namespace Upcl
