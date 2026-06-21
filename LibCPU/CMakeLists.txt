@@ -517,6 +517,16 @@ if(TARGET interp_backend)
      OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/branch.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r0 =1111' && ! echo \"$OUT\" | grep -q 'r0 =9999'")
+
+  # A conditional-branch LOOP: movi r0,3 ; movi r1,0 ; {addi r1,10 ; subi r0,1 ; jnz r0,-8} ;
+  # hlt. The jnz takes a signed backward displacement while r0 != 0, so the loop runs three
+  # times: r1 = 30 (0x1e) and r0 = 0. Exercises TagConditional + TranslateCond + sign-extended
+  # target folding -- the full loop machinery from a .upcl description.
+  add_test(NAME upcl.run-loop COMMAND sh -c
+    "printf '\\x04\\x03\\x00\\x05\\x00\\x00\\x09\\x0A\\x00\\x0C\\x01\\x00\\x44\\xF8\\x00' > '${CMAKE_BINARY_DIR}/loop.bin' && \
+     OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/loop.bin' \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
+     echo \"$OUT\" | grep -q 'r1 =001e' && echo \"$OUT\" | grep -q 'r0 =0000'")
 endif()
 
 # Feature / CPU-model selection: ONE description (test/x86.upcl) carries the 8086 base ISA

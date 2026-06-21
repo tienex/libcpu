@@ -34,9 +34,17 @@ insn movi : dst = imm
 insn addi : dst = dst + imm
 	encode #i24 ( op:6 = 0x02, reg:2 -> dst[ r ], imm:16 -> imm );
 
+// subi rN, imm16     -- subtract an immediate
+insn subi : dst = dst - imm
+	encode #i24 ( op:6 = 0x03, reg:2 -> dst[ r ], imm:16 -> imm );
+
 // jmp +disp          -- relative jump (forward); %PC reads as the next instruction
 insn jmp : pc = pc + disp
 	encode #i16 ( op:8 = 0x10, disp:8 -> disp );
+
+// jnz rN, +disp      -- branch (signed displacement) if register rN is non-zero
+insn jnz : if ( dst ) pc = pc + %S ( [ #i8 disp ] ) ;
+	encode #i16 ( op:6 = 0x11, reg:2 -> dst[ r ], disp:8 -> disp );
 
 // hlt
 insn hlt :

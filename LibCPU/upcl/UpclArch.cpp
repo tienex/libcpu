@@ -103,13 +103,15 @@ public:
                 return S_OK;
             }
             *pNextPc = Pc + D.Length;
-            // A write to the program counter whose target folds to a constant is a branch;
-            // the run loop wires the edge from the tag (the pc-write itself is not emitted).
+            // A pc-write with a constant-foldable target is a branch; an `if (c) pc=...` is a
+            // conditional branch (taken target in NewPc, fall-through in NextPc). The edge is
+            // wired from the tag (the pc-write itself is not emitted).
             UINT64 Target = 0;
-            if (StdBranchTarget (D, Pc, &Target)) {
-                *pTag = TagBranch; *pNewPc = (CPU_ADDR) Target;
-            } else {
-                *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;
+            Expr  *Cond = nullptr;
+            switch (StdBranchInfo (D, Pc, &Target, &Cond)) {
+            case StdBrUncond: *pTag = TagBranch;      *pNewPc = (CPU_ADDR) Target; break;
+            case StdBrCond:   *pTag = TagConditional; *pNewPc = (CPU_ADDR) Target; break;
+            default:          *pTag = TagContinue;    *pNewPc = (CPU_ADDR) -1;     break;
             }
             return S_OK;
         }
@@ -188,11 +190,11 @@ public:
             if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
-            // A constant-target pc-write is the branch edge (wired from the tag) -- emit the
-            // rest of the body; everything else translates as straight-line.
+            // The branch statement (an unconditional pc-write or an `if (c) pc=...`) is the
+            // edge, wired from the tag -- emit the rest of the body straight-line.
             std::vector<Stmt *> Body;
             for (Stmt *S : D.pInsn->Semantics) {
-                if (!IsStdPcWrite (S)) { Body.push_back (S); }
+                if (!IsStdPcWrite (S) && !IsCondBranchStmt (S)) { Body.push_back (S); }
             }
             Tr.Emit (Body);
             return S_OK;
@@ -211,9 +213,19 @@ public:
         return S_OK;
     }
 
-    HRESULT STDMETHODCALLTYPE TranslateCond (CPU_ADDR /*Pc*/, ICpuEmitter * /*pE*/, ICpuValue **ppCond) override {
+    HRESULT STDMETHODCALLTYPE TranslateCond (CPU_ADDR Pc, ICpuEmitter *pE, ICpuValue **ppCond) override {
         *ppCond = nullptr;
-        return E_NOTIMPL;                            // conditional control flow: next increment
+        if (m_Standard) {
+            DecodedInsn D;
+            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return E_NOTIMPL; }
+            UINT64 Target = 0;
+            Expr  *Cond = nullptr;
+            if (StdBranchInfo (D, Pc, &Target, &Cond) != StdBrCond || Cond == nullptr) { return E_NOTIMPL; }
+            Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
+            for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
+            return Tr.EmitCondition (Cond, ppCond);
+        }
+        return E_NOTIMPL;                            // experimental path: conditional flow later
     }
 
 private:
@@ -286,22 +298,52 @@ private:
         }
         case ExprCast:
             return FoldStd (E->Args[0], D, NextPc, pOut);          // width is irrelevant to folding
-        case ExprAugment:
-            return !E->Args.empty () && FoldStd (E->Args[0], D, NextPc, pOut);
+        case ExprAugment: {
+            // %S ( [ #iN x ] ) sign-extends the folded value from N bits (a backward branch's
+            // negative displacement); %U and other augments pass the value through.
+            if (E->Args.empty () || !FoldStd (E->Args[0], D, NextPc, pOut)) { return false; }
+            Expr *Inner = E->Args[0];
+            if (E->Name == "S" && Inner->Kind == ExprCast && Inner->VType != nullptr) {
+                UINT32 W = Inner->VType->Width;
+                if (W > 0 && W < 64) {
+                    INT64 Sign = (INT64) 1 << (W - 1);
+                    *pOut = (*pOut ^ Sign) - Sign;
+                }
+            }
+            return true;
+        }
         default:
             return false;
         }
     }
 
-    bool StdBranchTarget (DecodedInsn CONST &D, CPU_ADDR Pc, UINT64 *pTarget) CONST {
+    // A conditional-branch statement: `if (cond) <pc-write>` with a single then-statement
+    // and no else -- the shape a jcc/jnz instruction takes.
+    bool IsCondBranchStmt (Stmt *S) CONST {
+        return S->Kind == StmtIf && S->Else.empty () && S->Then.size () == 1
+            && IsStdPcWrite (S->Then[0]);
+    }
+
+    // Classify a decoded instruction's control flow and, for a branch, fold its target (and
+    // surface the condition expression for a conditional branch).
+    enum STD_BR { StdBrNone, StdBrUncond, StdBrCond };
+    STD_BR StdBranchInfo (DecodedInsn CONST &D, CPU_ADDR Pc, UINT64 *pTarget, Expr **ppCond) CONST {
         INT64 NextPc = (INT64) (Pc + D.Length);
+        *ppCond = nullptr;
         for (Stmt *S : D.pInsn->Semantics) {
             if (IsStdPcWrite (S) && S->Rhs != nullptr) {
                 INT64 T = 0;
-                if (FoldStd (S->Rhs, D, NextPc, &T)) { *pTarget = (UINT64) T; return true; }
+                if (FoldStd (S->Rhs, D, NextPc, &T)) { *pTarget = (UINT64) T; return StdBrUncond; }
+            }
+            if (IsCondBranchStmt (S)) {
+                Stmt *W = S->Then[0];
+                INT64 T = 0;
+                if (W->Rhs != nullptr && FoldStd (W->Rhs, D, NextPc, &T)) {
+                    *pTarget = (UINT64) T; *ppCond = S->Cond; return StdBrCond;
+                }
             }
         }
-        return false;
+        return StdBrNone;
     }
 
     // Decode the instruction at Pc: find the first instruction whose format-extracted

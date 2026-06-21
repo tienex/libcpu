@@ -76,6 +76,10 @@ public:
     // construct not yet handled (the caller can report it); already-emitted work stays.
     bool Emit (std::vector<Stmt *> CONST &Body);
 
+    // Emit a branch condition: the expression as an i1 (a value wider than one bit becomes a
+    // non-zero test, the C-like `if (x)`). Ownership of *ppOut transfers to the caller.
+    HRESULT EmitCondition (Expr *pExpr, ICpuValue **ppOut);
+
 private:
     // expressions
     Value EvalExpr (Expr *pExpr);

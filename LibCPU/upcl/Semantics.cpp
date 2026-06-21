@@ -555,6 +555,19 @@ Translator::Emit (std::vector<Stmt *> CONST &Body)
     return Ok;
 }
 
+HRESULT
+Translator::EmitCondition (Expr *pExpr, ICpuValue **ppOut)
+{
+    Value V = EvalExpr (pExpr);
+    // A one-bit value (a flag, a compare) is the condition; anything wider is true when
+    // non-zero (`if (reg)` == reg != 0).
+    Value Bit = (V.Bits == 1) ? V : Cmp (CmpNe, V, Const (V.Bits ? V.Bits : m_WordBits, 0));
+    if (Bit.V == nullptr) { *ppOut = nullptr; return E_FAIL; }
+    Bit.V->AddRef ();                                // ownership transferred to the caller
+    *ppOut = Bit.V;
+    return S_OK;
+}
+
 bool
 Translator::EmitStmt (Stmt *pStmt)
 {
