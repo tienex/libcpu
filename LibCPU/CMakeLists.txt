@@ -538,6 +538,20 @@ if(TARGET interp_backend)
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl') && \
      echo \"$OUT\" | grep -q 'cx =0001' && echo \"$OUT\" | grep -q 'dx =0001'")
 
+  # The modular, extensible x86 (x86.upcl includes x86/{disasm,8086,80186,v20}.upcl): the
+  # family is split into a core + per-generation/vendor files, each gated on a feature a CPU
+  # model selects. PUSH imm16 (0x68) decodes only with the 80186 `ext_186` feature (a v30 has
+  # it); an 8086 leaves it an unknown byte. The base 8086 still runs (mov ax,0x1234).
+  add_test(NAME upcl.x86-modular COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     \"$E\" upcl check \"$X\" | grep -q 'cpu .v30. = ext_186 nec' && \
+     ! \"$E\" upcl check \"$X\" | grep -q 'CONFLICT' && \
+     printf '\\x68\\x78\\x56' > '${CMAKE_BINARY_DIR}/x86push.bin' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86push.bin' --count 1 --arch \"upcl:$X@v30\"  | grep -q 'PUSH 5678h' && \
+     \"$E\" disasm '${CMAKE_BINARY_DIR}/x86push.bin' --count 1 --arch \"upcl:$X@8086\" | grep -q 'db 0x68' && \
+     printf '\\xB8\\x34\\x12\\x41\\xF4' > '${CMAKE_BINARY_DIR}/x86mod.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86mod.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =1234'")
+
   # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
   # CFG wires the edge. Program: movi r0,0x1111 ; jmp +3 ; movi r0,0x9999 ; hlt -- the jump
   # skips the second movi, so r0 must stay 0x1111 (a NOT-taken branch would leave 0x9999).

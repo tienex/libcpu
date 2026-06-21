@@ -1,0 +1,88 @@
+// The Intel x86 instruction-set family, as a modular, extensible UPCL description.
+//
+// This top file declares the architecture core -- the register file, the decoder operands,
+// the register-encoding orders -- and the shared semantic macros, then INCLUDES the syntax
+// styles and the instruction sets. Each ISA generation / vendor extension lives in its own
+// file under x86/, gated on a feature; a CPU model selects which features are active:
+//
+//     lcx run prog.bin --arch upcl:x86.upcl@v30
+//
+// It is built to grow toward the modern x86: add x86/<generation>.upcl with a `feature { }`
+// block, declare the feature, and list it in the CPU models that have it.
+
+arch "x86" {
+
+	name "Intel x86 family";
+	byte_size 8;
+	word_size 16;
+	address_size 16;
+	default_endian little;
+
+	register_file {
+
+		group R {
+			[ #i16 bx -> #i8 ( bh : bl ) ],
+			[ #i16 ax -> #i8 ( ah : al ) ],
+			[ #i16 cx -> #i8 ( ch : cl ) ],
+			[ #i16 dx -> #i8 ( dh : dl ) ],
+			[ #i16 sp ],
+			[ #i16 bp ],
+			[ #i16 si ],
+			[ #i16 di ]
+		}
+
+		group SEG {
+			[ #i16 cs ], [ #i16 ds ], [ #i16 ss ], [ #i16 es ]
+		}
+
+		group S {
+			[ #i16 ip ],
+			[ #i24 pc -> %PC #i16 explicit evaluate ( @ea ( seg, off ) ) ( seg <- cs : off <-> ip ) ],
+			[ #i16 flags -> %PSR #i1 explicit ( 0:0:0:0:O->%V:D:I:T:S->%N:Z->%Z:0:A<-C:0:P->%P:0:C->%C ) ]
+		}
+
+		group INT : [ #i8 intno ];
+	}
+}
+
+decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
+
+regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
+regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
+
+// Shared semantics: effective address, near/far jump, push/pop on the stack.
+macro ea ( seg, off ) : #i24 %result = ( [ #i16 seg ] << 4 ) + [ #i16 off ];
+
+macro i8086_jump ( address ) {
+	if ( address is #i16 )
+		pc.off = address;
+	else
+		pc.[ off, seg ] = address;
+}
+macro i8086_jump ( seg, off ) : pc.[ seg, off ] = ( seg : off );
+
+macro i8086_push ( value ) {
+	sp -= 2;
+	#i16 %M[ @ea ( ss, sp ) ] = value;
+}
+macro i8086_pop () {
+	%result = #i16 %M[ @ea ( ss, sp ) ];
+	sp += 2;
+}
+
+// Syntax styles (AT&T / Intel) and the instruction sets, oldest first.
+include "x86/disasm.upcl";
+include "x86/8086.upcl";
+include "x86/80186.upcl";
+include "x86/v20.upcl";
+
+// The ISA features a CPU model may include, then the models themselves.
+features {
+	ext_186 "80186 / 80188 additions";
+	nec     "NEC V20 / V30 (8080 emulation, bit instructions)";
+}
+
+cpu "8086"  { }                 // the base ISA only
+cpu "80186" { ext_186; }
+cpu "v20"   { nec; }
+cpu "v30"   { ext_186; nec; }   // V30 has the 80186 set plus the NEC additions

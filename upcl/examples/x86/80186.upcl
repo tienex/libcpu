@@ -1,0 +1,10 @@
+// 80186 / 80188 additions (feature `ext_186`). A CPU model with this feature decodes these;
+// an 8086 does not (PUSH imm16 is an unknown byte on an 8086).
+
+feature ext_186 {
+
+	// PUSH imm16 -- new on the 80186 (the 8086 has no push-immediate).
+	insn push_imm : @i8086_push ( src )
+		encode #i24 ( op:8 = 0x68, imm:16 -> src ),			// 0x68 iw
+		disasm ( mnemonic : "push", size : word, operands : src );
+}

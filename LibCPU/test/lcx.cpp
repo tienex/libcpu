@@ -834,6 +834,10 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             return false;
         };
         auto SameEncoding = [] (Upcl::Insn *A, Upcl::Insn *B) -> bool {
+            // This check is for the experimental `format`/binding model. Standard-syntax
+            // instructions carry their own `encode` bit-fields (no shared format), so an
+            // empty format here means "not comparable" rather than "the same".
+            if (A->Format.empty () || B->Format.empty ()) { return false; }
             if (A->Format != B->Format || A->Bindings.size () != B->Bindings.size ()) { return false; }
             for (Upcl::Field *Ba : A->Bindings) {
                 bool Found = false;

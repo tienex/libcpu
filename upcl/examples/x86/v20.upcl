@@ -1,0 +1,10 @@
+// NEC V20 / V30 additions (feature `nec`). The V-series is 8086/80186-compatible with extra
+// instructions; BRKEM enters 8080 emulation mode through a software interrupt vector.
+
+feature nec {
+
+	// BRKEM imm8 -- Break for Emulation (enter 8080 mode via the given interrupt vector).
+	insn brkem : intno = src
+		encode #i24 ( op:8 = 0x0F, ext:8 = 0xFF, imm:8 -> src ),		// 0F FF ib
+		disasm ( mnemonic : "brkem", operands : src );
+}

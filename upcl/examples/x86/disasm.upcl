@@ -1,0 +1,19 @@
+// x86 disassembly: two syntaxes (AT&T and Intel) from one set of rules. The systematic
+// differences live here; each instruction declares only its mnemonic, size and operands.
+
+macro disasm att_int   ( value, bits ) => "$0x" + value:hex(bits);
+macro disasm intel_int ( value, bits ) =>                            // 1234h, and 0abcdh (a
+	( value & 0x8000 ) ? "0" + value:hex(bits) + "h"            //   leading 0 when the first
+	                   :       value:hex(bits) + "h";            //   hex digit is a letter)
+macro disasm att_reg   ( name )        => "%" + name:lower;
+macro disasm intel_reg ( name )        => name:upper;
+
+disasm features {
+	styles { att, intel }
+	size   { word : "w", byte : "b" }
+	mnemonic { style att { casing : lower, suffix : size }  style intel { casing : upper } }
+	operands [ ordering { style att { reverse } } ] {
+		register { style att { call : att_reg }  style intel { call : intel_reg } }
+		integer  { style att { call : att_int }  style intel { call : intel_int } }
+	}
+}
