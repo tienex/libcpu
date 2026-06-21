@@ -580,6 +580,27 @@ if(TARGET interp_backend)
      OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/call.bin' \
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
+
+  # The Intel 8080 (i8080.upcl) -- the set the V20/V30 emulate. Decode must distinguish HLT
+  # (0x76, a full opcode) from the general MOV r,r pattern (most-specific match) and render
+  # sub-registers by their own name (MVI B, not MVI BC). Runs MVI A,5 ; MVI B,3 ; ADD B ; HLT
+  # -> A=8, and HLT halts (wait-on-interrupt).
+  add_test(NAME upcl.i8080 COMMAND sh -c
+    "I='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/i8080.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x3E\\x05\\x06\\x03\\x80\\x76' > '${CMAKE_BINARY_DIR}/i8080.bin' && \
+     OUT=$(\"$E\" disasm '${CMAKE_BINARY_DIR}/i8080.bin' --count 4 --arch \"upcl:$I\") && \
+     echo \"$OUT\" | grep -q 'MVI B, 03H' && echo \"$OUT\" | grep -q 'HLT' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/i8080.bin' --arch \"upcl:$I\" | grep -q 'a  =08'")
+
+  # 80186 PUSHA/POPA roundtrip (a v30 has ext_186): mov ax,9 ; pusha ; mov ax,1 ; popa ; hlt
+  # restores ax to 9. Also a NEC BRKEM (0F FF) decodes only with `nec`.
+  add_test(NAME upcl.v30-ext COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x09\\x00\\x60\\xB8\\x01\\x00\\x61\\xF4' > '${CMAKE_BINARY_DIR}/pusha.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/pusha.bin' --arch \"upcl:$X@v30\" | grep -q 'ax =0009' && \
+     printf '\\x0F\\xFF\\x07' > '${CMAKE_BINARY_DIR}/brkem.bin' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/brkem.bin' --count 1 --arch \"upcl:$X@v30\"  | grep -q 'BRKEM 07h' && \
+     \"$E\" disasm '${CMAKE_BINARY_DIR}/brkem.bin' --count 1 --arch \"upcl:$X@8086\" | grep -q 'db 0x0f'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus
