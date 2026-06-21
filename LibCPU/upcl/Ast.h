@@ -220,6 +220,8 @@ public:
     std::string RegCasing;                // "lower" / "upper" / ""
     std::string IntPrefix;                // "$0x" / "0x" / ""
     std::string IntSuffix;                // "h" / ""
+    std::string IntMacro;                 // `integer { style X { call : <macro> } }`
+    std::string RegMacro;                 // `register { style X { call : <macro> } }`
     bool        ReverseOperands = false;  // AT&T prints operands source-first
 };
 
@@ -233,6 +235,43 @@ public:
         for (DisasmStyle &S : Rules) { if (S.Name == Name) { return &S; } }
         return nullptr;
     }
+};
+
+// A disassembly format expression -- the body of a `macro disasm`. It evaluates, with the
+// macro's parameters bound (a value/bits number or a register name string), to a string:
+//   "0x" + value:hex(bits)   ->  DFmtConcat [ DFmtLit "0x", DFmtHex value width=bits ]
+typedef enum _DFMT_KIND {
+    DFmtLit,      // a string literal
+    DFmtParam,    // a bare parameter (a number rendered decimal, a string as-is)
+    DFmtHex,      // <param>:hex(<width-param>?)  -- hex, optionally zero-padded to the width
+    DFmtDec,      // <param>:dec / :sdec          -- decimal, unsigned or signed
+    DFmtCase,     // <param>:upper / :lower       -- a string parameter recased
+    DFmtConcat,   // a + b + ...
+    DFmtCond,     // ( <expr> ) ? a : b           -- choose a format by a condition over params
+    DFmtCall      // @<macro>( <param>, ... )      -- a nested disasm macro
+} DFMT_KIND;
+
+class DisasmFmt {
+public:
+    DFMT_KIND                Kind = DFmtLit;
+    std::string              Text;        // literal / parameter name / macro name
+    std::string              WidthParam;  // DFmtHex: the parameter giving the bit width ("" none)
+    bool                     Signed = false;   // DFmtDec
+    std::string              Casing;      // DFmtCase: "upper" / "lower"
+    Expr                    *Cond = nullptr;  // DFmtCond: the condition (owned)
+    std::vector<DisasmFmt *> Kids;        // DFmtConcat parts / DFmtCond [then, else]
+    std::vector<std::string> Args;        // DFmtCall: the argument parameter names
+    ~DisasmFmt () { delete Cond; for (DisasmFmt *K : Kids) { delete K; } }
+};
+
+// macro disasm <name> ( <params> ) => <format> ;  -- a reusable operand formatter.
+class DisasmMacro {
+public:
+    std::string              Name;
+    SRC_LOC                  Loc = 0;
+    std::vector<std::string> Params;
+    DisasmFmt               *Body = nullptr;
+    ~DisasmMacro () { delete Body; }
 };
 
 // The declarative per-instruction disassembly: the mnemonic, its size class (for the
@@ -451,6 +490,7 @@ public:
     std::vector<DecoderOperand *> DecoderOps; // old-syntax decoder_operands (owned)
     std::vector<RegSet *>    RegSets;        // named register lists (regset) (owned)
     DisasmFeatures          *Disasm = nullptr;  // `disasm features { ... }` (owned)
+    std::vector<DisasmMacro *> DisasmMacros;  // `macro disasm ...` formatters (owned)
     std::vector<Directive *> Directives;
 
     ~Arch () {
@@ -463,6 +503,7 @@ public:
         for (DecoderOperand *D : DecoderOps) { delete D; }
         for (RegSet *R : RegSets) { delete R; }
         delete Disasm;
+        for (DisasmMacro *D : DisasmMacros) { delete D; }
         for (Directive *D : Directives) { delete D; }
     }
 };

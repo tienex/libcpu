@@ -75,7 +75,10 @@ private:
     DisasmSpec *ParseDisasmDecl ();                // `( mnemonic:"..", size:.., operands: a, b )`
     EncAlt    *ParseEncAlt ();                     // `#iN ( <field> (, <field>)* )`
     bool       ParseEncField (EncField *pField);   // `<name> : <width> ( = <const> | -> <operand> )?`
-    Macro     *ParseMacro ();                     // `macro <id> ( params ) ...`
+    void       ParseMacro (Arch *pArch);          // `macro <id> ( params ) ...` | `macro disasm ...`
+    DisasmMacro *ParseDisasmMacro ();             // `macro disasm <id> ( params ) => <fmt> ;`
+    DisasmFmt  *ParseDisasmFmt ();                // a format expression: atom (+ atom)*
+    DisasmFmt  *ParseDisasmAtom ();               // literal / $param:directive / @macro(args)
     JumpInsn  *ParseJumpInsn ();                  // `jump insn <id> : type <t> ... { action }`
     void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
     void       ParseRegSet (Arch *pArch);         // `regset <name> [ <reg>, ... ];`

@@ -70,13 +70,22 @@ regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
 
 // Two disassembly syntaxes from one set of rules. The systematic AT&T-vs-Intel differences
 // live here; each instruction just declares its mnemonic, size and operand order.
+// Operand formatters: the immediate is hex, zero-padded to the operand width (so a byte is
+// 0x34 and a word 0x1234); AT&T prefixes immediates with $ and registers with %.
+macro disasm att_int   ( value, bits ) => "$0x" + value:hex(bits);
+macro disasm intel_int ( value, bits ) =>                            // 1234h, and 0abcdh (a
+	( value & 0x8000 ) ? "0" + value:hex(bits) + "h"            //   leading 0 when the first
+	                   :       value:hex(bits) + "h";            //   hex digit is a letter)
+macro disasm att_reg   ( name )        => "%" + name:lower;
+macro disasm intel_reg ( name )        => name:upper;
+
 disasm features {
 	styles { att, intel }
 	size   { word : "w", byte : "b" }
-	mnemonic { style att { casing : lower, suffix : size }  style intel { casing : lower } }
+	mnemonic { style att { casing : lower, suffix : size }  style intel { casing : upper } }
 	operands [ ordering { style att { reverse } } ] {
-		register { style att { prefix : "%", casing : lower }  style intel { casing : upper } }
-		integer  { style att { prefix : "$0x" }                style intel { prefix : "0x" } }
+		register { style att { call : att_reg }  style intel { call : intel_reg } }
+		integer  { style att { call : att_int }  style intel { call : intel_int } }
 	}
 }
 

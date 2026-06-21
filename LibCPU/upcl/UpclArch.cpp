@@ -717,14 +717,150 @@ private:
             if (It == D.Operands.end ()) { continue; }
             Operand CONST &Op = It->second;
             if (Op.Kind == Operand::Reg) {
-                Out += pS->RegPrefix + Cased (m_Layout.Phys[Op.RegIndex].Name, pS->RegCasing);
+                std::string Name = m_Layout.Phys[Op.RegIndex].Name;
+                if (!pS->RegMacro.empty ()) {
+                    std::map<std::string, RVal> Env;
+                    Env["name"] = RVal::Of (Name);
+                    Out += RenderMacro (pS->RegMacro, Env);
+                } else {
+                    Out += pS->RegPrefix + Cased (Name, pS->RegCasing);
+                }
             } else {
-                char B[24];
-                std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Op.ImmValue);
-                Out += pS->IntPrefix + std::string (B) + pS->IntSuffix;
+                if (!pS->IntMacro.empty ()) {
+                    std::map<std::string, RVal> Env;
+                    Env["value"] = RVal::Of (Op.ImmValue);
+                    Env["bits"]  = RVal::Of ((UINT64) Op.Bits);
+                    Out += RenderMacro (pS->IntMacro, Env);
+                } else {
+                    char B[24];
+                    std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Op.ImmValue);
+                    Out += pS->IntPrefix + std::string (B) + pS->IntSuffix;
+                }
             }
         }
         return Out;
+    }
+
+    // A disasm-macro parameter value: a number (value/bits) or a string (a register name).
+    struct RVal {
+        bool        IsNum = true;
+        UINT64      Num = 0;
+        std::string Str;
+        static RVal Of (UINT64 N) { RVal V; V.IsNum = true; V.Num = N; return V; }
+        static RVal Of (std::string CONST &S) { RVal V; V.IsNum = false; V.Str = S; return V; }
+    };
+
+    DisasmMacro *FindDisasmMacro (std::string CONST &Name) CONST {
+        for (DisasmMacro *D : m_pArch->DisasmMacros) { if (D->Name == Name) { return D; } }
+        return nullptr;
+    }
+
+    // Evaluate a disasm-condition expression (over the bound parameters) to a number; used
+    // by `( expr ) ? a : b` (e.g. the Intel leading-zero test `value & 0x8000`).
+    UINT64 DisasmEvalExpr (Expr *E, std::map<std::string, RVal> CONST &Env) CONST {
+        switch (E->Kind) {
+        case ExprInt:
+            return E->Int;
+        case ExprName: {
+            auto It = Env.find (E->Name);
+            return (It != Env.end ()) ? It->second.Num : 0;
+        }
+        case ExprUnary: {
+            UINT64 A = DisasmEvalExpr (E->Args[0], Env);
+            return (E->Op == TokMinus) ? (UINT64) (-(INT64) A) : (E->Op == TokTilde) ? ~A
+                 : (E->Op == TokNot)   ? (UINT64) (!A) : A;
+        }
+        case ExprBinary: {
+            UINT64 A = DisasmEvalExpr (E->Args[0], Env), B = DisasmEvalExpr (E->Args[1], Env);
+            switch (E->Op) {
+            case TokPlus:  return A + B;  case TokMinus: return A - B;  case TokStar: return A * B;
+            case TokAmp:   return A & B;  case TokPipe:  return A | B;  case TokCaret: return A ^ B;
+            case TokShl:   return A << B; case TokShr:   return A >> B;
+            case TokSlash: return B ? A / B : 0;  case TokPercent: return B ? A % B : 0;
+            case TokEqEq:  return A == B; case TokNotEq: return A != B;
+            case TokLt:    return A < B;  case TokLtEq:  return A <= B;
+            case TokGt:    return A > B;  case TokGtEq:  return A >= B;
+            case TokAndAnd:return A && B; case TokOrOr:  return A || B;
+            default:       return 0;
+            }
+        }
+        case ExprCall:                                   // abs( x )
+            if (E->Name == "abs" && !E->Args.empty ()) {
+                INT64 V = (INT64) DisasmEvalExpr (E->Args[0], Env);
+                return (UINT64) (V < 0 ? -V : V);
+            }
+            return 0;
+        default:
+            return 0;
+        }
+    }
+
+    std::string RenderMacro (std::string CONST &Name, std::map<std::string, RVal> CONST &Env) CONST {
+        DisasmMacro *M = FindDisasmMacro (Name);
+        return (M != nullptr && M->Body != nullptr) ? RenderFmt (M->Body, Env) : std::string ();
+    }
+
+    // Evaluate a disasm format expression with the parameters bound (Env).
+    std::string RenderFmt (DisasmFmt *F, std::map<std::string, RVal> CONST &Env) CONST {
+        switch (F->Kind) {
+        case DFmtLit:
+            return F->Text;
+        case DFmtParam: {
+            auto It = Env.find (F->Text);
+            if (It == Env.end ()) { return std::string (); }
+            return It->second.IsNum ? std::to_string ((unsigned long long) It->second.Num) : It->second.Str;
+        }
+        case DFmtHex: {
+            auto It = Env.find (F->Text);
+            if (It == Env.end ()) { return std::string (); }
+            UINT32 Digits = 0;
+            if (!F->WidthParam.empty ()) {
+                auto W = Env.find (F->WidthParam);
+                if (W != Env.end ()) { Digits = (UINT32) ((W->second.Num + 3) / 4); }
+            }
+            char B[32];
+            std::snprintf (B, sizeof (B), "%0*llx", (int) Digits, (unsigned long long) It->second.Num);
+            return B;
+        }
+        case DFmtDec: {
+            auto It = Env.find (F->Text);
+            if (It == Env.end ()) { return std::string (); }
+            if (F->Signed) {
+                auto Bi = Env.find ("bits");
+                UINT32 Bits = (Bi != Env.end ()) ? (UINT32) Bi->second.Num : 64;
+                UINT64 V = It->second.Num, Sign = (Bits && Bits < 64) ? (UINT64_C (1) << (Bits - 1)) : 0;
+                INT64 S = (INT64) ((V ^ Sign) - Sign);
+                return std::to_string ((long long) S);
+            }
+            return std::to_string ((unsigned long long) It->second.Num);
+        }
+        case DFmtCase: {
+            auto It = Env.find (F->Text);
+            return Cased (It != Env.end () ? It->second.Str : std::string (), F->Casing);
+        }
+        case DFmtConcat: {
+            std::string O;
+            for (DisasmFmt *K : F->Kids) { O += RenderFmt (K, Env); }
+            return O;
+        }
+        case DFmtCond: {
+            UINT64 C = (F->Cond != nullptr) ? DisasmEvalExpr (F->Cond, Env) : 0;
+            DisasmFmt *Pick = (C != 0) ? (F->Kids.size () > 0 ? F->Kids[0] : nullptr)
+                                       : (F->Kids.size () > 1 ? F->Kids[1] : nullptr);
+            return (Pick != nullptr) ? RenderFmt (Pick, Env) : std::string ();
+        }
+        case DFmtCall: {
+            DisasmMacro *M = FindDisasmMacro (F->Text);
+            if (M == nullptr || M->Body == nullptr) { return std::string (); }
+            std::map<std::string, RVal> Sub;
+            for (size_t I = 0; I < M->Params.size () && I < F->Args.size (); I++) {
+                auto It = Env.find (F->Args[I]);
+                if (It != Env.end ()) { Sub[M->Params[I]] = It->second; }
+            }
+            return RenderFmt (M->Body, Sub);
+        }
+        }
+        return std::string ();
     }
 
     static std::string Cased (std::string CONST &S, std::string CONST &Casing) {

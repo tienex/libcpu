@@ -568,15 +568,18 @@ if(TARGET interp_backend)
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 endif()
 
-# Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )`
-# renders in BOTH syntaxes from the `disasm features` block. B8 34 12 (MOV AX,0x1234) is
-# "mov AX, 0x1234" in Intel and "movw $0x1234, %ax" in AT&T (size suffix, reversed operands,
-# %-prefixed register, $0x immediate) -- proving the multi-style engine.
+# Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus
+# the `disasm features` block + disasm macros render BOTH syntaxes. B8 34 12 (MOV AX,0x1234)
+# is "MOV AX, 1234h" (Intel: upper mnemonic/reg, h-suffix) and "movw $0x1234, %ax" (AT&T:
+# lower mnemonic+size suffix, reversed, %reg, $0x). B8 CD AB (0xABCD) is "MOV AX, 0abcdh" --
+# the macro's `( value & 0x8000 ) ? "0"...` conditional adds a leading 0 before a letter digit.
 add_test(NAME upcl.disasm COMMAND sh -c
-  "printf '\\xB8\\x34\\x12' > '${CMAKE_BINARY_DIR}/disasm.bin' && \
-   D='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def'; E='$<TARGET_FILE:lcx>'; \
-   LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 --arch \"upcl:$D\" | grep -q 'mov AX, 0x1234' && \
-   LCX_SYNTAX=att   \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 --arch \"upcl:$D\" | grep -q 'movw .0x1234, %ax'")
+  "D='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def'; E='$<TARGET_FILE:lcx>'; \
+   printf '\\xB8\\x34\\x12' > '${CMAKE_BINARY_DIR}/disasm.bin' && \
+   printf '\\xB8\\xCD\\xAB' > '${CMAKE_BINARY_DIR}/disasm3.bin' && \
+   LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin'  --count 1 --arch \"upcl:$D\" | grep -q 'MOV AX, 1234h' && \
+   LCX_SYNTAX=att   \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin'  --count 1 --arch \"upcl:$D\" | grep -q 'movw .0x1234, %ax' && \
+   LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm3.bin' --count 1 --arch \"upcl:$D\" | grep -q 'MOV AX, 0abcdh'")
 
 # Clang-style diagnostics: a stray top-level token resyncs at the next declaration (no
 # cascade), and the error count is capped. One bad line + a good insn after it => exactly

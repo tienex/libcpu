@@ -1123,10 +1123,16 @@ Parser::ParseEncField (EncField *pField)
 }
 
 // `macro <id> ( <params> ) : <stmt> ;`  |  `macro <id> ( <params> ) { body }`.
-Macro *
-Parser::ParseMacro ()
+void
+Parser::ParseMacro (Arch *pArch)
 {
     Advance ();                                     // 'macro'
+    if (AtKeyword ("disasm")) {                     // `macro disasm <id> ( params ) => <fmt> ;`
+        Advance ();
+        DisasmMacro *D = ParseDisasmMacro ();
+        if (D != nullptr) { pArch->DisasmMacros.push_back (D); }
+        return;
+    }
     Macro *M = new Macro ();
     M->Loc = m_Cur.Loc;
     if (m_Cur.Kind == TokIdent) { M->Name = m_Cur.Text; Advance (); }
@@ -1146,7 +1152,91 @@ Parser::ParseMacro ()
         ParseBlock (&M->Body);
         Accept (TokSemi);
     }
-    return M;
+    pArch->Macros.push_back (M);
+}
+
+// `macro disasm <id> ( params ) => <format> ;` ('macro disasm' already consumed).
+DisasmMacro *
+Parser::ParseDisasmMacro ()
+{
+    DisasmMacro *D = new DisasmMacro ();
+    D->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { D->Name = m_Cur.Text; Advance (); }
+    Expect (TokLParen, "after the disasm macro name");
+    if (m_Cur.Kind != TokRParen) {
+        do { if (m_Cur.Kind == TokIdent) { D->Params.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
+    }
+    Expect (TokRParen, "to close the parameters");
+    if (Accept (TokAssign)) { Accept (TokGt); }     // the '=>' arrow
+    D->Body = ParseDisasmFmt ();
+    Expect (TokSemi, "after the disasm macro body");
+    return D;
+}
+
+// A format expression: a conditional `( <expr> ) ? <fmt> : <fmt>`, or one or more atoms
+// concatenated with '+'.
+DisasmFmt *
+Parser::ParseDisasmFmt ()
+{
+    if (m_Cur.Kind == TokLParen) {                   // ( <cond> ) ? <then> : <else>
+        Advance ();
+        Expr *Cond = ParseExpr (0);
+        Expect (TokRParen, "to close the condition");
+        Expect (TokQuestion, "after the condition");
+        DisasmFmt *F = new DisasmFmt ();
+        F->Kind = DFmtCond;
+        F->Cond = Cond;
+        F->Kids.push_back (ParseDisasmFmt ());
+        Expect (TokColon, "in the conditional format");
+        F->Kids.push_back (ParseDisasmFmt ());
+        return F;
+    }
+    DisasmFmt *First = ParseDisasmAtom ();
+    if (m_Cur.Kind != TokPlus) { return First; }
+    DisasmFmt *C = new DisasmFmt ();
+    C->Kind = DFmtConcat;
+    C->Kids.push_back (First);
+    while (Accept (TokPlus)) { C->Kids.push_back (ParseDisasmAtom ()); }
+    return C;
+}
+
+// "literal" | $param ( : hex(<width>?) | dec | sdec | upper | lower )? | @macro( args )
+DisasmFmt *
+Parser::ParseDisasmAtom ()
+{
+    DisasmFmt *F = new DisasmFmt ();
+    if (m_Cur.Kind == TokString) {
+        F->Kind = DFmtLit; F->Text = m_Cur.Text; Advance ();
+        return F;
+    }
+    if (m_Cur.Kind == TokMacroIdent) {              // @macro( args )
+        F->Kind = DFmtCall; F->Text = m_Cur.Text; Advance ();
+        Expect (TokLParen, "after a disasm macro call");
+        if (m_Cur.Kind != TokRParen) {
+            do { if (m_Cur.Kind == TokIdent) { F->Args.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
+        }
+        Expect (TokRParen, "to close a disasm macro call");
+        return F;
+    }
+    Accept (TokDollar);                             // optional '$' before a parameter
+    std::string Param;
+    if (m_Cur.Kind == TokIdent) { Param = m_Cur.Text; Advance (); }
+    F->Text = Param;
+    F->Kind = DFmtParam;
+    if (Accept (TokColon)) {
+        std::string Dir;
+        if (m_Cur.Kind == TokIdent) { Dir = m_Cur.Text; Advance (); }
+        if (Dir == "hex") {
+            F->Kind = DFmtHex;
+            if (Accept (TokLParen)) {
+                if (m_Cur.Kind == TokIdent) { F->WidthParam = m_Cur.Text; Advance (); }
+                Expect (TokRParen, "to close hex(...)");
+            }
+        } else if (Dir == "dec")  { F->Kind = DFmtDec; F->Signed = false; }
+        else if (Dir == "sdec")   { F->Kind = DFmtDec; F->Signed = true; }
+        else if (Dir == "upper" || Dir == "lower") { F->Kind = DFmtCase; F->Casing = Dir; }
+    }
+    return F;
 }
 
 // `jump insn <id> : <clause> (, <clause>)* { action }` where a clause is, in any order,
@@ -1267,9 +1357,11 @@ ApplyDisasmProp (DisasmStyle *pSt, std::string CONST &Cat, std::string CONST &Ke
     } else if (Cat == "register") {
         if (Key == "prefix") { pSt->RegPrefix = Val; }
         else if (Key == "casing") { pSt->RegCasing = Val; }
+        else if (Key == "call") { pSt->RegMacro = Val; }
     } else if (Cat == "integer") {
         if (Key == "prefix") { pSt->IntPrefix = Val; }
         else if (Key == "suffix") { pSt->IntSuffix = Val; }
+        else if (Key == "call") { pSt->IntMacro = Val; }
     } else if (Cat == "ordering") {
         if (Key == "reverse") { pSt->ReverseOperands = true; }
     }
@@ -1419,7 +1511,7 @@ Parser::ParseModule ()
         } else if (AtKeyword ("regset")) {
             ParseRegSet (M->Archs.back ());
         } else if (AtKeyword ("macro")) {
-            M->Archs.back ()->Macros.push_back (ParseMacro ());
+            ParseMacro (M->Archs.back ());
         } else if (AtKeyword ("jump")) {
             M->Archs.back ()->Jumps.push_back (ParseJumpInsn ());
         } else if (AtKeyword ("insn")) {
