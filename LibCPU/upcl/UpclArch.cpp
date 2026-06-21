@@ -125,7 +125,11 @@ public:
                           : (Ty == "call")                  ? TagCall
                           :                                   TagBranch;
                 } else {
-                    *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1;   // computed target: a later step
+                    // A computed target (an indirect jmp/call through a register or memory):
+                    // terminate the block -- translation emits an IndirectBranch and the run
+                    // loop resumes at the runtime target (a call's return point is reached when
+                    // the callee's ret indirect-branches back to the pushed address).
+                    *pTag = TagTrap; *pNewPc = (CPU_ADDR) -1;
                 }
                 return S_OK;
             }
@@ -270,10 +274,17 @@ public:
 
             std::vector<Stmt *> Body;
             if (D.pJump != nullptr) {
-                if (D.pJump->JumpType == "return") {
-                    // Computed return: translate the action in indirect-PC mode -- the pop
-                    // runs (stack adjust included), the pc/pc.off write is captured, and the
-                    // IndirectBranch is emitted last (resuming at the popped address).
+                // A return, or a branch/call whose target the decoder could not fold (an
+                // indirect jmp/call through a register or memory), is a computed transfer:
+                // translate the action in indirect-PC mode -- any push/pop runs (stack adjust
+                // included), the pc/pc.off write is captured, and the IndirectBranch is emitted
+                // last, resuming at the runtime target.
+                bool Computed = (D.pJump->JumpType == "return");
+                if (!Computed && (D.pJump->JumpType == "branch" || D.pJump->JumpType == "call")) {
+                    UINT64 T = 0;
+                    Computed = !JumpTarget (D, Pc, &T);
+                }
+                if (Computed) {
                     Tr.SetIndirectPc (true);
                     for (Stmt *S : D.pJump->Pre) { Tr.EmitOne (S); }
                     Tr.Emit (D.pJump->Action);
@@ -286,7 +297,7 @@ public:
                     }
                     return S_OK;
                 }
-                // A branch/call: pre-actions run; the transfer (a static pc-write or the
+                // A direct branch/call: pre-actions run; the transfer (a static pc-write or the
                 // transfer macro) is the edge (wired from the tag), so it is omitted.
                 std::string TgtOp = JumpTargetOperand (D.pJump);
                 for (Stmt *S : D.pJump->Pre) { Body.push_back (S); }

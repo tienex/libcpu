@@ -644,6 +644,22 @@ if(TARGET interp_backend)
      echo \"$OUT\" | grep -q 'ax =fffa' && echo \"$OUT\" | grep -q 'dx =fffe' && \
      printf '\\xB8\\x00\\x10\\xBB\\x10\\x00\\xF7\\xE3\\xF4' > '${CMAKE_BINARY_DIR}/x86mul.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x86mul.bin' --arch \"upcl:$X@8086\" | grep -q 'dx =0001'")
+
+  # The 0xFE/0xFF /digit group: INC/DEC r/m (/0,/1), PUSH r/m (/6), and the INDIRECT near transfers
+  # CALL r/m (/2) and JMP r/m (/4), whose target is the operand value computed at run time. The
+  # indirect call/jmp exercise the framework's computed-transfer path (tagger + IndirectBranch),
+  # previously used only by `ret`. Program: ax=5 ; bx=0x0E ; call bx -> [func: add ax,3 ; ret] ;
+  # add ax,10 -> ax must be 0x12 (5+3+10), proving the indirect call branched AND returned.
+  add_test(NAME upcl.x86-feff COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xFF\\xC0\\xFF\\xC8\\xFE\\xC3\\xFF\\xF3\\xFF\\xD3\\xFF\\xE3\\xFF\\x26\\x40\\x00' > '${CMAKE_BINARY_DIR}/x86feff.bin' && \
+     D=$(LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86feff.bin' --count 7 --arch \"upcl:$X@8086\") && \
+     echo \"$D\" | grep -q 'INC AX' && echo \"$D\" | grep -q 'INC BL' && echo \"$D\" | grep -q 'PUSH BX' && \
+     echo \"$D\" | grep -q 'CALL BX' && echo \"$D\" | grep -q 'JMP \\[0040h\\]' && \
+     printf '\\xB8\\x05\\x00\\xBB\\x0E\\x00\\xFF\\xD3\\x83\\xC0\\x0A\\xF4\\x90\\x90\\x83\\xC0\\x03\\xC3' > '${CMAKE_BINARY_DIR}/x86icall.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86icall.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0012' && \
+     printf '\\xB8\\x01\\x00\\xBB\\x0C\\x00\\xFF\\xE3\\xB8\\xFF\\x00\\x90\\xB8\\x99\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x86ijmp.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x86ijmp.bin' --arch \"upcl:$X@8086\" | grep -q 'ax =0099'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

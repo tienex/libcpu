@@ -147,17 +147,31 @@ insn idiv : encode #i16 ( op:8 = 0xF7, mod:2, reg:3 = 7, rm:3 -> src @modrm16 ),
 
 // ---- increment / decrement -----------------------------------------------
 
-insn inc : encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] ),			// 0x40+r
+// INC/DEC have the 0x40+r / 0x48+r short register forms and the 0xFF /0, /1 r/m forms
+// (and 0xFE /0, /1 for bytes). The grouped 0xFF /digit opcode also carries CALL/JMP/PUSH r/m.
+
+insn inc : encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] )			// 0x40+r
+	    |  #i16 ( op:8 = 0xFF, mod:2, reg:3 = 0, rm:3 -> dst @modrm16 ),	// 0xFF /0  INC r/m16
 	disasm ( mnemonic : "inc", size : word, operands : dst )
 	=> dst = %CC ( dst + 1, !C );
 
-insn dec : encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] ),			// 0x48+r
+insn dec : encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] )			// 0x48+r
+	    |  #i16 ( op:8 = 0xFF, mod:2, reg:3 = 1, rm:3 -> dst @modrm16 ),	// 0xFF /1  DEC r/m16
 	disasm ( mnemonic : "dec", size : word, operands : dst )
+	=> dst = %CC ( dst - 1, !C );
+
+insn incb : encode #i16 ( op:8 = 0xFE, mod:2, reg:3 = 0, rm:3 -> dst @modrm8 ),	// 0xFE /0  INC r/m8
+	disasm ( mnemonic : "inc", size : byte, operands : dst )
+	=> dst = %CC ( dst + 1, !C );
+
+insn decb : encode #i16 ( op:8 = 0xFE, mod:2, reg:3 = 1, rm:3 -> dst @modrm8 ),	// 0xFE /1  DEC r/m8
+	disasm ( mnemonic : "dec", size : byte, operands : dst )
 	=> dst = %CC ( dst - 1, !C );
 
 // ---- stack ---------------------------------------------------------------
 
-insn push : encode #i8 ( op:5 = 0x0A, reg:3 -> src[ gpr16 ] ),			// 0x50+r  PUSH r16
+insn push : encode #i8 ( op:5 = 0x0A, reg:3 -> src[ gpr16 ] )			// 0x50+r  PUSH r16
+	    |  #i16 ( op:8 = 0xFF, mod:2, reg:3 = 6, rm:3 -> src @modrm16 ),	// 0xFF /6  PUSH r/m16
 	disasm ( mnemonic : "push", size : word, operands : src )
 	=> @i8086_push ( src );
 
@@ -196,3 +210,16 @@ jump insn ncall : type call, encode #i24 ( op:8 = 0xE8, disp:16 -> src rel ),	//
 jump insn nret : type return, encode #i8 ( op:8 = 0xC3 ),			// 0xC3  RET (near)
 	disasm ( mnemonic : "ret" )
 	{ @i8086_jump ( @i8086_pop () ); }
+
+// Indirect near transfers: the target is the operand VALUE (a register, or the word at a
+// memory address), computed at run time -- so these are indirect branches. CALL also pushes
+// the return address. The decoder cannot fold the target, so the translator emits them as
+// computed transfers (an IndirectBranch resuming at the runtime address).
+
+jump insn icall : type call, encode #i16 ( op:8 = 0xFF, mod:2, reg:3 = 2, rm:3 -> src @modrm16 ),	// 0xFF /2  CALL r/m16
+	disasm ( mnemonic : "call", operands : src )
+	{ @i8086_push ( ip ); @i8086_jump ( src ); }
+
+jump insn ijmp : type branch, encode #i16 ( op:8 = 0xFF, mod:2, reg:3 = 4, rm:3 -> src @modrm16 ),	// 0xFF /4  JMP r/m16
+	disasm ( mnemonic : "jmp", operands : src )
+	{ @i8086_jump ( src ); }
