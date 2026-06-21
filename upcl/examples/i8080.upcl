@@ -1,0 +1,138 @@
+// The Intel 8080 instruction set -- a standalone UPCL description. The NEC V20/V30 enter an
+// 8080 emulation mode (via BRKEM) and execute this set; it is also a CPU in its own right.
+//
+// Fixed 1-3 byte encodings, no ModR/M. Register operands use the 8080 code order
+// B C D E H L M A (codes 0..7); M (code 6) is the memory byte at [HL] and needs the
+// memory addressing extension, so it is a placeholder here and the register forms are exact.
+
+arch "i8080" {
+
+	name "Intel 8080";
+	byte_size 8;
+	word_size 8;
+	address_size 16;
+	default_endian little;
+
+	register_file {
+
+		group R {
+			[ #i8 a ],
+			[ #i16 bc -> #i8 ( b : c ) ],
+			[ #i16 de -> #i8 ( d : e ) ],
+			[ #i16 hl -> #i8 ( h : l ) ],
+			[ #i8 m ],						// placeholder for [HL] (needs memory)
+			[ #i16 sp ]
+		}
+
+		group S {
+			[ #i16 pc -> %PC ],
+			[ #i8 flags -> %PSR #i1 ( S->%N : Z->%Z : 0 : A : 0 : P->%P : 1 : C->%C ) ]
+		}
+	}
+}
+
+decoder_operands [ #i8 dst, #i8 src, #i8 imm, #i16 addr, #i8 cc ];
+
+regset r8  [ b, c, d, e, h, l, m, a ];					// the 8-bit register codes
+regset rp  [ bc, de, hl, sp ];						// register pairs (for INX/DCX/DAD/PUSH)
+
+macro cond8080 ( cc ) : #i1 %result =					// condition codes (low 3 bits of Ccc)
+	( cc[2:1] == 0 ? flags.Z
+	: cc[2:1] == 1 ? flags.C
+	: cc[2:1] == 2 ? flags.P
+	:                flags.S )
+	^ ( cc[0:0] ^ 1 ) ;						// bit 0 set => the "true" sense
+
+disasm features {
+	styles { intel }
+	mnemonic { style intel { casing : upper } }
+	operands {
+		register { style intel { casing : upper } }
+		integer  { style intel { call : i8080_hex } }
+	}
+}
+macro disasm i8080_hex ( value, bits ) =>
+	( value & 0x8000 ) ? "0" + value:hex(bits) + "H"
+	                   :       value:hex(bits) + "H";
+
+// ---- data transfer -------------------------------------------------------
+
+insn mov : encode #i8 ( op:2 = 1, ddd:3 -> dst[ r8 ], sss:3 -> src[ r8 ] ),	// 0x40..0x7F  MOV r,r
+	disasm ( mnemonic : "mov", operands : dst, src )
+	=> dst = src;
+
+insn mvi : encode #i16 ( op:2 = 0, ddd:3 -> dst[ r8 ], rest:3 = 6, imm:8 -> imm ),	// MVI r,d8
+	disasm ( mnemonic : "mvi", operands : dst, imm )
+	=> dst = imm;
+
+// ---- arithmetic / logical (accumulator <op> register) --------------------
+
+insn add : encode #i8 ( op:5 = 0x10, sss:3 -> src[ r8 ] ),			// 0x80..0x87  ADD r
+	disasm ( mnemonic : "add", operands : src )
+	=> a = %CC ( a + src );
+
+insn adc : encode #i8 ( op:5 = 0x11, sss:3 -> src[ r8 ] ),			// 0x88..0x8F  ADC r
+	disasm ( mnemonic : "adc", operands : src )
+	=> a = %CC ( a + src + flags.C );
+
+insn sub : encode #i8 ( op:5 = 0x12, sss:3 -> src[ r8 ] ),			// 0x90..0x97  SUB r
+	disasm ( mnemonic : "sub", operands : src )
+	=> a = %CC ( a - src );
+
+insn ana : encode #i8 ( op:5 = 0x14, sss:3 -> src[ r8 ] ),			// 0xA0..0xA7  ANA r
+	disasm ( mnemonic : "ana", operands : src )
+	=> a = %CC ( a & src );
+
+insn xra : encode #i8 ( op:5 = 0x15, sss:3 -> src[ r8 ] ),			// 0xA8..0xAF  XRA r
+	disasm ( mnemonic : "xra", operands : src )
+	=> a = %CC ( a ^ src );
+
+insn ora : encode #i8 ( op:5 = 0x16, sss:3 -> src[ r8 ] ),			// 0xB0..0xB7  ORA r
+	disasm ( mnemonic : "ora", operands : src )
+	=> a = %CC ( a | src );
+
+insn cmp : encode #i8 ( op:5 = 0x17, sss:3 -> src[ r8 ] ),			// 0xB8..0xBF  CMP r
+	disasm ( mnemonic : "cmp", operands : src )
+	=> %CC ( a - src );
+
+insn adi : encode #i16 ( op:8 = 0xC6, imm:8 -> imm ),				// ADI d8
+	disasm ( mnemonic : "adi", operands : imm )
+	=> a = %CC ( a + imm );
+
+insn cpi : encode #i16 ( op:8 = 0xFE, imm:8 -> imm ),				// CPI d8
+	disasm ( mnemonic : "cpi", operands : imm )
+	=> %CC ( a - imm );
+
+insn inr : encode #i8 ( op:2 = 0, ddd:3 -> dst[ r8 ], rest:3 = 4 ),		// INR r
+	disasm ( mnemonic : "inr", operands : dst )
+	=> dst = %CC ( dst + 1, !C );
+
+insn dcr : encode #i8 ( op:2 = 0, ddd:3 -> dst[ r8 ], rest:3 = 5 ),		// DCR r
+	disasm ( mnemonic : "dcr", operands : dst )
+	=> dst = %CC ( dst - 1, !C );
+
+// ---- flags / accumulator -------------------------------------------------
+
+insn stc : encode #i8 ( op:8 = 0x37 ), disasm ( mnemonic : "stc" ) => flags.C = 1;	// STC
+insn cmc : encode #i8 ( op:8 = 0x3F ), disasm ( mnemonic : "cmc" ) => flags.C = flags.C ^ 1;	// CMC
+insn cma : encode #i8 ( op:8 = 0x2F ), disasm ( mnemonic : "cma" ) => a = ~a;		// CMA
+
+insn nop : encode #i8 ( op:8 = 0x00 ), disasm ( mnemonic : "nop" );		// NOP
+insn hlt : encode #i8 ( op:8 = 0x76 ), disasm ( mnemonic : "hlt" ) => @trap ( 0 );	// HLT
+
+// ---- control flow --------------------------------------------------------
+
+jump insn jmp : type branch, encode #i24 ( op:8 = 0xC3, addr:16 -> addr ),	// JMP a16
+	disasm ( mnemonic : "jmp", operands : addr )
+	{ pc.off = addr; }
+
+jump insn jcc : type branch, condition @cond8080 ( cc ),			// Jcc a16
+	encode #i24 ( op:2 = 3, cc:3 -> cc, rest:3 = 2, addr:16 -> addr ),
+	disasm ( mnemonic : "jcc", operands : addr )
+	{ pc.off = addr; }
+
+jump insn ret : type return, encode #i8 ( op:8 = 0xC9 ),			// RET
+	disasm ( mnemonic : "ret" )
+	{ pc.off = @i8080_pop (); }
+
+macro i8080_pop () { %result = #i16 %M[ sp ]; sp += 2; }

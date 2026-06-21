@@ -193,7 +193,7 @@ public:
                         if (It != D.Operands.end ()) {
                             char B[24];
                             if (It->second.Kind == Operand::Reg) {
-                                Out += m_Layout.Phys[It->second.RegIndex].Name;
+                                Out += It->second.RegName.empty () ? m_Layout.Phys[It->second.RegIndex].Name : It->second.RegName;
                             } else {
                                 std::snprintf (B, sizeof (B), "%llx", (unsigned long long) It->second.ImmValue);
                                 Out += B;
@@ -211,7 +211,7 @@ public:
                     Operand CONST &Op = Kv.second;
                     char B[32];
                     if (Op.Kind == Operand::Reg) {
-                        std::snprintf (B, sizeof (B), " %s", m_Layout.Phys[Op.RegIndex].Name.c_str ());
+                        std::snprintf (B, sizeof (B), " %s", (Op.RegName.empty () ? m_Layout.Phys[Op.RegIndex].Name : Op.RegName).c_str ());
                     } else {
                         std::snprintf (B, sizeof (B), " 0x%llx", (unsigned long long) Op.ImmValue);
                     }
@@ -753,7 +753,7 @@ private:
             if (It == D.Operands.end ()) { continue; }
             Operand CONST &Op = It->second;
             if (Op.Kind == Operand::Reg) {
-                std::string Name = m_Layout.Phys[Op.RegIndex].Name;
+                std::string Name = Op.RegName.empty () ? m_Layout.Phys[Op.RegIndex].Name : Op.RegName;
                 if (!pS->RegMacro.empty ()) {
                     std::map<std::string, RVal> Env;
                     Env["name"] = RVal::Of (Name);

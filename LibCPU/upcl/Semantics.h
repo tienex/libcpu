@@ -52,11 +52,13 @@ public:
 class Operand {
 public:
     enum KIND { Imm, Reg } Kind = Imm;
-    UINT32 Bits     = 0;        // operand width
-    UINT64 ImmValue = 0;        // Imm
-    UINT32 RegIndex = 0;        // Reg: physical register index (RegisterLayout)
-    UINT32 SubLo    = 0;        // Reg: sub-register window low bit
-    UINT32 SubWidth = 0;        // Reg: window width (0 => the whole physical register)
+    UINT32      Bits     = 0;   // operand width
+    UINT64      ImmValue = 0;   // Imm
+    UINT32      RegIndex = 0;   // Reg: physical register index (RegisterLayout)
+    UINT32      SubLo    = 0;   // Reg: sub-register window low bit
+    UINT32      SubWidth = 0;   // Reg: window width (0 => the whole physical register)
+    std::string RegName;        // Reg: the register's name as written (a sub-register's own
+                                //   name, e.g. "b", not its parent "bc") -- for disassembly
 };
 
 class Translator {

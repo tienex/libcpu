@@ -1,10 +1,22 @@
 // NEC V20 / V30 additions (feature `nec`). The V-series is 8086/80186-compatible with extra
-// instructions; BRKEM enters 8080 emulation mode through a software interrupt vector.
+// instructions and an 8080 emulation mode. In emulation mode the V20/V30 execute the 8080
+// instruction set -- see i8080.upcl -- entered with BRKEM and left with RETEM.
 
 feature nec {
 
-	// BRKEM imm8 -- Break for Emulation (enter 8080 mode via the given interrupt vector).
-	insn brkem : intno = src
-		encode #i24 ( op:8 = 0x0F, ext:8 = 0xFF, imm:8 -> src ),		// 0F FF ib
-		disasm ( mnemonic : "brkem", operands : src );
+	// BRKEM imm8 -- Break for Emulation: save the state and enter 8080 mode through the given
+	// interrupt vector (the host switches the decoder to the i8080 description).
+	insn brkem : encode #i24 ( op:8 = 0x0F, ext:8 = 0xFF, imm:8 -> src ),	// 0F FF ib
+		disasm ( mnemonic : "brkem", operands : src )
+		=> @trap ( src );
+
+	// RETEM -- Return from Emulation (leave 8080 mode, restore native state).
+	insn retem : encode #i16 ( op:8 = 0x0F, ext:8 = 0xFD ),			// 0F FD
+		disasm ( mnemonic : "retem" )
+		=> @trap ( 0 );
+
+	// CALLN imm8 -- Call Native: from 8080 mode, call a native (8086) interrupt routine.
+	insn calln : encode #i24 ( op:8 = 0x0F, ext:8 = 0xED, imm:8 -> src ),	// 0F ED ib
+		disasm ( mnemonic : "calln", operands : src )
+		=> @trap ( src );
 }

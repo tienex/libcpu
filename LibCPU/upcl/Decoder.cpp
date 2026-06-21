@@ -94,6 +94,7 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
         pOut->RegIndex = P->second;
         pOut->Bits     = m_pLayout->Phys[P->second].Width;
         pOut->SubWidth = 0;
+        pOut->RegName  = Name;
         return true;
     }
     for (RegSub CONST &Sub : m_pLayout->Subs) {
@@ -103,6 +104,7 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
             pOut->Bits     = Sub.Width;
             pOut->SubLo    = Sub.Lo;
             pOut->SubWidth = Sub.Width;
+            pOut->RegName  = Name;
             return true;
         }
     }
@@ -144,6 +146,16 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     return true;
 }
 
+// How many bits an encoding fixes to constants -- its specificity, for tie-breaking when
+// several encodings match the same bytes (the more constrained, the more specific).
+static UINT32
+ConstBits (EncAlt CONST *pAlt)
+{
+    UINT32 N = 0;
+    for (EncField CONST &F : pAlt->Fields) { if (F.HasConst) { N += F.Width; } }
+    return N;
+}
+
 bool
 Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut) CONST
 {
@@ -151,25 +163,31 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
     UINT8 CONST *p = pBytes + Pos;
     UINT64 Avail = Len - Pos;
 
+    // Among all encodings that match, prefer the MOST SPECIFIC -- the one constraining the
+    // most bits to constants -- so a full-opcode instruction (8080 HLT = 0x76) wins over a
+    // general pattern that also matches (MOV r,r covers 0x40..0x7F). Declaration order does
+    // not matter.
+    DecodedInsn Try;
+    INT32       BestSpec = -1;
     for (Insn *I : m_pArch->Insns) {
-        if (!IsEnabled (I->Feature)) { continue; }   // gated on a feature the model lacks
+        if (!IsEnabled (I->Feature)) { continue; }
         for (EncAlt *A : I->Encodings) {
-            if (MatchAlt (A, p, Avail, Pos, pOut)) {
-                pOut->pInsn = I; pOut->pJump = nullptr;
-                return true;
+            if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Spec = (INT32) ConstBits (A);
+                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr; }
             }
         }
     }
     for (JumpInsn *J : m_pArch->Jumps) {
         if (!IsEnabled (J->Feature)) { continue; }
         for (EncAlt *A : J->Encodings) {
-            if (MatchAlt (A, p, Avail, Pos, pOut)) {
-                pOut->pInsn = nullptr; pOut->pJump = J;
-                return true;
+            if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Spec = (INT32) ConstBits (A);
+                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J; }
             }
         }
     }
-    return false;
+    return BestSpec >= 0;
 }
 
 } // namespace Upcl

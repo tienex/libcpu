@@ -3,8 +3,30 @@
 
 feature ext_186 {
 
-	// PUSH imm16 -- new on the 80186 (the 8086 has no push-immediate).
-	insn push_imm : @i8086_push ( src )
-		encode #i24 ( op:8 = 0x68, imm:16 -> src ),			// 0x68 iw
-		disasm ( mnemonic : "push", size : word, operands : src );
+	// PUSH imm16 / imm8 -- new on the 80186 (the 8086 has no push-immediate).
+	insn push_imm : encode #i24 ( op:8 = 0x68, imm:16 -> src ),			// 0x68 iw
+		disasm ( mnemonic : "push", size : word, operands : src )
+		=> @i8086_push ( src );
+
+	insn push_imm8 : encode #i16 ( op:8 = 0x6A, imm:8 -> src ),			// 0x6A ib
+		disasm ( mnemonic : "push", operands : src )
+		=> @i8086_push ( %S ( [ #i16 src ] ) );
+
+	// PUSHA / POPA -- push / pop all the general registers.
+	insn pusha : encode #i8 ( op:8 = 0x60 ), disasm ( mnemonic : "pusha" ) {	// 0x60
+		#i16 osp = sp ;
+		@i8086_push ( ax ) ; @i8086_push ( cx ) ; @i8086_push ( dx ) ; @i8086_push ( bx ) ;
+		@i8086_push ( osp ) ; @i8086_push ( bp ) ; @i8086_push ( si ) ; @i8086_push ( di ) ;
+	}
+
+	insn popa : encode #i8 ( op:8 = 0x61 ), disasm ( mnemonic : "popa" ) {	// 0x61
+		di = @i8086_pop () ; si = @i8086_pop () ; bp = @i8086_pop () ; sp += 2 ;
+		bx = @i8086_pop () ; dx = @i8086_pop () ; cx = @i8086_pop () ; ax = @i8086_pop () ;
+	}
+
+	// LEAVE -- tear down a stack frame (mov sp, bp ; pop bp).
+	insn leave : encode #i8 ( op:8 = 0xC9 ), disasm ( mnemonic : "leave" ) {	// 0xC9
+		sp = bp ;
+		bp = @i8086_pop () ;
+	}
 }
