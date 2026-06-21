@@ -498,16 +498,16 @@ if(TARGET interp_backend)
     --arch "upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/v20.upcl")
   set_tests_properties(upcl.translate PROPERTIES PASS_REGULAR_EXPRESSION "ax =0008")
 
-  # The standard 8086.def -- register_file + `encode` + semantics -- run as a live frontend
+  # The standard 8086.upcl -- register_file + `encode` + semantics -- run as a live frontend
   # through the generic decoder + translator: MOV AX,0x1234 (B8 34 12); INC CX (41); HLT (F4)
   # must leave ax=0x1234 and cx=1. Proves a .upcl description executes on a real backend.
   add_test(NAME upcl.run-8086 COMMAND sh -c
     "printf '\\xB8\\x34\\x12\\x41\\xF4' > '${CMAKE_BINARY_DIR}/prog8086.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
-       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' | \
      grep -q 'ax =1234' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/prog8086.bin' \
-       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0001'")
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' | grep -q 'cx =0001'")
 
   # The 8086 `jump insn jmp : type branch { @i8086_jump(src) }` declaration, given an `encode`
   # with a PC-relative displacement, decodes and executes: mov ax,0x1234 ; jmp +2 ; inc cx ;
@@ -516,17 +516,17 @@ if(TARGET interp_backend)
   add_test(NAME upcl.run-8086-jmp COMMAND sh -c
     "printf '\\xB8\\x34\\x12\\xEB\\x02\\x41\\x41\\x41\\xF4' > '${CMAKE_BINARY_DIR}/jmp8086.bin' && \
      OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/jmp8086.bin' \
-       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def') && \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl') && \
      echo \"$OUT\" | grep -q 'ax =1234' && echo \"$OUT\" | grep -q 'cx =0001'")
 
   # 8086 conditional jump (Jcc) + a real countdown loop: mov cx,3 ; loop: dec cx ; jnz loop ;
   # hlt. JNZ (0x75) decodes via the single jcc encoding (cond=5); @eval_cc(cond) computes !ZF
   # from the flags dec set; the loop runs three times, so cx ends at 0. Proves Jcc condition
-  # evaluation + flag flow across the loop edge, all from the .def.
+  # evaluation + flag flow across the loop edge, all from the .upcl.
   add_test(NAME upcl.run-8086-jcc COMMAND sh -c
     "printf '\\xB9\\x03\\x00\\x49\\x75\\xFD\\xF4' > '${CMAKE_BINARY_DIR}/jcc8086.bin' && \
      '$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/jcc8086.bin' \
-       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'cx =0000'")
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' | grep -q 'cx =0000'")
 
   # 8086 segmented subroutine: ncall (E8) pushes ip via @i8086_push, nret (C3) pops it via
   # @i8086_jump(@i8086_pop()) -- exercising macro-overload resolution (near vs far i8086_jump),
@@ -535,7 +535,7 @@ if(TARGET interp_backend)
   add_test(NAME upcl.run-8086-call COMMAND sh -c
     "printf '\\xE8\\x03\\x00\\x41\\xEB\\x02\\x42\\xC3\\xF4' > '${CMAKE_BINARY_DIR}/call8086.bin' && \
      OUT=$('$<TARGET_FILE:lcx>' run '${CMAKE_BINARY_DIR}/call8086.bin' \
-       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def') && \
+       --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl') && \
      echo \"$OUT\" | grep -q 'cx =0001' && echo \"$OUT\" | grep -q 'dx =0001'")
 
   # Branches in the standard run path: a relative jmp whose target the decoder folds, so the
@@ -574,7 +574,7 @@ endif()
 # lower mnemonic+size suffix, reversed, %reg, $0x). B8 CD AB (0xABCD) is "MOV AX, 0abcdh" --
 # the macro's `( value & 0x8000 ) ? "0"...` conditional adds a leading 0 before a letter digit.
 add_test(NAME upcl.disasm COMMAND sh -c
-  "D='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def'; E='$<TARGET_FILE:lcx>'; \
+  "D='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl'; E='$<TARGET_FILE:lcx>'; \
    printf '\\xB8\\x34\\x12' > '${CMAKE_BINARY_DIR}/disasm.bin' && \
    printf '\\xB8\\xCD\\xAB' > '${CMAKE_BINARY_DIR}/disasm3.bin' && \
    LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin'  --count 1 --arch \"upcl:$D\" | grep -q 'MOV AX, 1234h' && \
@@ -610,23 +610,22 @@ add_test(NAME upcl.gate-v30 COMMAND sh -c
      --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/x86.upcl@v30' > '${CMAKE_BINARY_DIR}/x86gate.out' && \
    grep -q 'push 0x1234' '${CMAKE_BINARY_DIR}/x86gate.out' && grep -q 'brkem' '${CMAKE_BINARY_DIR}/x86gate.out'")
 
-# The hand-written parser implements the original UPCL .def grammar (register_file with
-# sub-register splits and flag bit-maps, macros, decoder_operands, jump insns, the rich
-# semantics language). Parse every reference description -- x86/80386/68k/MIPS/SPARC/m88k/
-# PDP-1/6502 -- with no diagnostics. Drives the normative flex/bison grammar through the
-# new front end.
-file(GLOB LIBCPU_UPCL_DEFS "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/*.def")
-foreach(_def ${LIBCPU_UPCL_DEFS})
-  get_filename_component(_defname ${_def} NAME_WE)
-  add_test(NAME upcl.def-${_defname} COMMAND lcx upcl check "${_def}")
-  set_tests_properties(upcl.def-${_defname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+# The hand-written parser implements the standard UPCL grammar (register_file with sub-
+# register splits and flag bit-maps, macros, decoder_operands, jump insns, the rich semantics
+# language). Parse every reference description -- x86/80386/68k/MIPS/SPARC/m88k/PDP-1/6502 --
+# with no diagnostics. Drives the normative flex/bison grammar through the new front end.
+file(GLOB LIBCPU_UPCL_EXAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/*.upcl")
+foreach(_upcl ${LIBCPU_UPCL_EXAMPLES})
+  get_filename_component(_upclname ${_upcl} NAME_WE)
+  add_test(NAME upcl.parse-${_upclname} COMMAND lcx upcl check "${_upcl}")
+  set_tests_properties(upcl.parse-${_upclname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 endforeach()
 
-# Register layout: flattening 8086.def's register_file must reproduce the real hardware --
+# Register layout: flattening 8086.upcl's register_file must reproduce the real hardware --
 # ah/al are the high/low bytes of ax, and the carry flag lands on FLAGS bit 0 mapped to the
 # meta carry %C. Locks the MSB-first bit-field walk against regressions.
 add_test(NAME upcl.layout COMMAND sh -c
-  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' > '${CMAKE_BINARY_DIR}/layout.out' && \
+  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' > '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'sub  ah     = ax\\[15:8\\]' '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'sub  al     = ax\\[7:0\\]'  '${CMAKE_BINARY_DIR}/layout.out' && \
    grep -q 'flag C      = flags\\[0\\] -> %C' '${CMAKE_BINARY_DIR}/layout.out' && \
@@ -642,7 +641,7 @@ add_test(NAME upcl.encoding COMMAND sh -c
    \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/test/risc.upcl' > '${CMAKE_BINARY_DIR}/enc.risc' && \
    grep -q 'encode #i32 ( op:6=0x0 rs:5->rs rt:5->rt rd:5->rd shamt:5=0x0 funct:6=0x20 )' '${CMAKE_BINARY_DIR}/enc.risc' && \
    grep -q 'encode #i32 ( op:6=0x8 rs:5->rs rt:5->rt imm:16->imm )' '${CMAKE_BINARY_DIR}/enc.risc' && \
-   \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' > '${CMAKE_BINARY_DIR}/enc.8086' && \
+   \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' > '${CMAKE_BINARY_DIR}/enc.8086' && \
    grep -q 'encode #i24 ( op:5=0x17 reg:3->dst.gpr16. imm:16->src )' '${CMAKE_BINARY_DIR}/enc.8086' && \
    grep -q 'encode #i8 ( op:8=0xf4 )' '${CMAKE_BINARY_DIR}/enc.8086'")
 set_tests_properties(upcl.encoding PROPERTIES FAIL_REGULAR_EXPRESSION "error|bits but the word is")
@@ -652,7 +651,7 @@ set_tests_properties(upcl.encoding PROPERTIES FAIL_REGULAR_EXPRESSION "error|bit
 # and the +r register resolve to ax); 41 = INC CX (reg field 1 -> cx, read+written as a
 # location operand); F4 = HLT. Proves decode -> operand resolution -> semantics end to end.
 add_test(NAME upcl.decode COMMAND sh -c
-  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' \
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl' \
      0xB8 0x34 0x12 0x41 0xF4 > '${CMAKE_BINARY_DIR}/decode.out' && \
    grep -q 'mov    dst=ax src=0x1234' '${CMAKE_BINARY_DIR}/decode.out' && \
    grep -q 'put r1 <- v0'             '${CMAKE_BINARY_DIR}/decode.out' && \
@@ -668,7 +667,7 @@ add_test(NAME upcl.decode COMMAND sh -c
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-
 # extend al into ax. Proves the translator emits hardware-correct x86 semantics.
-set(_def8086 "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def")
+set(_def8086 "${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.upcl")
 add_test(NAME upcl.emit COMMAND sh -c
   "set -e; E='$<TARGET_FILE:lcx>'; D='${_def8086}'; \
    \"$E\" upcl emit \"$D\" add > '${CMAKE_BINARY_DIR}/emit.add' && \
