@@ -272,9 +272,13 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                 break;
             }
             State.TrapPc = CPU_SMC_NO_TRAP;
+            State.SyscallVector = CPU_NO_SYSCALL;
             Code->Execute (Ram, &State, nullptr);
             if (State.TrapPc == CPU_SMC_NO_TRAP) {
                 break;
+            }
+            if (State.SyscallVector != CPU_NO_SYSCALL) {
+                break;                                   // a HLT/INT trap with no host handler: stop
             }
             Pc = (CPU_ADDR) State.TrapPc;
         }

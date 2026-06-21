@@ -896,6 +896,27 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
 bool
 Translator::EmitMacroStmt (Expr *pCall)
 {
+    // @trap ( vector ) -- a builtin: record the vector and trap to the host (a software
+    // interrupt, or HLT's wait-on-interrupt). Emitted via the syscall capability.
+    if (pCall->Name == "trap") {
+        ICpuSyscallEmitter *pSys = nullptr;
+        if (SUCCEEDED (m_pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
+            UINT64 Vec = 0;
+            if (!pCall->Args.empty ()) {
+                Expr *A = pCall->Args[0];
+                if (A->Kind == ExprInt) { Vec = A->Int; }
+                else if (A->Kind == ExprName) {
+                    auto It = m_Operands.find (A->Name);
+                    if (It != m_Operands.end () && It->second.Kind == Operand::Imm) { Vec = It->second.ImmValue; }
+                }
+            }
+            Value Ret = Const (m_WordBits, m_TrapReturnPc);
+            pSys->EmitSyscall ((UINT32) Vec, Ret.V);
+            pSys->Release ();
+        }
+        return true;
+    }
+
     Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
     if (M == nullptr) { return false; }
 

@@ -1,5 +1,9 @@
-// The base 8086 instruction set (the always-present ISA). Decoded and executed by every
-// x86 CPU model.
+// The base 8086 instruction set (the always-present ISA), decoded by every x86 CPU model.
+//
+// Each instruction lists its encoding and disassembly first, then `=> <semantics>` (or a
+// `{ ... }` block). This covers the register/immediate/implicit forms the bit-field encoding
+// expresses directly; memory operands (ModR/M mod != 11) come with the variable-length
+// decoder, so the register-to-register (mod = 11) forms are encoded here.
 
 // Evaluate an x86 condition code (the low nibble of a Jcc opcode): bits [3:1] pick the flag
 // test, bit 0 negates it. So 0x74 (cc=0100) is ZF, 0x75 (cc=0101) is !ZF, etc.
@@ -14,33 +18,108 @@ macro eval_cc ( cc ) : #i1 %result =
 	:                ( flags.Z | ( flags.S ^ flags.O ) ) )
 	^ cc[0:0] ;
 
-insn mov : dst = src
-	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src ),	// 0xB8+r iw
-	disasm ( mnemonic : "mov", size : word, operands : dst, src );
+// ---- data movement -------------------------------------------------------
 
-insn inc : dst = %CC ( dst + 1, !C )
-	encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] ),			// 0x40+r
-	disasm ( mnemonic : "inc", size : word, operands : dst );
+insn mov : encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src )		// 0xB8+r iw
+	     |  #i16 ( op:8 = 0x89, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x89 /r
+	disasm ( mnemonic : "mov", size : word, operands : dst, src )
+	=> dst = src;
 
-insn dec : dst = %CC ( dst - 1, !C )
-	encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] ),			// 0x48+r
-	disasm ( mnemonic : "dec", size : word, operands : dst );
+insn movb : encode #i16 ( op:5 = 0x16, reg:3 -> dst[ gpr8 ], imm:8 -> src )		// 0xB0+r ib
+	     |  #i16 ( op:8 = 0x88, mod:2 = 3, reg:3 -> src[ gpr8 ], rm:3 -> dst[ gpr8 ] ),	// 0x88 /r
+	disasm ( mnemonic : "mov", size : byte, operands : dst, src )
+	=> dst = src;
 
-insn hlt : encode #i8 ( op:8 = 0xF4 ), disasm ( mnemonic : "hlt" );	// 0xF4
+insn xchg : encode #i16 ( op:8 = 0x87, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x87 /r
+	disasm ( mnemonic : "xchg", size : word, operands : dst, src )
+	{ #i16 tmp = dst ; dst = src ; src = tmp ; }
 
-jump insn jmp : type branch, encode #i16 ( op:8 = 0xEB, disp:8 -> src rel ),	// 0xEB cb
+// ---- ALU (register/register, mod = 11) -----------------------------------
+
+insn add : encode #i16 ( op:8 = 0x01, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x01 /r
+	disasm ( mnemonic : "add", size : word, operands : dst, src )
+	=> dst = %CC ( dst + src );
+
+insn adc : encode #i16 ( op:8 = 0x11, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x11 /r
+	disasm ( mnemonic : "adc", size : word, operands : dst, src )
+	=> dst = %CC ( dst + src + flags.C );
+
+insn sub : encode #i16 ( op:8 = 0x29, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x29 /r
+	disasm ( mnemonic : "sub", size : word, operands : dst, src )
+	=> dst = %CC ( dst - src );
+
+insn sbb : encode #i16 ( op:8 = 0x19, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x19 /r
+	disasm ( mnemonic : "sbb", size : word, operands : dst, src )
+	=> dst = %CC ( dst - src - flags.C );
+
+insn and : encode #i16 ( op:8 = 0x21, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x21 /r
+	disasm ( mnemonic : "and", size : word, operands : dst, src )
+	=> dst = %CC ( dst & src );
+
+insn or : encode #i16 ( op:8 = 0x09, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x09 /r
+	disasm ( mnemonic : "or", size : word, operands : dst, src )
+	=> dst = %CC ( dst | src );
+
+insn xor : encode #i16 ( op:8 = 0x31, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x31 /r
+	disasm ( mnemonic : "xor", size : word, operands : dst, src )
+	=> dst = %CC ( dst ^ src );
+
+insn cmp : encode #i16 ( op:8 = 0x39, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x39 /r
+	disasm ( mnemonic : "cmp", size : word, operands : dst, src )
+	=> %CC ( dst - src );							// sets flags, no write-back
+
+insn test : encode #i16 ( op:8 = 0x85, mod:2 = 3, reg:3 -> src[ gpr16 ], rm:3 -> dst[ gpr16 ] ),	// 0x85 /r
+	disasm ( mnemonic : "test", size : word, operands : dst, src )
+	=> %CC ( dst & src );							// sets flags, no write-back
+
+// ---- increment / decrement -----------------------------------------------
+
+insn inc : encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] ),			// 0x40+r
+	disasm ( mnemonic : "inc", size : word, operands : dst )
+	=> dst = %CC ( dst + 1, !C );
+
+insn dec : encode #i8 ( op:5 = 0x09, reg:3 -> dst[ gpr16 ] ),			// 0x48+r
+	disasm ( mnemonic : "dec", size : word, operands : dst )
+	=> dst = %CC ( dst - 1, !C );
+
+// ---- stack ---------------------------------------------------------------
+
+insn push : encode #i8 ( op:5 = 0x0A, reg:3 -> src[ gpr16 ] ),			// 0x50+r  PUSH r16
+	disasm ( mnemonic : "push", size : word, operands : src )
+	=> @i8086_push ( src );
+
+insn pop : encode #i8 ( op:5 = 0x0B, reg:3 -> dst[ gpr16 ] ),			// 0x58+r  POP r16
+	disasm ( mnemonic : "pop", size : word, operands : dst )
+	=> dst = @i8086_pop ();
+
+// ---- flag operations -----------------------------------------------------
+
+insn clc : encode #i8 ( op:8 = 0xF8 ), disasm ( mnemonic : "clc" ) => flags.C = 0;		// 0xF8
+insn stc : encode #i8 ( op:8 = 0xF9 ), disasm ( mnemonic : "stc" ) => flags.C = 1;		// 0xF9
+insn cmc : encode #i8 ( op:8 = 0xF5 ), disasm ( mnemonic : "cmc" ) => flags.C = flags.C ^ 1;	// 0xF5
+insn cld : encode #i8 ( op:8 = 0xFC ), disasm ( mnemonic : "cld" ) => flags.D = 0;		// 0xFC
+insn std : encode #i8 ( op:8 = 0xFD ), disasm ( mnemonic : "std" ) => flags.D = 1;		// 0xFD
+insn cli : encode #i8 ( op:8 = 0xFA ), disasm ( mnemonic : "cli" ) => flags.I = 0;		// 0xFA
+insn sti : encode #i8 ( op:8 = 0xFB ), disasm ( mnemonic : "sti" ) => flags.I = 1;		// 0xFB
+
+insn nop : encode #i8 ( op:8 = 0x90 ), disasm ( mnemonic : "nop" );		// 0x90 (XCHG AX,AX)
+insn hlt : encode #i8 ( op:8 = 0xF4 ), disasm ( mnemonic : "hlt" ) => @trap ( 0 );	// 0xF4 wait-on-interrupt
+
+// ---- control flow --------------------------------------------------------
+
+jump insn jmp : type branch, encode #i16 ( op:8 = 0xEB, disp:8 -> src rel ),	// 0xEB cb  JMP rel8
 	disasm ( mnemonic : "jmp", operands : src )
 	{ @i8086_jump( src ); }
 
-jump insn jcc : type branch, condition @eval_cc ( cond ),			// 0x70..0x7F cb
+jump insn jcc : type branch, condition @eval_cc ( cond ),			// 0x70..0x7F cb  Jcc rel8
 	encode #i16 ( op:4 = 0x7, tttn:4 -> cond, disp:8 -> src rel ),
 	disasm ( mnemonic : "jcc", operands : src )
 	{ @i8086_jump ( src ); }
 
-jump insn ncall : type call, encode #i24 ( op:8 = 0xE8, disp:16 -> src rel ),	// 0xE8 cw
+jump insn ncall : type call, encode #i24 ( op:8 = 0xE8, disp:16 -> src rel ),	// 0xE8 cw  CALL rel16
 	disasm ( mnemonic : "call", operands : src )
 	{ @i8086_push ( ip ); @i8086_jump ( src ); }
 
-jump insn nret : type return, encode #i8 ( op:8 = 0xC3 ),			// 0xC3
+jump insn nret : type return, encode #i8 ( op:8 = 0xC3 ),			// 0xC3  RET (near)
 	disasm ( mnemonic : "ret" )
 	{ @i8086_jump ( @i8086_pop () ); }

@@ -129,6 +129,11 @@ public:
                 }
                 return S_OK;
             }
+            // An instruction that traps to the host (HLT, INT, ...) terminates its block.
+            if (D.pInsn != nullptr && StmtsTrap (D.pInsn->Semantics, 8)) {
+                *pTag = TagTrap; *pNewPc = (CPU_ADDR) -1;
+                return S_OK;
+            }
             // A pc-write with a constant-foldable target is a branch; an `if (c) pc=...` is a
             // conditional branch (taken target in NewPc, fall-through in NextPc). The edge is
             // wired from the tag (the pc-write itself is not emitted).
@@ -261,6 +266,7 @@ public:
             if (!m_PcName.empty ()) { Tr.BindOperand (m_PcName, PcOp); }
             auto OffIt = m_Layout.PcFields.find ("off");
             if (OffIt != m_Layout.PcFields.end ()) { Tr.BindOperand (OffIt->second, PcOp); }
+            Tr.SetTrapReturn (Pc + D.Length);            // where a @trap resumes (the next insn)
 
             std::vector<Stmt *> Body;
             if (D.pJump != nullptr) {
@@ -418,6 +424,36 @@ private:
         default:
             return false;
         }
+    }
+
+    // ---- trap detection ---------------------------------------------------
+    //
+    // Does an instruction body reach a @trap(...) -- directly or through a macro it calls
+    // (e.g. HLT's wait-on-interrupt, or @i8086_interrupt for INT)? Such an instruction
+    // terminates its block and traps to the host, so it is tagged TagTrap.
+    Macro *FindArchMacro (std::string CONST &Name, size_t Arity) CONST {
+        for (Macro *M : m_pArch->Macros) { if (M->Name == Name && M->Params.size () == Arity) { return M; } }
+        for (Macro *M : m_pArch->Macros) { if (M->Name == Name) { return M; } }
+        return nullptr;
+    }
+    bool ExprTraps (Expr *E, int Depth) CONST {
+        if (E == nullptr || Depth <= 0) { return false; }
+        if (E->Kind == ExprCall) {
+            if (E->Name == "trap") { return true; }
+            Macro *M = FindArchMacro (E->Name, E->Args.size ());
+            if (M != nullptr && StmtsTrap (M->Body, Depth - 1)) { return true; }
+        }
+        for (Expr *A : E->Args) { if (ExprTraps (A, Depth)) { return true; } }
+        return false;
+    }
+    bool StmtsTrap (std::vector<Stmt *> CONST &Body, int Depth) CONST {
+        if (Depth <= 0) { return false; }
+        for (Stmt *S : Body) {
+            if (ExprTraps (S->Rhs, Depth) || ExprTraps (S->Lhs, Depth) || ExprTraps (S->Cond, Depth)) { return true; }
+            if (StmtsTrap (S->Then, Depth) || StmtsTrap (S->Else, Depth) || StmtsTrap (S->Body, Depth)
+                || StmtsTrap (S->Init, Depth) || StmtsTrap (S->Step, Depth)) { return true; }
+        }
+        return false;
     }
 
     // ---- jump-insn support ------------------------------------------------

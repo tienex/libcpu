@@ -72,6 +72,10 @@ public:
     // register/const load; writes store back through the location. Used by the decoder.
     void BindOperand (std::string CONST &Name, Operand CONST &Op);
 
+    // The return address a `@trap(vector)` resumes at (the next instruction). The host reads
+    // the trapped vector and resumes here -- for HLT this is "wait on interrupt".
+    void SetTrapReturn (UINT64 Pc) { m_TrapReturnPc = Pc; }
+
     // Translate a body (an instruction's Semantics or a macro's Body). Returns false on a
     // construct not yet handled (the caller can report it); already-emitted work stays.
     bool Emit (std::vector<Stmt *> CONST &Body);
@@ -148,6 +152,7 @@ private:
     UINT32                           m_WordBits;
     bool                             m_IndirectPc = false; // pc-write -> captured as a branch
     ICpuValue                       *m_IndirectTarget = nullptr; // the captured computed target
+    UINT64                           m_TrapReturnPc = 0;    // @trap resume address
     std::map<std::string, Value>     m_Env;        // bound values / locals / %result
     std::map<std::string, Operand>   m_Operands;   // decoded operand locations (decoder path)
     std::map<std::string, std::vector<Macro *>> m_Macros;  // name -> overloads (by arity)

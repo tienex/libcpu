@@ -1003,12 +1003,24 @@ Parser::ParseOldInsn ()
     if (m_Cur.Kind == TokIdent) { I->Name = m_Cur.Text; Advance (); }
     else { std::string M = std::string ("expected an instruction name, found ") + TokenName (m_Cur.Kind);
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
-    if (Accept (TokColon)) {                        // inline body: : <stmt> ;   (or empty `: ;`)
+    if (Accept (TokColon)) {
+        // Two shapes after the colon, both supported:
+        //   body-first    `insn add : dst = %CC(dst+src) encode ... ;`
+        //   clauses-first `insn cld : encode ..., disasm ... => flags.D = 0 ;`  (or { block })
         if (m_Cur.Kind != TokSemi && !AtKeyword ("encode") && !AtKeyword ("disasm")) {
             I->Semantics.push_back (ParseInlineStmt ());
         }
         ParseInsnTail (I);
-        Expect (TokSemi, "after the inline instruction body");
+        if (Accept (TokAssign)) {                   // `=> <inline body>`
+            Accept (TokGt);
+            if (m_Cur.Kind != TokSemi) { I->Semantics.push_back (ParseInlineStmt ()); }
+            Expect (TokSemi, "after the instruction body");
+        } else if (m_Cur.Kind == TokLBrace) {       // `{ <block body> }`
+            ParseBlock (&I->Semantics);
+            Accept (TokSemi);
+        } else {
+            Expect (TokSemi, "after the instruction");
+        }
     } else if (m_Cur.Kind == TokLBrace) {
         ParseBlock (&I->Semantics);
         ParseInsnTail (I);
