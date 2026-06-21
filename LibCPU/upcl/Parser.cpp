@@ -1084,8 +1084,16 @@ Parser::ParseEncAlt ()
     }
     Expect (TokRParen, "to close the encoding field list");
 
-    if (A->WordBits != 0 && A->TotalBits () != A->WordBits) {
-        std::string Msg = "encoding fields total " + std::to_string (A->TotalBits ())
+    // A field that follows an `@addrmode` operand is positioned in the byte tail, after that
+    // mode's variable-length displacement -- so it is NOT part of the fixed `#iN` opcode word.
+    bool PastAddrMode = false;
+    for (EncField &F : A->Fields) {
+        if (PastAddrMode) { F.Tail = true; }
+        if (!F.AddrMode.empty ()) { PastAddrMode = true; }
+    }
+
+    if (A->WordBits != 0 && A->WordFieldBits () != A->WordBits) {
+        std::string Msg = "the opcode word's fields total " + std::to_string (A->WordFieldBits ())
                         + " bits but the word is " + std::to_string (A->WordBits);
         m_pDiag->Report (SevError, A->Loc, m_Cur.Range (), Msg);
     }
@@ -1130,6 +1138,8 @@ Parser::ParseEncField (EncField *pField)
         }
         // -> op rel : the field is a PC-relative displacement (a branch target).
         if (AtKeyword ("rel")) { pField->Relative = true; Advance (); }
+        // -> op sx : sign-extend the field value to the machine word (a short signed immediate).
+        if (AtKeyword ("sx")) { pField->SignExt = true; Advance (); }
         // -> op @<addrmode> : the field selects through an addressing mode.
         if (m_Cur.Kind == TokMacroIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
         else if (Accept (TokAt) && m_Cur.Kind == TokIdent) { pField->AddrMode = m_Cur.Text; Advance (); }

@@ -614,6 +614,19 @@ if(TARGET interp_backend)
      LCX_SYNTAX=att   \"$E\" disasm '${CMAKE_BINARY_DIR}/x86modrm.bin' --count 3 --arch \"upcl:$X@8086\" | grep -q 'movw %ax, 0x0050' && \
      OUT=$(\"$E\" run '${CMAKE_BINARY_DIR}/x86modrm.bin' --arch \"upcl:$X@8086\") && \
      echo \"$OUT\" | grep -q 'cx =2222' && echo \"$OUT\" | grep -q 'dx =0022'")
+
+  # Immediate-to-r/m group: the grouped opcodes 0x81 (iw) / 0x83 (ib, sign-extended) whose ModR/M
+  # `reg` field is an opcode extension (/digit) selecting the ALU op, and whose immediate is a TAIL
+  # field decoded AFTER the variable-length displacement. mov ax,5 ; add ax,-1 (0x83 /0 sx, ax=4) ;
+  # mov bx,0x100 ; or bx,0x000F (0x81 /1, bx=0x010F) ; mov [0x60],ax ; add [0x60],0x10 (0x83 /0 to
+  # memory: imm after disp16) ; mov cx,[0x60] (cx=0x14). Disasm shows the sign-extended 0ffffh.
+  add_test(NAME upcl.x86-immrm COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x05\\x00\\x83\\xC0\\xFF\\xBB\\x00\\x01\\x81\\xCB\\x0F\\x00\\x89\\x06\\x60\\x00\\x83\\x06\\x60\\x00\\x10\\x8B\\x0E\\x60\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x86immrm.bin' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86immrm.bin' --count 6 --arch \"upcl:$X@8086\" | grep -q 'ADD AX, 0ffffh' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x86immrm.bin' --count 6 --arch \"upcl:$X@8086\" | grep -q 'ADD \\[0060h\\], 0010h' && \
+     OUT=$(\"$E\" run '${CMAKE_BINARY_DIR}/x86immrm.bin' --arch \"upcl:$X@8086\") && \
+     echo \"$OUT\" | grep -q 'ax =0004' && echo \"$OUT\" | grep -q 'bx =010f' && echo \"$OUT\" | grep -q 'cx =0014'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

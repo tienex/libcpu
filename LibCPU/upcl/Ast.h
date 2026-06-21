@@ -225,6 +225,13 @@ public:
     std::string              AddrMode;    // `-> op @ <addrmode>`: the field selects through an
                                           //   addressing mode (a register or a memory address,
                                           //   reading a variable-length displacement).
+    bool                     SignExt = false; // `-> op sx`: sign-extend the field value to the
+                                          //   machine word width (e.g. `0x83 /digit ib`'s imm8
+                                          //   becomes a 16-bit operand). Architecture-neutral.
+    bool                     Tail = false; // the field follows an `@addrmode` operand, so it is
+                                          //   positioned in the byte tail AFTER that mode's
+                                          //   variable-length displacement (e.g. the immediate of
+                                          //   `0x81 /digit iw`), not inside the fixed opcode word.
 };
 
 // One encoding alternative: a word of `WordBits` bits split into fields. An instruction may
@@ -238,6 +245,14 @@ public:
     UINT32 TotalBits () CONST {
         UINT32 N = 0;
         for (EncField CONST &F : Fields) { N += F.Width; }
+        return N;
+    }
+
+    // The bits of the fixed opcode word -- the non-tail fields. Tail fields (immediates after a
+    // variable-length addressing mode) are appended as extra bytes, not part of the `#iN` word.
+    UINT32 WordFieldBits () CONST {
+        UINT32 N = 0;
+        for (EncField CONST &F : Fields) { if (!F.Tail) { N += F.Width; } }
         return N;
     }
 };

@@ -77,9 +77,17 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
     }
 
     if (Field.RegMap.empty ()) {
-        pOut->Kind     = Operand::Imm;
-        pOut->Bits     = Field.Width;
-        pOut->ImmValue = FieldVal;
+        pOut->Kind = Operand::Imm;
+        if (Field.SignExt) {
+            // A short signed immediate widened to the machine word (e.g. 0x83's imm8 -> 16 bits).
+            UINT32 Word = m_pArch->WordSize ? m_pArch->WordSize : Field.Width;
+            UINT64 Mask = (Word >= 64) ? ~UINT64_C (0) : ((UINT64_C (1) << Word) - 1);
+            pOut->Bits     = Word;
+            pOut->ImmValue = (UINT64) SignExtend (FieldVal, Field.Width) & Mask;
+        } else {
+            pOut->Bits     = Field.Width;
+            pOut->ImmValue = FieldVal;
+        }
         return true;
     }
 
@@ -247,10 +255,12 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     UINT32 WordLen = (Bits + 7) / 8;
     if (WordLen == 0 || WordLen > Avail) { return false; }
 
-    // Extract every field value, checking the constant (opcode) fields.
+    // Extract the fixed opcode-word fields, checking the constant (opcode) fields. Tail fields
+    // (immediates after a variable-length addressing mode) are NOT in the word -- read below.
     std::map<std::string, UINT64> FV;
     UINT32 BitOff = 0;
     for (EncField CONST &F : pAlt->Fields) {
+        if (F.Tail) { continue; }
         UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
@@ -269,7 +279,20 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
         }
     }
 
-    UINT64 NextPc = NextBase + WordLen + Extra;       // the successor address (for PC-relative fields)
+    // Tail fields follow the displacement, byte-aligned and in declaration order (e.g. the
+    // immediate of `0x81 /digit iw`). Each consumes its width from the tail and extends Length.
+    UINT32 TailOff = WordLen + Extra;
+    for (EncField CONST &F : pAlt->Fields) {
+        if (!F.Tail) { continue; }
+        UINT32 FieldBytes = (F.Width + 7) / 8;
+        if ((UINT64) TailOff + FieldBytes > Avail) { return false; }
+        UINT64 V = ExtractField (pBytes + TailOff, 0, F.Width, m_pArch->Little);
+        if (F.HasConst && V != F.Const) { return false; }
+        FV[F.Name] = V;
+        TailOff += FieldBytes;
+    }
+
+    UINT64 NextPc = NextBase + TailOff;               // the successor address (for PC-relative fields)
     for (EncField CONST &F : pAlt->Fields) {
         if (!F.Operand.empty () && F.AddrMode.empty ()) {
             Operand Op;
@@ -279,7 +302,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     }
 
     pOut->pAlt   = pAlt;
-    pOut->Length = WordLen + Extra;
+    pOut->Length = TailOff;
     return true;
 }
 
