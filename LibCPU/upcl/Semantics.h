@@ -72,6 +72,10 @@ private:
     bool  EmitAssign (Stmt *pStmt);
     void  StoreTo (Expr *pLhs, Value CONST &Rhs);
     bool  EmitMacroStmt (Expr *pCall);       // @macro(args) as a statement
+    bool  EmitIf (Stmt *pStmt);              // if (Cond) Then [else Else]  -> a CFG diamond
+    bool  EmitWhile (Stmt *pStmt);           // while (Cond) Body           -> head/body/end
+    bool  EmitFor (Stmt *pStmt);             // for (Init; Cond; Step) Body
+    ComPtr<ICpuBlock> NewBlock (CHAR8 CONST *pName);
 
     // names -> storage
     void   WriteName (std::string CONST &Name, Value CONST &Rhs);

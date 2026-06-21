@@ -558,7 +558,14 @@ add_test(NAME upcl.emit COMMAND sh -c
    \"$E\" upcl emit \"$D\" inc > '${CMAKE_BINARY_DIR}/emit.inc' && \
    grep -q 'setflag Z'    '${CMAKE_BINARY_DIR}/emit.inc' && \
    ! grep -q 'setflag C'  '${CMAKE_BINARY_DIR}/emit.inc' && \
-   \"$E\" upcl emit \"$D\" cbw | grep -q 'sext.i16'")
+   \"$E\" upcl emit \"$D\" cbw | grep -q 'sext.i16' && \
+   \"$E\" upcl emit \"$D\" aaa > '${CMAKE_BINARY_DIR}/emit.aaa' && \
+   grep -q 'condbr'  '${CMAKE_BINARY_DIR}/emit.aaa' && \
+   grep -q 'if.then' '${CMAKE_BINARY_DIR}/emit.aaa' && \
+   grep -q 'if.else' '${CMAKE_BINARY_DIR}/emit.aaa' && \
+   \"$E\" upcl emit \"$D\" movsb > '${CMAKE_BINARY_DIR}/emit.movsb' && \
+   grep -q 'getflag D' '${CMAKE_BINARY_DIR}/emit.movsb' && \
+   grep -q 'condbr'    '${CMAKE_BINARY_DIR}/emit.movsb'")
 
 # Knowledge-library (ZOO/zstd solid) archive: pack several real source files, list them
 # (asserting the solid container holds them), then extract one and diff it against the

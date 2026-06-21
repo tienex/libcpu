@@ -516,29 +516,6 @@ Translator::DeriveFlags (Expr *pInner, Value CONST &Result, Value CONST &A, Valu
 
 // ---- statements -----------------------------------------------------------
 
-static bool
-MapAssignOp (TOKEN_KIND Op, TOKEN_KIND *pBinTok)
-{
-    switch (Op) {
-    case TokPlusEq:   *pBinTok = TokPlus;   return true;
-    case TokMinusEq:  *pBinTok = TokMinus;  return true;
-    case TokStarEq:   *pBinTok = TokStar;   return true;
-    case TokSlashEq:  *pBinTok = TokSlash;  return true;
-    case TokPercentEq:*pBinTok = TokPercent;return true;
-    case TokPipeEq:   *pBinTok = TokPipe;   return true;
-    case TokAmpEq:    *pBinTok = TokAmp;    return true;
-    case TokCaretEq:  *pBinTok = TokCaret;  return true;
-    case TokShlEq:    *pBinTok = TokShl;    return true;
-    case TokShrEq:    *pBinTok = TokShr;    return true;
-    case TokRolEq:    *pBinTok = TokRol;    return true;
-    case TokRorEq:    *pBinTok = TokRor;    return true;
-    case TokAndComEq: *pBinTok = TokAndCom; return true;
-    case TokOrComEq:  *pBinTok = TokOrCom;  return true;
-    case TokXorComEq: *pBinTok = TokXorCom; return true;
-    default:          return false;
-    }
-}
-
 bool
 Translator::Emit (std::vector<Stmt *> CONST &Body)
 {
@@ -565,14 +542,109 @@ Translator::EmitStmt (Stmt *pStmt)
     }
 
     case StmtBlock:
+        return Emit (pStmt->Body);           // a brace group: same block, nested scope
+
     case StmtIf:
-    case StmtFor:
+        return EmitIf (pStmt);
+
     case StmtWhile:
-        return false;                        // control flow: a later increment (needs blocks)
+        return EmitWhile (pStmt);
+
+    case StmtFor:
+        return EmitFor (pStmt);
 
     default:
         return false;
     }
+}
+
+ComPtr<ICpuBlock>
+Translator::NewBlock (CHAR8 CONST *pName)
+{
+    ICpuBlock *pBlock = nullptr;
+    m_pE->CreateBlock (pName, &pBlock);
+    return ComPtr<ICpuBlock> (pBlock);
+}
+
+// if (Cond) Then [else Else].  Register state lives in the register file (memory), not in
+// SSA values, so the branches need no PHI nodes: each block reads and writes registers
+// afresh -- the merge block simply continues.
+bool
+Translator::EmitIf (Stmt *pStmt)
+{
+    Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
+
+    ComPtr<ICpuBlock> Then = NewBlock ("if.then");
+    ComPtr<ICpuBlock> Else = pStmt->Else.empty () ? ComPtr<ICpuBlock> () : NewBlock ("if.else");
+    ComPtr<ICpuBlock> End  = NewBlock ("if.end");
+
+    m_pE->CondBranch (Cond.V, Then.Get (), Else.Get () ? Else.Get () : End.Get ());
+
+    m_pE->SetInsertBlock (Then.Get ());
+    bool Ok = Emit (pStmt->Then);
+    m_pE->Branch (End.Get ());
+
+    if (Else.Get () != nullptr) {
+        m_pE->SetInsertBlock (Else.Get ());
+        Ok = Emit (pStmt->Else) && Ok;
+        m_pE->Branch (End.Get ());
+    }
+
+    m_pE->SetInsertBlock (End.Get ());
+    return Ok;
+}
+
+// while (Cond) Body.  head tests, body runs and loops back, end continues.
+bool
+Translator::EmitWhile (Stmt *pStmt)
+{
+    ComPtr<ICpuBlock> Head = NewBlock ("while.head");
+    ComPtr<ICpuBlock> Body = NewBlock ("while.body");
+    ComPtr<ICpuBlock> End  = NewBlock ("while.end");
+
+    m_pE->Branch (Head.Get ());
+    m_pE->SetInsertBlock (Head.Get ());
+    Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
+    m_pE->CondBranch (Cond.V, Body.Get (), End.Get ());
+
+    m_pE->SetInsertBlock (Body.Get ());
+    bool Ok = Emit (pStmt->Body);
+    m_pE->Branch (Head.Get ());
+
+    m_pE->SetInsertBlock (End.Get ());
+    return Ok;
+}
+
+// for (Init; Cond; Step) Body.  Init runs once, then head/body/step/end as usual.
+bool
+Translator::EmitFor (Stmt *pStmt)
+{
+    bool Ok = Emit (pStmt->Init);
+
+    ComPtr<ICpuBlock> Head = NewBlock ("for.head");
+    ComPtr<ICpuBlock> Body = NewBlock ("for.body");
+    ComPtr<ICpuBlock> Step = NewBlock ("for.step");
+    ComPtr<ICpuBlock> End  = NewBlock ("for.end");
+
+    m_pE->Branch (Head.Get ());
+    m_pE->SetInsertBlock (Head.Get ());
+    if (pStmt->Cond != nullptr) {
+        Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
+        m_pE->CondBranch (Cond.V, Body.Get (), End.Get ());
+    } else {
+        m_pE->Branch (Body.Get ());          // for (;;) with no test
+    }
+
+    m_pE->SetInsertBlock (Body.Get ());
+    Ok = Emit (pStmt->Body) && Ok;
+    m_pE->Branch (Step.Get ());
+
+    m_pE->SetInsertBlock (Step.Get ());
+    Ok = Emit (pStmt->Step) && Ok;
+    m_pE->Branch (Head.Get ());
+
+    m_pE->SetInsertBlock (End.Get ());
+    return Ok;
 }
 
 bool
@@ -580,10 +652,11 @@ Translator::EmitAssign (Stmt *pStmt)
 {
     if (pStmt->Lhs == nullptr || pStmt->Rhs == nullptr) { return true; }
 
-    TOKEN_KIND BinTok;
+    // The parser desugars `lhs <op>= rhs` to AssignOp = the base op (TokPlus for +=, ...);
+    // a plain store is TokAssign. So anything but TokAssign is a read-modify-write.
     Value Rhs;
-    if (MapAssignOp (pStmt->AssignOp, &BinTok)) {
-        // compound: lhs <op>= rhs  ==  lhs = lhs <op> rhs
+    if (pStmt->AssignOp != TokAssign) {
+        TOKEN_KIND BinTok = pStmt->AssignOp;
         Value Cur = EvalExpr (pStmt->Lhs);
         Value Add = EvalExpr (pStmt->Rhs);
         if (BinTok == TokAndCom || BinTok == TokOrCom || BinTok == TokXorCom) {

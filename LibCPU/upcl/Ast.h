@@ -81,7 +81,9 @@ public:
 // ---- statements (instruction semantics) -----------------------------------
 
 typedef enum _STMT_KIND {
-    StmtAssign,     // [<LhsType>]? Lhs <AssignOp> Rhs;   (AssignOp: TokAssign / TokPlusEq / ...)
+    StmtAssign,     // [<LhsType>]? Lhs <AssignOp> Rhs;   (AssignOp is the DESUGARED base op:
+                    //   TokAssign = plain store; TokPlus for +=, TokShl for <<=, ... -- the
+                    //   parser's AssignOpOf already mapped the *Eq token to its operator)
     StmtExpr,       // a bare expression statement (%CC(...) / @macro(...))  -- Rhs holds it
     StmtBlock,      // { Body... }
     StmtIf,         // if (Cond) Then [else Else]

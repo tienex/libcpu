@@ -470,9 +470,12 @@ public:
 
 class RecBlock final : public ComObject<ICpuBlock> {
 public:
+    RecBlock (UINT32 Id, CHAR8 CONST *pName) : m_Id (Id), m_Name (pName ? pName : "blk") {}
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppv) override {
         return DefaultQuery (riid, IID_IUnknown, ppv);
     }
+    UINT32      m_Id;
+    std::string m_Name;
 };
 
 class RecordingEmitter final : public ComObject<ICpuEmitter> {
@@ -546,14 +549,21 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE CreateBlock (CHAR8 CONST *pName, ICpuBlock **ppB) override {
-        *ppB = new RecBlock (); std::printf ("  block %s:\n", pName ? pName : "");
+        *ppB = new RecBlock (m_NextBlk++, pName);   // labelled where it is entered, not here
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppB) override { *ppB = nullptr; return S_OK; }
-    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *) override { std::printf ("  br\n"); return S_OK; }
-    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pC, ICpuBlock *, ICpuBlock *) override {
-        std::printf ("  condbr v%u\n", Id (pC)); return S_OK;
+    HRESULT STDMETHODCALLTYPE SetInsertBlock (ICpuBlock *pB) override {
+        m_pCur = static_cast<RecBlock *> (pB);
+        std::printf ("%s:\n", Label (pB).c_str ());
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetInsertBlock (ICpuBlock **ppB) override { *ppB = m_pCur; return S_OK; }
+    HRESULT STDMETHODCALLTYPE Branch (ICpuBlock *pB) override {
+        std::printf ("  br %s\n", Label (pB).c_str ()); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CondBranch (ICpuValue *pC, ICpuBlock *pT, ICpuBlock *pF) override {
+        std::printf ("  condbr v%u ? %s : %s\n", Id (pC), Label (pT).c_str (), Label (pF).c_str ());
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override {
         std::printf ("  setpc 0x%llx\n", (unsigned long long) Pc); return S_OK;
@@ -562,6 +572,12 @@ public:
 private:
     UINT32 Make (ICpuValue **ppV) { RecValue *V = new RecValue (m_Next++); *ppV = V; return V->m_Id; }
     static UINT32 Id (ICpuValue *pV) { return pV ? static_cast<RecValue *> (pV)->m_Id : ~(UINT32) 0; }
+    static std::string Label (ICpuBlock *pB) {
+        RecBlock *B = static_cast<RecBlock *> (pB);
+        char Buf[64];
+        std::snprintf (Buf, sizeof (Buf), "%s#%u", B->m_Name.c_str (), B->m_Id);
+        return Buf;
+    }
 
     static CHAR8 CONST *BinopName (CPU_BINOP Op) {
         static CHAR8 CONST *N[] = { "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
@@ -585,7 +601,9 @@ private:
         return N[Flag];
     }
 
-    UINT32 m_Next = 0;
+    UINT32    m_Next = 0;
+    UINT32    m_NextBlk = 0;
+    RecBlock *m_pCur = nullptr;
 };
 
 } // anonymous namespace
