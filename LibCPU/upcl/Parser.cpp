@@ -1028,8 +1028,14 @@ Parser::ParseInsnTail (Insn *pInsn)
             ParseEncodeClause (pInsn);
         } else if (AtKeyword ("disasm")) {
             Advance ();
-            if (m_Cur.Kind == TokString) { pInsn->Disasm = m_Cur.Text; pInsn->HasDisasm = true; Advance (); }
-            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string"); }
+            if (m_Cur.Kind == TokLParen) {           // declarative: disasm ( mnemonic:.., .. )
+                delete pInsn->DisasmDecl;
+                pInsn->DisasmDecl = ParseDisasmDecl ();
+            } else if (m_Cur.Kind == TokString) {    // override string: disasm "..."
+                pInsn->Disasm = m_Cur.Text; pInsn->HasDisasm = true; Advance ();
+            } else {
+                m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string or ( ... )");
+            }
         } else {
             break;
         }
@@ -1171,8 +1177,14 @@ Parser::ParseJumpInsn ()
             } while (Accept (TokPipe));
         } else if (AtKeyword ("disasm")) {
             Advance ();
-            if (m_Cur.Kind == TokString) { J->Disasm = m_Cur.Text; J->HasDisasm = true; Advance (); }
-            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string"); }
+            if (m_Cur.Kind == TokLParen) {
+                delete J->DisasmDecl;
+                J->DisasmDecl = ParseDisasmDecl ();
+            } else if (m_Cur.Kind == TokString) {
+                J->Disasm = m_Cur.Text; J->HasDisasm = true; Advance ();
+            } else {
+                m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a disassembly format string or ( ... )");
+            }
         } else if (AtKeyword ("condition")) {
             Advance (); J->Condition = ParseExpr (0);
         } else if (AtKeyword ("delay")) {
@@ -1245,6 +1257,145 @@ Parser::SyncToTopLevel ()
     }
 }
 
+// Apply one property of a disasm style block to the style, by category.
+static void
+ApplyDisasmProp (DisasmStyle *pSt, std::string CONST &Cat, std::string CONST &Key, std::string CONST &Val)
+{
+    if (Cat == "mnemonic") {
+        if (Key == "casing") { pSt->MnemCasing = Val; }
+        else if (Key == "suffix" && Val == "size") { pSt->MnemSizeSuffix = true; }
+    } else if (Cat == "register") {
+        if (Key == "prefix") { pSt->RegPrefix = Val; }
+        else if (Key == "casing") { pSt->RegCasing = Val; }
+    } else if (Cat == "integer") {
+        if (Key == "prefix") { pSt->IntPrefix = Val; }
+        else if (Key == "suffix") { pSt->IntSuffix = Val; }
+    } else if (Cat == "ordering") {
+        if (Key == "reverse") { pSt->ReverseOperands = true; }
+    }
+}
+
+// `{ style <name> { <key> : <val>, ... } ... }` -- the per-style rules for one category
+// (mnemonic / register / integer / ordering); each property is applied to its style.
+void
+Parser::ParseDisasmStyleBlocks (DisasmFeatures *pF, std::string CONST &Cat)
+{
+    if (!Expect (TokLBrace, "to open a disasm category")) { return; }
+    while (AtKeyword ("style")) {
+        Advance ();
+        std::string SName;
+        if (m_Cur.Kind == TokIdent) { SName = m_Cur.Text; Advance (); }
+        DisasmStyle *pSt = pF->Find (SName);
+        Expect (TokLBrace, "to open a style block");
+        while (m_Cur.Kind == TokIdent) {
+            std::string Key = m_Cur.Text;
+            Advance ();
+            std::string Val;
+            if (Accept (TokColon) && (m_Cur.Kind == TokString || m_Cur.Kind == TokIdent)) {
+                Val = m_Cur.Text;
+                Advance ();
+            }
+            if (pSt != nullptr) { ApplyDisasmProp (pSt, Cat, Key, Val); }
+            Accept (TokComma);
+        }
+        Expect (TokRBrace, "to close a style block");
+        Accept (TokComma);
+    }
+    Expect (TokRBrace, "to close a disasm category");
+}
+
+// `disasm features { styles {..} size {..} mnemonic {..} operands [ordering{..}] {register{..}
+// integer{..}} }` -- the syntax styles and their rendering rules (see Ast.h).
+void
+Parser::ParseDisasmFeatures (Arch *pArch)
+{
+    Advance ();                                     // 'disasm'
+    if (AtKeyword ("features")) { Advance (); }
+    DisasmFeatures *pF = new DisasmFeatures ();
+    Expect (TokLBrace, "to open the disasm features");
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        if (AtKeyword ("styles")) {
+            Advance ();
+            Expect (TokLBrace, "to open styles");
+            while (m_Cur.Kind == TokIdent) {
+                DisasmStyle S; S.Name = m_Cur.Text;
+                pF->Styles.push_back (m_Cur.Text);
+                pF->Rules.push_back (S);
+                Advance ();
+                if (!Accept (TokComma)) { Accept (TokSemi); }
+            }
+            Expect (TokRBrace, "to close styles");
+        } else if (AtKeyword ("size")) {
+            Advance ();
+            Expect (TokLBrace, "to open size");
+            while (m_Cur.Kind == TokIdent) {
+                std::string Name = m_Cur.Text;
+                Advance ();
+                Expect (TokColon, "in a size entry");
+                std::string Code;
+                if (m_Cur.Kind == TokString) { Code = m_Cur.Text; Advance (); }
+                pF->Sizes[Name] = Code;
+                Accept (TokComma);
+            }
+            Expect (TokRBrace, "to close size");
+        } else if (AtKeyword ("mnemonic")) {
+            Advance ();
+            ParseDisasmStyleBlocks (pF, std::string ("mnemonic"));
+        } else if (AtKeyword ("operands")) {
+            Advance ();
+            if (Accept (TokLBracket)) {              // [ ordering { ... } ]
+                while (m_Cur.Kind != TokRBracket && m_Cur.Kind != TokEof) {
+                    if (AtKeyword ("ordering")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("ordering")); }
+                    else { Advance (); }
+                }
+                Expect (TokRBracket, "to close the operand attributes");
+            }
+            Expect (TokLBrace, "to open operands");
+            while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+                if (AtKeyword ("register")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("register")); }
+                else if (AtKeyword ("integer")) { Advance (); ParseDisasmStyleBlocks (pF, std::string ("integer")); }
+                else { Advance (); }
+            }
+            Expect (TokRBrace, "to close operands");
+        } else {
+            Advance ();
+        }
+        Accept (TokComma);
+    }
+    Expect (TokRBrace, "to close the disasm features");
+    delete pArch->Disasm;
+    pArch->Disasm = pF;
+}
+
+// `( mnemonic : "mov", size : word, operands : dst, src )` -- the declarative per-insn
+// disassembly. `operands` is the last field (it consumes the remaining names).
+DisasmSpec *
+Parser::ParseDisasmDecl ()
+{
+    DisasmSpec *D = new DisasmSpec ();
+    Expect (TokLParen, "to open a disasm declaration");
+    while (m_Cur.Kind != TokRParen && m_Cur.Kind != TokEof) {
+        if (m_Cur.Kind != TokIdent) { Advance (); continue; }
+        std::string Key = m_Cur.Text;
+        Advance ();
+        Expect (TokColon, "in a disasm field");
+        if (Key == "mnemonic") {
+            if (m_Cur.Kind == TokString) { D->Mnemonic = m_Cur.Text; Advance (); }
+        } else if (Key == "size") {
+            if (m_Cur.Kind == TokIdent) { D->Size = m_Cur.Text; Advance (); }
+        } else if (Key == "operands") {
+            while (m_Cur.Kind == TokIdent) {
+                D->Operands.push_back (m_Cur.Text);
+                Advance ();
+                if (!Accept (TokComma)) { break; }
+            }
+        }
+        Accept (TokComma);
+    }
+    Expect (TokRParen, "to close a disasm declaration");
+    return D;
+}
+
 Module *
 Parser::ParseModule ()
 {
@@ -1263,6 +1414,8 @@ Parser::ParseModule ()
             Advance ();
         } else if (AtKeyword ("decoder_operands")) {
             ParseDecoderOperands (M->Archs.back ());
+        } else if (AtKeyword ("disasm")) {
+            ParseDisasmFeatures (M->Archs.back ());      // `disasm features { ... }`
         } else if (AtKeyword ("regset")) {
             ParseRegSet (M->Archs.back ());
         } else if (AtKeyword ("macro")) {

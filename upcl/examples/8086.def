@@ -68,6 +68,18 @@ decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
 regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
 regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
 
+// Two disassembly syntaxes from one set of rules. The systematic AT&T-vs-Intel differences
+// live here; each instruction just declares its mnemonic, size and operand order.
+disasm features {
+	styles { att, intel }
+	size   { word : "w", byte : "b" }
+	mnemonic { style att { casing : lower, suffix : size }  style intel { casing : lower } }
+	operands [ ordering { style att { reverse } } ] {
+		register { style att { prefix : "%", casing : lower }  style intel { casing : upper } }
+		integer  { style att { prefix : "$0x" }                style intel { prefix : "0x" } }
+	}
+}
+
 macro ea ( seg, off ) : #i24 %result = ( [ #i16 seg ] << 4 ) + [ #i16 off ];
 
 // Evaluate an x86 condition code (the low nibble of a Jcc opcode): bits [3:1] pick the flag
@@ -271,7 +283,7 @@ jump insn jcc : type branch,
 
 insn mov : dst = src
 	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src ),	// 0xB8+r iw  MOV r16, imm16
-	disasm "mov %dst, 0x%src";
+	disasm ( mnemonic : "mov", size : word, operands : dst, src );
 insn movsb {
 
 	#i8 %M[ @i8086_str_dst () ] = #i8 %M[ @i8086_str_src () ];

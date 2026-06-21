@@ -568,13 +568,15 @@ if(TARGET interp_backend)
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 endif()
 
-# Disassembly format strings: a `disasm "mov %dst, 0x%src"` clause renders the operands by
-# name (a register operand as its name, an immediate as hex). B8 34 12 must disassemble to
-# "mov ax, 0x1234".
+# Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )`
+# renders in BOTH syntaxes from the `disasm features` block. B8 34 12 (MOV AX,0x1234) is
+# "mov AX, 0x1234" in Intel and "movw $0x1234, %ax" in AT&T (size suffix, reversed operands,
+# %-prefixed register, $0x immediate) -- proving the multi-style engine.
 add_test(NAME upcl.disasm COMMAND sh -c
   "printf '\\xB8\\x34\\x12' > '${CMAKE_BINARY_DIR}/disasm.bin' && \
-   '$<TARGET_FILE:lcx>' disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 \
-     --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' | grep -q 'mov ax, 0x1234'")
+   D='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def'; E='$<TARGET_FILE:lcx>'; \
+   LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 --arch \"upcl:$D\" | grep -q 'mov AX, 0x1234' && \
+   LCX_SYNTAX=att   \"$E\" disasm '${CMAKE_BINARY_DIR}/disasm.bin' --count 1 --arch \"upcl:$D\" | grep -q 'movw .0x1234, %ax'")
 
 # Clang-style diagnostics: a stray top-level token resyncs at the next declaration (no
 # cascade), and the error count is capped. One bad line + a good insn after it => exactly

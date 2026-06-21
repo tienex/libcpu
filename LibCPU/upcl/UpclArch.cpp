@@ -6,7 +6,10 @@
 #include "Semantics.h"
 #include "LibCPU/PCom.h"
 #include "LibCPU/CpuState.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -59,6 +62,12 @@ public:
                 m_EnabledInsns.push_back (I);
             }
         }
+        // The disassembly syntax style: the first declared style by default, overridable via
+        // the LCX_SYNTAX environment variable (e.g. att / intel).
+        if (m_pArch->Disasm != nullptr && !m_pArch->Disasm->Styles.empty ()) {
+            m_DisasmStyle = m_pArch->Disasm->Styles[0];
+        }
+        if (CHAR8 CONST *pEnv = std::getenv ("LCX_SYNTAX")) { m_DisasmStyle = pEnv; }
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override {
@@ -160,7 +169,13 @@ public:
             bool        HasFmt = (D.pJump != nullptr) ? D.pJump->HasDisasm : D.pInsn->HasDisasm;
             std::string Fmt    = (D.pJump != nullptr) ? D.pJump->Disasm    : D.pInsn->Disasm;
             std::string Name   = (D.pJump != nullptr) ? D.pJump->Name      : D.pInsn->Name;
+            DisasmSpec *Decl   = (D.pJump != nullptr) ? D.pJump->DisasmDecl : D.pInsn->DisasmDecl;
             std::string Out;
+            if (Decl != nullptr && !HasFmt) {
+                // Declarative disassembly rendered through the style features.
+                std::snprintf (pLine, MaxLine, "%s", RenderDisasm (Decl, D).c_str ());
+                return S_OK;
+            }
             if (HasFmt) {
                 // Render the format: a %<operand> placeholder becomes the operand's register
                 // name (a register operand) or its hex value (an immediate).
@@ -673,6 +688,51 @@ private:
     RegisterLayout                   m_Layout;            // standard-path register layout
     std::unique_ptr<Decoder>         m_pDecoder;          // standard-path generic decoder
     std::string                      m_PcName;            // the program-counter register's name
+    std::string                      m_DisasmStyle;       // active disassembly syntax style
+
+    // Render a declarative disassembly (mnemonic + operands) for the active style, applying
+    // its mnemonic casing/size-suffix, operand ordering, and register/immediate formatting.
+    std::string RenderDisasm (DisasmSpec *pDecl, DecodedInsn CONST &D) CONST {
+        DisasmFeatures *pF = m_pArch->Disasm;
+        DisasmStyle    *pS = (pF != nullptr) ? pF->Find (m_DisasmStyle) : nullptr;
+        if (pS == nullptr) {                            // no features/style: bare mnemonic + operands
+            std::string Out = pDecl->Mnemonic;
+            for (std::string CONST &Op : pDecl->Operands) { Out += " " + Op; }
+            return Out;
+        }
+        std::string Mnem = pDecl->Mnemonic;
+        if (pS->MnemSizeSuffix && !pDecl->Size.empty ()) {
+            auto It = pF->Sizes.find (pDecl->Size);
+            if (It != pF->Sizes.end ()) { Mnem += It->second; }
+        }
+        Mnem = Cased (Mnem, pS->MnemCasing);
+
+        std::vector<std::string> Ops = pDecl->Operands;
+        if (pS->ReverseOperands) { std::reverse (Ops.begin (), Ops.end ()); }
+
+        std::string Out = Mnem;
+        for (size_t I = 0; I < Ops.size (); I++) {
+            Out += (I == 0) ? " " : ", ";
+            auto It = D.Operands.find (Ops[I]);
+            if (It == D.Operands.end ()) { continue; }
+            Operand CONST &Op = It->second;
+            if (Op.Kind == Operand::Reg) {
+                Out += pS->RegPrefix + Cased (m_Layout.Phys[Op.RegIndex].Name, pS->RegCasing);
+            } else {
+                char B[24];
+                std::snprintf (B, sizeof (B), "%llx", (unsigned long long) Op.ImmValue);
+                Out += pS->IntPrefix + std::string (B) + pS->IntSuffix;
+            }
+        }
+        return Out;
+    }
+
+    static std::string Cased (std::string CONST &S, std::string CONST &Casing) {
+        std::string Out = S;
+        if (Casing == "upper") { for (char &C : Out) { C = (char) std::toupper ((unsigned char) C); } }
+        else if (Casing == "lower") { for (char &C : Out) { C = (char) std::tolower ((unsigned char) C); } }
+        return Out;
+    }
 };
 
 // Resolve a CPU-model name to the set of features it enables. A null/unknown model

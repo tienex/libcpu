@@ -70,6 +70,9 @@ private:
     Insn      *ParseOldInsn ();                   // `insn <id> : <stmt> ;` | `insn <id> { body }`
     void       ParseEncodeClause (Insn *pInsn);   // `encode <alt> ( | <alt> )*`
     void       ParseInsnTail (Insn *pInsn);        // post-body clauses: encode / disasm
+    void       ParseDisasmFeatures (Arch *pArch);  // `disasm features { ... }`
+    void       ParseDisasmStyleBlocks (DisasmFeatures *pF, std::string CONST &Cat); // `style <n> { props }`*
+    DisasmSpec *ParseDisasmDecl ();                // `( mnemonic:"..", size:.., operands: a, b )`
     EncAlt    *ParseEncAlt ();                     // `#iN ( <field> (, <field>)* )`
     bool       ParseEncField (EncField *pField);   // `<name> : <width> ( = <const> | -> <operand> )?`
     Macro     *ParseMacro ();                     // `macro <id> ( params ) ...`

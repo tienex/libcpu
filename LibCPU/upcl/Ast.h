@@ -17,6 +17,7 @@
 #define LIBCPU_UPCL_AST_H
 
 #include "Token.h"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -202,6 +203,47 @@ public:
     }
 };
 
+// ---- disassembly syntax styles --------------------------------------------
+//
+// disasm features { styles { att; intel } size { word:"w" } mnemonic { style att {...} } ... }
+//
+// The systematic differences between syntaxes (AT&T vs Intel) captured once: per-style
+// mnemonic casing + size suffix, register prefix + casing, immediate prefix/suffix, and
+// operand ordering. Each instruction then declares only `disasm ( mnemonic:"mov", size:word,
+// operands: dst, src )` and the engine renders it for the active style.
+class DisasmStyle {
+public:
+    std::string Name;                     // att / intel
+    std::string MnemCasing;               // "lower" / "upper" / ""
+    bool        MnemSizeSuffix = false;   // append the size code to the mnemonic (movw)
+    std::string RegPrefix;                // "%" / ""
+    std::string RegCasing;                // "lower" / "upper" / ""
+    std::string IntPrefix;                // "$0x" / "0x" / ""
+    std::string IntSuffix;                // "h" / ""
+    bool        ReverseOperands = false;  // AT&T prints operands source-first
+};
+
+class DisasmFeatures {
+public:
+    std::vector<std::string>           Styles;     // declared style names (first = default)
+    std::map<std::string, std::string> Sizes;      // size name -> code (word -> "w")
+    std::vector<DisasmStyle>           Rules;      // per-style rendering rules
+
+    DisasmStyle *Find (std::string CONST &Name) {
+        for (DisasmStyle &S : Rules) { if (S.Name == Name) { return &S; } }
+        return nullptr;
+    }
+};
+
+// The declarative per-instruction disassembly: the mnemonic, its size class (for the
+// AT&T suffix), and the operands in base (Intel) order. Rendered through DisasmFeatures.
+class DisasmSpec {
+public:
+    std::string              Mnemonic;
+    std::string              Size;        // a size name from the features `size { }` map
+    std::vector<std::string> Operands;    // operand names, Intel order (AT&T reverses)
+};
+
 class Insn {
 public:
     std::string              Name;
@@ -217,12 +259,14 @@ public:
     SRC_LOC                  FeatureLoc = 0;
     std::vector<Stmt *>      Semantics;      // the instruction body (assignment statements)
     std::vector<EncAlt *>    Encodings;      // old .def: `encode <alt> | <alt> ...` byte patterns
+    DisasmSpec              *DisasmDecl = nullptr;  // declarative `disasm ( ... )` (owned)
     std::vector<Directive *> Directives;     // any other attribute (escape hatch)
 
     ~Insn () {
         for (Field *F : Bindings) { delete F; }
         for (Stmt *S : Semantics) { delete S; }
         for (EncAlt *E : Encodings) { delete E; }
+        delete DisasmDecl;
         for (Directive *D : Directives) { delete D; }
     }
 };
@@ -374,12 +418,14 @@ public:
     std::vector<Stmt *>   Action;
     std::vector<EncAlt *> Encodings;          // `encode <alt> | ...` byte patterns (owned)
     bool                  HasDisasm = false;
-    std::string           Disasm;            // `disasm "..."` format string
+    std::string           Disasm;            // `disasm "..."` override format string
+    DisasmSpec           *DisasmDecl = nullptr;  // declarative `disasm ( ... )` (owned)
     ~JumpInsn () {
         delete Delay; delete Condition;
         for (Stmt *S : Pre) { delete S; }
         for (Stmt *S : Action) { delete S; }
         for (EncAlt *E : Encodings) { delete E; }
+        delete DisasmDecl;
     }
 };
 
@@ -404,6 +450,7 @@ public:
     std::vector<JumpInsn *>  Jumps;          // old-syntax jump instructions (owned)
     std::vector<DecoderOperand *> DecoderOps; // old-syntax decoder_operands (owned)
     std::vector<RegSet *>    RegSets;        // named register lists (regset) (owned)
+    DisasmFeatures          *Disasm = nullptr;  // `disasm features { ... }` (owned)
     std::vector<Directive *> Directives;
 
     ~Arch () {
@@ -415,6 +462,7 @@ public:
         for (JumpInsn *J : Jumps) { delete J; }
         for (DecoderOperand *D : DecoderOps) { delete D; }
         for (RegSet *R : RegSets) { delete R; }
+        delete Disasm;
         for (Directive *D : Directives) { delete D; }
     }
 };
