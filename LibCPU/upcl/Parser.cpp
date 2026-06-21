@@ -1080,6 +1080,17 @@ Parser::ParseEncField (EncField *pField)
     } else if (Accept (TokArrow)) {                  // -> <operand>  : bind the field's bits
         if (m_Cur.Kind == TokIdent) { pField->Operand = m_Cur.Text; Advance (); }
         else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an operand name after '->'"); }
+        // optional register map: -> op[ r0, r1, ... ]  -- the field value selects a register,
+        // so the operand is that register location (else it is the immediate field value).
+        if (Accept (TokLBracket)) {
+            if (m_Cur.Kind != TokRBracket) {
+                do {
+                    if (m_Cur.Kind == TokIdent) { pField->RegMap.push_back (m_Cur.Text); Advance (); }
+                    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a register name in the map"); break; }
+                } while (Accept (TokComma));
+            }
+            Expect (TokRBracket, "to close the register map");
+        }
     }
     return true;
 }
@@ -1156,6 +1167,27 @@ Parser::ParseDecoderOperands (Arch *pArch)
     Expect (TokSemi, "after decoder_operands");
 }
 
+// `regset <name> [ <reg> (, <reg>)* ];` -- a named register list reused by encodings.
+void
+Parser::ParseRegSet (Arch *pArch)
+{
+    Advance ();                                     // 'regset'
+    RegSet *R = new RegSet ();
+    R->Loc = m_Cur.Loc;
+    if (m_Cur.Kind == TokIdent) { R->Name = m_Cur.Text; Advance (); }
+    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a register-set name"); }
+    Expect (TokLBracket, "to open the register set");
+    if (m_Cur.Kind != TokRBracket) {
+        do {
+            if (m_Cur.Kind == TokIdent) { R->Regs.push_back (m_Cur.Text); Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a register name"); break; }
+        } while (Accept (TokComma));
+    }
+    Expect (TokRBracket, "to close the register set");
+    Expect (TokSemi, "after the register set");
+    pArch->RegSets.push_back (R);
+}
+
 Module *
 Parser::ParseModule ()
 {
@@ -1173,6 +1205,8 @@ Parser::ParseModule ()
             Advance ();
         } else if (AtKeyword ("decoder_operands")) {
             ParseDecoderOperands (M->Archs.back ());
+        } else if (AtKeyword ("regset")) {
+            ParseRegSet (M->Archs.back ());
         } else if (AtKeyword ("macro")) {
             M->Archs.back ()->Macros.push_back (ParseMacro ());
         } else if (AtKeyword ("jump")) {

@@ -552,7 +552,7 @@ add_test(NAME upcl.encoding COMMAND sh -c
    grep -q 'encode #i32 ( op:6=0x0 rs:5->rs rt:5->rt rd:5->rd shamt:5=0x0 funct:6=0x20 )' '${CMAKE_BINARY_DIR}/enc.risc' && \
    grep -q 'encode #i32 ( op:6=0x8 rs:5->rs rt:5->rt imm:16->imm )' '${CMAKE_BINARY_DIR}/enc.risc' && \
    \"$E\" upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/8086.def' > '${CMAKE_BINARY_DIR}/enc.8086' && \
-   grep -q 'encode #i24 ( op:5=0x17 reg:3->dst imm:16->src )' '${CMAKE_BINARY_DIR}/enc.8086' && \
+   grep -q 'encode #i24 ( op:5=0x17 reg:3->dst.gpr16. imm:16->src )' '${CMAKE_BINARY_DIR}/enc.8086' && \
    grep -q 'encode #i8 ( op:8=0xf4 )' '${CMAKE_BINARY_DIR}/enc.8086'")
 set_tests_properties(upcl.encoding PROPERTIES FAIL_REGULAR_EXPRESSION "error|bits but the word is")
 

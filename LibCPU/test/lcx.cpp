@@ -732,6 +732,11 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                              F.Meta.empty () ? "" : " -> %", F.Meta.c_str ());
             }
         }
+        for (Upcl::RegSet *pRs : pArch->RegSets) {
+            std::printf ("    regset %-8s [", pRs->Name.c_str ());
+            for (size_t K = 0; K < pRs->Regs.size (); K++) { std::printf ("%s%s", K ? "," : "", pRs->Regs[K].c_str ()); }
+            std::printf ("]\n");
+        }
         for (Upcl::Feature CONST &Ft : pArch->Features) {
             std::printf ("    feature %-10s %s\n", Ft.Name.c_str (), Ft.Doc.c_str ());
         }
@@ -755,7 +760,14 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                     Upcl::EncField CONST &F = pEnc->Fields[I];
                     std::printf ("%s%s:%u", I ? " " : " ", F.Name.c_str (), F.Width);
                     if (F.HasConst)            { std::printf ("=0x%llx", (unsigned long long) F.Const); }
-                    else if (!F.Operand.empty ()) { std::printf ("->%s", F.Operand.c_str ()); }
+                    else if (!F.Operand.empty ()) {
+                        std::printf ("->%s", F.Operand.c_str ());
+                        if (!F.RegMap.empty ()) {
+                            std::printf ("[");
+                            for (size_t K = 0; K < F.RegMap.size (); K++) { std::printf ("%s%s", K ? "," : "", F.RegMap[K].c_str ()); }
+                            std::printf ("]");
+                        }
+                    }
                 }
                 std::printf (" )\n");
             }

@@ -172,12 +172,15 @@ public:
 // fixed-width form of any ISA is described the same way -- no byte/ModR/M assumptions.
 class EncField {
 public:
-    std::string Name;            // field name (e.g. op, rs, imm) -- for diagnostics/disasm
-    SRC_LOC     Loc = 0;
-    UINT32      Width = 0;
-    bool        HasConst = false;
-    UINT64      Const = 0;       // `= <value>`  : the opcode match
-    std::string Operand;         // `-> <operand>`: the decoder operand this field feeds
+    std::string              Name;        // field name (op, rs, imm) -- for diagnostics/disasm
+    SRC_LOC                  Loc = 0;
+    UINT32                   Width = 0;
+    bool                     HasConst = false;
+    UINT64                   Const = 0;   // `= <value>`  : the opcode match
+    std::string              Operand;     // `-> <operand>`: the decoder operand this field feeds
+    std::vector<std::string> RegMap;      // `-> op[r0, r1, ...]`: field value SELECTS a register
+                                          //   (the operand is that register location); empty =>
+                                          //   the operand is the immediate field value.
 };
 
 // One encoding alternative: a word of `WordBits` bits split into fields. An instruction may
@@ -334,6 +337,16 @@ public:
     ~Macro () { for (Stmt *S : Body) { delete S; } }
 };
 
+// regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];  -- a named register list. An encoding's
+// `-> op[ gpr16 ]` references it instead of spelling the registers out every time; the
+// decoder expands the alias to its registers (the field value selects one).
+class RegSet {
+public:
+    std::string              Name;
+    SRC_LOC                  Loc = 0;
+    std::vector<std::string> Regs;
+};
+
 // decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
 typedef enum _DECOP_KIND { DecopNormal, DecopConst, DecopCcflags } DECOP_KIND;
 class DecoderOperand {
@@ -382,6 +395,7 @@ public:
     std::vector<Macro *>     Macros;         // old-syntax macros (owned)
     std::vector<JumpInsn *>  Jumps;          // old-syntax jump instructions (owned)
     std::vector<DecoderOperand *> DecoderOps; // old-syntax decoder_operands (owned)
+    std::vector<RegSet *>    RegSets;        // named register lists (regset) (owned)
     std::vector<Directive *> Directives;
 
     ~Arch () {
@@ -392,6 +406,7 @@ public:
         for (Macro *M : Macros) { delete M; }
         for (JumpInsn *J : Jumps) { delete J; }
         for (DecoderOperand *D : DecoderOps) { delete D; }
+        for (RegSet *R : RegSets) { delete R; }
         for (Directive *D : Directives) { delete D; }
     }
 };

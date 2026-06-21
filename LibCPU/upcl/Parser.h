@@ -73,6 +73,7 @@ private:
     Macro     *ParseMacro ();                     // `macro <id> ( params ) ...`
     JumpInsn  *ParseJumpInsn ();                  // `jump insn <id> : type <t> ... { action }`
     void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
+    void       ParseRegSet (Arch *pArch);         // `regset <name> [ <reg>, ... ];`
     Directive *ParseGenericDirective ();         // the escape hatch
     Stmt      *ParseStmt ();          // insn_stmts:  { } | flow | <basic> ';'
     Stmt      *ParseInlineStmt ();     // inline_insn_stmts:  flow | <basic>   (no trailing ';')

@@ -64,6 +64,10 @@ arch "8086" {
 
 decoder_operands [ #i16 src, #i16 dst, ccflags #i16 cond, const #i1 rep ];
 
+// The register encoding orders, declared once and shared by the instruction encodings.
+regset gpr16 [ ax, cx, dx, bx, sp, bp, si, di ];
+regset gpr8  [ al, cl, dl, bl, ah, ch, dh, bh ];
+
 macro ea ( seg, off ) : #i24 %result = ( [ #i16 seg ] << 4 ) + [ #i16 off ];
 macro i8086_jump ( address ) {
 	if ( address is #i16 )
@@ -197,7 +201,7 @@ insn inb_dx: al = @call ( i8086_input_byte, [ #i32 dx ] );
 insn inw   : ax = @call ( i8086_input_word, [ #i32 src ] );
 insn inw_dx: ax = @call ( i8086_input_word, [ #i32 dx ] );
 insn inc   : dst = %CC ( dst + 1, !C )
-	encode #i8 ( op:5 = 0x08, reg:3 -> dst );		// 0x40+r  INC r16
+	encode #i8 ( op:5 = 0x08, reg:3 -> dst[ gpr16 ] );		// 0x40+r  INC r16
 insn int   : @i8086_interrupt ( intno );
 insn into  : if ( flags.O ) @i8086_interrupt ( 4 );;
 insn iret {
@@ -246,7 +250,7 @@ jump insn jcc : type branch
 			    { @i8086_jump ( src ); }
 
 insn mov : dst = src
-	encode #i24 ( op:5 = 0x17, reg:3 -> dst, imm:16 -> src );	// 0xB8+r iw  MOV r16, imm16
+	encode #i24 ( op:5 = 0x17, reg:3 -> dst[ gpr16 ], imm:16 -> src );	// 0xB8+r iw  MOV r16, imm16
 insn movsb {
 
 	#i8 %M[ @i8086_str_dst () ] = #i8 %M[ @i8086_str_src () ];
