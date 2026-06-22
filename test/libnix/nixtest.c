@@ -75,10 +75,17 @@ main (void)
 	int rm  = nix_rmdir (dir, env);
 	int dirok = (mk == 0) && (rm == 0);
 
-	int ok = filok && dirok;
+	/* Time op -- exercises the nix-time host layer (gettimeofday). */
+	struct nix_timeval tv;
+	memset (&tv, 0, sizeof (tv));
+	int tr = nix_gettimeofday (&tv, NULL, env);
+	int timeok = (tr == 0) && (tv.tv_sec > 1000000000);   /* a plausible wall clock (after 2001) */
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d\n",
-	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm);
+	int ok = filok && dirok && timeok;
+
+	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld\n",
+	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
+	        tr, (long long) tv.tv_sec);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

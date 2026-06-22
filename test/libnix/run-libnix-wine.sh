@@ -25,7 +25,8 @@ mkdir -p "$BUILD"
 cmake -S "$SRC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$SRC/CMake/mingw-w64.cmake" >/dev/null
 cmake --build "$BUILD" --target nixtest >/dev/null
 
-# Wine resolves DLLs from the executable's directory.
-cp "$BUILD/nix/libnix.dll" "$BUILD/xec-compat/libxec-compat.dll" "$BUILD/"
+# The win32 build is static, so nixtest.exe is self-contained -- nothing to stage. (Copy any
+# DLLs that do exist, harmlessly, in case the build is ever switched back to shared libs.)
+cp "$BUILD"/nix/libnix.dll "$BUILD"/xec-compat/libxec-compat.dll "$BUILD/" 2>/dev/null || true
 cd "$BUILD"
 WINEDEBUG=-all wine nixtest.exe

@@ -17,5 +17,11 @@ ENDIF()
 INCLUDE_DIRECTORIES(lib engine arch ${PROJECT_BINARY_DIR})
 CONFIGURE_FILE(xec-base.h.cmake ${PROJECT_BINARY_DIR}/xec-base.h)
 
-ADD_LIBRARY(xec-compat SHARED lib/xec-init.c lib/xec-log.c lib/xec-mem.c ${MMAP_SOURCE} ${XCPT_SOURCE}
+# Static on win32 (self-contained test exe under Wine); shared on POSIX.
+IF(WIN32)
+    SET(XEC_LIBTYPE STATIC)
+ELSE()
+    SET(XEC_LIBTYPE SHARED)
+ENDIF()
+ADD_LIBRARY(xec-compat ${XEC_LIBTYPE} lib/xec-init.c lib/xec-log.c lib/xec-mem.c ${MMAP_SOURCE} ${XCPT_SOURCE}
     engine/xec-us-syscall.c engine/xec-monitor.c)

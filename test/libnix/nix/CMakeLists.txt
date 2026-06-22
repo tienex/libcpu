@@ -84,6 +84,8 @@ SET(NIX_CORE_SRC
 			nix-io.c
 			nix-file.c
 			nix-dir.c
+			nix-time.c
+			nix-xcpt.c
 			nix-structs.c)
 
 # The rest of the generic layer (directories, memory, processes, signals, sockets, SysV
@@ -99,9 +101,7 @@ SET(NIX_GENERIC_SRC
 			nix-s5-sem.c
 			nix-s5-shm.c
 			nix-signal.c
-			nix-socket.c
-			nix-time.c
-			nix-xcpt.c)
+			nix-socket.c)
 
 # Host-OS families: the per-host implementations of the host-specific operations.
 SET(NIX_BSD_SRC
@@ -123,7 +123,12 @@ ELSE()
 	SET(NIX_SRC ${NIX_CORE_SRC} ${NIX_GENERIC_SRC} ${NIX_BSD_SRC} ${NIX_LINUX_SRC} ${NIX_HPUX_SRC})
 ENDIF()
 
-ADD_LIBRARY(nix SHARED ${NIX_SRC})
+# Static on win32 so the test executable is self-contained under Wine (no DLL deps); shared on POSIX.
+IF(WIN32)
+	ADD_LIBRARY(nix STATIC ${NIX_SRC})
+ELSE()
+	ADD_LIBRARY(nix SHARED ${NIX_SRC})
+ENDIF()
 TARGET_LINK_LIBRARIES(nix xec-compat)
 IF(SOCKET_LIBRARY)
   TARGET_LINK_LIBRARIES(nix socket)

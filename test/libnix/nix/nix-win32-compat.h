@@ -116,7 +116,11 @@ NIX_WIN32_ENOSYS_STUB (fchdir, (int fd))
 NIX_WIN32_ENOSYS_STUB (chroot, (char const *path))
 
 struct timeval;   /* declared by <sys/time.h>; a pointer param needs only the tag */
+struct timezone;
 NIX_WIN32_ENOSYS_STUB (utimes, (char const *path, struct timeval const *times))
+/* gettimeofday + time + nanosleep are provided by MinGW; setting the wall clock is not in the
+   file-op-core surface yet. */
+NIX_WIN32_ENOSYS_STUB (settimeofday, (struct timeval const *tv, struct timezone const *tz))
 
 static __inline long
 fpathconf (int fd, int name)
