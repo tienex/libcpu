@@ -24,6 +24,7 @@ typedef enum _TOKEN_KIND {
     TokEof,
     TokIdent,        // a word (keywords are recognised by the parser, by spelling)
     TokInt,          // integer literal (0x hex / 0b binary / 0 octal / decimal)
+    TokFloat,        // floating-point literal (3.14159, 1e10) -- Real holds the value
     TokString,       // "..."
     TokType,         // a UPCL type literal: #i16, #f80, #v4:32 (Text holds the spelling)
     TokMeta,         // %word -- an augment (%CC/%S/%U/%M/%MEM/...) or meta-register (%PC/%V/...);
@@ -63,6 +64,7 @@ public:
     SRC_LOC     End  = 0;        // one past the last character
     std::string Text;           // spelling (Ident/String value, raw int text)
     UINT64      Int  = 0;        // parsed value when Kind == TokInt
+    double      Real = 0.0;      // parsed value when Kind == TokFloat
 
     bool Is (TOKEN_KIND K) CONST { return Kind == K; }
     SRC_RANGE Range () CONST { return SRC_RANGE { Loc, End }; }

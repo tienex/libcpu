@@ -2,6 +2,7 @@
 
 #include "Lexer.h"
 #include <cstring>
+#include <cstdlib>
 
 namespace LibCPU {
 namespace Upcl {
@@ -175,6 +176,19 @@ Lexer::LexNumber (UINT32 Begin)
     } else {
         while (IsDigit (Peek ())) {
             Value = Value * 10 + (UINT32) (Advance () - '0');
+        }
+        // A fractional part (.<digit>, distinct from the `..` range token) or an exponent makes this
+        // a floating-point literal -- rescan the whole span with strtod.
+        if ((Peek () == '.' && IsDigit (Peek (1))) || Peek () == 'e' || Peek () == 'E') {
+            if (Peek () == '.') { Advance (); while (IsDigit (Peek ())) { Advance (); } }
+            if (Peek () == 'e' || Peek () == 'E') {
+                Advance ();
+                if (Peek () == '+' || Peek () == '-') { Advance (); }
+                while (IsDigit (Peek ())) { Advance (); }
+            }
+            Token F = Make (TokFloat, Begin);
+            F.Real = std::strtod (m_pText->c_str () + Begin, nullptr);
+            return F;
         }
     }
     Token T = Make (TokInt, Begin);

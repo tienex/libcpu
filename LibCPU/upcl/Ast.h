@@ -43,6 +43,7 @@ public:
 
 typedef enum _EXPR_KIND {
     ExprInt,        // integer literal               (Int)
+    ExprFloat,      // floating-point literal         (Real)
     ExprName,       // identifier reference           (Name)
     ExprUnary,      // Op Args[0]                     (Op, Args)
     ExprBinary,     // Args[0] Op Args[1]             (Op, Args)
@@ -66,6 +67,7 @@ public:
     EXPR_KIND                Kind;
     SRC_LOC                  Loc  = 0;
     UINT64                   Int  = 0;          // ExprInt
+    double                   Real = 0.0;        // ExprFloat
     std::string              Name;             // ExprName / ExprCall / ExprMeta / ExprMember / ExprAugment
     TOKEN_KIND               Op   = TokUnknown; // ExprUnary / ExprBinary
     std::vector<Expr *>      Args;

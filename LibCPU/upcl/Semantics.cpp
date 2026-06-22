@@ -423,6 +423,18 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprInt:
         return Const (m_WordBits, pExpr->Int);
 
+    case ExprFloat: {
+        // A floating-point literal: materialise its 64-bit (double) IEEE pattern as an integer
+        // constant, then reinterpret those bits as a float. A `[ #f80 <literal> ]` cast then widens
+        // it to the 80-bit stack (an 8087 FLDPI loads pi this way). Constants are double-precision.
+        double D = pExpr->Real;
+        UINT64 Bits = 0;
+        std::memcpy (&Bits, &D, sizeof (Bits));
+        Value R = CastTo (CastIToFBits, Const (64, Bits), 64);
+        R.Float = true;
+        return R;
+    }
+
     case ExprName:
         return EvalName (pExpr->Name);
 

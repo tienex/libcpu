@@ -29,6 +29,27 @@ feature fpu {
 		disasm ( mnemonic : "fldz" )
 		=> @fpu_push ( [ #f80 0 ] );
 
+	// The on-chip transcendental constants (loaded to double precision here, widened to 80 bits).
+	insn fldpi  : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 3 ),	// 0xD9 EB  pi
+		disasm ( mnemonic : "fldpi" )
+		=> @fpu_push ( [ #f80 3.14159265358979323846 ] );
+
+	insn fldl2t : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 1 ),	// 0xD9 E9  log2(10)
+		disasm ( mnemonic : "fldl2t" )
+		=> @fpu_push ( [ #f80 3.32192809488736234787 ] );
+
+	insn fldl2e : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 2 ),	// 0xD9 EA  log2(e)
+		disasm ( mnemonic : "fldl2e" )
+		=> @fpu_push ( [ #f80 1.44269504088896340736 ] );
+
+	insn fldlg2 : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 4 ),	// 0xD9 EC  log10(2)
+		disasm ( mnemonic : "fldlg2" )
+		=> @fpu_push ( [ #f80 0.30102999566398119521 ] );
+
+	insn fldln2 : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 5 ),	// 0xD9 ED  ln(2)
+		disasm ( mnemonic : "fldln2" )
+		=> @fpu_push ( [ #f80 0.69314718055994530942 ] );
+
 	// ---- unary operations on ST(0) -----------------------------------------
 
 	insn fchs  : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 4, rm:3 = 0 ),	// 0xD9 E0

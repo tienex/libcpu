@@ -191,6 +191,13 @@ Parser::ParsePrimary ()
         return E;
     }
 
+    if (m_Cur.Kind == TokFloat) {
+        Expr *E = new Expr (ExprFloat);
+        E->Loc = Loc; E->Real = m_Cur.Real;
+        Advance ();
+        return E;
+    }
+
     // %CC(...) / %S(...) / %U(...) / %OFTRAP(...) / %ORD/%UNO / %M[...] / a meta-register.
     if (m_Cur.Kind == TokMeta) {
         std::string Name = m_Cur.Text;              // without the '%'

@@ -764,6 +764,16 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x87cw.bin' --arch \"upcl:$X@8086\" --dump 0x42 | grep -q '0x42. = 0x027f' && \
      printf '\\x9B' > '${CMAKE_BINARY_DIR}/x87wait.bin' && \
      LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x87wait.bin' --count 1 --arch \"upcl:$X@8086\" | grep -q 'FWAIT'")
+
+  # 8087 on-chip constants (UPCL float literals -> double-precision FP constants via the bit-reinterpret
+  # path, no new emitter method). FLDPI loads pi; * 100, truncated, = 314 (0x013a), proving the value is
+  # 3.14159..., not an integer. FLDL2E loads log2(e) = 1.4427; * 1000 = 1442 (0x05a2).
+  add_test(NAME upcl.x86-8087-const COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xD9\\xEB\\xB8\\x64\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87pi.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87pi.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x013a' && \
+     printf '\\xD9\\xEA\\xB8\\xE8\\x03\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87l2e.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87l2e.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x05a2'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus
