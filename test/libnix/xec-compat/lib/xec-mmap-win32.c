@@ -12,6 +12,7 @@
 
 #include "xec-mmap.h"
 #include "xec-mem.h"
+#include "xec-debug.h"
 
 #ifndef SIZE_T_MAX
 # define SIZE_T_MAX ( (1 << (sizeof (size_t) << 3)) - 1)

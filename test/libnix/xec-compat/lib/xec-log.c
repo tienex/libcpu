@@ -118,16 +118,19 @@ xec_log_set_flags (uint32_t flags)
 void
 xec_abort (bool coredump)
 {
-  sigset_t empty;
-
   log_close_all ();
 
-  /* Disable signal handlers. */
-  sigemptyset(&empty);
-  sigprocmask(0, &empty, NULL);
-  signal(SIGSEGV, SIG_DFL);
+#ifndef _WIN32
+  /* Disable signal handlers (win32 has no POSIX signal mask; nothing to restore). */
+  {
+    sigset_t empty;
+    sigemptyset(&empty);
+    sigprocmask(0, &empty, NULL);
+    signal(SIGSEGV, SIG_DFL);
 #ifdef SIGBUS
-  signal(SIGBUS, SIG_DFL);
+    signal(SIGBUS, SIG_DFL);
+#endif
+  }
 #endif
 
   if (coredump)
