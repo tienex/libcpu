@@ -31,10 +31,11 @@
 
 extern void *g_nix_log;
 
+#ifndef _WIN32   /* sync(2) -- no win32 equivalent in the file-op core */
 int
 nix_sync(nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "invoked", 0);  
+	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "invoked", 0);
 
 	errno = 0;
 	sync();
@@ -44,6 +45,7 @@ nix_sync(nix_env_t *env)
 	}
 	return (0);
 }
+#endif
 
 int
 nix_dup(int oldd, nix_env_t *env)
@@ -171,6 +173,7 @@ nix_read(int fd, void *buf, size_t bufsiz, nix_env_t *env)
 	return (nb);
 }
 
+#ifndef _WIN32   /* readv -- vectored I/O (sys/uio.h), not in the file-op core */
 nix_ssize_t
 nix_readv(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 {
@@ -203,6 +206,7 @@ nix_readv(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 
 	return (nb);
 }
+#endif  /* !_WIN32 -- readv */
 
 nix_ssize_t
 nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
@@ -232,6 +236,7 @@ nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
 	return (nb);
 }
 
+#ifndef _WIN32   /* writev -- vectored I/O (sys/uio.h), not in the file-op core */
 nix_ssize_t
 nix_writev(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 {
@@ -267,7 +272,11 @@ nix_writev(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 
 	return nb;
 }
+#endif  /* !_WIN32 -- writev */
 
+/* pipe / ioctl / fcntl / select / poll -- POSIX multiplexing + control, brought up on
+   non-POSIX hosts later (the file-op core does not need them). */
+#ifndef _WIN32
 int
 nix_pipe(int *fds, nix_env_t *env)
 {
@@ -722,3 +731,4 @@ done:
 
 	return (rc);
 }
+#endif  /* !_WIN32 -- pipe/ioctl/fcntl/select/poll */

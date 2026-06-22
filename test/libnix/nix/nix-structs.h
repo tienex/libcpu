@@ -4,8 +4,10 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/stat.h>
-#include <sys/resource.h>
-#include <termios.h>
+#ifndef _WIN32
+#include <sys/resource.h>   /* struct rusage / rlimit -- POSIX only */
+#include <termios.h>        /* struct termios -- POSIX only */
+#endif
 
 void
 timeval_to_nix_timeval(struct timeval const *in,
@@ -40,6 +42,7 @@ void
 stat_to_nix_stat(struct stat const *in,
 				 struct nix_stat   *out);
 
+#ifndef _WIN32   /* rusage / rlimit / termios conversions -- POSIX-only host types */
 void
 rusage_to_nix_rusage(struct rusage const *in,
 					 struct nix_rusage   *out);
@@ -55,5 +58,6 @@ termios_to_nix_termios(struct termios const *in,
 void
 nix_termios_to_termios(struct nix_termios const *in,
 					   struct termios           *out);
+#endif
 
 #endif  /* !__nix_structs_h */

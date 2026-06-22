@@ -1,8 +1,10 @@
 #include "nix.h"
 #include "nix-structs.h"
 
-#include <termios.h>
 #include <string.h>
+#ifndef _WIN32
+#include <termios.h>       /* tcflag_t / struct termios -- POSIX only */
+#endif
 
 static __inline nix_mode_t
 mode_to_nix_mode(mode_t mode)
@@ -135,6 +137,7 @@ stat_to_nix_stat(struct stat const *in,
 #endif
 }
 
+#ifndef _WIN32   /* rusage / rlimit / termios conversions -- POSIX-only host types */
 void
 rusage_to_nix_rusage(struct rusage const *in,
 					 struct nix_rusage   *out)
@@ -898,3 +901,4 @@ nix_termios_to_termios(struct nix_termios const *in,
 #endif
 	nix_termios_cc_to_termios_cc(in->c_cc, out->c_cc);
 }
+#endif  /* !_WIN32 */
