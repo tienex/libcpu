@@ -507,6 +507,12 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprCast: {
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
         bool   ToFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
+        // A cast of an integer literal builds the constant directly at the target width, so a
+        // value wider than the machine word (e.g. [ #i16 0x100 ] on an 8-bit-word arch) is not
+        // truncated to the word width first and then zero-extended back.
+        if (!ToFloat && pExpr->Args[0]->Kind == ExprInt) {
+            return Const (Bits, pExpr->Args[0]->Int);
+        }
         Value  A = EvalExpr (pExpr->Args[0]);
         if (ToFloat) {
             // [ #fN x ]: an int converts to float (FILD), a float re-rounds to the new width.

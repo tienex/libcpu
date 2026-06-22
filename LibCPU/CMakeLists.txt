@@ -240,11 +240,11 @@ libcpu_discover_llvm(${CMAKE_CURRENT_SOURCE_DIR})
 libcpu_discover_gccjit(${CMAKE_CURRENT_SOURCE_DIR})
 
 # ---- loader test ----
-add_executable(load6502 test/load6502.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(load6502 test/load6502.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(load6502 PRIVATE frontends/m6502 test)
 target_link_libraries(load6502 PRIVATE LibCPU)
 
-add_executable(aot6502 test/aot6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(aot6502 test/aot6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(aot6502 PRIVATE frontends/m6502 test aot)
 target_link_libraries(aot6502 PRIVATE LibCPU)
 
@@ -252,11 +252,11 @@ add_executable(aotchip8 test/aotchip8.cpp aot/AotGenerator.cpp frontends/chip8/C
 target_include_directories(aotchip8 PRIVATE frontends/chip8 test aot)
 target_link_libraries(aotchip8 PRIVATE LibCPU)
 
-add_executable(aotcfg6502 test/aotcfg6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(aotcfg6502 test/aotcfg6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(aotcfg6502 PRIVATE frontends/m6502 test aot)
 target_link_libraries(aotcfg6502 PRIVATE LibCPU)
 
-add_executable(aotsmc6502 test/aotsmc6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(aotsmc6502 test/aotsmc6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(aotsmc6502 PRIVATE frontends/m6502 test aot)
 target_link_libraries(aotsmc6502 PRIVATE LibCPU)
 
@@ -270,7 +270,7 @@ target_include_directories(tiered PRIVATE frontends/v20 frontends/i8080 test aot
 target_link_libraries(tiered PRIVATE LibCPU Threads::Threads)
 
 # Same tiered / PGO suite, driven through the 6502 frontend (frontend-agnosticism).
-add_executable(tiered6502 test/tiered6502.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(tiered6502 test/tiered6502.cpp aot/AotGenerator.cpp core/TieredEngine.cpp core/PerfTrace.cpp core/ProfiledAot.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(tiered6502 PRIVATE frontends/m6502 test aot core)
 target_link_libraries(tiered6502 PRIVATE LibCPU Threads::Threads)
 
@@ -280,7 +280,7 @@ target_include_directories(dossys PRIVATE frontends/v20 frontends/i8080 test aot
 target_link_libraries(dossys PRIVATE LibCPU)
 
 # Single-step debugger (line editor + gdb-like commands + dual disassembly).
-add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.cpp)
+add_executable(lcdbg test/lcdbg.cpp core/Debugger.cpp core/LineEditor.cpp frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.generated.cpp)
 target_include_directories(lcdbg PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test core)
 target_link_libraries(lcdbg PRIVATE LibCPU)
 
@@ -305,14 +305,14 @@ target_link_libraries(nativedemo PRIVATE LibCPU)
 # diagnostics, a hand-written recursive-descent parser); embeddable, and linked
 # dynamically. It is built into LibCPU.framework/Versions/A/Frameworks/UPCL.framework
 # and links the LibCPU framework at run time.
-add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/Semantics.cpp upcl/Decoder.cpp upcl/UpclArch.cpp)
+add_library(upcl SHARED upcl/Diagnostic.cpp upcl/Lexer.cpp upcl/Parser.cpp upcl/RegisterLayout.cpp upcl/Semantics.cpp upcl/Decoder.cpp upcl/UpclArch.cpp upcl/CppGen.cpp)
 set_target_properties(upcl PROPERTIES
   OUTPUT_NAME UPCL
   FRAMEWORK TRUE
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.UPCL
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/Semantics.h;upcl/Decoder.h;upcl/UpclArch.h")
+  PUBLIC_HEADER "upcl/Diagnostic.h;upcl/Token.h;upcl/Ast.h;upcl/Lexer.h;upcl/Parser.h;upcl/RegisterLayout.h;upcl/Semantics.h;upcl/Decoder.h;upcl/UpclArch.h;upcl/CppGen.h")
 target_include_directories(upcl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/upcl ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(upcl PUBLIC LibCPU)            # dynamic link against the LibCPU framework
 if(APPLE)
@@ -333,7 +333,7 @@ add_executable(lcx test/lcx.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
   core/DeviceNode.cpp core/MachineBuilder.cpp
   console/ConsoleChannel.cpp console/ConsoleBridge.cpp console/TerminalConsole.cpp
-  frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.cpp
+  frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.generated.cpp
   third_party/zstd/zstd.c)
 target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core console third_party/zstd)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
@@ -846,6 +846,15 @@ foreach(_upcl ${LIBCPU_UPCL_EXAMPLES})
   add_test(NAME upcl.parse-${_upclname} COMMAND lcx upcl check "${_upcl}")
   set_tests_properties(upcl.parse-${_upclname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 endforeach()
+
+# The 6502 frontend is GENERATED from 6502.upcl (Cpu6502.generated.cpp, checked in and compiled
+# in place of a hand-written frontend). Guard against drift: regenerate it and confirm the
+# committed copy is byte-identical -- so editing 6502.upcl without regenerating fails the build.
+add_test(NAME upcl.gen-6502 COMMAND sh -c
+  "E='$<TARGET_FILE:lcx>'; U='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/6502.upcl'; \
+   G='${CMAKE_CURRENT_SOURCE_DIR}/frontends/m6502/Cpu6502.generated.cpp'; \
+   \"$E\" upcl gen \"$U\" Create6502 > '${CMAKE_BINARY_DIR}/Cpu6502.regen.cpp' && \
+   diff -u \"$G\" '${CMAKE_BINARY_DIR}/Cpu6502.regen.cpp'")
 
 # Register layout: flattening 8086.upcl's register_file must reproduce the real hardware --
 # ah/al are the high/low bytes of ax, and the carry flag lands on FLAGS bit 0 mapped to the

@@ -38,6 +38,7 @@
 #include "../core/ZooArchive.h"
 #endif
 #include "../upcl/Parser.h"
+#include "../upcl/CppGen.h"
 #include "../upcl/UpclArch.h"
 #include "../upcl/RegisterLayout.h"
 #include "../upcl/Semantics.h"
@@ -649,14 +650,31 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     bool Lex     = pVerb != nullptr && std::strcmp (pVerb, "lex") == 0;
     bool Emit    = pVerb != nullptr && std::strcmp (pVerb, "emit") == 0;
     bool Decode  = pVerb != nullptr && std::strcmp (pVerb, "decode") == 0;
-    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit && !Decode)) {
+    bool Gen     = pVerb != nullptr && std::strcmp (pVerb, "gen") == 0;
+    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit && !Decode && !Gen)) {
         std::printf ("usage: lcx upcl check   <file.upcl>            validate + summarise\n"
                      "       lcx upcl produce <file.upcl>            build the frontend + round-trip its encodings\n"
                      "       lcx upcl lex     <file.upcl>            dump the token stream (lexer development aid)\n"
                      "       lcx upcl emit    <file.upcl> <insn>     translate one instruction body to emitter SSA\n"
                      "       lcx upcl decode  <file.upcl> <bytes..>  decode a byte stream + translate each insn\n"
+                     "       lcx upcl gen     <file.upcl> <factory> [cpu]   generate a C++ frontend (to stdout)\n"
                      "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
+    }
+    if (Gen) {
+        CHAR8 CONST *pCreate = Positional (argc, argv, 2);
+        CHAR8 CONST *pCpu    = Positional (argc, argv, 3);
+        if (pCreate == nullptr) { std::printf ("lcx upcl gen: need a factory name (e.g. Create6502)\n"); return 2; }
+        Upcl::SourceManager Sm;
+        Upcl::Module *pMod = UpclParse (pFile, Sm);
+        if (pMod == nullptr || pMod->Archs.empty ()) { return 1; }
+        std::string Out;
+        if (!Upcl::GenerateCpp (pMod, 0, pCpu, std::string (pCreate), &Out)) {
+            std::fprintf (stderr, "lcx upcl gen: %s\n", Out.c_str ());
+            return 1;
+        }
+        std::fwrite (Out.data (), 1, Out.size (), stdout);
+        return 0;
     }
     if (Decode) {
         Upcl::SourceManager Sm;

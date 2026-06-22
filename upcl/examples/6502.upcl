@@ -1,3 +1,16 @@
+// The MOS 6502 instruction set -- a standalone UPCL description.
+//
+// This is the initial slice that mirrors the hand-written frontend it replaces:
+//
+//     A9 LDA #imm   A5 LDA $zp   85 STA $zp   8D STA $abs
+//     E6 INC $zp    C6 DEC $zp   69 ADC #imm  18 CLC
+//     D0 BNE rel    4C JMP $abs  20 JSR $abs  60 RTS
+//
+// Fixed 1-3 byte encodings, no ModR/M. The accumulator is an implicit operand (it does not
+// occupy encoding bits). JSR/RTS use the page-1 hardware stack ($0100 + S) and drive the
+// in-artifact PC dispatcher exactly as the x86 CALL/RET do, so the whole-program AOT /
+// tiering machinery stays frontend-agnostic. Decimal mode is not modelled (binary ADC).
+
 arch "6502" {
 
 	name "MOS 6502";
@@ -28,5 +41,103 @@ arch "6502" {
 		}
 
 	}
-
 }
+
+// imm: an 8-bit immediate; zp: an 8-bit zero-page address; abs: a 16-bit data address;
+// tgt: a 16-bit branch/jump target (a `rel` field resolves to its absolute address).
+decoder_operands [ #i8 imm, #i8 zp, #i16 abs, #i16 tgt ];
+
+// The page-1 hardware stack. PUSH writes [$0100 + S] then decrements S; PULL increments S
+// then reads [$0100 + S]. S is 8-bit, so the stack wraps within page 1. The page base and
+// the widened S are taken at 16 bits (the word size is 8, so a bare 0x100 literal would
+// truncate to 0) to form the full 16-bit address.
+macro push6502 ( value ) {
+	#i8 %M[ [ #i16 0x100 ] + [ #i16 S ] ] = value ;
+	S = S - 1 ;
+}
+macro pull6502 () {
+	S = S + 1 ;
+	%result = #i8 %M[ [ #i16 0x100 ] + [ #i16 S ] ] ;
+}
+
+// ---- loads / stores ------------------------------------------------------
+
+// LDA #imm / LDA $zp: load the accumulator, set N and Z from the loaded value.
+insn lda_imm : encode #i16 ( op:8 = 0xA9, imm:8 -> imm ),
+	disasm ( mnemonic : "lda", operands : imm )
+	=> A = %CC ( imm );
+
+insn lda_zp : encode #i16 ( op:8 = 0xA5, zp:8 -> zp ),
+	disasm ( mnemonic : "lda", operands : zp )
+	=> A = %CC ( #i8 %M[ [ #i16 zp ] ] );
+
+// STA $zp / STA $abs: store the accumulator. No flags.
+insn sta_zp : encode #i16 ( op:8 = 0x85, zp:8 -> zp ),
+	disasm ( mnemonic : "sta", operands : zp )
+	=> #i8 %M[ [ #i16 zp ] ] = A;
+
+insn sta_abs : encode #i24 ( op:8 = 0x8D, abs:16 -> abs ),
+	disasm ( mnemonic : "sta", operands : abs )
+	=> #i8 %M[ abs ] = A;
+
+// ---- read-modify-write ---------------------------------------------------
+
+// INC $zp / DEC $zp: adjust a zero-page cell by one, set N and Z (carry/overflow unaffected,
+// so the bare %CC on the plain result -- not an add/sub form -- derives only N and Z).
+insn inc_zp : encode #i16 ( op:8 = 0xE6, zp:8 -> zp ),
+	disasm ( mnemonic : "inc", operands : zp )
+	{ #i8 v = #i8 %M[ [ #i16 zp ] ] + 1 ;
+	  #i8 %M[ [ #i16 zp ] ] = v ;
+	  %CC ( v ) ; }
+
+insn dec_zp : encode #i16 ( op:8 = 0xC6, zp:8 -> zp ),
+	disasm ( mnemonic : "dec", operands : zp )
+	{ #i8 v = #i8 %M[ [ #i16 zp ] ] - 1 ;
+	  #i8 %M[ [ #i16 zp ] ] = v ;
+	  %CC ( v ) ; }
+
+// ---- arithmetic ----------------------------------------------------------
+
+// ADC #imm (binary mode): A = A + imm + C. The add is done at 16 bits so the carry survives;
+// carry-out is bit 8 of the wide sum, overflow is the signed-overflow term, and N/Z follow
+// from the 8-bit result.
+insn adc_imm : encode #i16 ( op:8 = 0x69, imm:8 -> imm ),
+	disasm ( mnemonic : "adc", operands : imm )
+	{ #i16 sum = [ #i16 A ] + [ #i16 imm ] + [ #i16 P.C ] ;
+	  #i8  res = sum[ 7:0 ] ;
+	  P.C = sum[ 8:8 ] ;
+	  P.V = ( ( A ^ res ) & ( imm ^ res ) & 0x80 ) != 0 ;
+	  A = %CC ( res ) ; }
+
+// ---- flags ---------------------------------------------------------------
+
+insn clc : encode #i8 ( op:8 = 0x18 ), disasm ( mnemonic : "clc" ) => P.C = 0;	// 0x18
+
+// ---- control flow --------------------------------------------------------
+
+// BNE rel: branch when Z is clear. The `rel` field resolves to the absolute target.
+jump insn bne : type branch, condition ( ! P.Z ),
+	encode #i16 ( op:8 = 0xD0, disp:8 -> tgt rel ),
+	disasm ( mnemonic : "bne", operands : tgt )
+	{ pc = tgt; }
+
+// JMP $abs: an unconditional branch to a folded target.
+jump insn jmp : type branch, encode #i24 ( op:8 = 0x4C, addr:16 -> tgt ),
+	disasm ( mnemonic : "jmp", operands : tgt )
+	{ pc = tgt; }
+
+// JSR $abs: push the address of the JSR's last byte (return - 1) high then low, then branch.
+// `pc` reads as the next instruction's address (Pc + 3), so `pc - 1` is that last byte.
+jump insn jsr : type call, encode #i24 ( op:8 = 0x20, addr:16 -> tgt ),
+	disasm ( mnemonic : "jsr", operands : tgt )
+	{ #i16 ret = pc - 1 ;
+	  @push6502 ( ret[ 15:8 ] ) ;
+	  @push6502 ( ret[ 7:0 ] ) ;
+	  pc = tgt; }
+
+// RTS: pull low then high, and resume at (address + 1) -- a computed (indirect) return.
+jump insn rts : type return, encode #i8 ( op:8 = 0x60 ),
+	disasm ( mnemonic : "rts" )
+	{ #i8 lo = @pull6502 () ;
+	  #i8 hi = @pull6502 () ;
+	  pc = ( ( [ #i16 hi ] << 8 ) | [ #i16 lo ] ) + 1; }
