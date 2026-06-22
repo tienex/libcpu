@@ -98,16 +98,12 @@ insn dec_zp : encode #i16 ( op:8 = 0xC6, zp:8 -> zp ),
 
 // ---- arithmetic ----------------------------------------------------------
 
-// ADC #imm (binary mode): A = A + imm + C. The add is done at 16 bits so the carry survives;
-// carry-out is bit 8 of the wide sum, overflow is the signed-overflow term, and N/Z follow
-// from the 8-bit result.
+// ADC #imm (binary mode): A = A + imm + C. %CC derives every architectural flag the register
+// file binds from the add-with-carry -- N and Z from the result, C the carry-out (computed wide,
+// so the carry survives), V the signed overflow -- and the carry-in is read via the meta flag %C.
 insn adc_imm : encode #i16 ( op:8 = 0x69, imm:8 -> imm ),
 	disasm ( mnemonic : "adc", operands : imm )
-	{ #i16 sum = [ #i16 A ] + [ #i16 imm ] + [ #i16 P.C ] ;
-	  #i8  res = sum[ 7:0 ] ;
-	  P.C = sum[ 8:8 ] ;
-	  P.V = ( ( A ^ res ) & ( imm ^ res ) & 0x80 ) != 0 ;
-	  A = %CC ( res ) ; }
+	=> A = %CC ( A + imm + %C );
 
 // ---- flags ---------------------------------------------------------------
 

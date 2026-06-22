@@ -399,7 +399,7 @@ target_include_directories(jslist PRIVATE backends/js)
 # toolchain was not found is simply skipped (its target does not exist).
 enable_testing()
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
-set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 loadchip8 aotchip8)
+set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 load6502 aot6502 loadchip8 aotchip8)
 foreach(_be ${LIBCPU_CFG_BACKENDS})
   if(TARGET ${_be})
     set(_bundle "$<TARGET_BUNDLE_DIR:${_be}>")
@@ -411,9 +411,13 @@ foreach(_be ${LIBCPU_CFG_BACKENDS})
     # (the index is known at translate time), so the slice runs on every backend, not just interp.
     add_test(NAME chip8.load.${_be} COMMAND loadchip8 "${_bundle}")
     add_test(NAME chip8.aot.${_be}  COMMAND aotchip8 "${_bundle}")
+    # The 6502 generated frontend: the slice program plus the %CC-driven ADC carry/overflow case.
+    add_test(NAME m6502.load.${_be} COMMAND load6502 "${_bundle}")
+    add_test(NAME m6502.aot.${_be}  COMMAND aot6502 "${_bundle}")
     # Belt-and-suspenders: fail the test if any demo prints a FAIL line, even
     # should the driver's exit code ever regress.
-    set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} chip8.load.${_be} chip8.aot.${_be} PROPERTIES
+    set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} chip8.load.${_be} chip8.aot.${_be}
+      m6502.load.${_be} m6502.aot.${_be} PROPERTIES
       FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
     list(APPEND LIBCPU_CHECK_DEPS ${_be})
   endif()
@@ -920,7 +924,8 @@ add_test(NAME upcl.emit COMMAND sh -c
   "set -e; E='$<TARGET_FILE:lcx>'; D='${_def8086}'; \
    \"$E\" upcl emit \"$D\" add > '${CMAKE_BINARY_DIR}/emit.add' && \
    grep -q 'add v1, v0'   '${CMAKE_BINARY_DIR}/emit.add' && \
-   grep -q 'ult v4, v1'   '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'zext.i17'     '${CMAKE_BINARY_DIR}/emit.add' && \
+   grep -q 'const.i17 0x10' '${CMAKE_BINARY_DIR}/emit.add' && \
    grep -q 'setflag C'    '${CMAKE_BINARY_DIR}/emit.add' && \
    grep -q 'setflag O'    '${CMAKE_BINARY_DIR}/emit.add' && \
    grep -q 'setflag A'    '${CMAKE_BINARY_DIR}/emit.add' && \

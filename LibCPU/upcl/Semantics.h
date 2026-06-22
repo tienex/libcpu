@@ -142,9 +142,9 @@ private:
     // flags
     void  SetFlagBit (RegFlag CONST &Flag, Value CONST &Bit);
     Value GetFlagBit (RegFlag CONST &Flag);
-    void  DeriveFlags (Expr *pInner, Value CONST &Result, Value CONST &A, Value CONST &B,
-                       bool HaveOperands, std::vector<std::string> CONST &CcFlags,
-                       std::vector<bool> CONST &CcNeg);
+    void  DeriveFlags (bool IsAdd, Value CONST &Result, Value CONST &A, Value CONST &B,
+                       Value CONST &CarryBit, bool HaveOperands,
+                       std::vector<std::string> CONST &CcFlags, std::vector<bool> CONST &CcNeg);
 
     // emitter helpers (each pools the result so it outlives the call)
     Value Const (UINT32 Bits, UINT64 N);

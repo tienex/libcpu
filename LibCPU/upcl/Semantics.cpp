@@ -622,29 +622,53 @@ Translator::EvalCC (Expr *pExpr)
 {
     Expr *Inner = pExpr->Args[0];
 
-    // Peek the root: an add/sub gives us both operands, so we can derive carry/overflow/
-    // aux exactly. Anything else yields only the result-derived flags (Z/N/P).
+    // Peek the root: an add/sub gives us both operands, so we can derive carry/overflow/aux
+    // exactly. Anything else yields only the result-derived flags (Z/N/P).
     bool   HaveOperands = false;
-    Value  A {}, B {};
+    bool   IsAdd = false;
+    Value  A {}, B {};        // the two DATA operands (carry/overflow/aux derive from these)
+    Value  CarryBit {};       // the true carry-out / borrow
     Value  Result;
     if (Inner->Kind == ExprBinary && (Inner->Op == TokPlus || Inner->Op == TokMinus)) {
-        A = EvalExpr (Inner->Args[0]);
-        B = EvalExpr (Inner->Args[1]);
-        B = Coerce (B, A.Bits, false);
-        Result = Bin (Inner->Op == TokPlus ? BinAdd : BinSub, A, B);
+        IsAdd = (Inner->Op == TokPlus);
+        Expr *Lhs = Inner->Args[0];
+        Expr *Rhs = Inner->Args[1];
+        // Add-with-carry / subtract-with-borrow is written `(P op Q) op R` -- the SAME op
+        // nested -- e.g. `a + src + %C`. P and Q are the data operands; R is the carry/borrow-in.
+        bool  WithCarry = (Lhs->Kind == ExprBinary && Lhs->Op == Inner->Op);
+        Value Cin {};
+        if (WithCarry) {
+            A   = EvalExpr (Lhs->Args[0]);
+            B   = Coerce (EvalExpr (Lhs->Args[1]), A.Bits, false);
+            Cin = Coerce (EvalExpr (Rhs), A.Bits, false);
+        } else {
+            A = EvalExpr (Lhs);
+            B = Coerce (EvalExpr (Rhs), A.Bits, false);
+        }
+        UINT32    W  = A.Bits;
+        CPU_BINOP Op = IsAdd ? BinAdd : BinSub;
+        // The architectural result wraps at W, as the hardware does.
+        Result = Bin (Op, A, B);
+        if (WithCarry) { Result = Bin (Op, Result, Cin); }
+        // The true carry/borrow: redo the operation ONE BIT WIDER so an intermediate add does
+        // not drop the carry before the carry-in is folded in (a + src wraps to 8 bits before
+        // + %C, otherwise), then take bit W. For a 2-term op this equals the old Result <u A.
+        Value Wide = Bin (Op, Coerce (A, W + 1, false), Coerce (B, W + 1, false));
+        if (WithCarry) { Wide = Bin (Op, Wide, Coerce (Cin, W + 1, false)); }
+        CarryBit = Extract (Wide, W, 1);
         HaveOperands = true;
     } else {
         Result = EvalExpr (Inner);
     }
 
-    DeriveFlags (Inner, Result, A, B, HaveOperands, pExpr->CcFlags, pExpr->CcNeg);
+    DeriveFlags (IsAdd, Result, A, B, CarryBit, HaveOperands, pExpr->CcFlags, pExpr->CcNeg);
     return Result;
 }
 
 void
-Translator::DeriveFlags (Expr *pInner, Value CONST &Result, Value CONST &A, Value CONST &B,
-                         bool HaveOperands, std::vector<std::string> CONST &CcFlags,
-                         std::vector<bool> CONST &CcNeg)
+Translator::DeriveFlags (bool IsAdd, Value CONST &Result, Value CONST &A, Value CONST &B,
+                         Value CONST &CarryBit, bool HaveOperands,
+                         std::vector<std::string> CONST &CcFlags, std::vector<bool> CONST &CcNeg)
 {
     UINT32 W = Result.Bits ? Result.Bits : m_WordBits;
 
@@ -691,10 +715,9 @@ Translator::DeriveFlags (Expr *pInner, Value CONST &Result, Value CONST &A, Valu
 
     if (!HaveOperands) { return; }
 
-    bool IsAdd = (pInner->Op == TokPlus);
-
-    // Carry: add -> result wrapped below an operand; sub -> first operand below second.
-    Apply ("C", "", IsAdd ? Cmp (CmpULt, Result, A) : Cmp (CmpULt, A, B));
+    // Carry: the carry-out / borrow computed wide by the caller (so an add-with-carry's
+    // intermediate wrap does not lose it).
+    Apply ("C", "", CarryBit);
 
     // Overflow (signed): the sign-bit of the "operands disagree with result" term.
     Value Xor1 = Bin (BinXor, IsAdd ? A : A, IsAdd ? Result : B);
