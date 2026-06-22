@@ -753,6 +753,17 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x87cl.bin' --arch \"upcl:$X@8086\" --dump 0x46 | grep -q '0x46. = 0x0100' && \
      printf '\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xD1\\xDD\\x3E\\x44\\x00\\x8B\\x06\\x44\\x00\\x81\\xE0\\x00\\x40\\x89\\x06\\x46\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87ce.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x87ce.bin' --arch \"upcl:$X@8086\" --dump 0x46 | grep -q '0x46. = 0x4000'")
+
+  # 8087 control: FNINIT loads the default control word 0x037F (round-to-nearest, exceptions masked),
+  # read back with FNSTCW; FLDCW/FNSTCW round-trip an arbitrary control word (0x027F). FWAIT decodes.
+  add_test(NAME upcl.x86-8087-ctrl COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xDB\\xE3\\xD9\\x3E\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87init.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87init.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x037f' && \
+     printf '\\xB8\\x7F\\x02\\x89\\x06\\x40\\x00\\xD9\\x2E\\x40\\x00\\xD9\\x3E\\x42\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87cw.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87cw.bin' --arch \"upcl:$X@8086\" --dump 0x42 | grep -q '0x42. = 0x027f' && \
+     printf '\\x9B' > '${CMAKE_BINARY_DIR}/x87wait.bin' && \
+     LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x87wait.bin' --count 1 --arch \"upcl:$X@8086\" | grep -q 'FWAIT'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

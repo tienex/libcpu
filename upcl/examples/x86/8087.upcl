@@ -156,4 +156,21 @@ feature fpu {
 		disasm ( mnemonic : "fstsw", operands : dst )
 		{ fsw = ( fc3 << 14 ) | ( ftop << 11 ) | ( fc2 << 10 ) | ( fc0 << 8 ) ;
 		  dst = fsw ; }
+
+	// ---- control -----------------------------------------------------------
+
+	// FNINIT: initialise the coprocessor -- empty the stack (TOP = 0), clear the status word and
+	// condition codes, and load the default control word (round-to-nearest, all exceptions masked).
+	insn fninit : encode #i16 ( op:8 = 0xDB, mod:2 = 3, reg:3 = 4, rm:3 = 3 ),	// 0xDB E3
+		disasm ( mnemonic : "fninit" )
+		{ ftop = 0 ; fsw = 0 ; fcw = 0x37F ; fc0 = 0 ; fc2 = 0 ; fc3 = 0 ; }
+
+	// FLDCW m16 / FNSTCW m16: load and store the control word.  0xD9 /5, 0xD9 /7
+	insn fldcw : encode #i16 ( op:8 = 0xD9, mod:2, reg:3 = 5, rm:3 -> src @modrm16 ),
+		disasm ( mnemonic : "fldcw", operands : src )
+		=> fcw = src;
+
+	insn fnstcw : encode #i16 ( op:8 = 0xD9, mod:2, reg:3 = 7, rm:3 -> dst @modrm16 ),
+		disasm ( mnemonic : "fnstcw", operands : dst )
+		=> dst = fcw;
 }

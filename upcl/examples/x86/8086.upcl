@@ -226,6 +226,7 @@ insn cli : encode #i8 ( op:8 = 0xFA ), disasm ( mnemonic : "cli" ) => flags.I = 
 insn sti : encode #i8 ( op:8 = 0xFB ), disasm ( mnemonic : "sti" ) => flags.I = 1;		// 0xFB
 
 insn nop : encode #i8 ( op:8 = 0x90 ), disasm ( mnemonic : "nop" );		// 0x90 (XCHG AX,AX)
+insn fwait : encode #i8 ( op:8 = 0x9B ), disasm ( mnemonic : "fwait" );		// 0x9B WAIT -- sync with the 8087
 insn hlt : encode #i8 ( op:8 = 0xF4 ), disasm ( mnemonic : "hlt" ) => @trap ( 0 );	// 0xF4 wait-on-interrupt
 
 // ---- control flow --------------------------------------------------------
