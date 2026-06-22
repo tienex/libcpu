@@ -1,0 +1,103 @@
+// CHIP-8 -- a standalone UPCL description (the ALU/load/store slice the hand-written frontend
+// covered). Two-byte big-endian opcodes, sixteen 8-bit data registers V0..VF (VF doubles as the
+// ALU flag register) and a 16-bit index register I.
+//
+//   6xkk LD Vx,kk    7xkk ADD Vx,kk   8xy0 LD Vx,Vy
+//   8xy1 OR          8xy2 AND         8xy3 XOR
+//   8xy4 ADD Vx,Vy (VF=carry)         8xy5 SUB Vx,Vy (VF=NOT borrow)
+//   Annn LD I,nnn    Fx55 store V0..Vx -> [I]   Fx65 load [I] -> V0..Vx
+//
+// The register-bank index Vx and the Fx55/Fx65 spans are runtime-indexed register access:
+// v[ expr ] selects the physical register at run time, and the Fx55/Fx65 loops range over
+// V0..Vx with a counter.
+
+arch "chip8" {
+
+	name "CHIP-8";
+
+	endian big;
+
+	byte_size 8;
+	word_size 8;
+	address_size 16;
+
+	register_file {
+
+		group V {
+			[ 16 ** #i8 v? ]			// v0..v15 (v15 = VF, the flag register)
+		}
+
+		group S {
+			[ #i16 ri ],				// the 16-bit index register I
+			[ #i16 pc -> %PC ]
+		}
+
+	}
+}
+
+// x / y: 4-bit register selectors; kk: an 8-bit immediate; nnn: a 12-bit address.
+decoder_operands [ #i8 x, #i8 y, #i8 kk, #i16 nnn ];
+
+// ---- load / immediate ----------------------------------------------------
+
+insn ld_vx_kk : encode #i16 ( op:4 = 0x6, rx:4 -> x, kk:8 -> kk ),	// 6xkk
+	disasm ( mnemonic : "ld", operands : x, kk )
+	=> v[ x ] = kk;
+
+insn add_vx_kk : encode #i16 ( op:4 = 0x7, rx:4 -> x, kk:8 -> kk ),	// 7xkk (no carry)
+	disasm ( mnemonic : "add", operands : x, kk )
+	=> v[ x ] = v[ x ] + kk;
+
+insn ld_i_nnn : encode #i16 ( op:4 = 0xA, addr:12 -> nnn ),		// Annn
+	disasm ( mnemonic : "ld", operands : nnn )
+	=> ri = nnn;
+
+// ---- register-to-register ALU (8xy_) -------------------------------------
+
+insn ld_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x0 ),	// 8xy0
+	disasm ( mnemonic : "ld", operands : x, y )
+	=> v[ x ] = v[ y ];
+
+insn or_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x1 ),	// 8xy1
+	disasm ( mnemonic : "or", operands : x, y )
+	=> v[ x ] = v[ x ] | v[ y ];
+
+insn and_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x2 ),	// 8xy2
+	disasm ( mnemonic : "and", operands : x, y )
+	=> v[ x ] = v[ x ] & v[ y ];
+
+insn xor_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x3 ),	// 8xy3
+	disasm ( mnemonic : "xor", operands : x, y )
+	=> v[ x ] = v[ x ] ^ v[ y ];
+
+// 8xy4: Vx += Vy, VF = carry (bit 8 of the 16-bit sum). VF is written last so a Vx==VF
+// instruction leaves the carry, as on hardware.
+insn add_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x4 ),	// 8xy4
+	disasm ( mnemonic : "add", operands : x, y )
+	{ #i16 s = [ #i16 v[ x ] ] + [ #i16 v[ y ] ] ;
+	  v[ x ] = s[ 7:0 ] ;
+	  v[ 15 ] = s[ 8:8 ] ; }
+
+// 8xy5: Vx -= Vy, VF = NOT borrow (1 when Vx >= Vy).
+insn sub_vx_vy : encode #i16 ( op:4 = 0x8, rx:4 -> x, ry:4 -> y, lo:4 = 0x5 ),	// 8xy5
+	disasm ( mnemonic : "sub", operands : x, y )
+	{ #i8 ge = [ #i8 ( v[ x ] >= v[ y ] ) ] ;
+	  v[ x ] = v[ x ] - v[ y ] ;
+	  v[ 15 ] = ge ; }
+
+// ---- block load / store (Fx55 / Fx65) ------------------------------------
+//
+// Range over V0..Vx with a 16-bit counter; the span bound Vx is a runtime operand, so this is
+// a real loop (not a translate-time unroll). The address is I + the counter.
+
+insn st_vx_i : encode #i16 ( op:4 = 0xF, rx:4 -> x, kk:8 = 0x55 ),	// Fx55
+	disasm ( mnemonic : "ld", operands : x )
+	{ for ( #i16 j = 0 ; j <= [ #i16 x ] ; j = j + 1 ) {
+		#i8 %M[ ri + j ] = v[ j ] ;
+	  } }
+
+insn ld_vx_i : encode #i16 ( op:4 = 0xF, rx:4 -> x, kk:8 = 0x65 ),	// Fx65
+	disasm ( mnemonic : "ld", operands : x )
+	{ for ( #i16 j = 0 ; j <= [ #i16 x ] ; j = j + 1 ) {
+		v[ j ] = #i8 %M[ ri + j ] ;
+	  } }

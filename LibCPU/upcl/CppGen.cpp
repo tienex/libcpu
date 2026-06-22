@@ -6,6 +6,7 @@
 #include "LibCPU/ICpu.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -83,6 +84,23 @@ FlagName (CPU_FLAG Flag)
     return "FlagZero";
 }
 
+// The C++ spelling of a binary operator -- for rendering a generated loop's control
+// expressions (init / condition / step) as plain C++ integer arithmetic.
+static CHAR8 CONST *
+CppBinOp (TOKEN_KIND Op)
+{
+    switch (Op) {
+    case TokPlus: return "+"; case TokMinus: return "-"; case TokStar: return "*";
+    case TokSlash: return "/"; case TokPercent: return "%";
+    case TokAmp: return "&"; case TokPipe: return "|"; case TokCaret: return "^";
+    case TokShl: return "<<"; case TokShr: return ">>";
+    case TokLt: return "<"; case TokLtEq: return "<="; case TokGt: return ">"; case TokGtEq: return ">=";
+    case TokEqEq: return "=="; case TokNotEq: return "!=";
+    case TokAndAnd: return "&&"; case TokOrOr: return "||";
+    default: return "+";
+    }
+}
+
 // ---- printing emitter -----------------------------------------------------
 //
 // A value handle carries the name of the C++ ComPtr the generated code declared for it;
@@ -137,9 +155,14 @@ public:
 
     std::string CONST &Body () CONST { return m_Body; }
 
-    // Append already-formatted generated text (e.g. an SMC dispatch tail the generator builds
-    // directly rather than through an emitter call).
+    // Append already-formatted generated text (e.g. an SMC dispatch tail, or a C++ for-loop
+    // wrapper the generator builds directly rather than through an emitter call).
     void AppendRaw (std::string CONST &Text) { m_Body += Text; }
+
+    // Indentation control, so emitter calls nested inside a generated C++ loop are indented.
+    std::string CONST &IndentStr () CONST { return m_Indent; }
+    void PushIndent () { m_Indent += "    "; }
+    void PopIndent () { if (m_Indent.size () >= 4) { m_Indent.resize (m_Indent.size () - 4); } }
 
     // Register an operand/PC sentinel value -> the C++ expression that recovers it at run time.
     void MapSentinel (UINT64 Value, std::string CONST &Expr) { m_Sentinels[Value] = Expr; }
@@ -279,9 +302,33 @@ ExtractExpr (UINT32 BitPos, UINT32 Width, bool Little)
         }
         return Out + ")";
     }
-    UINT32 Shift = 8 - (BitPos % 8) - Width;
-    std::snprintf (B, sizeof (B), "((m_pCode[Pc + %u] >> %u) & 0x%x)", ByteOff, Shift, (1u << Width) - 1u);
-    return B;
+    // A sub-byte field wholly within one byte: shift it down and mask.
+    if ((BitPos % 8) + Width <= 8) {
+        UINT32 Shift = 8 - (BitPos % 8) - Width;
+        std::snprintf (B, sizeof (B), "((m_pCode[Pc + %u] >> %u) & 0x%x)", ByteOff, Shift, (1u << Width) - 1u);
+        return B;
+    }
+    // A field that crosses byte boundaries but is not byte-aligned (e.g. CHIP-8's 12-bit nnn at
+    // bit offset 4): assemble the spanned bytes MSB-first, then shift down and mask -- the same
+    // big-endian bit walk the standard Decoder uses.
+    UINT32 FirstByte = BitPos / 8;
+    UINT32 LastByte  = (BitPos + Width - 1) / 8;
+    UINT32 NumBytes  = LastByte - FirstByte + 1;
+    std::string Acc = "(";
+    for (UINT32 K = 0; K < NumBytes; K++) {
+        UINT32 Sh = 8 * (NumBytes - 1 - K);
+        std::snprintf (B, sizeof (B), "%s(m_pCode[Pc + %u]%s%s)",
+                       K ? " | " : "", FirstByte + K,
+                       Sh ? " << " : "", Sh ? std::to_string (Sh).c_str () : "");
+        Acc += B;
+    }
+    Acc += ")";
+    UINT32 RightShift = NumBytes * 8 - (BitPos - FirstByte * 8) - Width;
+    UINT32 Mask = (Width >= 32) ? 0xFFFFFFFFu : ((1u << Width) - 1u);
+    std::string Out = Acc;
+    if (RightShift != 0) { Out = "(" + Acc + " >> " + std::to_string (RightShift) + ")"; }
+    std::snprintf (B, sizeof (B), " & 0x%x)", Mask);
+    return "(" + Out + B;
 }
 
 // ---- feature resolution ---------------------------------------------------
@@ -446,6 +493,61 @@ GenerateCpp (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
                 if (!PcName.empty ()) { Tr.BindOperand (PcName, PcOp); }
             }
 
+            // A loop's control expression rendered as plain C++ integer arithmetic: the counter
+            // is a C++ variable, an operand is its runtime extraction, a literal is itself.
+            std::set<std::string> LoopVars;
+            UINT64 LoopSent = SentBase + UINT64_C (0x10000);
+            std::function<std::string (Expr *)> CppIntExpr = [&] (Expr *Ex) -> std::string {
+                if (Ex == nullptr) { return "0"; }
+                switch (Ex->Kind) {
+                case ExprInt:  return std::to_string ((unsigned long long) Ex->Int);
+                case ExprName: {
+                    if (LoopVars.count (Ex->Name)) { return Ex->Name; }     // a C++ loop counter
+                    auto It = OperandExpr.find (Ex->Name);
+                    if (It != OperandExpr.end ()) { return "(" + It->second + ")"; }
+                    return "0";
+                }
+                case ExprCast: return CppIntExpr (Ex->Args[0]);             // width is irrelevant here
+                case ExprUnary: return std::string (Ex->Op == TokMinus ? "-" : Ex->Op == TokTilde ? "~"
+                                                  : Ex->Op == TokNot ? "!" : "") + CppIntExpr (Ex->Args[0]);
+                case ExprBinary: return "(" + CppIntExpr (Ex->Args[0]) + " " + CppBinOp (Ex->Op) + " "
+                                            + CppIntExpr (Ex->Args[1]) + ")";
+                default: return "0";
+                }
+            };
+
+            // Emit a statement list, turning a `for` whose bound is a runtime operand into a C++
+            // loop (a translate-time unroll, as the hand-written frontends do): the counter is a
+            // C++ variable bound to a sentinel, and the body's emitter calls run per iteration.
+            std::function<void (std::vector<Stmt *> CONST &)> GenStmts = [&] (std::vector<Stmt *> CONST &Stmts) {
+                for (Stmt *S : Stmts) {
+                    if (S->Kind == StmtFor && !S->Init.empty () && S->Init[0]->Lhs != nullptr
+                        && S->Init[0]->Lhs->Kind == ExprName) {
+                        std::string Lv = S->Init[0]->Lhs->Name;
+                        Operand LvOp;
+                        LvOp.Kind = Operand::Imm;
+                        LvOp.Bits = (S->Init[0]->LhsType != nullptr) ? S->Init[0]->LhsType->Width : AddrBits;
+                        LvOp.ImmValue = LoopSent;
+                        Em.MapSentinel (LoopSent, Lv);
+                        Tr.BindOperand (Lv, LvOp);
+                        LoopVars.insert (Lv);
+                        LoopSent++;
+                        std::string Init = CppIntExpr (S->Init[0]->Rhs);
+                        std::string Cond = (S->Cond != nullptr) ? CppIntExpr (S->Cond) : std::string ("1");
+                        std::string Step = (!S->Step.empty () && S->Step[0]->Rhs != nullptr)
+                                         ? (Lv + " = " + CppIntExpr (S->Step[0]->Rhs)) : Lv;
+                        Em.AppendRaw (Em.IndentStr () + "for (UINT32 " + Lv + " = " + Init + "; " + Cond + "; " + Step + ") {\n");
+                        Em.PushIndent ();
+                        GenStmts (S->Body);
+                        Em.PopIndent ();
+                        Em.AppendRaw (Em.IndentStr () + "}\n");
+                        LoopVars.erase (Lv);
+                    } else {
+                        Tr.EmitOne (S);
+                    }
+                }
+            };
+
             // Select the statements to emit, mirroring UpclArch: a jump's transfer (a pc
             // write) is the block edge -- wired from the tag -- so it is omitted; a computed
             // transfer (a return, or an unfoldable target) is emitted in indirect-PC mode
@@ -479,13 +581,13 @@ GenerateCpp (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
                     for (Stmt *S : pJump->Action) {
                         if (!IsPcWrite (S, PcName)) { Body.push_back (S); }
                     }
-                    Tr.Emit (Body);
+                    GenStmts (Body);
                 }
             } else {
                 for (Stmt *S : Semantics) {
                     if (!IsPcWrite (S, PcName)) { Body.push_back (S); }
                 }
-                Tr.Emit (Body);
+                GenStmts (Body);
             }
             E.TranslateBody = Em.Body ();
 

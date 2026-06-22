@@ -248,7 +248,7 @@ add_executable(aot6502 test/aot6502.cpp aot/AotGenerator.cpp frontends/m6502/Cpu
 target_include_directories(aot6502 PRIVATE frontends/m6502 test aot)
 target_link_libraries(aot6502 PRIVATE LibCPU)
 
-add_executable(aotchip8 test/aotchip8.cpp aot/AotGenerator.cpp frontends/chip8/Chip8.cpp)
+add_executable(aotchip8 test/aotchip8.cpp aot/AotGenerator.cpp frontends/chip8/Chip8.generated.cpp)
 target_include_directories(aotchip8 PRIVATE frontends/chip8 test aot)
 target_link_libraries(aotchip8 PRIVATE LibCPU)
 
@@ -373,7 +373,7 @@ add_executable(dtapi test/dtcapi.c core/DeviceTreeApi.cpp core/DeviceTree.cpp)
 target_include_directories(dtapi PRIVATE core)
 
 # ---- second frontend (CHIP-8) through any backend bundle ----
-add_executable(loadchip8 test/loadchip8.cpp frontends/chip8/Chip8.cpp)
+add_executable(loadchip8 test/loadchip8.cpp frontends/chip8/Chip8.generated.cpp)
 target_include_directories(loadchip8 PRIVATE frontends/chip8 test)
 target_link_libraries(loadchip8 PRIVATE LibCPU)
 if(APPLE)
@@ -399,13 +399,24 @@ target_include_directories(jslist PRIVATE backends/js)
 # toolchain was not found is simply skipped (its target does not exist).
 enable_testing()
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
-set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502)
+set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 loadchip8 aotchip8)
 foreach(_be ${LIBCPU_CFG_BACKENDS})
   if(TARGET ${_be})
     set(_bundle "$<TARGET_BUNDLE_DIR:${_be}>")
     add_test(NAME aotv20.${_be}     COMMAND aotv20 "${_bundle}")
     add_test(NAME tiered.${_be}     COMMAND tiered "${_bundle}" "${_bundle}")
     add_test(NAME tiered6502.${_be} COMMAND tiered6502 "${_bundle}" "${_bundle}")
+    # The CHIP-8 frontend is generated from chip8.upcl too. Its Vx selector is runtime-indexed
+    # register access (v[x] -- the field x is symbolic in the generator), and the Fx55/Fx65 block
+    # loops the generator unrolls to a C++ loop also read v[j] that way. Only the interpreter
+    # implements the CPU_REGBANK_FLAG register bank today (as for the 8087), so the CHIP-8 slice
+    # runs on the interpreter; the other backends gain it once the generator folds a translate-
+    # time-constant array index to a direct register access (also needed for i8080 reg-select).
+    if(_be STREQUAL "interp_backend")
+      add_test(NAME chip8.load.${_be} COMMAND loadchip8 "${_bundle}")
+      add_test(NAME chip8.aot.${_be}  COMMAND aotchip8 "${_bundle}")
+      set_tests_properties(chip8.load.${_be} chip8.aot.${_be} PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+    endif()
     # Belt-and-suspenders: fail the test if any demo prints a FAIL line, even
     # should the driver's exit code ever regress.
     set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} PROPERTIES
@@ -855,6 +866,14 @@ add_test(NAME upcl.gen-6502 COMMAND sh -c
    G='${CMAKE_CURRENT_SOURCE_DIR}/frontends/m6502/Cpu6502.generated.cpp'; \
    \"$E\" upcl gen \"$U\" Create6502 > '${CMAKE_BINARY_DIR}/Cpu6502.regen.cpp' && \
    diff -u \"$G\" '${CMAKE_BINARY_DIR}/Cpu6502.regen.cpp'")
+
+# The CHIP-8 frontend is likewise generated from chip8.upcl (Chip8.generated.cpp, checked in).
+# Same drift guard: regenerate and confirm the committed copy is byte-identical.
+add_test(NAME upcl.gen-chip8 COMMAND sh -c
+  "E='$<TARGET_FILE:lcx>'; U='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/chip8.upcl'; \
+   G='${CMAKE_CURRENT_SOURCE_DIR}/frontends/chip8/Chip8.generated.cpp'; \
+   \"$E\" upcl gen \"$U\" CreateChip8 > '${CMAKE_BINARY_DIR}/Chip8.regen.cpp' && \
+   diff -u \"$G\" '${CMAKE_BINARY_DIR}/Chip8.regen.cpp'")
 
 # Register layout: flattening 8086.upcl's register_file must reproduce the real hardware --
 # ah/al are the high/low bytes of ax, and the carry flag lands on FLAGS bit 0 mapped to the
