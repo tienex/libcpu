@@ -595,6 +595,15 @@ if(TARGET interp_backend)
      printf '\\x10\\x05\\x11\\x03\\x22\\x30\\xFF' > '${CMAKE_BINARY_DIR}/fpmul.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/fpmul.bin' --arch \"upcl:$F\" | grep -q 'r0 =000f'")
 
+  # Runtime-indexed register access: a register array (4 ** #f80 f?) addressed by a value computed
+  # at run time -- the mechanism the 8087 stack ST((TOP+i)&7) needs. The program writes f[2]=7 then
+  # f[0]=99 and reads f[2]; r0 = 7 (not 99) proves the index selects element 2 at run time. Reuses
+  # the Load/Store primitives via a register-bank address sentinel, so no new emitter method.
+  add_test(NAME upcl.fp-indexed COMMAND sh -c
+    "F='${CMAKE_CURRENT_SOURCE_DIR}/test/fparray.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x10\\x02\\x11\\x07\\x10\\x00\\x11\\x63\\x10\\x02\\x20\\xFF' > '${CMAKE_BINARY_DIR}/fparray.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/fparray.bin' --arch \"upcl:$F\" | grep -q 'r0 =0007'")
+
   # The Intel 8080 (i8080.upcl) -- the set the V20/V30 emulate. Decode must distinguish HLT
   # (0x76, a full opcode) from the general MOV r,r pattern (most-specific match) and render
   # sub-registers by their own name (MVI B, not MVI BC). Runs MVI A,5 ; MVI B,3 ; ADD B ; HLT

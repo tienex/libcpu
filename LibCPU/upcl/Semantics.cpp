@@ -1,6 +1,7 @@
 /** @file  The UPCL semantics translator. See Semantics.h. */
 
 #include "Semantics.h"
+#include "LibCPU/CpuState.h"     // CPU_REGBANK_FLAG: the runtime-indexed register-bank sentinel
 #include <cstring>
 
 namespace LibCPU {
@@ -121,6 +122,26 @@ Translator::Insert (Value CONST &Parent, Value CONST &Field, UINT32 Lo, UINT32 W
 }
 
 // ---- name / register / flag resolution ------------------------------------
+
+// The register array a `name[i]` indexes -- its base is a plain name matching a layout array.
+RegArray CONST *
+Translator::FindArray (Expr *pBase) CONST
+{
+    if (pBase->Kind != ExprName && pBase->Kind != ExprMember) { return nullptr; }
+    for (RegArray CONST &A : m_Layout.Arrays) {
+        if (A.Name == pBase->Name) { return &A; }
+    }
+    return nullptr;
+}
+
+// The Load/Store address that selects array element [Idx]: the bank sentinel OR the physical slot
+// (BaseIndex + Idx). Built at 64-bit width so the sentinel's high bits are not truncated.
+Value
+Translator::RegBankAddr (RegArray CONST &Arr, Value CONST &Idx)
+{
+    Value Slot = Bin (BinAdd, Const (64, Arr.BaseIndex), Coerce (Idx, 64, false));
+    return Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Slot);
+}
 
 bool
 Translator::FindSub (std::string CONST &Name, RegSub CONST **ppSub) CONST
@@ -545,7 +566,17 @@ Translator::EvalExpr (Expr *pExpr)
         return Const (1, 1);              // dynamic type test: always an int here
 
     case ExprIndex: {
-        Value Addr = EvalExpr (pExpr->Args[1]);
+        RegArray CONST *pArr = FindArray (pExpr->Args[0]);
+        if (pArr != nullptr) {                       // st[i]: a register-array element via the bank
+            Value Idx  = EvalExpr (pExpr->Args[1]);
+            Value Addr = RegBankAddr (*pArr, Idx);
+            ComPtr<ICpuValue> V;
+            m_pE->Load (Addr.V, pArr->Width, &V);
+            Value Out = Pool (std::move (V), pArr->Width);
+            Out.Float = pArr->Float;
+            return Out;
+        }
+        Value Addr = EvalExpr (pExpr->Args[1]);      // r[addr]: the index is a memory address
         ComPtr<ICpuValue> V;
         m_pE->Load (Addr.V, m_WordBits, &V);
         return Pool (std::move (V), m_WordBits);
@@ -894,6 +925,21 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         Value Addr = EvalExpr (pLhs->Args[0]);
         Value V = Coerce (Rhs, Bits, false);
         m_pE->Store (V.V, Addr.V, Bits);
+        return;
+    }
+
+    case ExprIndex: {
+        RegArray CONST *pArr = FindArray (pLhs->Args[0]);
+        if (pArr != nullptr) {                       // st[i] = ... : a register-array element
+            Value Idx  = EvalExpr (pLhs->Args[1]);
+            Value Addr = RegBankAddr (*pArr, Idx);
+            Value V    = Coerce (Rhs, pArr->Width, false);   // float: widths match, a no-op
+            m_pE->Store (V.V, Addr.V, pArr->Width);
+            return;
+        }
+        Value Addr = EvalExpr (pLhs->Args[1]);       // r[addr] = ... : the index is a memory address
+        Value V = Coerce (Rhs, m_WordBits, false);
+        m_pE->Store (V.V, Addr.V, m_WordBits);
         return;
     }
 

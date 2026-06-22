@@ -83,6 +83,14 @@ typedef struct _CPU_STATE {
     long double Fpu[32];
 } CPU_STATE;
 
+// Runtime-indexed register access. A Load/Store whose address has the CPU_REGBANK_FLAG bits set
+// targets a register-file slot (the low CPU_REGBANK_MASK bits select it) instead of guest RAM --
+// so a register chosen by a runtime index (an FPU stack ST((TOP+i)&7), a RISC r[rd]) reuses the
+// existing Load/Store primitives. A >64-bit access uses the float bank (Fpu[]); else Reg[]. The
+// flag is in the high address bits, well above any guest RAM, and is carried at 64-bit width.
+#define CPU_REGBANK_FLAG  ((UINT64) 0xFFFF000000000000ULL)
+#define CPU_REGBANK_MASK  ((UINT64) 0x1F)
+
 // Self-modifying-code page granularity: 256-byte pages over the 16-bit address
 // space (256 pages), tracked as a bit-per-page bitmap (256 bits = 32 bytes). A
 // write dirties only its own page's bit, so only blocks in that page re-translate.

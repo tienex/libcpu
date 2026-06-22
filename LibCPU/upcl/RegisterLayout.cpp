@@ -95,6 +95,18 @@ BuildRegisterLayout (Arch *pArch)
             UINT32 Width = (pDecl->VType != nullptr) ? pDecl->VType->Width : 0;
             UINT32 Count = RepeatCount (pDecl);
 
+            // A repeated declaration (`8 ** #f80 st?`) is also a register ARRAY -- the base name
+            // (st) addresses its elements by a runtime index (an FPU stack, a RISC register file).
+            if (Count > 1) {
+                RegArray Arr;
+                Arr.Name      = pDecl->Name;
+                Arr.BaseIndex = (UINT32) Layout.Phys.size ();
+                Arr.Count     = Count;
+                Arr.Width     = Width;
+                Arr.Float     = (pDecl->VType != nullptr && pDecl->VType->Kind == TypeFloat);
+                Layout.Arrays.push_back (Arr);
+            }
+
             for (UINT32 Copy = 0; Copy < Count; ++Copy) {
                 RegPhys Phys;
                 Phys.Name  = (Count > 1) ? (pDecl->Name + std::to_string (Copy)) : pDecl->Name;

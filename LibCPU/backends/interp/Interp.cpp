@@ -169,12 +169,24 @@ public:
                 }
                 break;
             case OpLoad:
-                Temp[In.Dest] = RamRead (pRam, Temp[In.A], In.Bits);
+                if ((Temp[In.A] & CPU_REGBANK_FLAG) == CPU_REGBANK_FLAG) {   // a runtime-indexed register
+                    UINT32 Slot = (UINT32) (Temp[In.A] & CPU_REGBANK_MASK);
+                    if (In.Bits > 64) { FTemp[In.Dest] = pState->Fpu[Slot]; }
+                    else { Temp[In.Dest] = MaskBits (pState->Reg[Slot], In.Bits); }
+                } else {
+                    Temp[In.Dest] = RamRead (pRam, Temp[In.A], In.Bits);
+                }
                 break;
             case OpStore:
-                RamWrite (pRam, Temp[In.B], Temp[In.A], In.Bits);
-                if (Temp[In.B] >= pState->CodeStart && Temp[In.B] < pState->CodeEnd) {   // SMC write-barrier
-                    pState->CodeDirty[(Temp[In.B] >> 11) & 31] |= (UINT8) (1u << ((Temp[In.B] >> 8) & 7));
+                if ((Temp[In.B] & CPU_REGBANK_FLAG) == CPU_REGBANK_FLAG) {   // a runtime-indexed register
+                    UINT32 Slot = (UINT32) (Temp[In.B] & CPU_REGBANK_MASK);
+                    if (In.Bits > 64) { pState->Fpu[Slot] = FTemp[In.A]; }
+                    else { pState->Reg[Slot] = MaskBits (Temp[In.A], In.Bits); }
+                } else {
+                    RamWrite (pRam, Temp[In.B], Temp[In.A], In.Bits);
+                    if (Temp[In.B] >= pState->CodeStart && Temp[In.B] < pState->CodeEnd) {   // SMC write-barrier
+                        pState->CodeDirty[(Temp[In.B] >> 11) & 31] |= (UINT8) (1u << ((Temp[In.B] >> 8) & 7));
+                    }
                 }
                 break;
             case OpBinary:

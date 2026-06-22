@@ -38,6 +38,17 @@ public:
     bool        Float = false;   // a floating-point register (#f<width>, e.g. an 8087 st)
 };
 
+// A register array: a repeated declaration (`8 ** #f80 st?`) addressed by a runtime index. The
+// elements are the physical registers [BaseIndex .. BaseIndex+Count); `st[expr]` reads/writes one.
+class RegArray {
+public:
+    std::string Name;
+    UINT32      BaseIndex = 0;
+    UINT32      Count     = 0;
+    UINT32      Width     = 0;
+    bool        Float     = false;
+};
+
 // A sub-register: a contiguous bit field of a physical register (e.g. ah = ax bits [15:8]).
 class RegSub {
 public:
@@ -58,9 +69,10 @@ public:
 
 class RegisterLayout {
 public:
-    std::vector<RegPhys> Phys;
-    std::vector<RegSub>  Subs;
-    std::vector<RegFlag> Flags;
+    std::vector<RegPhys>  Phys;
+    std::vector<RegSub>   Subs;
+    std::vector<RegFlag>  Flags;
+    std::vector<RegArray> Arrays;              // repeated declarations addressed by a runtime index
     std::map<std::string, UINT32> PhysIndex;   // name -> Phys index (fast lookup)
 
     // The program counter's composition fields -> their source register. From the PC's

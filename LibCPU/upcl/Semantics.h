@@ -135,6 +135,8 @@ private:
     UINT32 WidthOf (Expr *pExpr) CONST;            // a name/cast's static width (no emit)
     bool  FindSub (std::string CONST &Name, RegSub CONST **ppSub) CONST;
     bool  FindFlag (std::string CONST &Name, RegFlag CONST **ppFlag) CONST;
+    RegArray CONST *FindArray (Expr *pBase) CONST;  // the register array a `name[i]` base names
+    Value RegBankAddr (RegArray CONST &Arr, Value CONST &Idx);  // the Load/Store sentinel address
     bool  MapFlag (RegFlag CONST &Flag, CPU_FLAG *pFlag) CONST;  // false -> use PSR bit
 
     // flags
