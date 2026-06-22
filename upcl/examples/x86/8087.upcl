@@ -1,0 +1,88 @@
+// Intel 8087 numeric coprocessor (feature `fpu`). The 8087 shares the 8086 instruction stream:
+// its instructions are the ESC group (0xD8-0xDF) followed by a ModR/M byte. It owns an eight-deep
+// register stack of 80-bit extended-precision values; ST(0) is the top, ST(i) the i-th below it.
+//
+// The stack is TOP-relative -- ST(i) is the physical register st[(ftop + i) & 7] -- so a push
+// pre-decrements ftop and a pop post-increments it, both modulo 8. ftop starts at 0, so the first
+// push lands in st[7]. This is the authentic 8087 rotating stack (not a data-shuffling imitation):
+// the runtime-indexed register access st[expr] selects the physical register at run time.
+//
+// This first cut covers the load/store, constant, and arithmetic core; the comparison/transcendental
+// groups, the control instructions (FINIT/FLDCW/FSTSW), and the m32/m64/m80 real memory formats
+// (which need the float-width memory casts) come next.
+
+// Push a value onto the register stack: pre-decrement the top (mod 8), then write ST(0).
+macro fpu_push ( value ) {
+	ftop = ( ftop - 1 ) & 7 ;
+	st[ ftop ] = value ;
+}
+
+feature fpu {
+
+	// ---- constants ----------------------------------------------------------
+
+	insn fld1 : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 0 ),	// 0xD9 E8
+		disasm ( mnemonic : "fld1" )
+		=> @fpu_push ( [ #f80 1 ] );
+
+	insn fldz : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 5, rm:3 = 6 ),	// 0xD9 EE
+		disasm ( mnemonic : "fldz" )
+		=> @fpu_push ( [ #f80 0 ] );
+
+	// ---- register loads / stores -------------------------------------------
+
+	// FLD ST(i): push a copy of ST(i).  0xD9 C0+i  (read ST(i) before the push moves the top)
+	insn fld_st : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 0, rm:3 -> sti ),
+		disasm ( mnemonic : "fld", operands : sti )
+		{ #f80 v = st[ ( ftop + sti ) & 7 ] ; @fpu_push ( v ) ; }
+
+	// FXCH ST(i): exchange ST(0) and ST(i).  0xD9 C8+i
+	insn fxch : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 1, rm:3 -> sti ),
+		disasm ( mnemonic : "fxch", operands : sti )
+		{ #f80 v = st[ ftop ] ;
+		  st[ ftop ] = st[ ( ftop + sti ) & 7 ] ;
+		  st[ ( ftop + sti ) & 7 ] = v ; }
+
+	// FILD m16int: load a 16-bit integer from memory, convert to floating point, push.  0xDF /0
+	insn fild : encode #i16 ( op:8 = 0xDF, mod:2, reg:3 = 0, rm:3 -> src @modrm16 ),
+		disasm ( mnemonic : "fild", size : word, operands : src )
+		=> @fpu_push ( [ #f80 src ] );
+
+	// FIST m16int: store ST(0), truncated to a 16-bit integer, to memory.  0xDF /2
+	insn fist : encode #i16 ( op:8 = 0xDF, mod:2, reg:3 = 2, rm:3 -> dst @modrm16 ),
+		disasm ( mnemonic : "fist", size : word, operands : dst )
+		=> dst = [ #i16 st[ ftop ] ];
+
+	// FISTP m16int: FIST, then pop.  0xDF /3
+	insn fistp : encode #i16 ( op:8 = 0xDF, mod:2, reg:3 = 3, rm:3 -> dst @modrm16 ),
+		disasm ( mnemonic : "fistp", size : word, operands : dst )
+		{ dst = [ #i16 st[ ftop ] ] ; ftop = ( ftop + 1 ) & 7 ; }
+
+	// ---- arithmetic: ST(0) = ST(0) op ST(i)  (0xD8 /digit) ------------------
+
+	insn fadd : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 0, rm:3 -> sti ),	// 0xD8 C0+i
+		disasm ( mnemonic : "fadd", operands : sti )
+		=> st[ ftop ] = st[ ftop ] + st[ ( ftop + sti ) & 7 ];
+
+	insn fmul : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 1, rm:3 -> sti ),	// 0xD8 C8+i
+		disasm ( mnemonic : "fmul", operands : sti )
+		=> st[ ftop ] = st[ ftop ] * st[ ( ftop + sti ) & 7 ];
+
+	insn fsub : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 4, rm:3 -> sti ),	// 0xD8 E0+i
+		disasm ( mnemonic : "fsub", operands : sti )
+		=> st[ ftop ] = st[ ftop ] - st[ ( ftop + sti ) & 7 ];
+
+	insn fdiv : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 6, rm:3 -> sti ),	// 0xD8 F0+i
+		disasm ( mnemonic : "fdiv", operands : sti )
+		=> st[ ftop ] = st[ ftop ] / st[ ( ftop + sti ) & 7 ];
+
+	// ---- arithmetic with pop: ST(i) = ST(i) op ST(0); pop  (0xDE /digit) ----
+
+	insn faddp : encode #i16 ( op:8 = 0xDE, mod:2 = 3, reg:3 = 0, rm:3 -> sti ),	// 0xDE C0+i
+		disasm ( mnemonic : "faddp", operands : sti )
+		{ st[ ( ftop + sti ) & 7 ] = st[ ( ftop + sti ) & 7 ] + st[ ftop ] ; ftop = ( ftop + 1 ) & 7 ; }
+
+	insn fmulp : encode #i16 ( op:8 = 0xDE, mod:2 = 3, reg:3 = 1, rm:3 -> sti ),	// 0xDE C8+i
+		disasm ( mnemonic : "fmulp", operands : sti )
+		{ st[ ( ftop + sti ) & 7 ] = st[ ( ftop + sti ) & 7 ] * st[ ftop ] ; ftop = ( ftop + 1 ) & 7 ; }
+}

@@ -42,10 +42,19 @@ arch "x86" {
 		}
 
 		group INT : [ #i8 intno ];
+
+		// The 8087 numeric coprocessor: eight 80-bit registers forming a stack, plus the status
+		// and control words. The stack is TOP-relative -- ST(i) is the physical register
+		// st[(ftop + i) & 7] -- so ftop holds the 3-bit stack-top pointer (in real hardware it
+		// occupies bits 11..13 of fsw; kept as its own register here until fsw is fully modelled).
+		group FPU {
+			[ 8 ** #f80 st? ],
+			[ #i16 fsw ], [ #i16 fcw ], [ #i16 ftop ]
+		}
 	}
 }
 
-decoder_operands [ #i16 src, #i16 dst, #i8 cnt, ccflags #i16 cond, const #i1 rep ];
+decoder_operands [ #i16 src, #i16 dst, #i8 cnt, #i8 sti, ccflags #i16 cond, const #i1 rep ];
 
 // Show code addresses as the real-mode CS:IP pair (segment << 4 + offset): the offset is the
 // low 16 bits, the segment the rest divided by 16. (A flat 16/20-bit linear address otherwise.)
@@ -110,14 +119,16 @@ include "x86/disasm.upcl";
 include "x86/8086.upcl";
 include "x86/80186.upcl";
 include "x86/v20.upcl";
+include "x86/8087.upcl";
 
 // The ISA features a CPU model may include, then the models themselves.
 features {
 	ext_186 "80186 / 80188 additions";
 	nec     "NEC V20 / V30 (8080 emulation, bit instructions)";
+	fpu     "8087 numeric coprocessor (ESC group, 80-bit FP stack)";
 }
 
-cpu "8086"  { }                 // the base ISA only
-cpu "80186" { ext_186; }
-cpu "v20"   { nec; }
-cpu "v30"   { ext_186; nec; }   // V30 has the 80186 set plus the NEC additions
+cpu "8086"  { fpu; }                 // the base ISA, with an 8087 fitted
+cpu "80186" { ext_186; fpu; }
+cpu "v20"   { nec; fpu; }
+cpu "v30"   { ext_186; nec; fpu; }   // V30 has the 80186 set plus the NEC additions

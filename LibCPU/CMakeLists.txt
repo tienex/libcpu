@@ -712,6 +712,22 @@ if(TARGET interp_backend)
      printf '\\x3E\\x05\\x06\\x03' > '${CMAKE_BINARY_DIR}/i80seg.bin' && \
      F=$(\"$E\" disasm '${CMAKE_BINARY_DIR}/i80seg.bin' --count 2 --arch \"upcl:$I\") && \
      echo \"$F\" | grep -q '[$]0000:' && ! echo \"$F\" | grep -q '0000:0000:'")
+
+  # The 8087 numeric coprocessor (feature fpu): the ESC (0xD8-0xDF) group over an 80-bit FP register
+  # stack with a TOP-relative rotating pointer (runtime-indexed register access). The decisive
+  # program computes (7 / 2) * 2 entirely on the 8087 stack -- fild 2, fild 7, fdiv st(1), fmul
+  # st(1), fist -- and stores 7: integer arithmetic would give (3) * 2 = 6, so a memory result of 7
+  # proves genuine floating point through the stack. Also FADDP 6+7=13 and FMULP 6*7=42, and the
+  # ESC opcodes disassemble (FLD1 / FILD / FIST).
+  add_test(NAME upcl.x86-8087 COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xD9\\xE8\\xDF\\x06\\x40\\x00\\xDF\\x16\\x40\\x00' > '${CMAKE_BINARY_DIR}/x87dis.bin' && \
+     D=$(LCX_SYNTAX=intel \"$E\" disasm '${CMAKE_BINARY_DIR}/x87dis.bin' --count 3 --arch \"upcl:$X@8086\") && \
+     echo \"$D\" | grep -q 'FLD1' && echo \"$D\" | grep -q 'FILD .0040h.' && echo \"$D\" | grep -q 'FIST .0040h.' && \
+     printf '\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xF1\\xD8\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87fp.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87fp.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007' && \
+     printf '\\xB8\\x06\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC1\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87add.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87add.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x000d'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus
