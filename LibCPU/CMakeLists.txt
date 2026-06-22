@@ -774,6 +774,24 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x87pi.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x013a' && \
      printf '\\xD9\\xEA\\xB8\\xE8\\x03\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87l2e.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x87l2e.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x05a2'")
+
+  # 8087 transcendentals (the genuine 8087 set -- F2XM1/FYL2X/FPTAN/FPATAN/FYL2XP1; FSIN/FCOS are 387+).
+  # Each result is an exact integer, so any wrong op or pop would miss it.
+  #   F2XM1   : 2**3 - 1 = 7                          (FILD 3; F2XM1; FISTP)
+  #   FYL2X   : 1 * log2(8) = 3                       (FLD1; FILD 8; FYL2X; FISTP)
+  #   FYL2XP1 : 1 * log2(7 + 1) = 3                   (FLD1; FILD 7; FYL2XP1; FISTP)
+  #   FPTAN/FPATAN round-trip: atan2(tan(1 rad), 1) = 1 rad = 1, proving tan and the two-arg arctangent
+  #     compose to the identity (FLD1; FPTAN; FPATAN; FISTP).
+  add_test(NAME upcl.x86-8087-trans COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x03\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD9\\xF0\\xDF\\x1E\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87_2xm1.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87_2xm1.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007' && \
+     printf '\\xD9\\xE8\\xB8\\x08\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD9\\xF1\\xDF\\x1E\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87_yl2x.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87_yl2x.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0003' && \
+     printf '\\xD9\\xE8\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD9\\xF9\\xDF\\x1E\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87_yl2xp1.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87_yl2xp1.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0003' && \
+     printf '\\xD9\\xE8\\xD9\\xF2\\xD9\\xF3\\xDF\\x1E\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87_tan.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87_tan.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0001'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

@@ -332,7 +332,7 @@ private:
         case BinAShr: R = (UINT64)(SignExtend (A, Bits) >> (B & 63)); break;
         case BinRol:  { UINT32 S = (UINT32)(B % Bits); R = (A << S) | (MaskBits (A, Bits) >> (Bits - S)); break; }
         case BinRor:  { UINT32 S = (UINT32)(B % Bits); R = (MaskBits (A, Bits) >> S) | (A << (Bits - S)); break; }
-        case BinFAdd: case BinFSub: case BinFMul: case BinFDiv: break;   // float ops: the FTemp path
+        case BinFAdd: case BinFSub: case BinFMul: case BinFDiv: case BinFAtan2: break;   // float ops: the FTemp path
         }
         return MaskBits (R, Bits);
     }
@@ -341,7 +341,7 @@ private:
         case UnNeg: return MaskBits ((UINT64) 0 - A, Bits);
         case UnCom: return MaskBits (~A, Bits);
         case UnNot: return (MaskBits (A, Bits) == 0) ? 1 : 0;
-        case UnFNeg: case UnFAbs: case UnFSqrt: break;   // float ops: the FTemp path
+        case UnFNeg: case UnFAbs: case UnFSqrt: case UnF2xm1: case UnFLog2: case UnFTan: break;   // float ops: the FTemp path
         }
         return 0;
     }
@@ -380,11 +380,12 @@ private:
 
     static long double ApplyBinaryF (CPU_BINOP Op, long double A, long double B) {
         switch (Op) {
-        case BinFAdd: return A + B;
-        case BinFSub: return A - B;
-        case BinFMul: return A * B;
-        case BinFDiv: return A / B;        // IEEE: division by zero yields +/-inf or NaN, no trap
-        default:      return 0;
+        case BinFAdd:   return A + B;
+        case BinFSub:   return A - B;
+        case BinFMul:   return A * B;
+        case BinFDiv:   return A / B;      // IEEE: division by zero yields +/-inf or NaN, no trap
+        case BinFAtan2: return std::atan2l (A, B);
+        default:        return 0;
         }
     }
     static long double ApplyUnaryF (CPU_UNOP Op, long double A) {
@@ -392,6 +393,9 @@ private:
         case UnFNeg:  return -A;
         case UnFAbs:  return std::fabsl (A);
         case UnFSqrt: return std::sqrtl (A);
+        case UnF2xm1: return std::exp2l (A) - 1.0L;
+        case UnFLog2: return std::log2l (A);
+        case UnFTan:  return std::tanl (A);
         default:      return 0;
         }
     }

@@ -33,7 +33,8 @@ typedef enum _CPU_BINOP {
     BinRol, BinRor,
     // Floating-point arithmetic: the operands and result are IEEE floats of the operation's
     // width (an FPU like the 8087 emits these). Appended so the integer opcodes keep their values.
-    BinFAdd, BinFSub, BinFMul, BinFDiv
+    BinFAdd, BinFSub, BinFMul, BinFDiv,
+    BinFAtan2   // atan2(a, b)   (8087 FPATAN)
 } CPU_BINOP;
 
 //
@@ -45,7 +46,10 @@ typedef enum _CPU_UNOP {
     UnNot,   // logical not (!x), producing an i1
     UnFNeg,  // floating-point negate (8087 FCHS)
     UnFAbs,  // floating-point absolute value (8087 FABS)
-    UnFSqrt  // floating-point square root (8087 FSQRT)
+    UnFSqrt, // floating-point square root (8087 FSQRT)
+    UnF2xm1, // 2**x - 1   (8087 F2XM1)
+    UnFLog2, // log2(x)    (a primitive of 8087 FYL2X)
+    UnFTan   // tan(x)     (a primitive of 8087 FPTAN)
 } CPU_UNOP;
 
 //

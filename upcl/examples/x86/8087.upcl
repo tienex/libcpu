@@ -64,6 +64,42 @@ feature fpu {
 		disasm ( mnemonic : "fsqrt" )
 		=> st[ ftop ] = @fsqrt ( st[ ftop ] );
 
+	// ---- transcendentals (the original 8087's value-bearing functions) ------
+	// These are the genuine 8087 set: F2XM1, FYL2X, FPTAN, FPATAN, FYL2XP1.
+	// (FSIN/FCOS/FSINCOS arrived only with the 387.) Each works on the stack top,
+	// and the y*log2 / arctangent forms compute into ST(1) and pop, so the result
+	// is written into st[(ftop + 1) & 7] -- the register that becomes the new top --
+	// before ftop is advanced.
+
+	// F2XM1: ST(0) = 2**ST(0) - 1.  0xD9 F0
+	insn f2xm1 : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 6, rm:3 = 0 ),
+		disasm ( mnemonic : "f2xm1" )
+		=> st[ ftop ] = @f2xm1 ( st[ ftop ] );
+
+	// FYL2X: ST(1) = ST(1) * log2(ST(0)), then pop.  0xD9 F1
+	insn fyl2x : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 6, rm:3 = 1 ),
+		disasm ( mnemonic : "fyl2x" )
+		{ st[ ( ftop + 1 ) & 7 ] = st[ ( ftop + 1 ) & 7 ] * @flog2 ( st[ ftop ] ) ;
+		  ftop = ( ftop + 1 ) & 7 ; }
+
+	// FPTAN: ST(0) = tan(ST(0)), then push 1.0 (so ST(1)/ST(0) is the tangent).  0xD9 F2
+	insn fptan : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 6, rm:3 = 2 ),
+		disasm ( mnemonic : "fptan" )
+		{ st[ ftop ] = @ftan ( st[ ftop ] ) ;
+		  @fpu_push ( [ #f80 1 ] ) ; }
+
+	// FPATAN: ST(1) = atan(ST(1) / ST(0)), then pop.  0xD9 F3
+	insn fpatan : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 6, rm:3 = 3 ),
+		disasm ( mnemonic : "fpatan" )
+		{ st[ ( ftop + 1 ) & 7 ] = @fatan2 ( st[ ( ftop + 1 ) & 7 ], st[ ftop ] ) ;
+		  ftop = ( ftop + 1 ) & 7 ; }
+
+	// FYL2XP1: ST(1) = ST(1) * log2(ST(0) + 1.0), then pop.  0xD9 F9
+	insn fyl2xp1 : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 7, rm:3 = 1 ),
+		disasm ( mnemonic : "fyl2xp1" )
+		{ st[ ( ftop + 1 ) & 7 ] = st[ ( ftop + 1 ) & 7 ] * @flog2 ( st[ ftop ] + [ #f80 1 ] ) ;
+		  ftop = ( ftop + 1 ) & 7 ; }
+
 	// ---- register loads / stores -------------------------------------------
 
 	// FLD ST(i): push a copy of ST(i).  0xD9 C0+i  (read ST(i) before the push moves the top)

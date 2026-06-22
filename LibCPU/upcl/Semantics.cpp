@@ -1103,11 +1103,31 @@ Translator::EvalMacroCall (Expr *pCall)
         }
     }
 
-    // @fabs / @fsqrt ( x ) -- floating-point absolute value and square root (8087 FABS / FSQRT).
-    // No operator spells these, so they are builtins mapping to the unary FP ops.
-    if (pCall->Args.size () == 1 && (pCall->Name == "fabs" || pCall->Name == "fsqrt")) {
+    // Unary floating-point builtins. No operator spells these, so they map to the unary FP ops.
+    //   @fabs / @fsqrt          -- 8087 FABS / FSQRT
+    //   @f2xm1 / @flog2 / @ftan -- transcendental primitives of 8087 F2XM1 / FYL2X / FPTAN
+    if (pCall->Args.size () == 1) {
+        CPU_UNOP Op;
+        bool Found = true;
+        if (pCall->Name == "fabs") { Op = UnFAbs; }
+        else if (pCall->Name == "fsqrt") { Op = UnFSqrt; }
+        else if (pCall->Name == "f2xm1") { Op = UnF2xm1; }
+        else if (pCall->Name == "flog2") { Op = UnFLog2; }
+        else if (pCall->Name == "ftan") { Op = UnFTan; }
+        else { Found = false; }
+        if (Found) {
+            Value A = EvalExpr (pCall->Args[0]);
+            Value R = Un (Op, A);
+            R.Float = true;
+            return R;
+        }
+    }
+
+    // @fatan2 ( y, x ) -- 8087 FPATAN, the two-argument arctangent (a binary FP op).
+    if (pCall->Args.size () == 2 && pCall->Name == "fatan2") {
         Value A = EvalExpr (pCall->Args[0]);
-        Value R = Un (pCall->Name == "fsqrt" ? UnFSqrt : UnFAbs, A);
+        Value B = EvalExpr (pCall->Args[1]);
+        Value R = Bin (BinFAtan2, A, B);
         R.Float = true;
         return R;
     }
