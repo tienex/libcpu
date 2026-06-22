@@ -438,6 +438,7 @@ Translator::EvalExpr (Expr *pExpr)
         Value A = EvalExpr (pExpr->Args[0]);
         if (pExpr->Op == TokNot)   { return Un (UnNot, A); }
         if (pExpr->Op == TokTilde) { return Un (UnCom, A); }
+        if (A.Float) { Value R = Un (UnFNeg, A); R.Float = true; return R; }   // float negate (FCHS)
         return Un (UnNeg, A);                            // unary minus
     }
 
@@ -1088,6 +1089,15 @@ Translator::EvalMacroCall (Expr *pCall)
         if (O != m_Operands.end () && O->second.Kind == Operand::Mem) {
             return MemAddress (O->second);
         }
+    }
+
+    // @fabs / @fsqrt ( x ) -- floating-point absolute value and square root (8087 FABS / FSQRT).
+    // No operator spells these, so they are builtins mapping to the unary FP ops.
+    if (pCall->Args.size () == 1 && (pCall->Name == "fabs" || pCall->Name == "fsqrt")) {
+        Value A = EvalExpr (pCall->Args[0]);
+        Value R = Un (pCall->Name == "fsqrt" ? UnFSqrt : UnFAbs, A);
+        R.Float = true;
+        return R;
     }
 
     Macro *M = FindMacro (pCall->Name, pCall->Args.size ());

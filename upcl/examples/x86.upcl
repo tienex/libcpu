@@ -49,7 +49,8 @@ arch "x86" {
 		// occupies bits 11..13 of fsw; kept as its own register here until fsw is fully modelled).
 		group FPU {
 			[ 8 ** #f80 st? ],
-			[ #i16 fsw ], [ #i16 fcw ], [ #i16 ftop ]
+			[ #i16 fsw ], [ #i16 fcw ], [ #i16 ftop ],
+			[ #i16 fc0 ], [ #i16 fc2 ], [ #i16 fc3 ]	// condition-code bits (C1 is always 0 here)
 		}
 	}
 }

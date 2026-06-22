@@ -29,6 +29,20 @@ feature fpu {
 		disasm ( mnemonic : "fldz" )
 		=> @fpu_push ( [ #f80 0 ] );
 
+	// ---- unary operations on ST(0) -----------------------------------------
+
+	insn fchs  : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 4, rm:3 = 0 ),	// 0xD9 E0
+		disasm ( mnemonic : "fchs" )
+		=> st[ ftop ] = - st[ ftop ];
+
+	insn fabs  : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 4, rm:3 = 1 ),	// 0xD9 E1
+		disasm ( mnemonic : "fabs" )
+		=> st[ ftop ] = @fabs ( st[ ftop ] );
+
+	insn fsqrt : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 7, rm:3 = 2 ),	// 0xD9 FA
+		disasm ( mnemonic : "fsqrt" )
+		=> st[ ftop ] = @fsqrt ( st[ ftop ] );
+
 	// ---- register loads / stores -------------------------------------------
 
 	// FLD ST(i): push a copy of ST(i).  0xD9 C0+i  (read ST(i) before the push moves the top)
@@ -116,4 +130,30 @@ feature fpu {
 	insn fmulp : encode #i16 ( op:8 = 0xDE, mod:2 = 3, reg:3 = 1, rm:3 -> sti ),	// 0xDE C8+i
 		disasm ( mnemonic : "fmulp", operands : sti )
 		{ st[ ( ftop + sti ) & 7 ] = st[ ( ftop + sti ) & 7 ] * st[ ftop ] ; ftop = ( ftop + 1 ) & 7 ; }
+
+	// ---- compares: set the condition codes C3/C2/C0 (greater=000, less=001, equal=100) ----------
+
+	insn fcom : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 2, rm:3 -> sti ),	// 0xD8 D0+i
+		disasm ( mnemonic : "fcom", operands : sti )
+		{ fc0 = st[ ftop ] < st[ ( ftop + sti ) & 7 ] ;
+		  fc3 = st[ ftop ] == st[ ( ftop + sti ) & 7 ] ;
+		  fc2 = 0 ; }
+
+	insn fcomp : encode #i16 ( op:8 = 0xD8, mod:2 = 3, reg:3 = 3, rm:3 -> sti ),	// 0xD8 D8+i
+		disasm ( mnemonic : "fcomp", operands : sti )
+		{ fc0 = st[ ftop ] < st[ ( ftop + sti ) & 7 ] ;
+		  fc3 = st[ ftop ] == st[ ( ftop + sti ) & 7 ] ;
+		  fc2 = 0 ; ftop = ( ftop + 1 ) & 7 ; }
+
+	// FTST: compare ST(0) with 0.0.  0xD9 E4
+	insn ftst : encode #i16 ( op:8 = 0xD9, mod:2 = 3, reg:3 = 4, rm:3 = 4 ),
+		disasm ( mnemonic : "ftst" )
+		{ fc0 = st[ ftop ] < [ #f80 0 ] ; fc3 = st[ ftop ] == [ #f80 0 ] ; fc2 = 0 ; }
+
+	// FSTSW / FNSTSW m16: assemble the status word from TOP and the condition codes, store it.
+	// (The 8087 has no FSTSW AX -- that direct form is an 80287 addition -- so this goes to memory.)
+	insn fstsw : encode #i16 ( op:8 = 0xDD, mod:2, reg:3 = 7, rm:3 -> dst @modrm16 ),	// 0xDD /7
+		disasm ( mnemonic : "fstsw", operands : dst )
+		{ fsw = ( fc3 << 14 ) | ( ftop << 11 ) | ( fc2 << 10 ) | ( fc0 << 8 ) ;
+		  dst = fsw ; }
 }

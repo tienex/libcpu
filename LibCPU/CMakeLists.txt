@@ -739,6 +739,20 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x87m32.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007' && \
      printf '\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xF1\\xDD\\x1E\\x44\\x00\\xDD\\x06\\x44\\x00\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87m64.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x87m64.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007'")
+
+  # 8087 unary ops and compares. FSQRT(9)=3, FCHS(5)=-5 (0xfffb), FABS of that = 5. Then FCOM sets the
+  # condition codes, observed the authentic 8087 way -- FSTSW to memory (the 8087 has no FSTSW AX),
+  # then the CPU tests the bits: 3 < 5 sets C0 (status & 0x0100 != 0), 5 == 5 sets C3 (& 0x4000).
+  add_test(NAME upcl.x86-8087-cmp COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x09\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD9\\xFA\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87sqrt.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87sqrt.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0003' && \
+     printf '\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD9\\xE0\\xD9\\xE1\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87abs.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87abs.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0005' && \
+     printf '\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x03\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xD1\\xDD\\x3E\\x44\\x00\\x8B\\x06\\x44\\x00\\x81\\xE0\\x00\\x01\\x89\\x06\\x46\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87cl.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87cl.bin' --arch \"upcl:$X@8086\" --dump 0x46 | grep -q '0x46. = 0x0100' && \
+     printf '\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x05\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xD1\\xDD\\x3E\\x44\\x00\\x8B\\x06\\x44\\x00\\x81\\xE0\\x00\\x40\\x89\\x06\\x46\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87ce.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87ce.bin' --arch \"upcl:$X@8086\" --dump 0x46 | grep -q '0x46. = 0x4000'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus
