@@ -5,6 +5,7 @@
 #include "Semantics.h"
 #include "LibCPU/ICpu.h"
 #include "LibCPU/PCom.h"
+#include "LibCPU/CpuState.h"
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -114,6 +115,13 @@ public:
         return DefaultQuery (riid, IID_ICpuValue, ppvObject);
     }
     std::string CONST &Name () CONST { return m_Name; }
+
+    // If non-empty, this value is a compile-time-known C++ integer with this expression (a
+    // ConstInt, or arithmetic over such). It lets a register-array index that is known at
+    // translate time (an operand or a loop counter) become a direct register access.
+    std::string IntExpr;
+    bool        IsBankFlag = false;   // a ConstInt equal to CPU_REGBANK_FLAG
+    std::string BankSlot;             // a register-bank address whose slot index is this C++ int
 private:
     std::string m_Name;
 };
@@ -168,10 +176,15 @@ public:
     void MapSentinel (UINT64 Value, std::string CONST &Expr) { m_Sentinels[Value] = Expr; }
 
     HRESULT STDMETHODCALLTYPE ConstInt (UINT32 Bits, UINT64 Value, ICpuValue **ppValue) override {
-        return Produce ("ConstInt", std::to_string (Bits) + ", " + ConstExpr (Value), ppValue);
+        std::string Expr = ConstExpr (Value);
+        SourceValue *pV = Produce ("ConstInt", std::to_string (Bits) + ", " + Expr, ppValue);
+        pV->IntExpr = Expr;                                  // a constant is a C++ integer expression
+        if (Value == CPU_REGBANK_FLAG) { pV->IsBankFlag = true; }
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetRegister (UINT32 Index, UINT32 Bits, ICpuValue **ppValue) override {
-        return Produce ("GetRegister", std::to_string (Index) + ", " + std::to_string (Bits), ppValue);
+        Produce ("GetRegister", std::to_string (Index) + ", " + std::to_string (Bits), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE PutRegister (UINT32 Index, ICpuValue *pValue, UINT32 Bits, BOOLEAN Sext) override {
         Put ("pE->PutRegister (" + std::to_string (Index) + ", " + ValName (pValue) + ", "
@@ -179,29 +192,61 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Load (ICpuValue *pAddr, UINT32 Bits, ICpuValue **ppValue) override {
-        return Produce ("Load", ValName (pAddr) + ", " + std::to_string (Bits), ppValue);
+        SourceValue *pA = static_cast<SourceValue *> (pAddr);
+        if (!pA->BankSlot.empty ()) {                        // a translate-time slot -> a direct read
+            Produce ("GetRegister", pA->BankSlot + ", " + std::to_string (Bits), ppValue);
+            return S_OK;
+        }
+        Produce ("Load", ValName (pAddr) + ", " + std::to_string (Bits), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Store (ICpuValue *pValue, ICpuValue *pAddr, UINT32 Bits) override {
+        SourceValue *pA = static_cast<SourceValue *> (pAddr);
+        if (!pA->BankSlot.empty ()) {                        // a translate-time slot -> a direct write
+            Put ("pE->PutRegister (" + pA->BankSlot + ", " + ValName (pValue) + ", " + std::to_string (Bits) + ", FALSE);");
+            return S_OK;
+        }
         Put ("pE->Store (" + ValName (pValue) + ", " + ValName (pAddr) + ", " + std::to_string (Bits) + ");");
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE BinaryOp (CPU_BINOP Op, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
-        return Produce ("BinaryOp", std::string (BinopName (Op)) + ", " + ValName (pA) + ", " + ValName (pB), ppValue);
+        SourceValue *pa = static_cast<SourceValue *> (pA), *pb = static_cast<SourceValue *> (pB);
+        SourceValue *pV = Produce ("BinaryOp", std::string (BinopName (Op)) + ", " + ValName (pA) + ", " + ValName (pB), ppValue);
+        // base + index of a translate-time-known slot stays a C++ integer expression.
+        if (Op == BinAdd && !pa->IntExpr.empty () && !pb->IntExpr.empty ()) {
+            pV->IntExpr = "(" + pa->IntExpr + " + " + pb->IntExpr + ")";
+        }
+        // REGBANK_FLAG | slot, with the slot a C++ integer, marks a register-bank address whose
+        // physical slot is known at translate time (a direct register access, not a bank load).
+        if (Op == BinOr) {
+            if (pa->IsBankFlag && !pb->IntExpr.empty ()) { pV->BankSlot = pb->IntExpr; }
+            else if (pb->IsBankFlag && !pa->IntExpr.empty ()) { pV->BankSlot = pa->IntExpr; }
+        }
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE UnaryOp (CPU_UNOP Op, ICpuValue *pA, ICpuValue **ppValue) override {
-        return Produce ("UnaryOp", std::string (UnopName (Op)) + ", " + ValName (pA), ppValue);
+        Produce ("UnaryOp", std::string (UnopName (Op)) + ", " + ValName (pA), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Compare (CPU_CMP Pred, ICpuValue *pA, ICpuValue *pB, ICpuValue **ppValue) override {
-        return Produce ("Compare", std::string (CmpName (Pred)) + ", " + ValName (pA) + ", " + ValName (pB), ppValue);
+        Produce ("Compare", std::string (CmpName (Pred)) + ", " + ValName (pA) + ", " + ValName (pB), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Cast (CPU_CAST Op, ICpuValue *pA, UINT32 Bits, ICpuValue **ppValue) override {
-        return Produce ("Cast", std::string (CastName (Op)) + ", " + ValName (pA) + ", " + std::to_string (Bits), ppValue);
+        SourceValue *pa = static_cast<SourceValue *> (pA);
+        SourceValue *pV = Produce ("Cast", std::string (CastName (Op)) + ", " + ValName (pA) + ", " + std::to_string (Bits), ppValue);
+        // A width cast of a known C++ integer (the index widened to the bank slot type) keeps it
+        // a C++ integer -- register indices are small, so the value is preserved.
+        if (!pa->IntExpr.empty ()) { pV->IntExpr = pa->IntExpr; }
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Select (ICpuValue *pCond, ICpuValue *pTrue, ICpuValue *pFalse, ICpuValue **ppValue) override {
-        return Produce ("Select", ValName (pCond) + ", " + ValName (pTrue) + ", " + ValName (pFalse), ppValue);
+        Produce ("Select", ValName (pCond) + ", " + ValName (pTrue) + ", " + ValName (pFalse), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetFlag (CPU_FLAG Flag, ICpuValue **ppValue) override {
-        return Produce ("GetFlag", FlagName (Flag), ppValue);
+        Produce ("GetFlag", FlagName (Flag), ppValue);
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetFlag (CPU_FLAG Flag, ICpuValue *pValue) override {
         Put ("pE->SetFlag (" + std::string (FlagName (Flag)) + ", " + ValName (pValue) + ");");
@@ -241,11 +286,13 @@ private:
     void Put (std::string CONST &Line) { m_Body += m_Indent + Line + "\n"; }
 
     // A value-producing call: declare a fresh ComPtr and pass it as the trailing out-param.
-    HRESULT Produce (std::string CONST &Method, std::string CONST &Args, ICpuValue **ppValue) {
+    // Returns the new handle so the caller can attach the value's C++-int metadata.
+    SourceValue *Produce (std::string CONST &Method, std::string CONST &Args, ICpuValue **ppValue) {
         std::string v = NewVar ();
         Put ("ComPtr<ICpuValue> " + v + "; pE->" + Method + " (" + Args + ", &" + v + ");");
-        *ppValue = new SourceValue (v);
-        return S_OK;
+        SourceValue *pV = new SourceValue (v);
+        *ppValue = pV;
+        return pV;
     }
 
     // The C++ expression for a ConstInt value: a sentinel maps to its runtime recovery

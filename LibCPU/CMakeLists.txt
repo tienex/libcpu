@@ -406,20 +406,14 @@ foreach(_be ${LIBCPU_CFG_BACKENDS})
     add_test(NAME aotv20.${_be}     COMMAND aotv20 "${_bundle}")
     add_test(NAME tiered.${_be}     COMMAND tiered "${_bundle}" "${_bundle}")
     add_test(NAME tiered6502.${_be} COMMAND tiered6502 "${_bundle}" "${_bundle}")
-    # The CHIP-8 frontend is generated from chip8.upcl too. Its Vx selector is runtime-indexed
-    # register access (v[x] -- the field x is symbolic in the generator), and the Fx55/Fx65 block
-    # loops the generator unrolls to a C++ loop also read v[j] that way. Only the interpreter
-    # implements the CPU_REGBANK_FLAG register bank today (as for the 8087), so the CHIP-8 slice
-    # runs on the interpreter; the other backends gain it once the generator folds a translate-
-    # time-constant array index to a direct register access (also needed for i8080 reg-select).
-    if(_be STREQUAL "interp_backend")
-      add_test(NAME chip8.load.${_be} COMMAND loadchip8 "${_bundle}")
-      add_test(NAME chip8.aot.${_be}  COMMAND aotchip8 "${_bundle}")
-      set_tests_properties(chip8.load.${_be} chip8.aot.${_be} PROPERTIES FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
-    endif()
+    # The CHIP-8 frontend is generated from chip8.upcl too -- the Vx selector and the Fx55/Fx65
+    # block loops index a register array, which the generator turns into a direct register access
+    # (the index is known at translate time), so the slice runs on every backend, not just interp.
+    add_test(NAME chip8.load.${_be} COMMAND loadchip8 "${_bundle}")
+    add_test(NAME chip8.aot.${_be}  COMMAND aotchip8 "${_bundle}")
     # Belt-and-suspenders: fail the test if any demo prints a FAIL line, even
     # should the driver's exit code ever regress.
-    set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} PROPERTIES
+    set_tests_properties(aotv20.${_be} tiered.${_be} tiered6502.${_be} chip8.load.${_be} chip8.aot.${_be} PROPERTIES
       FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
     list(APPEND LIBCPU_CHECK_DEPS ${_be})
   endif()

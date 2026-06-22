@@ -98,7 +98,7 @@ public:
             ComPtr<ICpuValue> t4; pE->BinaryOp (BinAdd, t2, t3, &t4);
             ComPtr<ICpuValue> t5; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t5);
             ComPtr<ICpuValue> t6; pE->BinaryOp (BinOr, t5, t4, &t6);
-            pE->Store (t0, t6, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t0, 8, FALSE);
             break;
         }
         case 1: {   // add_vx_kk
@@ -108,7 +108,7 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (8, m_pCode[Pc + 1], &t7);
             ComPtr<ICpuValue> t8; pE->BinaryOp (BinAdd, t6, t7, &t8);
             ComPtr<ICpuValue> t9; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t9);
@@ -117,7 +117,7 @@ public:
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinAdd, t10, t11, &t12);
             ComPtr<ICpuValue> t13; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t13);
             ComPtr<ICpuValue> t14; pE->BinaryOp (BinOr, t13, t12, &t14);
-            pE->Store (t8, t14, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t8, 8, FALSE);
             break;
         }
         case 2: {   // ld_i_nnn
@@ -133,14 +133,14 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (64, 0x0, &t8);
             ComPtr<ICpuValue> t9; pE->Cast (CastZExt, t7, 64, &t9);
             ComPtr<ICpuValue> t10; pE->BinaryOp (BinAdd, t8, t9, &t10);
             ComPtr<ICpuValue> t11; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t11);
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinOr, t11, t10, &t12);
-            pE->Store (t6, t12, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t6, 8, FALSE);
             break;
         }
         case 4: {   // or_vx_vy
@@ -150,14 +150,14 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (64, 0x0, &t8);
             ComPtr<ICpuValue> t9; pE->Cast (CastZExt, t7, 64, &t9);
             ComPtr<ICpuValue> t10; pE->BinaryOp (BinAdd, t8, t9, &t10);
             ComPtr<ICpuValue> t11; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t11);
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinOr, t11, t10, &t12);
-            ComPtr<ICpuValue> t13; pE->Load (t12, 8, &t13);
+            ComPtr<ICpuValue> t13; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t13);
             ComPtr<ICpuValue> t14; pE->BinaryOp (BinOr, t6, t13, &t14);
             ComPtr<ICpuValue> t15; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t15);
             ComPtr<ICpuValue> t16; pE->ConstInt (64, 0x0, &t16);
@@ -165,7 +165,7 @@ public:
             ComPtr<ICpuValue> t18; pE->BinaryOp (BinAdd, t16, t17, &t18);
             ComPtr<ICpuValue> t19; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t19);
             ComPtr<ICpuValue> t20; pE->BinaryOp (BinOr, t19, t18, &t20);
-            pE->Store (t14, t20, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t14, 8, FALSE);
             break;
         }
         case 5: {   // and_vx_vy
@@ -175,14 +175,14 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (64, 0x0, &t8);
             ComPtr<ICpuValue> t9; pE->Cast (CastZExt, t7, 64, &t9);
             ComPtr<ICpuValue> t10; pE->BinaryOp (BinAdd, t8, t9, &t10);
             ComPtr<ICpuValue> t11; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t11);
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinOr, t11, t10, &t12);
-            ComPtr<ICpuValue> t13; pE->Load (t12, 8, &t13);
+            ComPtr<ICpuValue> t13; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t13);
             ComPtr<ICpuValue> t14; pE->BinaryOp (BinAnd, t6, t13, &t14);
             ComPtr<ICpuValue> t15; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t15);
             ComPtr<ICpuValue> t16; pE->ConstInt (64, 0x0, &t16);
@@ -190,7 +190,7 @@ public:
             ComPtr<ICpuValue> t18; pE->BinaryOp (BinAdd, t16, t17, &t18);
             ComPtr<ICpuValue> t19; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t19);
             ComPtr<ICpuValue> t20; pE->BinaryOp (BinOr, t19, t18, &t20);
-            pE->Store (t14, t20, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t14, 8, FALSE);
             break;
         }
         case 6: {   // xor_vx_vy
@@ -200,14 +200,14 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (64, 0x0, &t8);
             ComPtr<ICpuValue> t9; pE->Cast (CastZExt, t7, 64, &t9);
             ComPtr<ICpuValue> t10; pE->BinaryOp (BinAdd, t8, t9, &t10);
             ComPtr<ICpuValue> t11; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t11);
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinOr, t11, t10, &t12);
-            ComPtr<ICpuValue> t13; pE->Load (t12, 8, &t13);
+            ComPtr<ICpuValue> t13; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t13);
             ComPtr<ICpuValue> t14; pE->BinaryOp (BinXor, t6, t13, &t14);
             ComPtr<ICpuValue> t15; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t15);
             ComPtr<ICpuValue> t16; pE->ConstInt (64, 0x0, &t16);
@@ -215,7 +215,7 @@ public:
             ComPtr<ICpuValue> t18; pE->BinaryOp (BinAdd, t16, t17, &t18);
             ComPtr<ICpuValue> t19; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t19);
             ComPtr<ICpuValue> t20; pE->BinaryOp (BinOr, t19, t18, &t20);
-            pE->Store (t14, t20, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t14, 8, FALSE);
             break;
         }
         case 7: {   // add_vx_vy
@@ -225,7 +225,7 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->Cast (CastZExt, t6, 16, &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t8);
             ComPtr<ICpuValue> t9; pE->ConstInt (64, 0x0, &t9);
@@ -233,7 +233,7 @@ public:
             ComPtr<ICpuValue> t11; pE->BinaryOp (BinAdd, t9, t10, &t11);
             ComPtr<ICpuValue> t12; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t12);
             ComPtr<ICpuValue> t13; pE->BinaryOp (BinOr, t12, t11, &t13);
-            ComPtr<ICpuValue> t14; pE->Load (t13, 8, &t14);
+            ComPtr<ICpuValue> t14; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t14);
             ComPtr<ICpuValue> t15; pE->Cast (CastZExt, t14, 16, &t15);
             ComPtr<ICpuValue> t16; pE->BinaryOp (BinAdd, t7, t15, &t16);
             ComPtr<ICpuValue> t17; pE->Cast (CastTrunc, t16, 8, &t17);
@@ -243,7 +243,7 @@ public:
             ComPtr<ICpuValue> t21; pE->BinaryOp (BinAdd, t19, t20, &t21);
             ComPtr<ICpuValue> t22; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t22);
             ComPtr<ICpuValue> t23; pE->BinaryOp (BinOr, t22, t21, &t23);
-            pE->Store (t17, t23, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t17, 8, FALSE);
             ComPtr<ICpuValue> t24; pE->ConstInt (16, 0x8, &t24);
             ComPtr<ICpuValue> t25; pE->BinaryOp (BinLShr, t16, t24, &t25);
             ComPtr<ICpuValue> t26; pE->Cast (CastTrunc, t25, 1, &t26);
@@ -254,7 +254,7 @@ public:
             ComPtr<ICpuValue> t31; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t31);
             ComPtr<ICpuValue> t32; pE->BinaryOp (BinOr, t31, t30, &t32);
             ComPtr<ICpuValue> t33; pE->Cast (CastZExt, t26, 8, &t33);
-            pE->Store (t33, t32, 8);
+            pE->PutRegister ((0x0 + 0xf), t33, 8, FALSE);
             break;
         }
         case 8: {   // sub_vx_vy
@@ -264,14 +264,14 @@ public:
             ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
             ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
             ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-            ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+            ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t6);
             ComPtr<ICpuValue> t7; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t7);
             ComPtr<ICpuValue> t8; pE->ConstInt (64, 0x0, &t8);
             ComPtr<ICpuValue> t9; pE->Cast (CastZExt, t7, 64, &t9);
             ComPtr<ICpuValue> t10; pE->BinaryOp (BinAdd, t8, t9, &t10);
             ComPtr<ICpuValue> t11; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t11);
             ComPtr<ICpuValue> t12; pE->BinaryOp (BinOr, t11, t10, &t12);
-            ComPtr<ICpuValue> t13; pE->Load (t12, 8, &t13);
+            ComPtr<ICpuValue> t13; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t13);
             ComPtr<ICpuValue> t14; pE->Compare (CmpUGe, t6, t13, &t14);
             ComPtr<ICpuValue> t15; pE->Cast (CastZExt, t14, 8, &t15);
             ComPtr<ICpuValue> t16; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t16);
@@ -280,14 +280,14 @@ public:
             ComPtr<ICpuValue> t19; pE->BinaryOp (BinAdd, t17, t18, &t19);
             ComPtr<ICpuValue> t20; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t20);
             ComPtr<ICpuValue> t21; pE->BinaryOp (BinOr, t20, t19, &t21);
-            ComPtr<ICpuValue> t22; pE->Load (t21, 8, &t22);
+            ComPtr<ICpuValue> t22; pE->GetRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), 8, &t22);
             ComPtr<ICpuValue> t23; pE->ConstInt (4, ((m_pCode[Pc + 1] >> 4) & 0xf), &t23);
             ComPtr<ICpuValue> t24; pE->ConstInt (64, 0x0, &t24);
             ComPtr<ICpuValue> t25; pE->Cast (CastZExt, t23, 64, &t25);
             ComPtr<ICpuValue> t26; pE->BinaryOp (BinAdd, t24, t25, &t26);
             ComPtr<ICpuValue> t27; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t27);
             ComPtr<ICpuValue> t28; pE->BinaryOp (BinOr, t27, t26, &t28);
-            ComPtr<ICpuValue> t29; pE->Load (t28, 8, &t29);
+            ComPtr<ICpuValue> t29; pE->GetRegister ((0x0 + ((m_pCode[Pc + 1] >> 4) & 0xf)), 8, &t29);
             ComPtr<ICpuValue> t30; pE->BinaryOp (BinSub, t22, t29, &t30);
             ComPtr<ICpuValue> t31; pE->ConstInt (4, ((m_pCode[Pc + 0] >> 0) & 0xf), &t31);
             ComPtr<ICpuValue> t32; pE->ConstInt (64, 0x0, &t32);
@@ -295,14 +295,14 @@ public:
             ComPtr<ICpuValue> t34; pE->BinaryOp (BinAdd, t32, t33, &t34);
             ComPtr<ICpuValue> t35; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t35);
             ComPtr<ICpuValue> t36; pE->BinaryOp (BinOr, t35, t34, &t36);
-            pE->Store (t30, t36, 8);
+            pE->PutRegister ((0x0 + ((m_pCode[Pc + 0] >> 0) & 0xf)), t30, 8, FALSE);
             ComPtr<ICpuValue> t37; pE->ConstInt (8, 0xf, &t37);
             ComPtr<ICpuValue> t38; pE->ConstInt (64, 0x0, &t38);
             ComPtr<ICpuValue> t39; pE->Cast (CastZExt, t37, 64, &t39);
             ComPtr<ICpuValue> t40; pE->BinaryOp (BinAdd, t38, t39, &t40);
             ComPtr<ICpuValue> t41; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t41);
             ComPtr<ICpuValue> t42; pE->BinaryOp (BinOr, t41, t40, &t42);
-            pE->Store (t15, t42, 8);
+            pE->PutRegister ((0x0 + 0xf), t15, 8, FALSE);
             break;
         }
         case 9: {   // st_vx_i
@@ -313,7 +313,7 @@ public:
                 ComPtr<ICpuValue> t3; pE->BinaryOp (BinAdd, t1, t2, &t3);
                 ComPtr<ICpuValue> t4; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t4);
                 ComPtr<ICpuValue> t5; pE->BinaryOp (BinOr, t4, t3, &t5);
-                ComPtr<ICpuValue> t6; pE->Load (t5, 8, &t6);
+                ComPtr<ICpuValue> t6; pE->GetRegister ((0x0 + j), 8, &t6);
                 ComPtr<ICpuValue> t7; pE->GetRegister (16, 16, &t7);
                 ComPtr<ICpuValue> t8; pE->ConstInt (16, j, &t8);
                 ComPtr<ICpuValue> t9; pE->BinaryOp (BinAdd, t7, t8, &t9);
@@ -333,7 +333,7 @@ public:
                 ComPtr<ICpuValue> t7; pE->BinaryOp (BinAdd, t5, t6, &t7);
                 ComPtr<ICpuValue> t8; pE->ConstInt (64, UINT64_C (0xffff000000000000), &t8);
                 ComPtr<ICpuValue> t9; pE->BinaryOp (BinOr, t8, t7, &t9);
-                pE->Store (t3, t9, 8);
+                pE->PutRegister ((0x0 + j), t3, 8, FALSE);
             }
             break;
         }
