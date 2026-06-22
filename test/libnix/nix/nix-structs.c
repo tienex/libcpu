@@ -105,7 +105,7 @@ stat_to_nix_stat(struct stat const *in,
 	out->st_gid     = in->st_gid;
 	out->st_rdev    = in->st_rdev;
 
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(_WIN32)
 #if defined(sun)
 	timespec_to_nix_timespec(&in->st_atim, &out->st_atimespec);
 	timespec_to_nix_timespec(&in->st_mtim, &out->st_mtimespec);
@@ -130,9 +130,14 @@ stat_to_nix_stat(struct stat const *in,
 #endif
 
 	out->st_size    = in->st_size;
+#ifdef _WIN32
+	out->st_blocks  = 0;          /* win32 struct stat carries no block accounting */
+	out->st_blksize = 0;
+#else
 	out->st_blocks  = in->st_blocks;
 	out->st_blksize = in->st_blksize;
-#if !defined(__linux__) && !defined(sun)
+#endif
+#if !defined(__linux__) && !defined(sun) && !defined(_WIN32)
 	out->st_gen     = in->st_gen;
 #endif
 }

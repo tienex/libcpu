@@ -6,7 +6,9 @@
 void *g_nix_log = NULL;
 
 extern int nix_fd_init(size_t);
-extern int nix_signal_init(size_t);
+#ifndef _WIN32
+extern int nix_signal_init(size_t);   /* nix-signal.c is part of the generic layer (not yet on win32) */
+#endif
 
 // XXX MOVE TO ENV!
 
@@ -23,8 +25,12 @@ nix_init(size_t nfds, size_t nsigs)
 		abort();
 	}
 
+#ifndef _WIN32
 	if (!nix_signal_init(nsigs)) {
 		XEC_BUGCHECK(NULL, 501);
 		abort();
 	}
+#else
+	(void) nsigs;
+#endif
 }
