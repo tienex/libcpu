@@ -83,13 +83,13 @@ SET(NIX_CORE_SRC
 			nix-fd.c
 			nix-io.c
 			nix-file.c
+			nix-dir.c
 			nix-structs.c)
 
 # The rest of the generic layer (directories, memory, processes, signals, sockets, SysV
 # IPC, time) -- POSIX today; ported to non-POSIX hosts incrementally.
 SET(NIX_GENERIC_SRC
 			nix-cred.c
-			nix-dir.c
 			nix-hostinfo.c
 			nix-mem.c
 			nix-process.c

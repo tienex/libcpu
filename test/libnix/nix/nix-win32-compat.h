@@ -18,11 +18,15 @@
 #ifdef _WIN32
 
 #include <io.h>
+#include <direct.h>       /* _mkdir / _chdir / _rmdir / _getcwd */
 #include <errno.h>
 #include <stdio.h>        /* SEEK_SET / SEEK_CUR */
 #include <fcntl.h>        /* _O_WRONLY */
 #include <sys/types.h>
 #include <sys/stat.h>
+
+/* win32 mkdir takes no mode argument; the file-op core's mode is advisory there. */
+#define mkdir(path, mode) _mkdir (path)
 
 #ifndef ENOSYS
 #define ENOSYS 40
@@ -108,6 +112,8 @@ NIX_WIN32_ENOSYS_STUB (link,   (char const *a, char const *b))
 NIX_WIN32_ENOSYS_STUB (flock,  (int fd, int op))
 NIX_WIN32_ENOSYS_STUB (mknod,  (char const *path, int mode, dev_t dev))
 NIX_WIN32_ENOSYS_STUB (mkfifo, (char const *path, int mode))
+NIX_WIN32_ENOSYS_STUB (fchdir, (int fd))
+NIX_WIN32_ENOSYS_STUB (chroot, (char const *path))
 
 struct timeval;   /* declared by <sys/time.h>; a pointer param needs only the tag */
 NIX_WIN32_ENOSYS_STUB (utimes, (char const *path, struct timeval const *times))

@@ -62,14 +62,23 @@ main (void)
 	nix_close (fd2, env);
 	remove (path);
 
-	int ok = (wrote == (nix_ssize_t) len)
-	      && (got == (nix_ssize_t) len)
-	      && (memcmp (buf, msg, len) == 0)
-	      && (sr == 0)
-	      && (st.st_size == (nix_off_t) len);
+	int filok = (wrote == (nix_ssize_t) len)
+	         && (got == (nix_ssize_t) len)
+	         && (memcmp (buf, msg, len) == 0)
+	         && (sr == 0)
+	         && (st.st_size == (nix_off_t) len);
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'\n",
-	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf);
+	/* Directory ops (create + remove) -- exercises the nix-dir host layer. */
+	char const *dir = "/tmp/nixtest.libnix.dir";
+	nix_rmdir (dir, env);                          /* clear any leftover */
+	int mk  = nix_mkdir (dir, 0755, env);
+	int rm  = nix_rmdir (dir, env);
+	int dirok = (mk == 0) && (rm == 0);
+
+	int ok = filok && dirok;
+
+	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d\n",
+	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }
