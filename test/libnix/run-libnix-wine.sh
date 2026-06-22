@@ -6,6 +6,10 @@
 # Usage: run-libnix-wine.sh [build-dir]   (default build dir: /tmp/libnix-win)
 set -e
 
+# Find the cross toolchain + wine in the usual spots (Homebrew, ~/bin) when not already on PATH.
+PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
 SRC="$(cd "$(dirname "$0")" && pwd)"
 BUILD="${1:-/tmp/libnix-win}"
 
