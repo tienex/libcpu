@@ -2,20 +2,26 @@
 
 #include <sys/types.h>
 #include <sys/time.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef _WIN32
+/* POSIX-only multiplexing / vectored-I/O / terminal headers. The portable file-op core
+   (read/write/close) needs none of them; the functions that do are guarded below. */
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
 #ifdef HAVE_SYS_FILIO_H
 #include <sys/filio.h>
 #endif
-#include <stdio.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <poll.h>
 #include <termios.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
+#else
+#include <io.h>          /* win32: read/write/close/lseek live here (the MSVCRT POSIX layer) */
+#endif
 
 #include "nix.h"
 #include "nix-fd.h"

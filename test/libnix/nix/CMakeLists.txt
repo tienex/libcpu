@@ -74,40 +74,23 @@ INCLUDE_DIRECTORIES(${PROJECT_BINARY_DIR})
 
 CONFIGURE_FILE(nix-config.h.cmake ${PROJECT_BINARY_DIR}/nix-config.h)
 
-ADD_LIBRARY(nix
-			SHARED
-			nix-bsd-cred.c
-			nix-bsd-dir.c
-			nix-bsd-file.c
-			nix-bsd-fs.c
-			nix-bsd-io.c
-			nix-bsd-mem.c
-			nix-bsd-nfs.c
-			nix-bsd-obsolete.c
-			nix-bsd-process.c
-			nix-bsd-signal.c
-			nix-bsd-system.c
-			nix-bsd-time.c
+# The portable file-op core -- what the host-op conformance test exercises and the
+# first set ported to every host.
+SET(NIX_CORE_SRC
 			nix-common.c
+			nix-env.c
+			nix-init.c
+			nix-fd.c
+			nix-io.c
+			nix-file.c
+			nix-structs.c)
+
+# The rest of the generic layer (directories, memory, processes, signals, sockets, SysV
+# IPC, time) -- POSIX today; ported to non-POSIX hosts incrementally.
+SET(NIX_GENERIC_SRC
 			nix-cred.c
 			nix-dir.c
-			nix-env.c
-			nix-fd.c
-			nix-file.c
 			nix-hostinfo.c
-			nix-hpux-cred.c
-			nix-init.c
-			nix-io.c
-			nix-linux-cred.c
-			nix-linux-file.c
-			nix-linux-fs.c
-			nix-linux-i386.c
-			nix-linux-mem.c
-			nix-linux-nfs.c
-			nix-linux-process.c
-			nix-linux-signal.c
-			nix-linux-system.c
-			nix-linux-time.c
 			nix-mem.c
 			nix-process.c
 			nix-rt-process.c
@@ -117,9 +100,30 @@ ADD_LIBRARY(nix
 			nix-s5-shm.c
 			nix-signal.c
 			nix-socket.c
-			nix-structs.c
 			nix-time.c
 			nix-xcpt.c)
+
+# Host-OS families: the per-host implementations of the host-specific operations.
+SET(NIX_BSD_SRC
+			nix-bsd-cred.c nix-bsd-dir.c nix-bsd-file.c nix-bsd-fs.c nix-bsd-io.c
+			nix-bsd-mem.c nix-bsd-nfs.c nix-bsd-obsolete.c nix-bsd-process.c
+			nix-bsd-signal.c nix-bsd-system.c nix-bsd-time.c)
+SET(NIX_LINUX_SRC
+			nix-linux-cred.c nix-linux-file.c nix-linux-fs.c nix-linux-i386.c
+			nix-linux-mem.c nix-linux-nfs.c nix-linux-process.c nix-linux-signal.c
+			nix-linux-system.c nix-linux-time.c)
+SET(NIX_HPUX_SRC nix-hpux-cred.c)
+
+# Host selection. POSIX hosts build the full generic + BSD/Linux/HP-UX families exactly as
+# before; win32 builds the portable file-op core only -- the rest of the syscall surface is
+# brought up on win32 incrementally, keeping `ctest nix.hostops` green at every step.
+IF(WIN32)
+	SET(NIX_SRC ${NIX_CORE_SRC})
+ELSE()
+	SET(NIX_SRC ${NIX_CORE_SRC} ${NIX_GENERIC_SRC} ${NIX_BSD_SRC} ${NIX_LINUX_SRC} ${NIX_HPUX_SRC})
+ENDIF()
+
+ADD_LIBRARY(nix SHARED ${NIX_SRC})
 TARGET_LINK_LIBRARIES(nix xec-compat)
 IF(SOCKET_LIBRARY)
   TARGET_LINK_LIBRARIES(nix socket)
