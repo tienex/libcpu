@@ -219,6 +219,18 @@ public:
                 case CastFTrunc: FTemp[In.Dest] = (In.Bits == 32) ? (long double) (float) FTemp[In.A]
                                                 : (In.Bits == 64) ? (long double) (double) FTemp[In.A]
                                                 :                   FTemp[In.A]; break;
+                case CastIToFBits: {            // raw IEEE bytes (an integer) reinterpreted as a float
+                    if (In.Bits == 32) { float f; UINT32 b = (UINT32) Temp[In.A]; std::memcpy (&f, &b, 4); FTemp[In.Dest] = (long double) f; }
+                    else if (In.Bits == 64) { double d; UINT64 b = Temp[In.A]; std::memcpy (&d, &b, 8); FTemp[In.Dest] = (long double) d; }
+                    else { FTemp[In.Dest] = (long double) Temp[In.A]; }
+                    break;
+                }
+                case CastFToIBits: {            // a float reinterpreted to raw IEEE bytes (an integer)
+                    if (In.Bits == 32) { float f = (float) FTemp[In.A]; UINT32 b; std::memcpy (&b, &f, 4); Temp[In.Dest] = b; }
+                    else if (In.Bits == 64) { double d = (double) FTemp[In.A]; UINT64 b; std::memcpy (&b, &d, 8); Temp[In.Dest] = b; }
+                    else { Temp[In.Dest] = (UINT64) FTemp[In.A]; }
+                    break;
+                }
                 default:         Temp[In.Dest]  = ApplyCast ((CPU_CAST) In.Aux, Temp[In.A], In.C, In.Bits); break;
                 }
                 break;

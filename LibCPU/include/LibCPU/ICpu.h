@@ -72,7 +72,9 @@ typedef enum _CPU_CAST {
     CastSIToF,   // signed integer -> float
     CastFToSI,   // float -> signed integer (truncating toward zero)
     CastFExt,    // float -> wider float
-    CastFTrunc   // float -> narrower float
+    CastFTrunc,  // float -> narrower float
+    CastIToFBits,// reinterpret integer bits as an IEEE float of the same width (load raw real bytes)
+    CastFToIBits // reinterpret an IEEE float as integer bits of the same width (store raw real bytes)
 } CPU_CAST;
 
 //

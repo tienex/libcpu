@@ -728,6 +728,17 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/x87fp.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007' && \
      printf '\\xB8\\x06\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC1\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87add.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/x87add.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x000d'")
+
+  # 8087 memory reals: FLD/FST/FSTP m32real & m64real (the float-width memory casts -- raw IEEE bytes
+  # reinterpreted to/from the 80-bit stack). Compute 7/2 = 3.5, FSTP it to memory as a float32,
+  # reload with FLD m32, multiply by 2, store the integer: a result of 7 proves the 3.5 survived the
+  # float32 round-trip (a truncation to int would give 3*2 = 6). The m64real path is checked too.
+  add_test(NAME upcl.x86-8087-mem COMMAND sh -c
+    "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/x86.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xF1\\xD9\\x1E\\x44\\x00\\xD9\\x06\\x44\\x00\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87m32.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87m32.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007' && \
+     printf '\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xB8\\x07\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xD8\\xF1\\xDD\\x1E\\x44\\x00\\xDD\\x06\\x44\\x00\\xB8\\x02\\x00\\x89\\x06\\x40\\x00\\xDF\\x06\\x40\\x00\\xDE\\xC9\\xDF\\x16\\x40\\x00\\xF4' > '${CMAKE_BINARY_DIR}/x87m64.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/x87m64.bin' --arch \"upcl:$X@8086\" --dump 0x40 | grep -q '0x40. = 0x0007'")
 endif()
 
 # Disassembly: one declarative `disasm ( mnemonic:"mov", size:word, operands:dst,src )` plus

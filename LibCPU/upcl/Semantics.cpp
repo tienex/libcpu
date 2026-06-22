@@ -512,10 +512,15 @@ Translator::EvalExpr (Expr *pExpr)
 
     case ExprMem: {
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
+        bool   IsFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
         Value Addr = EvalExpr (pExpr->Args[0]);
         ComPtr<ICpuValue> V;
         m_pE->Load (Addr.V, Bits, &V);
-        return Pool (std::move (V), Bits);
+        Value Out = Pool (std::move (V), Bits);
+        // A float-typed memory load (`#f32 %M[..]`) reads the raw IEEE bytes, so reinterpret the
+        // loaded integer bits as a float of that width (an 8087 FLD m32real / m64real).
+        if (IsFloat) { Out = CastTo (CastIToFBits, Out, Bits); Out.Float = true; }
+        return Out;
     }
 
     case ExprSelect: {
@@ -922,8 +927,17 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
 
     case ExprMem: {
         UINT32 Bits = (pLhs->VType != nullptr) ? pLhs->VType->Width : Rhs.Bits;
+        bool   IsFloat = (pLhs->VType != nullptr && pLhs->VType->Kind == TypeFloat);
         Value Addr = EvalExpr (pLhs->Args[0]);
-        Value V = Coerce (Rhs, Bits, false);
+        Value V;
+        if (IsFloat && Rhs.Float) {
+            // A float-typed store (`#f32 %M[..] = st`): round to the target width, then write the
+            // raw IEEE bytes (an 8087 FST m32real / m64real).
+            V = (Bits >= Rhs.Bits) ? CastTo (CastFExt, Rhs, Bits) : CastTo (CastFTrunc, Rhs, Bits);
+            V = CastTo (CastFToIBits, V, Bits);
+        } else {
+            V = Coerce (Rhs, Bits, false);
+        }
         m_pE->Store (V.V, Addr.V, Bits);
         return;
     }
@@ -1066,6 +1080,16 @@ Translator::EmitMacroStmt (Expr *pCall)
 Value
 Translator::EvalMacroCall (Expr *pCall)
 {
+    // @lea ( operand ) -- the effective address of a memory operand, without loading it. Lets an
+    // instruction access the operand's bytes at a width other than the operand's own (an 8087
+    // FLD m32real reads 4 bytes from the ModR/M address through `#f32 %M[ @lea(src) ]`).
+    if (pCall->Name == "lea" && pCall->Args.size () == 1 && pCall->Args[0]->Kind == ExprName) {
+        auto O = m_Operands.find (pCall->Args[0]->Name);
+        if (O != m_Operands.end () && O->second.Kind == Operand::Mem) {
+            return MemAddress (O->second);
+        }
+    }
+
     Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
     if (M == nullptr) { return Const (m_WordBits, 0); }
 
