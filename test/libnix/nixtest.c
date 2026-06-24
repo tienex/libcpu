@@ -120,13 +120,20 @@ main (void)
 	int yld = nix_rt_sched_yield (env);
 	int rtok = (ipc == -1) && (yld == 0);
 
-	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok;
+	/* Process ops -- exercises nix-process. getpid/getppid are real; fork has no analog in the
+	   single-process model and must report the nosys sentinel. */
+	int pid  = nix_getpid (env);
+	int ppid = nix_getppid (env);
+	int frk  = nix_fork (env);
+	int procok = (pid > 0) && (ppid > 0) && (frk == -1);
+
+	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok;
 
 	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
 	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu,
 	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp, cr, (long long) ts.tv_sec);
-	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d\n", ipc, yld);
+	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d\n", ipc, yld, pid, ppid, frk);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

@@ -209,6 +209,14 @@ NIX_WIN32_SETID_STUB (seteuid, uid_t, NIX_WIN32_UID)
 NIX_WIN32_SETID_STUB (setgid,  gid_t, NIX_WIN32_GID)
 NIX_WIN32_SETID_STUB (setegid, gid_t, NIX_WIN32_GID)
 
+/* No parent-process concept on win32: report init (1) as the parent. nix-process is otherwise a
+   single-process model (fork/exec/wait are ENOSYS). PRIO_PROCESS is referenced by nix_nice's
+   no-HAVE_NICE path. */
+static __inline pid_t getppid (void) { return 1; }
+#ifndef PRIO_PROCESS
+#define PRIO_PROCESS 0
+#endif
+
 /* Process groups / sessions: win32 has no analog. Model the emulated process as a single
    self-led group and session -- it is its own group/session leader (its own pid). */
 static __inline pid_t getpgrp (void)             { return (pid_t) _getpid (); }

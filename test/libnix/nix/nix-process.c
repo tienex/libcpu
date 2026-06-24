@@ -5,7 +5,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/resource.h>
+#ifndef _WIN32
+#include <sys/resource.h>   /* struct rusage/rlimit, RLIMIT_*, PRIO_*; POSIX only (shim defines PRIO_PROCESS) */
+#endif
 
 #include "nix.h"
 #include "nix-structs.h"
@@ -76,13 +78,19 @@ nix_setpriority(int which, int who, int prio, nix_env_t *env)
 int
 nix_getrusage(int who, struct nix_rusage *rusage, nix_env_t *env)
 {
+#ifndef _WIN32
 	struct rusage ru;
+#endif
 
 	if (rusage == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 
+#ifdef _WIN32
+	(void)who;
+	return (nix_nosys(env));   /* no getrusage/struct rusage on win32 (converter is POSIX-only) */
+#else
 	if (getrusage(who, &ru) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
@@ -91,19 +99,26 @@ nix_getrusage(int who, struct nix_rusage *rusage, nix_env_t *env)
 	rusage_to_nix_rusage(&ru, rusage);
 
 	return (0);
+#endif
 }
 
 int
 nix_getrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 {
+#ifndef _WIN32
 	struct rlimit rl;
 	int           rrsrc;
+#endif
 
 	if (rlim == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 
+#ifdef _WIN32
+	(void)resource;
+	return (nix_nosys(env));   /* no getrlimit/struct rlimit/RLIMIT_* on win32 (converter is POSIX-only) */
+#else
 	switch (resource)
 	  {
 	  case NIX_RLIMIT_CORE:    rrsrc = RLIMIT_CORE;    break;
@@ -135,6 +150,7 @@ nix_getrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 	rlimit_to_nix_rlimit(&rl, rlim);
 
 	return (0);
+#endif
 }
 
 int
@@ -146,19 +162,34 @@ nix_setrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 nix_pid_t
 nix_wait(nix_pid_t wpid, nix_env_t *env)
 {
+#ifdef _WIN32
+  (void)wpid;
+  return (nix_nosys(env));   /* no child processes in the single-process win32 model */
+#else
   return (nix_bsd_wait4(wpid, NULL, 0, NULL, env));
+#endif
 }
 
 nix_pid_t
 nix_waitpid(nix_pid_t wpid, int options, nix_env_t *env)
 {
+#ifdef _WIN32
+  (void)wpid; (void)options;
+  return (nix_nosys(env));
+#else
   return (nix_bsd_wait4(wpid, NULL, options, NULL, env));
+#endif
 }
 
 nix_pid_t
 nix_wait3(nix_pid_t wpid, int *status, int options, nix_env_t *env)
 {
+#ifdef _WIN32
+  (void)wpid; (void)status; (void)options;
+  return (nix_nosys(env));
+#else
   return (nix_bsd_wait4(wpid, status, options, NULL, env));
+#endif
 }
 
 int
