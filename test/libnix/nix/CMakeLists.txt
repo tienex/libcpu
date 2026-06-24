@@ -88,6 +88,7 @@ SET(NIX_CORE_SRC
 			nix-hostinfo.c
 			nix-cred.c
 			nix-mem.c
+			nix-rt-time.c
 			nix-xcpt.c
 			nix-structs.c)
 
@@ -96,7 +97,6 @@ SET(NIX_CORE_SRC
 SET(NIX_GENERIC_SRC
 			nix-process.c
 			nix-rt-process.c
-			nix-rt-time.c
 			nix-s5-msg.c
 			nix-s5-sem.c
 			nix-s5-shm.c
