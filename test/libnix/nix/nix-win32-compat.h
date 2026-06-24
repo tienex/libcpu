@@ -146,6 +146,41 @@ readlink (char const *path, char *buf, int bufsiz)
   return -1;
 }
 
+/* Host identity. Win32 has no POSIX gethostname in <unistd.h> -- the BSD one lives in winsock
+   (needs WSAStartup). The machine name is reachable through kernel32's GetComputerNameA with no
+   init and no winsock link, so we use that. Declared by hand (matching the real WINBASEAPI
+   prototype) to avoid pulling all of <windows.h> into every nix source. */
+__declspec (dllimport) int __stdcall GetComputerNameA (char *lpBuffer, unsigned long *nSize);
+
+#ifndef ENAMETOOLONG
+#define ENAMETOOLONG 38
+#endif
+
+static __inline int
+gethostname (char *buf, size_t len)
+{
+  unsigned long n = (unsigned long) len;
+  if (GetComputerNameA (buf, &n))
+    return 0;
+  errno = ENAMETOOLONG;          /* the only documented GetComputerNameA failure: buffer too small */
+  return -1;
+}
+
+/* No NIS/YP domain concept on win32: the faithful POSIX representation of "not in a domain" is an
+   empty domain name reported successfully (what a non-domain-joined POSIX host returns too). */
+static __inline int
+getdomainname (char *buf, size_t len)
+{
+  if (len == 0)
+    return 0;
+  buf[0] = '\0';
+  return 0;
+}
+
+/* Setting host/domain identity has no unprivileged win32 analog: report unsupported. */
+NIX_WIN32_ENOSYS_STUB (sethostname,   (char const *name, size_t len))
+NIX_WIN32_ENOSYS_STUB (setdomainname, (char const *name, size_t len))
+
 #endif  /* _WIN32 */
 
 #endif  /* !__nix_win32_compat_h */

@@ -15,7 +15,7 @@
 #include "xec-debug.h"
 
 #ifndef SIZE_T_MAX
-# define SIZE_T_MAX ( (1 << (sizeof (size_t) << 3)) - 1)
+# define SIZE_T_MAX (~(size_t) 0) /* max value of size_t; 1 << (8*sizeof) overflows the shift */
 #endif
 
 #ifndef FILE_MAP_EXECUTE
@@ -287,8 +287,13 @@ xec_mmap_create_with_file (char const *path,
       if (hmap == NULL)
         goto fail;
 
-      /* Map the file (sheesh, 3 steps to mmap a file!?) */
-      mm->ptr = MapViewOfFile (hmap, map_flags, (offset >> 32), offset, size);
+      /* Map the file (sheesh, 3 steps to mmap a file!?). The offset splits across two DWORDs;
+         widen to 64-bit before the shift so it is well-defined when off_t is 32-bit (the high
+         half is then simply 0). */
+      mm->ptr = MapViewOfFile (hmap, map_flags,
+                               (DWORD) ((uint64_t) offset >> 32), /* dwFileOffsetHigh */
+                               (DWORD) (uint64_t) offset,         /* dwFileOffsetLow */
+                               size);
       if (mm->ptr == NULL)
         goto fail;
       

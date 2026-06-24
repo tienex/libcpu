@@ -85,6 +85,7 @@ SET(NIX_CORE_SRC
 			nix-file.c
 			nix-dir.c
 			nix-time.c
+			nix-hostinfo.c
 			nix-xcpt.c
 			nix-structs.c)
 
@@ -92,7 +93,6 @@ SET(NIX_CORE_SRC
 # IPC, time) -- POSIX today; ported to non-POSIX hosts incrementally.
 SET(NIX_GENERIC_SRC
 			nix-cred.c
-			nix-hostinfo.c
 			nix-mem.c
 			nix-process.c
 			nix-rt-process.c

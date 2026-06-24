@@ -81,11 +81,17 @@ main (void)
 	int tr = nix_gettimeofday (&tv, NULL, env);
 	int timeok = (tr == 0) && (tv.tv_sec > 1000000000);   /* a plausible wall clock (after 2001) */
 
-	int ok = filok && dirok && timeok;
+	/* Host-identity op -- exercises the nix-hostinfo host layer (gethostname). */
+	char host[256];
+	memset (host, 0, sizeof (host));
+	int hr = nix_gethostname (host, sizeof (host), env);
+	int hostok = (hr == 0) && (host[0] != '\0');           /* a real machine name, non-empty */
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld\n",
+	int ok = filok && dirok && timeok && hostok;
+
+	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
-	        tr, (long long) tv.tv_sec);
+	        tr, (long long) tv.tv_sec, hr, host);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }
