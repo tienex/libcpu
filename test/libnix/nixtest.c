@@ -114,12 +114,19 @@ main (void)
 	int cr = nix_rt_clock_gettime (NIX_CLOCK_REALTIME, &ts, env);
 	int clockok = (cr == 0) && (ts.tv_sec > 1000000000);   /* plausible wall clock (after 2001) */
 
-	int ok = filok && dirok && timeok && hostok && credok && memok && clockok;
+	/* SysV IPC -- exercises nix-s5-* (no analog off POSIX: nosys everywhere) -- and the realtime
+	   scheduler yield from nix-rt-process (advisory; succeeds even where it is a no-op). */
+	int ipc = nix_s5_msgget ((nix_key_t) 1, 0, env);
+	int yld = nix_rt_sched_yield (env);
+	int rtok = (ipc == -1) && (yld == 0);
+
+	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok;
 
 	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
 	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu,
 	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp, cr, (long long) ts.tv_sec);
+	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d\n", ipc, yld);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

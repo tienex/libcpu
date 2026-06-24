@@ -3,7 +3,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/sem.h>
+#ifndef _WIN32
+#include <sys/sem.h>        /* SysV semaphores; no win32 analog (all ops are nix_nosys) */
+#endif
 
 #include "nix.h"
 
