@@ -217,6 +217,11 @@ static __inline pid_t getppid (void) { return 1; }
 #define PRIO_PROCESS 0
 #endif
 
+/* No inter-process signal delivery on win32. The guest's own signal dispositions are still fully
+   managed in nix-signal's tables (sigaction/sigprocmask/...); only raising a real host signal at
+   another process is unsupported. */
+NIX_WIN32_ENOSYS_STUB (kill, (pid_t pid, int sig))
+
 /* Process groups / sessions: win32 has no analog. Model the emulated process as a single
    self-led group and session -- it is its own group/session leader (its own pid). */
 static __inline pid_t getpgrp (void)             { return (pid_t) _getpid (); }

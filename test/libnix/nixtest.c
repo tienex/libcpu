@@ -127,13 +127,30 @@ main (void)
 	int frk  = nix_fork (env);
 	int procok = (pid > 0) && (ppid > 0) && (frk == -1);
 
-	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok;
+	/* Signal dispositions -- exercises nix-signal's guest-side core (host-independent): install a
+	   handler via sigaction, read it back, and round-trip the process signal mask. */
+	nix_signal_init (32);
+	struct nix_sigaction sa, osa;
+	memset (&sa, 0, sizeof (sa));
+	memset (&osa, 0, sizeof (osa));
+	sa.__sa_handler = 0x1234;
+	int sga = nix_sigaction (2, &sa, NULL, env);    /* install */
+	int sgb = nix_sigaction (2, &sa, &osa, env);    /* reinstall, recovering the previous handler */
+	nix_sigset_t oldmask = 0, newmask = 0x5;
+	/* nix_sigprocmask reports success via env errno (==0), which the obsd41 dispatcher clears at
+	   each syscall entry; model that boundary here since this harness calls primitives directly. */
+	nix_env_set_errno (env, 0);
+	int spm = nix_sigprocmask (NIX_SIG_SETMASK, &newmask, &oldmask, env);
+	int sigok = (sga == 0) && (sgb == 0) && (osa.__sa_handler == 0x1234) && (spm == 0);
+
+	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok && sigok;
 
 	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
 	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu,
 	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp, cr, (long long) ts.tv_sec);
-	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d\n", ipc, yld, pid, ppid, frk);
+	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d  sigaction=%d/%d handler=0x%llx sigprocmask=%d\n",
+	        ipc, yld, pid, ppid, frk, sga, sgb, (unsigned long long) osa.__sa_handler, spm);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

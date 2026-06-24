@@ -91,6 +91,7 @@ SET(NIX_CORE_SRC
 			nix-rt-time.c
 			nix-rt-process.c
 			nix-process.c
+			nix-signal.c
 			nix-s5-msg.c
 			nix-s5-sem.c
 			nix-s5-shm.c
@@ -100,7 +101,6 @@ SET(NIX_CORE_SRC
 # The rest of the generic layer (directories, memory, processes, signals, sockets, SysV
 # IPC, time) -- POSIX today; ported to non-POSIX hosts incrementally.
 SET(NIX_GENERIC_SRC
-			nix-signal.c
 			nix-socket.c)
 
 # Host-OS families: the per-host implementations of the host-specific operations.
