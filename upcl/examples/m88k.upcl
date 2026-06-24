@@ -47,7 +47,59 @@ arch "m88k" {
 }
 
 decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #i32 wmask,
-				 const #i9 vec9 ];
+				 const #i9 vec9,
+				 // Encoded immediate-form operands: 5-bit GPR selectors (rD[25:21], rS1[20:16])
+				 // and the immediate, held in a 32-bit operand so it widens cleanly for shifts/
+				 // arithmetic (the 16-bit imm16[15:0] field zero-extends into it). r[ idx ]
+				 // selects the physical GPR.
+				 #i5 rd, #i5 rs1, #i32 imm ];
+
+// ---------------------------------------------------------------------------
+// Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
+//   <op:6> <rD:5> <rS1:5> <imm16:16>.  rD = rS1 <op> imm16.  Logical ops act on the low
+//   16-bit half; the .u ("upper") variants act on the high half. Authoritative bit
+//   assignments cross-checked against arch/m88k/m88k_insn.cpp's primary decode table.
+// ---------------------------------------------------------------------------
+
+insn and_imm   : encode #i32 ( op:6 = 0x10, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "and", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] & ( 0xffff0000 | imm );
+insn and_u_imm : encode #i32 ( op:6 = 0x11, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "and.u", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] & ( ( imm << 16 ) | 0xffff );
+insn mask_imm  : encode #i32 ( op:6 = 0x12, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "mask", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] & imm;
+insn mask_u_imm: encode #i32 ( op:6 = 0x13, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "mask.u", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] & ( imm << 16 );
+insn xor_imm   : encode #i32 ( op:6 = 0x14, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "xor", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] ^ imm;
+insn xor_u_imm : encode #i32 ( op:6 = 0x15, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "xor.u", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] ^ ( imm << 16 );
+insn or_imm    : encode #i32 ( op:6 = 0x16, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "or", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] | imm;
+insn or_u_imm  : encode #i32 ( op:6 = 0x17, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "or.u", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] | ( imm << 16 );
+insn addu_imm  : encode #i32 ( op:6 = 0x18, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "addu", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] + imm;
+insn subu_imm  : encode #i32 ( op:6 = 0x19, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "subu", operands : rd, rs1, imm )
+	=> r[ rd ] = r[ rs1 ] - imm;
+insn mulu_imm  : encode #i32 ( op:6 = 0x1b, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "mulu", operands : rd, rs1, imm )
+	=> r[ rd ] = %U ( r[ rs1 ] * imm );
+insn add_imm   : encode #i32 ( op:6 = 0x1c, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "add", operands : rd, rs1, imm )
+	=> r[ rd ] = %OFTRAP ( r[ rs1 ] + imm, 1 );
+insn sub_imm   : encode #i32 ( op:6 = 0x1d, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "sub", operands : rd, rs1, imm )
+	=> r[ rd ] = %OFTRAP ( r[ rs1 ] - imm, 1 );
 
 // Perform addition/subtraction with over/underflow check, trap 1 on overflow.
 insn add     : dst = %OFTRAP ( src1 + src2, 1 );
