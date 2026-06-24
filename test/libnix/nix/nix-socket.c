@@ -1,14 +1,20 @@
 #include "nix-config.h"
 
+#include <string.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>     /* socklen_t, sockaddr_storage */
+#include <errno.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in_systm.h>
 #include <netinet/in.h>
-#include <string.h>
 #include <unistd.h>
 #ifdef HAVE_UCRED_H
 #include <ucred.h>
+#endif
 #endif
 
 #include "nix.h"
@@ -20,6 +26,79 @@
 #endif
 
 extern void *g_nix_log;
+
+#ifdef _WIN32
+/* Winsock differs from BSD sockets in three ways the shared code below assumes away: it must be
+   started (WSAStartup) before use, it reports errors via WSAGetLastError rather than errno, and
+   AF_UNIX/socketpair/getpeereid have no analog. Bridge the first two here; the AF_UNIX paths are
+   guarded out. The winsock calls are wrapped (then macro-aliased to their POSIX names) so the
+   shared bodies need no per-call edits; the wrappers are defined before the #defines, so they
+   reach the real winsock functions without recursing. */
+static int
+nix__wsa_to_errno (int w)
+{
+	switch (w) {
+		case WSAEWOULDBLOCK:  return EAGAIN;
+		case WSAEINTR:        return EINTR;
+		case WSAEBADF:        return EBADF;
+		case WSAEACCES:       return EACCES;
+		case WSAEFAULT:       return EFAULT;
+		case WSAEINVAL:       return EINVAL;
+		case WSAEMFILE:       return EMFILE;
+		case WSAENOTSOCK:     return EBADF;
+		case WSAEADDRINUSE:   return EADDRINUSE;
+		case WSAEADDRNOTAVAIL:return EADDRNOTAVAIL;
+		case WSAECONNREFUSED: return ECONNREFUSED;
+		case WSAENOTCONN:     return ENOTCONN;
+		case WSAECONNRESET:   return ECONNRESET;
+		case WSAETIMEDOUT:    return ETIMEDOUT;
+		default:              return EIO;
+	}
+}
+
+static void
+nix__wsa_ensure (void)
+{
+	static int started = 0;
+	if (!started) {
+		WSADATA wsa;
+		WSAStartup (MAKEWORD (2, 2), &wsa);   /* idempotent enough for a single-process emulator */
+		started = 1;
+	}
+}
+
+static __inline int nix_w_socket (int a, int b, int c)
+	{ int r = (int) socket (a, b, c); if (r < 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_bind (int s, struct sockaddr const *a, int l)
+	{ int r = bind ((SOCKET) s, a, l); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_connect (int s, struct sockaddr const *a, int l)
+	{ int r = connect ((SOCKET) s, a, l); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_listen (int s, int b)
+	{ int r = listen ((SOCKET) s, b); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_accept (int s, struct sockaddr *a, int *l)
+	{ int r = (int) accept ((SOCKET) s, a, l); if (r < 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_shutdown (int s, int h)
+	{ int r = shutdown ((SOCKET) s, h); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_getpeername (int s, struct sockaddr *a, int *l)
+	{ int r = getpeername ((SOCKET) s, a, l); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_getsockname (int s, struct sockaddr *a, int *l)
+	{ int r = getsockname ((SOCKET) s, a, l); if (r != 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_recvfrom (int s, void *b, int n, int f, struct sockaddr *a, int *l)
+	{ int r = recvfrom ((SOCKET) s, (char *) b, n, f, a, l); if (r < 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+static __inline int nix_w_sendto (int s, void const *b, int n, int f, struct sockaddr const *a, int l)
+	{ int r = sendto ((SOCKET) s, (char const *) b, n, f, a, l); if (r < 0) errno = nix__wsa_to_errno (WSAGetLastError ()); return r; }
+
+#define socket(a,b,c)         nix_w_socket ((a), (b), (c))
+#define bind(s,a,l)           nix_w_bind ((s), (a), (l))
+#define connect(s,a,l)        nix_w_connect ((s), (a), (l))
+#define listen(s,b)           nix_w_listen ((s), (b))
+#define accept(s,a,l)         nix_w_accept ((s), (a), (l))
+#define shutdown(s,h)         nix_w_shutdown ((s), (h))
+#define getpeername(s,a,l)    nix_w_getpeername ((s), (a), (l))
+#define getsockname(s,a,l)    nix_w_getsockname ((s), (a), (l))
+#define recvfrom(s,b,n,f,a,l) nix_w_recvfrom ((s), (b), (n), (f), (a), (l))
+#define sendto(s,b,n,f,a,l)   nix_w_sendto ((s), (b), (n), (f), (a), (l))
+#endif  /* _WIN32 */
 
 static void
 nix_sockaddr_in_to_sockaddr_in(struct nix_sockaddr_in const *in,
@@ -45,6 +124,7 @@ sockaddr_in_to_nix_sockaddr_in(struct sockaddr_in const *in,
 	out->sin_addr   = in->sin_addr.s_addr;
 }
 
+#ifndef _WIN32   /* AF_UNIX (struct sockaddr_un) has no win32 analog */
 static void
 nix_sockaddr_un_to_sockaddr_un(struct nix_sockaddr_un const *in,
 							   struct sockaddr_un           *out)
@@ -66,6 +146,7 @@ sockaddr_un_to_nix_sockaddr_un(struct sockaddr_un const *in,
 	out->sun_family = in->sun_family;
 	strncpy(out->sun_path, in->sun_path, min(sizeof(in->sun_path), sizeof(out->sun_path)));
 }
+#endif  /* !_WIN32 -- AF_UNIX helpers */
 
 static int
 nix_sockaddr_to_sockaddr(struct nix_sockaddr const *in,
@@ -74,12 +155,14 @@ nix_sockaddr_to_sockaddr(struct nix_sockaddr const *in,
 						 socklen_t                 *outlen)
 {
 	switch (in->sa_family) {
+#ifndef _WIN32
 		case NIX_AF_UNIX:
 			XEC_ASSERT(g_nix_log, inlen == sizeof (struct nix_sockaddr_un));
 			nix_sockaddr_un_to_sockaddr_un((struct nix_sockaddr_un const *)in,
 			   (struct sockaddr_un *)out);
 			*outlen = sizeof (struct sockaddr_un);
 			return (1);
+#endif
 
 		case NIX_AF_INET:
 			XEC_ASSERT(g_nix_log, inlen == sizeof (struct nix_sockaddr_in));
@@ -99,6 +182,7 @@ sockaddr_to_nix_sockaddr(struct sockaddr const *in,
 						 nix_socklen_t         *outlen)
 {
 	switch (in->sa_family) {
+#ifndef _WIN32
 		case NIX_AF_UNIX:
 			XEC_ASSERT(g_nix_log, inlen >= sizeof (struct sockaddr_un));
 			XEC_ASSERT(g_nix_log, *outlen >= sizeof (struct nix_sockaddr_un));
@@ -106,6 +190,7 @@ sockaddr_to_nix_sockaddr(struct sockaddr const *in,
 				(struct nix_sockaddr_un *)out);
 			*outlen = sizeof(struct nix_sockaddr_un);
 			return (1);
+#endif
 
 		case NIX_AF_INET:
 			XEC_ASSERT(g_nix_log, inlen >= sizeof (struct sockaddr_in));
@@ -127,6 +212,10 @@ nix_socket(int family, int type, int protocol, nix_env_t *env)
 
 	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "family=%d, type=%d, protocol=%d", family, type, protocol);
 
+#ifdef _WIN32
+	nix__wsa_ensure();
+#endif
+
 	fd = socket(family, type, protocol);
 	if (fd < 0) {
 		nix_env_set_errno(env, errno);
@@ -139,12 +228,22 @@ nix_socket(int family, int type, int protocol, nix_env_t *env)
 		return (-1);
 	}
 
+#ifdef _WIN32
+	nix_fd_set_socket(gfd, 1);   /* route this fd's I/O through recv/send/closesocket */
+#endif
+
 	return (gfd);
 }
 
 int
 nix_socketpair(int family, int type, int protocol, int *sv, nix_env_t *env)
 {
+#ifdef _WIN32
+	/* No socketpair on win32 (it is an AF_UNIX construct). A loopback-TCP emulation is possible
+	   but out of scope for the file-op-era surface; report unsupported. */
+	(void)family; (void)type; (void)protocol; (void)sv;
+	return (nix_nosys(env));
+#else
 	int d;
 	int rc;
 	int rsv[2];
@@ -179,6 +278,7 @@ errnfile:
 	close(rsv[0]);
 	nix_env_set_errno(env, ENFILE);
 	return (0);
+#endif  /* _WIN32 */
 }
 
 int
@@ -308,6 +408,10 @@ nix_accept(int fd, struct nix_sockaddr *sa, nix_socklen_t *salen, nix_env_t *env
 		return (-1);
 	}
 
+#ifdef _WIN32
+	nix_fd_set_socket(gfd, 1);   /* accepted connection is also a socket fd */
+#endif
+
 	__nix_try
 	{
 		sockaddr_to_nix_sockaddr ( (struct sockaddr const *)&ss, sslen, sa, salen);
@@ -322,7 +426,7 @@ nix_accept(int fd, struct nix_sockaddr *sa, nix_socklen_t *salen, nix_env_t *env
 	}
 	__nix_end_try
 
-	return (0);
+	return (gfd);   /* accept(2) returns the new connection's descriptor, not 0 */
 }
 
 int

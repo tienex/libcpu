@@ -143,7 +143,52 @@ main (void)
 	int spm = nix_sigprocmask (NIX_SIG_SETMASK, &newmask, &oldmask, env);
 	int sigok = (sga == 0) && (sgb == 0) && (osa.__sa_handler == 0x1234) && (spm == 0);
 
-	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok && sigok;
+	/* Sockets -- exercises nix-socket AND the fd-unification (on win32 nix_write/nix_read on a
+	   socket fd route to send/recv, not the CRT _write/_read). A single-thread loopback TCP
+	   self-connect on 127.0.0.1: the handshake completes via the listen backlog before accept. */
+	nix_env_set_errno (env, 0);
+	int srv = nix_socket (NIX_AF_INET, 1 /* SOCK_STREAM */, 0, env);
+	int cli = -1, acc = -1, b = -1, l = -1, gn = -1, cc = -1;
+	nix_ssize_t sn = -1, rn = -1;
+	char rbuf = 0;
+	if (srv >= 0) {
+		struct nix_sockaddr_in sin, bound, caddr, peer;
+		nix_socklen_t blen = sizeof (bound), plen = sizeof (peer);
+		memset (&sin, 0, sizeof (sin));
+		sin.sin_family = NIX_AF_INET;
+		sin.sin_port   = 0;             /* let the OS choose a free port */
+		sin.sin_addr   = 0x0100007F;    /* 127.0.0.1 in network byte order (little-endian host) */
+		b  = nix_bind (srv, (struct nix_sockaddr *) &sin, sizeof (sin), env);
+		l  = nix_listen (srv, 1, env);
+		memset (&bound, 0, sizeof (bound));
+		gn = nix_getsockname (srv, (struct nix_sockaddr *) &bound, &blen, env);
+		cli = nix_socket (NIX_AF_INET, 1, 0, env);
+		memset (&caddr, 0, sizeof (caddr));
+		caddr.sin_family = NIX_AF_INET;
+		caddr.sin_port   = bound.sin_port;   /* the assigned port, already in network order */
+		caddr.sin_addr   = 0x0100007F;
+		cc = nix_connect (cli, (struct nix_sockaddr *) &caddr, sizeof (caddr), env);
+		memset (&peer, 0, sizeof (peer));
+		acc = nix_accept (srv, (struct nix_sockaddr *) &peer, &plen, env);
+		char sbuf = 'Z';
+		if (cli >= 0) {
+			sn = nix_write (cli, &sbuf, 1, env);   /* -> send() on win32 socket fds */
+		}
+		if (acc >= 0) {
+			rn = nix_read (acc, &rbuf, 1, env);    /* -> recv() on win32 socket fds */
+		}
+		if (acc >= 0) {
+			nix_close (acc, env);
+		}
+		if (cli >= 0) {
+			nix_close (cli, env);
+		}
+		nix_close (srv, env);
+	}
+	int sockok = (srv >= 0) && (b == 0) && (l == 0) && (gn == 0) && (cc == 0)
+	          && (acc >= 0) && (sn == 1) && (rn == 1) && (rbuf == 'Z');
+
+	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok && sigok && sockok;
 
 	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
@@ -151,6 +196,8 @@ main (void)
 	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp, cr, (long long) ts.tv_sec);
 	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d  sigaction=%d/%d handler=0x%llx sigprocmask=%d\n",
 	        ipc, yld, pid, ppid, frk, sga, sgb, (unsigned long long) osa.__sa_handler, spm);
+	printf ("  socket: srv=%d bind=%d listen=%d getsockname=%d connect=%d accept=%d  send=%lld recv=%lld byte='%c'\n",
+	        srv, b, l, gn, cc, acc, (long long) sn, (long long) rn, rbuf ? rbuf : '?');
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

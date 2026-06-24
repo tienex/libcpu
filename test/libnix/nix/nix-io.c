@@ -21,6 +21,11 @@
 #include <unistd.h>
 #else
 #include <io.h>          /* win32: read/write/close/lseek live here (the MSVCRT POSIX layer) */
+/* Socket fds need winsock I/O, not the CRT's _read/_write/_close. Declared by hand (matching the
+   ws2_32 prototypes) so winsock.h stays confined to nix-socket.c; SOCKET is uintptr_t. */
+__declspec (dllimport) int __stdcall recv (uintptr_t s, char *buf, int len, int flags);
+__declspec (dllimport) int __stdcall send (uintptr_t s, char const *buf, int len, int flags);
+__declspec (dllimport) int __stdcall closesocket (uintptr_t s);
 #endif
 
 #include "nix.h"
@@ -133,7 +138,12 @@ nix_close(int fd, nix_env_t *env)
 	}
 
 	if (rfd > 2) { // XXX HACK
+#ifdef _WIN32
+		int failed = nix_fd_is_socket(fd) ? (closesocket((uintptr_t)rfd) != 0) : (close(rfd) != 0);
+		if (failed) {
+#else
 		if (close(rfd) != 0) {
+#endif
 			nix_env_set_errno(env, errno);
 			return (-1);
 		}
@@ -166,7 +176,12 @@ nix_read(int fd, void *buf, size_t bufsiz, nix_env_t *env)
 	if (bufsiz == 0)
 		return (0);
 
-	nb = read(rfd, buf, bufsiz);
+#ifdef _WIN32
+	if (nix_fd_is_socket(fd))
+		nb = recv((uintptr_t)rfd, buf, (int)bufsiz, 0);
+	else
+#endif
+		nb = read(rfd, buf, bufsiz);
 	if (nb < 0)
 		nix_env_set_errno(env, errno);
 
@@ -229,7 +244,12 @@ nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
 	if (bufsiz == 0)
 		return (0);
 
-	nb = write(rfd, buf, bufsiz);
+#ifdef _WIN32
+	if (nix_fd_is_socket(fd))
+		nb = send((uintptr_t)rfd, buf, (int)bufsiz, 0);
+	else
+#endif
+		nb = write(rfd, buf, bufsiz);
 	if (nb < 0)
 		nix_env_set_errno(env, errno);
 

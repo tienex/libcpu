@@ -157,6 +157,9 @@ __declspec (dllimport) int __stdcall GetComputerNameA (char *lpBuffer, unsigned 
 #define ENAMETOOLONG 38
 #endif
 
+/* winsock declares its own gethostname(char*, int); when it is in scope (nix-socket.c) defer to
+   it rather than redefining with an incompatible signature. */
+#if !defined(_WINSOCK2API_) && !defined(_WINSOCKAPI_)
 static __inline int
 gethostname (char *buf, size_t len)
 {
@@ -166,6 +169,7 @@ gethostname (char *buf, size_t len)
   errno = ENAMETOOLONG;          /* the only documented GetComputerNameA failure: buffer too small */
   return -1;
 }
+#endif
 
 /* No NIS/YP domain concept on win32: the faithful POSIX representation of "not in a domain" is an
    empty domain name reported successfully (what a non-domain-joined POSIX host returns too). */

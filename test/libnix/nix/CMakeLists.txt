@@ -92,16 +92,16 @@ SET(NIX_CORE_SRC
 			nix-rt-process.c
 			nix-process.c
 			nix-signal.c
+			nix-socket.c
 			nix-s5-msg.c
 			nix-s5-sem.c
 			nix-s5-shm.c
 			nix-xcpt.c
 			nix-structs.c)
 
-# The rest of the generic layer (directories, memory, processes, signals, sockets, SysV
-# IPC, time) -- POSIX today; ported to non-POSIX hosts incrementally.
-SET(NIX_GENERIC_SRC
-			nix-socket.c)
+# The rest of the generic layer -- all brought onto the win32 core surface; nothing POSIX-only
+# remains here. (Kept as a distinct list for clarity / future host families.)
+SET(NIX_GENERIC_SRC)
 
 # Host-OS families: the per-host implementations of the host-specific operations.
 SET(NIX_BSD_SRC
@@ -130,6 +130,10 @@ ELSE()
 	ADD_LIBRARY(nix SHARED ${NIX_SRC})
 ENDIF()
 TARGET_LINK_LIBRARIES(nix xec-compat)
+IF(WIN32)
+  # winsock: nix-socket's socket calls + nix-io's socket-fd recv/send/closesocket routing.
+  TARGET_LINK_LIBRARIES(nix ws2_32)
+ENDIF()
 IF(SOCKET_LIBRARY)
   TARGET_LINK_LIBRARIES(nix socket)
 ENDIF()

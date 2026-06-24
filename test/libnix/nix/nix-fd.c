@@ -22,6 +22,9 @@ static size_t    nix_fdtable_size = 0;
 static size_t    nix_usedfd       = 0;
 static int      *nix_fdtable      = NULL;
 static bitstr_t *nix_fdslots      = NULL;
+#ifdef _WIN32
+static bitstr_t *nix_fdsock       = NULL;  /* which gfds are win32 SOCKETs (route I/O to recv/send) */
+#endif
 
 #define NIX_FD_LOCK()
 #define NIX_FD_UNLOCK()
@@ -41,6 +44,10 @@ nix_fd_init(size_t count)
 	XEC_ASSERT(g_nix_log, nix_fdtable != NULL);
 	nix_fdslots = bit_alloc(count);
 	XEC_ASSERT(g_nix_log, nix_fdslots != NULL);
+#ifdef _WIN32
+	nix_fdsock = bit_alloc(count);
+	XEC_ASSERT(g_nix_log, nix_fdsock != NULL);
+#endif
 
 	for (n = 0; n < count; n++)
 		nix_fdtable[n] = -1;
@@ -119,6 +126,9 @@ nix_fd_release(int fd, nix_env_t *env)
 			nix_fdtable[fd] = -1;
 
 			bit_clear(nix_fdslots, fd);
+#ifdef _WIN32
+			bit_clear(nix_fdsock, fd);
+#endif
 
 			--nix_usedfd;
 
@@ -179,3 +189,26 @@ nix_getdtablesize(void)
 {
 	return (nix_fdtable_size);
 }
+
+#ifdef _WIN32
+void
+nix_fd_set_socket(int gfd, int is_socket)
+{
+	if (gfd < 0 || gfd >= (int)nix_fdtable_size)
+		return;
+
+	if (is_socket)
+		bit_set(nix_fdsock, gfd);
+	else
+		bit_clear(nix_fdsock, gfd);
+}
+
+int
+nix_fd_is_socket(int gfd)
+{
+	if (gfd < 0 || gfd >= (int)nix_fdtable_size)
+		return (0);
+
+	return (bit_test(nix_fdsock, gfd) != 0);
+}
+#endif
