@@ -5,7 +5,9 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/reboot.h>
+#ifndef _WIN32
+#include <sys/reboot.h>     /* host reboot flags; win32 has no analog (reboot() stubbed in the shim) */
+#endif
 
 #include "nix.h"
 

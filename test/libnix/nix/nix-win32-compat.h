@@ -19,6 +19,7 @@
 
 #include <io.h>
 #include <direct.h>       /* _mkdir / _chdir / _rmdir / _getcwd */
+#include <process.h>      /* _getpid */
 #include <errno.h>
 #include <stdio.h>        /* SEEK_SET / SEEK_CUR */
 #include <fcntl.h>        /* _O_WRONLY */
@@ -180,6 +181,44 @@ getdomainname (char *buf, size_t len)
 /* Setting host/domain identity has no unprivileged win32 analog: report unsupported. */
 NIX_WIN32_ENOSYS_STUB (sethostname,   (char const *name, size_t len))
 NIX_WIN32_ENOSYS_STUB (setdomainname, (char const *name, size_t len))
+
+/* Process credentials. Win32 has no POSIX numeric uid/gid (its model is SID/token-based), so the
+   emulated process runs as one fixed, non-root identity: queries report it, and "setting" to that
+   same id succeeds (you are always who you already are) while any other id is EPERM -- the same
+   thing an unprivileged POSIX process sees. */
+#ifndef NIX_WIN32_UID
+#define NIX_WIN32_UID 1000
+#endif
+#ifndef NIX_WIN32_GID
+#define NIX_WIN32_GID 1000
+#endif
+#ifndef EPERM
+#define EPERM 1
+#endif
+
+static __inline uid_t getuid  (void) { return NIX_WIN32_UID; }
+static __inline uid_t geteuid (void) { return NIX_WIN32_UID; }
+static __inline gid_t getgid  (void) { return NIX_WIN32_GID; }
+static __inline gid_t getegid (void) { return NIX_WIN32_GID; }
+
+#define NIX_WIN32_SETID_STUB(name, type, fixed)                 \
+  static __inline int name (type id)                            \
+  { if (id == (fixed)) return 0; errno = EPERM; return -1; }
+NIX_WIN32_SETID_STUB (setuid,  uid_t, NIX_WIN32_UID)
+NIX_WIN32_SETID_STUB (seteuid, uid_t, NIX_WIN32_UID)
+NIX_WIN32_SETID_STUB (setgid,  gid_t, NIX_WIN32_GID)
+NIX_WIN32_SETID_STUB (setegid, gid_t, NIX_WIN32_GID)
+
+/* Process groups / sessions: win32 has no analog. Model the emulated process as a single
+   self-led group and session -- it is its own group/session leader (its own pid). */
+static __inline pid_t getpgrp (void)             { return (pid_t) _getpid (); }
+static __inline pid_t getpgid (pid_t pid)        { (void) pid; return (pid_t) _getpid (); }
+static __inline pid_t getsid  (pid_t pid)        { (void) pid; return (pid_t) _getpid (); }
+static __inline pid_t setsid  (void)             { return (pid_t) _getpid (); }
+static __inline int   setpgid (pid_t p, pid_t g) { (void) p; (void) g; return 0; }
+
+/* The guest must never reboot the host. */
+NIX_WIN32_ENOSYS_STUB (reboot, (int howto))
 
 #endif  /* _WIN32 */
 

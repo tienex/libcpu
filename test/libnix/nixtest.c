@@ -87,11 +87,17 @@ main (void)
 	int hr = nix_gethostname (host, sizeof (host), env);
 	int hostok = (hr == 0) && (host[0] != '\0');           /* a real machine name, non-empty */
 
-	int ok = filok && dirok && timeok && hostok;
+	/* Credentials -- exercises the nix-cred host layer (uid/gid identity + setid semantics). */
+	int uid = nix_getuid (env);
+	int gid = nix_getgid (env);
+	int seteu = nix_seteuid ((nix_uid_t) nix_geteuid (env), env);   /* re-set to self: must succeed */
+	int credok = (uid >= 0) && (gid >= 0) && (nix_geteuid (env) == uid) && (seteu == 0);
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'\n",
+	int ok = filok && dirok && timeok && hostok && credok;
+
+	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
-	        tr, (long long) tv.tv_sec, hr, host);
+	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }
