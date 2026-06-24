@@ -123,10 +123,10 @@ _xec_mmap_get_flags (size_t   *size,
       break;
     case XEC_MMAP_WRITE:
     case XEC_MMAP_READ | XEC_MMAP_WRITE:
-      if (flags & XEC_MMAP_SHARED)
-        *prot_flags = PAGE_READWRITE;
+      if (isfile && !(flags & XEC_MMAP_SHARED))
+        *prot_flags = PAGE_WRITECOPY; /* private view of a file: copy-on-write */
       else
-        *prot_flags = PAGE_WRITECOPY;
+        *prot_flags = PAGE_READWRITE; /* anonymous memory (VirtualAlloc rejects WRITECOPY), or a shared file view */
       break;
     case XEC_MMAP_EXEC:
       *prot_flags = PAGE_EXECUTE;

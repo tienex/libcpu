@@ -220,6 +220,46 @@ static __inline int   setpgid (pid_t p, pid_t g) { (void) p; (void) g; return 0;
 /* The guest must never reboot the host. */
 NIX_WIN32_ENOSYS_STUB (reboot, (int howto))
 
+/* Memory protection. nix_mprotect forwards POSIX-style prot bits (PROT_READ=1/WRITE=2/EXEC=4,
+   matching NIX_PROT_*) straight to the host, so the win32 mprotect must translate that bit
+   combination into win32's combinatorial PAGE_* protection enum and call VirtualProtect.
+   Declared by hand (matching the real WINBASEAPI prototype) to keep <windows.h> out. */
+__declspec (dllimport) int __stdcall VirtualProtect (void *lpAddress, size_t dwSize,
+                                                     unsigned long flNewProtect,
+                                                     unsigned long *lpflOldProtect);
+
+#ifndef PAGE_NOACCESS
+#define PAGE_NOACCESS          0x01
+#define PAGE_READONLY          0x02
+#define PAGE_READWRITE         0x04
+#define PAGE_EXECUTE           0x10
+#define PAGE_EXECUTE_READ      0x20
+#define PAGE_EXECUTE_READWRITE 0x40
+#endif
+
+#ifndef EACCES
+#define EACCES 13
+#endif
+
+static __inline int
+mprotect (void *addr, size_t len, int prot)
+{
+  unsigned long newp, oldp;
+  switch (prot & 7)                                  /* READ|WRITE|EXEC, as forwarded by nix_mprotect */
+    {
+    case 0:                          newp = PAGE_NOACCESS;          break;
+    case 1:                          newp = PAGE_READONLY;          break;
+    case 2: case 3:                  newp = PAGE_READWRITE;         break;  /* write implies read on win32 */
+    case 4:                          newp = PAGE_EXECUTE;           break;
+    case 5:                          newp = PAGE_EXECUTE_READ;      break;
+    default:                         newp = PAGE_EXECUTE_READWRITE; break;  /* 6, 7 */
+    }
+  if (VirtualProtect (addr, len, newp, &oldp))
+    return 0;
+  errno = EACCES;                                    /* the documented VirtualProtect failure mode */
+  return -1;
+}
+
 #endif  /* _WIN32 */
 
 #endif  /* !__nix_win32_compat_h */

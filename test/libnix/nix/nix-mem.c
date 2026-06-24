@@ -1,5 +1,7 @@
 #include <sys/types.h>
-#include <sys/mman.h>
+#ifndef _WIN32
+#include <sys/mman.h>       /* host mmap/mprotect; win32 has neither (mprotect shimmed via VirtualProtect) */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>

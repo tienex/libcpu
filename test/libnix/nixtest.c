@@ -13,11 +13,13 @@
 **/
 
 #include "nix.h"
+#include "xec-mmap.h"
 
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 extern void xec_init (void);                  /* brings up the xec log + memory subsystems */
 
@@ -93,11 +95,24 @@ main (void)
 	int seteu = nix_seteuid ((nix_uid_t) nix_geteuid (env), env);   /* re-set to self: must succeed */
 	int credok = (uid >= 0) && (gid >= 0) && (nix_geteuid (env) == uid) && (seteu == 0);
 
-	int ok = filok && dirok && timeok && hostok && credok;
+	/* Memory ops -- exercises the nix-mem host layer. brk is nosys everywhere (returns the all-ones
+	   sentinel + ENOSYS); mprotect runs against a real page obtained portably from xec_mmap_create
+	   (VirtualAlloc on win32, mmap on POSIX), validating the win32 PAGE_* translation. */
+	uintmax_t brk = nix_brk ((uintmax_t) 0x1000, env);
+	xec_mmap_t *mm = xec_mmap_create (4096, XEC_MMAP_READ | XEC_MMAP_WRITE);
+	int mp = -1;
+	if (mm != NULL) {
+		mp = nix_mprotect ((uintmax_t) (uintptr_t) xec_mmap_get_bytes (mm), 4096, NIX_PROT_READ, env);
+		xec_mmap_free (mm);
+	}
+	int memok = (brk == (uintmax_t) -1) && (mm != NULL) && (mp == 0);
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d\n",
+	int ok = filok && dirok && timeok && hostok && credok && memok;
+
+	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d\n",
 	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
-	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu);
+	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu,
+	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp);
 	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }
