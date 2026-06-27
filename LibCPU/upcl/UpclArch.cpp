@@ -130,6 +130,16 @@ public:
                     *pTag = (D.pJump->Condition != nullptr) ? TagConditional
                           : (Ty == "call")                  ? TagCall
                           :                                   TagBranch;
+                } else if (Ty == "branch") {
+                    // A conditional branch written as a ternary pc-write (`pc = cond ? T : fall`)
+                    // with a static target T: a real two-way branch, so the CFG can make T a leader
+                    // (a backward T is a loop edge). Otherwise it is a computed/indirect transfer.
+                    Expr *Cond = nullptr;
+                    if (JumpCondTarget (D, Pc, &Target, &Cond)) {
+                        *pNewPc = (CPU_ADDR) Target; *pTag = TagConditional;
+                    } else {
+                        *pTag = TagTrap; *pNewPc = (CPU_ADDR) -1;
+                    }
                 } else {
                     // A computed target (an indirect jmp/call through a register or memory):
                     // terminate the block -- translation emits an IndirectBranch and the run
@@ -288,7 +298,11 @@ public:
                 bool Computed = (D.pJump->JumpType == "return");
                 if (!Computed && (D.pJump->JumpType == "branch" || D.pJump->JumpType == "call")) {
                     UINT64 T = 0;
-                    Computed = !JumpTarget (D, Pc, &T);
+                    Expr  *C = nullptr;
+                    // A static unconditional target OR a static ternary conditional (pc = c ? T :
+                    // fall) is a direct branch -- the edge is wired from the tag, not an indirect
+                    // transfer. Only a truly runtime target is computed.
+                    Computed = !JumpTarget (D, Pc, &T) && !JumpCondTarget (D, Pc, &T, &C);
                 }
                 if (Computed) {
                     Tr.SetIndirectPc (true);
@@ -323,6 +337,9 @@ public:
                 }
             }
             Tr.Emit (Body);
+            // A delayed (.n) direct/conditional branch: the delay slot runs before the tag-wired
+            // transfer (the AotGenerator emits the Branch/CondBranch after this).
+            if (D.pJump != nullptr && D.pJump->Delay != nullptr) { EmitDelaySlot (Pc + D.Length, pE); }
             return S_OK;
         }
         DECODED D;
@@ -347,6 +364,10 @@ public:
             Expr *Cond = nullptr;
             if (D.pJump != nullptr) {
                 Cond = D.pJump->Condition;          // a conditional jump (jcc)
+                if (Cond == nullptr) {
+                    UINT64 Target = 0;              // or a ternary pc-write `pc = cond ? T : fall`
+                    JumpCondTarget (D, Pc, &Target, &Cond);
+                }
             } else {
                 UINT64 Target = 0;
                 if (StdBranchInfo (D, Pc, &Target, &Cond) != StdBrCond) { Cond = nullptr; }
@@ -449,6 +470,8 @@ private:
             switch (E->Op) {
             case TokPlus:  *pOut = A + B; return true;
             case TokMinus: *pOut = A - B; return true;
+            case TokShl:   *pOut = A << B; return true;          // scaled pc-relative (RISC word offset)
+            case TokShr:   *pOut = A >> B; return true;
             default:       return false;
             }
         }
@@ -459,12 +482,18 @@ private:
             // negative displacement); %U and other augments pass the value through.
             if (E->Args.empty () || !FoldStd (E->Args[0], D, NextPc, pOut)) { return false; }
             Expr *Inner = E->Args[0];
+            UINT32 W = 0;
             if (E->Name == "S" && Inner->Kind == ExprCast && Inner->VType != nullptr) {
-                UINT32 W = Inner->VType->Width;
-                if (W > 0 && W < 64) {
-                    INT64 Sign = (INT64) 1 << (W - 1);
-                    *pOut = (*pOut ^ Sign) - Sign;
-                }
+                W = Inner->VType->Width;                          // %S ( [ #iN x ] )
+            } else if (E->Name == "S" && Inner->Kind == ExprName) {
+                // %S ( operand ): sign-extend from the operand's declared width (a branch's
+                // signed displacement bound straight to a decoder operand, no explicit cast).
+                auto It = D.Operands.find (Inner->Name);
+                if (It != D.Operands.end ()) { W = It->second.Bits; }
+            }
+            if (W > 0 && W < 64) {
+                INT64 Sign = (INT64) 1 << (W - 1);
+                *pOut = (*pOut ^ Sign) - Sign;
             }
             return true;
         }
@@ -551,6 +580,28 @@ private:
         if (It == D.Operands.end () || It->second.Kind != Operand::Imm) { return false; }
         *pTarget = It->second.ImmValue;
         return true;
+    }
+
+    // A conditional branch written as a ternary pc-write: `pc = cond ? T : fall`, where T folds to a
+    // static target and the else-branch is exactly the fall-through. Recognising it as a STATIC
+    // conditional (rather than a computed/indirect transfer) lets the CFG make T a block leader, so
+    // a backward edge (a loop) is wired in-artifact. Handles the delayed form too (its fall-through
+    // is past the delay slot, and the else is sxip+len accordingly).
+    bool JumpCondTarget (DecodedInsn CONST &D, CPU_ADDR Pc, UINT64 *pTarget, Expr **ppCond) CONST {
+        INT64 NextPc   = (INT64) (Pc + D.Length);                      // what sxip reads as
+        INT64 FallThru = (D.pJump->Delay != nullptr) ? (INT64) (Pc + 2 * D.Length) : NextPc;
+        for (Stmt *S : D.pJump->Action) {
+            if (IsStdPcWrite (S) && S->Rhs != nullptr && S->Rhs->Kind == ExprSelect
+                && S->Rhs->Args.size () >= 3) {
+                INT64 T = 0, E = 0;
+                if (FoldStd (S->Rhs->Args[1], D, NextPc, &T)
+                    && FoldStd (S->Rhs->Args[2], D, NextPc, &E) && E == FallThru) {
+                    *pTarget = (UINT64) T; *ppCond = S->Rhs->Args[0];
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // A conditional-branch statement: `if (cond) <pc-write>` with a single then-statement
