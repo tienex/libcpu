@@ -263,10 +263,18 @@ jump insn bb1_n : type branch
 				  condition (src1 & src2) != 0
 				  { sxip = sxip; }
 
-jump insn jmp : type call { sxip = src1; }
-jump insn jmp_n : type call delay 1 { sxip = src1; }
-jump insn jsr : type call { r1 = snip; sxip = src1; }
-jump insn jsr_n : type call delay 1 { r1 = snip; sxip = src1; }
+// jmp/jsr: register-indirect jump (EXT2 op 0x3d, minor 0x30/0x32 -> mc 0xc0/0xc8). The target is
+// the runtime value r[rS2] (a computed jump, like a return); jsr links r1 = return address (the
+// next instruction, which the PC reads as here). rD/rS1 are unused. The .n delayed variants and
+// the EXT1 system forms are deferred.
+jump insn jmp : type call,
+				encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xc0, z:3 = 0, rs2:5 -> rs2 ),
+				disasm ( mnemonic : "jmp", operands : rs2 )
+				{ sxip = r[ rs2 ]; }
+jump insn jsr : type call,
+				encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xc8, z:3 = 0, rs2:5 -> rs2 ),
+				disasm ( mnemonic : "jsr", operands : rs2 )
+				{ r1 = sxip; sxip = r[ rs2 ]; }
 
 jump insn tb1 : type trap
 				condition (src1 & src2) != 0
