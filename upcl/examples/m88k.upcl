@@ -2,8 +2,7 @@ arch "m88k" {
 
 	name "Motorola 88100";
 
-	endian both;
-	default_endian big;
+	endian big;
 
 	byte_size 8;
 	word_size 32;
@@ -35,13 +34,10 @@ arch "m88k" {
 			[ #i32 sxip -> %PC ],
 			[ #i32 snip -> %NPC ],
 			[ #i32 sfip <- ( snip + 8 ) ],
-			// PSR: 32 one-bit fields, MSB-first, carry (C->%C) at bit 28. Enumerated as a colon
-			// splitter (the x86-flags idiom) so the C flag is registered for read/write; the
-			// bracket/typed form is a union and registers no flags.
-			[ #i32 psr -> %PSR #i1 explicit (
-				0 : 0 : 0 : C->%C :
-				0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 :
-				0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 ) ]
+			// PSR: carry (C->%C) at bit 28 (the MC88100's C_SHIFT). A colon splitter with typed
+			// per-field widths registers the C flag for read/write -- MSB-first: 3 high bits, C,
+			// then the low 28 bits.
+			[ #i32 psr -> %PSR #i32 explicit ( #i3 0 : #i1 C -> %C : #i28 0 ) ]
 
 		}
 

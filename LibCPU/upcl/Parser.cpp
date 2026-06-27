@@ -640,6 +640,9 @@ Parser::ParseValueBind ()
 {
     BitBind *B = new BitBind ();
     B->Loc = m_Cur.Loc;
+    // An optional per-field type gives the bind its own width (e.g. `#i3 0 : #i1 C->%C : #i28 0`),
+    // so a colon splitter can describe a wide register's fields without enumerating every bit.
+    if (m_Cur.Kind == TokType) { B->SubType = ParseType (); }
     if (m_Cur.Kind == TokIdent) {
         B->Name = m_Cur.Text;
         Advance ();
