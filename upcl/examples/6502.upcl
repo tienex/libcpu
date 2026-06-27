@@ -107,12 +107,12 @@ insn adc_imm : encode #i16 ( op:8 = 0x69, imm:8 -> imm ),
 
 // ---- flags ---------------------------------------------------------------
 
-insn clc : encode #i8 ( op:8 = 0x18 ), disasm ( mnemonic : "clc" ) => P.C = 0;	// 0x18
+insn clc : encode #i8 ( op:8 = 0x18 ), disasm ( mnemonic : "clc" ) => %C = 0;	// 0x18
 
 // ---- control flow --------------------------------------------------------
 
 // BNE rel: branch when Z is clear. The `rel` field resolves to the absolute target.
-jump insn bne : type branch, condition ( ! P.Z ),
+jump insn bne : type branch, condition ( ! %Z ),
 	encode #i16 ( op:8 = 0xD0, disp:8 -> tgt rel ),
 	disasm ( mnemonic : "bne", operands : tgt )
 	{ pc = tgt; }

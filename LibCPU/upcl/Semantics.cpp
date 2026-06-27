@@ -957,7 +957,11 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         return;
 
     case ExprMeta:
-        m_Env[pLhs->Name] = Rhs;             // %result and other inlined-macro locals
+        // A meta-flag write (%C/%Z/%N/%V = ...) is a real flag write, so route it through
+        // WriteName, which resolves flags (FindFlag -> SetFlagBit) and falls back to an env
+        // local for names that are neither register nor flag -- preserving %result and other
+        // inlined-macro locals.
+        WriteName (pLhs->Name, Rhs);
         return;
 
     case ExprMember: {
