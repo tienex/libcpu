@@ -119,6 +119,10 @@ public:
             if (D.pJump != nullptr) {
                 UINT64 Target = 0;
                 std::string CONST &Ty = D.pJump->JumpType;
+                // A delayed (.n) transfer consumes the following instruction (its delay slot),
+                // which TranslateInstr emits inline before the transfer -- so the fall-through /
+                // next-block address is past it.
+                if (D.pJump->Delay != nullptr) { *pNextPc = Pc + 2 * D.Length; }
                 if (Ty == "return") {
                     *pTag = TagTrap; *pNewPc = (CPU_ADDR) -1;       // computed: pops + indirect-branches
                 } else if ((Ty == "branch" || Ty == "call") && JumpTarget (D, Pc, &Target)) {
@@ -291,6 +295,11 @@ public:
                     for (Stmt *S : D.pJump->Pre) { Tr.EmitOne (S); }
                     Tr.Emit (D.pJump->Action);
                     ICpuValue *Target = Tr.IndirectTarget ();
+                    // A delayed (.n) transfer: the next instruction (the delay slot) executes
+                    // before the branch takes effect. Its target was already captured above
+                    // (from the pre-delay-slot register state), so emit the delay slot now, then
+                    // branch to the saved target.
+                    if (D.pJump->Delay != nullptr) { EmitDelaySlot (Pc + D.Length, pE); }
                     ICpuSmcEmitter *pFlow = nullptr;
                     if (Target != nullptr
                         && SUCCEEDED (pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pFlow)) && pFlow != nullptr) {
@@ -351,6 +360,31 @@ public:
     }
 
 private:
+    // Emit the body of the instruction in a delayed (.n) branch's delay slot, inline before the
+    // branch transfer. The branch target was already captured from the pre-delay-slot register
+    // state, so the delay slot's register effects run here and then control transfers. Only the
+    // delay slot's side effects are emitted (a transfer in a delay slot is not modelled).
+    void EmitDelaySlot (CPU_ADDR Pc, ICpuEmitter *pE) {
+        DecodedInsn D;
+        if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return; }
+        Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
+        for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
+        Operand PcOp; PcOp.Kind = Operand::Imm;
+        PcOp.Bits = m_AddrBits; PcOp.ImmValue = (UINT64) (Pc + D.Length);
+        if (!m_PcName.empty ()) { Tr.BindOperand (m_PcName, PcOp); }
+        auto OffIt = m_Layout.PcFields.find ("off");
+        if (OffIt != m_Layout.PcFields.end ()) { Tr.BindOperand (OffIt->second, PcOp); }
+        if (D.pInsn != nullptr) {
+            std::vector<Stmt *> Body;
+            for (Stmt *S : D.pInsn->Semantics) {
+                if (!IsStdPcWrite (S) && !IsCondBranchStmt (S)) { Body.push_back (S); }
+            }
+            Tr.Emit (Body);
+        } else if (D.pJump != nullptr) {
+            for (Stmt *S : D.pJump->Pre) { Tr.EmitOne (S); }   // a jump's side effects, not its transfer
+        }
+    }
+
     static bool IsWord (CHAR8 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
 
     UINT32 RegIndexOf (std::string CONST &Name) CONST {

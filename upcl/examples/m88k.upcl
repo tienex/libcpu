@@ -280,6 +280,18 @@ jump insn bb1 : type branch,
 				disasm ( mnemonic : "bb1", operands : bit, rs1, boff )
 				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) != 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : sxip; }
 
+// Delayed (.n) bit-test branches (major 0x35/0x37): the following instruction (delay slot) always
+// executes before the transfer. The delay slot runs inline (emitted by TranslateInstr), so the
+// NOT-taken path resumes PAST it (sxip + 4 = branch+8), while the taken path goes to branch+off<<2.
+jump insn bb0_n : type branch, delay 1,
+				encode #i32 ( op:6 = 0x35, bit:5 -> bit, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bb0.n", operands : bit, rs1, boff )
+				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) == 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : ( sxip + 4 ); }
+jump insn bb1_n : type branch, delay 1,
+				encode #i32 ( op:6 = 0x37, bit:5 -> bit, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bb1.n", operands : bit, rs1, boff )
+				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) != 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : ( sxip + 4 ); }
+
 // jmp/jsr: register-indirect jump (EXT2 op 0x3d, minor 0x30/0x32 -> mc 0xc0/0xc8). The target is
 // the runtime value r[rS2] (a computed jump, like a return); jsr links r1 = return address (the
 // next instruction, which the PC reads as here). rD/rS1 are unused. The .n delayed variants and
