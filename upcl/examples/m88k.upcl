@@ -197,19 +197,29 @@ insn lda_h    : dst = src1 + ( src2 << 1 );
 insn lda_d    : dst = src1 + ( src2 << 3 );
 insn lda_x    : dst = src1 + ( src2 << 4 );
 
-insn ld       : dst = #i32 %M[ src1 + src2 ];
-insn ld_h     : dst = %S ( [ #i32 #i16 %M[ src1 + src2 ] ] );
-insn ld_hu    : dst = #i16 %M[ src1 + src2 ];
-insn ld_b     : dst = %S ( [ #i32 #i8 %M[ src1 + src2 ] ] );
-insn ld_bu    : dst = #i8 %M[ src1 + src2 ];
-insn ld_d     : ( dst : dst2 ) = #i64 %M[ src1 + src2 ];
-insn ld_x     : xdst = #f80 %M[ src1 + src2 ];
+// Scalar load/store, immediate form (major opcode bits[31:26]): rD = mem[rS1 + imm16] and stores.
+// imm16 is zero-extended (the operand is #i32). Signed loads (ld.h/ld.b) sign-extend the fetched
+// value to 32 bits; unsigned loads (ld.hu/ld.bu) zero-extend. Major opcodes from desc_major.
+insn ld    : encode #i32 ( op:6 = 0x05, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld", operands : rd, rs1, imm )    => r[ rd ] = #i32 %M[ r[ rs1 ] + imm ];
+insn ld_h  : encode #i32 ( op:6 = 0x06, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.h", operands : rd, rs1, imm )  => r[ rd ] = %S ( [ #i32 #i16 %M[ r[ rs1 ] + imm ] ] );
+insn ld_hu : encode #i32 ( op:6 = 0x02, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.hu", operands : rd, rs1, imm ) => r[ rd ] = #i16 %M[ r[ rs1 ] + imm ];
+insn ld_b  : encode #i32 ( op:6 = 0x07, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.b", operands : rd, rs1, imm )  => r[ rd ] = %S ( [ #i32 #i8 %M[ r[ rs1 ] + imm ] ] );
+insn ld_bu : encode #i32 ( op:6 = 0x03, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.bu", operands : rd, rs1, imm ) => r[ rd ] = #i8 %M[ r[ rs1 ] + imm ];
 
-insn st       : #i32 %M[ src1 + src2 ] = dst;
-insn st_h     : #i16 %M[ src1 + src2 ] = dst; 
-insn st_b     : #i8 %M[ src1 + src2 ] = dst;
-insn st_d     : #i64 %M[ src1 + src2 ] = ( dst : dst2 );
-insn st_x     : #f80 %M[ src1 + src2 ] = xdst;
+insn st    : encode #i32 ( op:6 = 0x09, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "st", operands : rd, rs1, imm )    => #i32 %M[ r[ rs1 ] + imm ] = r[ rd ];
+insn st_h  : encode #i32 ( op:6 = 0x0a, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "st.h", operands : rd, rs1, imm )  => #i16 %M[ r[ rs1 ] + imm ] = r[ rd ];
+insn st_b  : encode #i32 ( op:6 = 0x0b, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "st.b", operands : rd, rs1, imm )  => #i8 %M[ r[ rs1 ] + imm ] = r[ rd ];
+
+// ld.d/st.d (64-bit register-pair) and ld.x/st.x (80-bit float) immediate forms: deferred
+// (need rD:rD+1 pair access / the F register file).
 
 insn xmem {
 	t = #i32 %M[ src1 + src2 ];
