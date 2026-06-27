@@ -178,6 +178,24 @@ insn or    : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x58, z
 insn or_c  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x5c, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "or.c", operands : rd, rs1, rs2 )   => r[ rd ] = r[ rs1 ] |~ r[ rs2 ];
 
+// cmp: compare rS1 against rS2 (triadic, minor 0x1f -> mc 0x7c) or imm16 (immediate, major 0x1f),
+// storing the m88k comparison bit-vector in rD: equal -> 0x5aa4 (eq/le/ge/ls/hs/...); else 0xa008
+// (ne base) OR the unsigned relations (bits 8-11) and signed relations (bits 4-7), packed via the
+// (((-cmp) ^ 6) & 0xf) << shift trick (faithful to the old arch_m88k_cmp). The result is what the
+// cmp-and-branch idiom (cmp + bb1 <bit>) tests.
+insn cmp     : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x7c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "cmp", operands : rd, rs1, rs2 )
+	=> r[ rd ] = ( r[ rs1 ] == r[ rs2 ] ) ? 0x5aa4 :
+	   ( 0xa008
+	   | ( ( ( ( ( %U ( r[ rs1 ] ) > %U ( r[ rs2 ] ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 8 )
+	   | ( ( ( ( ( %S ( r[ rs1 ] ) > %S ( r[ rs2 ] ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 4 ) );
+insn cmp_imm : encode #i32 ( op:6 = 0x1f, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "cmp", operands : rd, rs1, imm )
+	=> r[ rd ] = ( r[ rs1 ] == imm ) ? 0x5aa4 :
+	   ( 0xa008
+	   | ( ( ( ( ( %U ( r[ rs1 ] ) > %U ( imm ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 8 )
+	   | ( ( ( ( ( %S ( r[ rs1 ] ) > %S ( imm ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 4 ) );
+
 // Triadic shift / bit-find forms under EXT2 (register form: shift/rotate count or source in rS2).
 // mc = minor<<2 (no carry variants). ext/extu shift rS1 right by rS2's low 5 bits (signed/unsigned);
 // rot rotates right; ff1/ff0 find the first set/clear bit of rS1 (two-operand, rS2 unused).
