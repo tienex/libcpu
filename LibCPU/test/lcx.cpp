@@ -248,6 +248,18 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     CPU_ADDR End   = (CPU_ADDR) Len;
     bool Cache = Flag (argc, argv, "--cache");
 
+    // --reg <i>=<v>: seed an initial general register before running (entry-state setup for a
+    // user-space run -- e.g. an argument in r2, a return/exit address in the link register).
+    for (int I = 1; I + 1 < argc; I++) {
+        if (std::strcmp (argv[I], "--reg") == 0) {
+            CHAR8 CONST *pEq = std::strchr (argv[I + 1], '=');
+            if (pEq != nullptr) {
+                UINT32 Idx = (UINT32) std::strtoul (argv[I + 1], nullptr, 0);
+                if (Idx < 32) { State.Reg[Idx] = (UINT64) std::strtoull (pEq + 1, nullptr, 0); }
+            }
+        }
+    }
+
     std::printf ("lcx %s: %s, %llu bytes, %s%s\n", pVerb, pArchName,
                  (unsigned long long) Len, Aot ? "AOT" : "JIT", Cache ? " +cache" : "");
 
