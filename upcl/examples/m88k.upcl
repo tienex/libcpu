@@ -59,8 +59,8 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 #i5 rd, #i5 rs1, #i5 rs2, #i32 imm,
 				 // The raw 26-bit signed word offset for br/bsr (m88k scales it by 4).
 				 #i26 off,
-				 // tb0/tb1: the tested bit number (D[25:21]).
-				 #i5 bit ];
+				 // tb0/tb1/bb0/bb1: the tested bit number (D[25:21]); bb0/bb1's 16-bit word offset.
+				 #i5 bit, #i16 boff ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -248,24 +248,19 @@ jump insn bsr : type call, encode #i32 ( op:6 = 0x32, off:26 -> off ),
 	disasm ( mnemonic : "bsr", operands : off )
 	{ r1 = sxip; sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
 
-// bb0/bb1: branch on bit clear/set (major 0x34/0x36). DEFERRED encoding: a conditional branch
-// drives its target through the generator's *pNewPc, which is currently built from a single
-// operand field with a hardcoded (INT8) rel (6502-shaped) -- it cannot express m88k's scaled
-// (<<2), wide (16-bit), body-computed PC-relative target. Wiring *pNewPc to derive from the body's
-// PC-write is the generator follow-up; until then these stay un-encoded.
-jump insn bb0 : type branch
-				condition (src1 & src2) == 0
-				{ sxip = sxip; }
-jump insn bb0_n : type branch
-				  condition (src1 & src2) == 0
-				  { sxip = sxip; }
+// bb0/bb1: branch on bit clear/set (major 0x34/0x36). bit[25:21] selects the bit of rS1[20:16];
+// the 16-bit signed word offset scales by 4 off the branch address. The target is computed as a
+// SELECT (taken ? target : fall-through) so it becomes an indirect branch -- this gates correctly
+// at runtime, unlike the static-condition path whose *pNewPc cannot express a scaled m88k offset.
+jump insn bb0 : type branch,
+				encode #i32 ( op:6 = 0x34, bit:5 -> bit, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bb0", operands : bit, rs1, boff )
+				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) == 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : sxip; }
 
-jump insn bb1 : type branch
-				condition (src1 & src2) != 0
-				{ sxip = sxip; }
-jump insn bb1_n : type branch
-				  condition (src1 & src2) != 0
-				  { sxip = sxip; }
+jump insn bb1 : type branch,
+				encode #i32 ( op:6 = 0x36, bit:5 -> bit, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bb1", operands : bit, rs1, boff )
+				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) != 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : sxip; }
 
 // jmp/jsr: register-indirect jump (EXT2 op 0x3d, minor 0x30/0x32 -> mc 0xc0/0xc8). The target is
 // the runtime value r[rS2] (a computed jump, like a return); jsr links r1 = return address (the
