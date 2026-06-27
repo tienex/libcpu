@@ -176,16 +176,21 @@ insn or    : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x58, z
 insn or_c  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x5c, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "or.c", operands : rd, rs1, rs2 )   => r[ rd ] = r[ rs1 ] |~ r[ rs2 ];
 
-insn rot      : dst = src1 >>< ( src2 & 0x1f );
+// Triadic shift / bit-find forms under EXT2 (register form: shift/rotate count or source in rS2).
+// mc = minor<<2 (no carry variants). ext/extu shift rS1 right by rS2's low 5 bits (signed/unsigned);
+// rot rotates right; ff1/ff0 find the first set/clear bit of rS1 (two-operand, rS2 unused).
+insn ext  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x90, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ext", operands : rd, rs1, rs2 )  => r[ rd ] = %S ( r[ rs1 ] >> ( r[ rs2 ] & 0x1f ) );
+insn extu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x98, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "extu", operands : rd, rs1, rs2 ) => r[ rd ] = %U ( r[ rs1 ] >> ( r[ rs2 ] & 0x1f ) );
+insn rot  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xa8, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "rot", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] >>< ( r[ rs2 ] & 0x1f );
+insn ff1  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xe8, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ff1", operands : rd, rs1 )       => r[ rd ] = @ffs ( r[ rs1 ] );
+insn ff0  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xec, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ff0", operands : rd, rs1 )       => r[ rd ] = @ffc ( r[ rs1 ] );
 
-insn mak      : dst = ( src1 & wmask ) << src2;
-insn set      : dst = src1 | ( wmask << src2 );
-insn clr      : dst = src1 &~ ( wmask << src2 );
-insn ext      : dst = %S ( src1 >> ( src2 & 0x1f ) );
-insn extu     : dst = %U ( src1 >> ( src2 & 0x1f ) );
-
-insn ff0      : dst = @ffc ( src1 );
-insn ff1      : dst = @ffs ( src1 );
+// mak/set/clr (bit-field width:offset via rS2 / wmask) still pending an encoded form -- deferred.
 
 insn lda      : dst = src1 + ( src2 << 2 );
 insn lda_h    : dst = src1 + ( src2 << 1 );
