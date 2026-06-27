@@ -60,7 +60,9 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 // The raw 26-bit signed word offset for br/bsr (m88k scales it by 4).
 				 #i26 off,
 				 // tb0/tb1/bb0/bb1: the tested bit number (D[25:21]); bb0/bb1's 16-bit word offset.
-				 #i5 bit, #i16 boff ];
+				 #i5 bit, #i16 boff,
+				 // bcnd: the 5-bit condition selector M[25:21].
+				 #i5 mb ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -291,6 +293,33 @@ jump insn bb1_n : type branch, delay 1,
 				encode #i32 ( op:6 = 0x37, bit:5 -> bit, rs1:5 -> rs1, boff:16 -> boff ),
 				disasm ( mnemonic : "bb1.n", operands : bit, rs1, boff )
 				{ sxip = ( ( r[ rs1 ] & ( 1 << bit ) ) != 0 ) ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : ( sxip + 4 ); }
+
+// bcnd/bcnd.n: conditional branch on rS1 versus zero (major 0x3a/0x3b). The 5-bit M selector picks
+// the relation: 1=gt0 2=eq0 3=ge0 12=lt0 13=ne0 14=le0 15=always 0=never (signed compares against
+// 0). The 16-bit signed word offset scales by 4 off the branch address; computed-target select so
+// it gates at runtime. (The 0x80000000-edge codes 4-11 are rare and default to never for now.)
+jump insn bcnd : type branch,
+				encode #i32 ( op:6 = 0x3a, mb:5 -> mb, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bcnd", operands : mb, rs1, boff )
+				{ sxip = ( ( mb == 15 ) ? 1 :
+				           ( mb == 1 )  ? ( %S ( r[ rs1 ] ) >  0 ) :
+				           ( mb == 2 )  ? ( r[ rs1 ] == 0 ) :
+				           ( mb == 3 )  ? ( %S ( r[ rs1 ] ) >= 0 ) :
+				           ( mb == 12 ) ? ( %S ( r[ rs1 ] ) <  0 ) :
+				           ( mb == 13 ) ? ( r[ rs1 ] != 0 ) :
+				           ( mb == 14 ) ? ( %S ( r[ rs1 ] ) <= 0 ) : 0 )
+				         ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : sxip; }
+jump insn bcnd_n : type branch, delay 1,
+				encode #i32 ( op:6 = 0x3b, mb:5 -> mb, rs1:5 -> rs1, boff:16 -> boff ),
+				disasm ( mnemonic : "bcnd.n", operands : mb, rs1, boff )
+				{ sxip = ( ( mb == 15 ) ? 1 :
+				           ( mb == 1 )  ? ( %S ( r[ rs1 ] ) >  0 ) :
+				           ( mb == 2 )  ? ( r[ rs1 ] == 0 ) :
+				           ( mb == 3 )  ? ( %S ( r[ rs1 ] ) >= 0 ) :
+				           ( mb == 12 ) ? ( %S ( r[ rs1 ] ) <  0 ) :
+				           ( mb == 13 ) ? ( r[ rs1 ] != 0 ) :
+				           ( mb == 14 ) ? ( %S ( r[ rs1 ] ) <= 0 ) : 0 )
+				         ? ( ( sxip - 4 ) + ( %S ( boff ) << 2 ) ) : ( sxip + 4 ); }
 
 // jmp/jsr: register-indirect jump (EXT2 op 0x3d, minor 0x30/0x32 -> mc 0xc0/0xc8). The target is
 // the runtime value r[rS2] (a computed jump, like a return); jsr links r1 = return address (the
