@@ -35,10 +35,13 @@ arch "m88k" {
 			[ #i32 sxip -> %PC ],
 			[ #i32 snip -> %NPC ],
 			[ #i32 sfip <- ( snip + 8 ) ],
-			// PSR: carry at bit 28. NOTE: the bracket (typed) splitter is parsed as a union and
-			// does not register its C->%C flag, so carry-in reads (add.ci's %C) currently lower
-			// to 0; wiring flag registration for typed bracket layouts is a generator follow-up.
-			[ #i32 psr -> %PSR #i32 explicit [ #i3 0, #i1 C->%C, #i28 0 ] ]
+			// PSR: 32 one-bit fields, MSB-first, carry (C->%C) at bit 28. Enumerated as a colon
+			// splitter (the x86-flags idiom) so the C flag is registered for read/write; the
+			// bracket/typed form is a union and registers no flags.
+			[ #i32 psr -> %PSR #i1 explicit (
+				0 : 0 : 0 : C->%C :
+				0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 :
+				0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 : 0 ) ]
 
 		}
 
