@@ -51,8 +51,8 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 // Encoded immediate-form operands: 5-bit GPR selectors (rD[25:21], rS1[20:16])
 				 // and the immediate, held in a 32-bit operand so it widens cleanly for shifts/
 				 // arithmetic (the 16-bit imm16[15:0] field zero-extends into it). r[ idx ]
-				 // selects the physical GPR.
-				 #i5 rd, #i5 rs1, #i32 imm ];
+				 // selects the physical GPR. rs2 is the triadic third register (rS2[4:0]).
+				 #i5 rd, #i5 rs1, #i5 rs2, #i32 imm ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -101,48 +101,74 @@ insn sub_imm   : encode #i32 ( op:6 = 0x1d, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> 
 	disasm ( mnemonic : "sub", operands : rd, rs1, imm )
 	=> r[ rd ] = %OFTRAP ( r[ rs1 ] - imm, 1 );
 
-// Perform addition/subtraction with over/underflow check, trap 1 on overflow.
-insn add     : dst = %OFTRAP ( src1 + src2, 1 );
-insn add_ci  : dst = %OFTRAP ( src1 + src2 + psr.C, 1 );
-insn add_co  : dst = %OFTRAP ( %CC ( src1 + src2 ), 1 );
-insn add_cio : dst = %OFTRAP ( %CC ( src1 + src2 + psr.C ), 1 );
+// ---------------------------------------------------------------------------
+// Triadic register-form integer instructions (major opcode 0x3d = EXT2):
+//   <op:6=0x3d> <rD:5> <rS1:5> <mc:8> <0:3> <rS2:5>.  rD = rS1 <op> rS2.
+//   mc:8 = bits[15:8] = (minor<<2) | carry, where minor is the old decoder's sub_opcode_1
+//   (bits[15:10]) and carry (bits[9:8]) selects the .ci/.co/.cio variants of add/addu/sub/
+//   subu. The two are merged into one 8-bit field so each variant is a distinct decode key
+//   (the decoder splits on adjacent constant fields, not on a separate carry sub-field).
+//   Cross-checked against arch/m88k/m88k_insn.cpp's desc_ext2 + carry()/has_carry().
+//   Carry-in is the meta flag %C; carry-out variants update it via %CC(...).
+// ---------------------------------------------------------------------------
 
-insn sub     : dst = %OFTRAP ( src1 - src2, 1 );
-insn sub_ci  : dst = %OFTRAP ( src1 - src2 - psr.C, 1 );
-insn sub_co  : dst = %OFTRAP ( %CC ( src1 - src2 ), 1 );
-insn sub_cio : dst = %OFTRAP ( %CC ( src1 - src2 - psr.C ), 1 );
+// add (minor 0x1c -> mc 0x70..0x73): signed add with overflow trap.
+insn add     : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x70, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "add", operands : rd, rs1, rs2 )    => r[ rd ] = %OFTRAP ( r[ rs1 ] + r[ rs2 ], 1 );
+insn add_ci  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x71, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "add.ci", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( r[ rs1 ] + r[ rs2 ] + %C, 1 );
+insn add_co  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x72, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "add.co", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( %CC ( r[ rs1 ] + r[ rs2 ] ), 1 );
+insn add_cio : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x73, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "add.cio", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( %CC ( r[ rs1 ] + r[ rs2 ] + %C ), 1 );
 
-insn addu     : dst = src1 + src2;
-insn addu_ci  : dst = src1 + src2 + psr.C;
-insn addu_co  : dst = %CC ( src1 + src2 );
-insn addu_cio : dst = %CC ( src1 + src2 + psr.C );
+// sub (minor 0x1d -> mc 0x74..0x77): signed subtract with overflow trap.
+insn sub     : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x74, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "sub", operands : rd, rs1, rs2 )    => r[ rd ] = %OFTRAP ( r[ rs1 ] - r[ rs2 ], 1 );
+insn sub_ci  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x75, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "sub.ci", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( r[ rs1 ] - r[ rs2 ] - %C, 1 );
+insn sub_co  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x76, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "sub.co", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( %CC ( r[ rs1 ] - r[ rs2 ] ), 1 );
+insn sub_cio : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x77, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "sub.cio", operands : rd, rs1, rs2 ) => r[ rd ] = %OFTRAP ( %CC ( r[ rs1 ] - r[ rs2 ] - %C ), 1 );
 
-insn subu     : dst = src1 - src2;
-insn subu_ci  : dst = src1 - src2 - psr.C;
-insn subu_co  : dst = %CC ( src1 - src2 );
-insn subu_cio : dst = %CC ( src1 - src2 - psr.C );
+// addu (minor 0x18 -> mc 0x60..0x63): unsigned add, no trap.
+insn addu     : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x60, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "addu", operands : rd, rs1, rs2 )    => r[ rd ] = r[ rs1 ] + r[ rs2 ];
+insn addu_ci  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x61, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "addu.ci", operands : rd, rs1, rs2 ) => r[ rd ] = r[ rs1 ] + r[ rs2 ] + %C;
+insn addu_co  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x62, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "addu.co", operands : rd, rs1, rs2 ) => r[ rd ] = %CC ( r[ rs1 ] + r[ rs2 ] );
+insn addu_cio : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x63, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "addu.cio", operands : rd, rs1, rs2 ) => r[ rd ] = %CC ( r[ rs1 ] + r[ rs2 ] + %C );
 
-insn muls     : dst = %S ( src1 * src2 );
-insn mulu     : dst = %U ( src1 * src2 );
+// subu (minor 0x19 -> mc 0x64..0x67): unsigned subtract, no trap.
+insn subu     : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x64, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "subu", operands : rd, rs1, rs2 )    => r[ rd ] = r[ rs1 ] - r[ rs2 ];
+insn subu_ci  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x65, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "subu.ci", operands : rd, rs1, rs2 ) => r[ rd ] = r[ rs1 ] - r[ rs2 ] - %C;
+insn subu_co  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x66, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "subu.co", operands : rd, rs1, rs2 ) => r[ rd ] = %CC ( r[ rs1 ] - r[ rs2 ] );
+insn subu_cio : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x67, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "subu.cio", operands : rd, rs1, rs2 ) => r[ rd ] = %CC ( r[ rs1 ] - r[ rs2 ] - %C );
 
-// Divisions never fault on div by zero.
-//insn divs     : dst = ( src2 == 0 ) ? 0 : %S ( src1 / src2 );
-//insn divu     : dst = ( src2 == 0 ) ? 0 : %U ( src1 / src2 );
+// mulu (minor 0x1b -> mc 0x6c): unsigned multiply.
+insn mulu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x6c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "mulu", operands : rd, rs1, rs2 ) => r[ rd ] = %U ( r[ rs1 ] * r[ rs2 ] );
 
-insn mask     : dst = src1 & ( 0xffff0000 | src2 );
-insn mask_u   : dst = src1 & ( ( src2 << 16 ) | 0xffff );
-
-insn and      : dst = src1 & src2;
-insn and_c    : dst = src1 &~ src2;
-insn and_u    : dst = src1 & ( src2 << 16 );
-
-insn or       : dst = src1 | src2;
-insn or_c     : dst = src1 |~ src2;
-insn or_u     : dst = src1 | ( src2 << 16 );
-
-insn xor      : dst = src1 ^ src2;
-insn xor_c    : dst = src1 ^~ src2;
-insn xor_u    : dst = src1 ^ ( src2 << 16 );
+// Logical triadic forms (no carry; mc = minor<<2).
+insn and   : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x40, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "and", operands : rd, rs1, rs2 )    => r[ rd ] = r[ rs1 ] & r[ rs2 ];
+insn and_c : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x44, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "and.c", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] &~ r[ rs2 ];
+insn xor   : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x50, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "xor", operands : rd, rs1, rs2 )    => r[ rd ] = r[ rs1 ] ^ r[ rs2 ];
+insn xor_c : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x54, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "xor.c", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] ^~ r[ rs2 ];
+insn or    : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x58, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "or", operands : rd, rs1, rs2 )     => r[ rd ] = r[ rs1 ] | r[ rs2 ];
+insn or_c  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x5c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "or.c", operands : rd, rs1, rs2 )   => r[ rd ] = r[ rs1 ] |~ r[ rs2 ];
 
 insn rot      : dst = src1 >>< ( src2 & 0x1f );
 
