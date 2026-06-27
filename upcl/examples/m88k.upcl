@@ -58,7 +58,9 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 // and the immediate, held in a 32-bit operand so it widens cleanly for shifts/
 				 // arithmetic (the 16-bit imm16[15:0] field zero-extends into it). r[ idx ]
 				 // selects the physical GPR. rs2 is the triadic third register (rS2[4:0]).
-				 #i5 rd, #i5 rs1, #i5 rs2, #i32 imm ];
+				 #i5 rd, #i5 rs1, #i5 rs2, #i32 imm,
+				 // Branch target + the raw 26-bit signed word offset (m88k scales it by 4).
+				 #i32 tgt, #i26 off ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -232,6 +234,19 @@ insn xmem_bu {
 	#i8 %M[ src1 + src2 ] = dst;
 	dst = t;
 }
+
+// br: unconditional PC-relative branch (major 0x30), 26-bit SIGNED word offset. Real m88k target
+// is branch_addr + (offset << 2); the PC reads here as the NEXT instruction (branch_addr + 4), so
+// subtract 4. off is #i26 so %S sign-extends from bit 25 before the <<2 scale.
+jump insn br : type branch, encode #i32 ( op:6 = 0x30, off:26 -> off ),
+	disasm ( mnemonic : "br", operands : off )
+	{ sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
+
+// bsr: branch-to-subroutine (major 0x32). Like br, but link r1 = return address (the next
+// instruction, which is what the PC reads as here).
+jump insn bsr : type call, encode #i32 ( op:6 = 0x32, off:26 -> off ),
+	disasm ( mnemonic : "bsr", operands : off )
+	{ r1 = sxip; sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
 
 jump insn bb0 : type branch
 				condition (src1 & src2) == 0
