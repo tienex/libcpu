@@ -59,8 +59,8 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 // arithmetic (the 16-bit imm16[15:0] field zero-extends into it). r[ idx ]
 				 // selects the physical GPR. rs2 is the triadic third register (rS2[4:0]).
 				 #i5 rd, #i5 rs1, #i5 rs2, #i32 imm,
-				 // Branch target + the raw 26-bit signed word offset (m88k scales it by 4).
-				 #i32 tgt, #i26 off ];
+				 // The raw 26-bit signed word offset for br/bsr (m88k scales it by 4).
+				 #i26 off ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -248,6 +248,11 @@ jump insn bsr : type call, encode #i32 ( op:6 = 0x32, off:26 -> off ),
 	disasm ( mnemonic : "bsr", operands : off )
 	{ r1 = sxip; sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
 
+// bb0/bb1: branch on bit clear/set (major 0x34/0x36). DEFERRED encoding: a conditional branch
+// drives its target through the generator's *pNewPc, which is currently built from a single
+// operand field with a hardcoded (INT8) rel (6502-shaped) -- it cannot express m88k's scaled
+// (<<2), wide (16-bit), body-computed PC-relative target. Wiring *pNewPc to derive from the body's
+// PC-write is the generator follow-up; until then these stay un-encoded.
 jump insn bb0 : type branch
 				condition (src1 & src2) == 0
 				{ sxip = sxip; }
