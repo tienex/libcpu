@@ -51,7 +51,8 @@
 #include "RunMethodCall.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
-#include <unistd.h>   // write/read for the obsd-m88k user-space syscall personality
+#include <unistd.h>   // write/read/close/getpid for the obsd-m88k user-space syscall personality
+#include <fcntl.h>    // open
 #include <cstring>
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
@@ -223,6 +224,20 @@ ObsdM88kSyscall (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize)
         pState->Reg[3] = (UINT64) N;                      // result in r2
         return true;
     }
+    case 5: {                                             // open(path, flags, mode)
+        UINT64 PathA = Arg (0);
+        long   Fd    = -1;
+        // OpenBSD O_* flags are BSD-derived and match the host's, so they pass through directly.
+        if (PathA < RamSize) { Fd = (long) open ((char CONST *) (pRam + PathA), (int) Arg (1), (int) Arg (2)); }
+        pState->Reg[3] = (UINT64) Fd;
+        return true;
+    }
+    case 6:                                               // close(fd)
+        pState->Reg[3] = (UINT64) (long) close ((int) Arg (0));
+        return true;
+    case 20:                                              // getpid
+        pState->Reg[3] = (UINT64) (long) getpid ();
+        return true;
     default:
         std::fprintf (stderr, "lcx: unhandled obsd-m88k syscall %llu\n", (unsigned long long) Sc);
         return false;
