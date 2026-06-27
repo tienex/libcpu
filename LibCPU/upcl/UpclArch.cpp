@@ -545,7 +545,10 @@ private:
     std::string JumpTargetOperand (JumpInsn *J) CONST {
         for (Stmt *S : J->Action) {
             Expr *E = (S->Kind == StmtExpr) ? S->Rhs : nullptr;
-            if (E != nullptr && E->Kind == ExprCall) {
+            // @trap(vec) is a host trap, not a branch-target transfer macro -- its operand is the
+            // trap vector, which must NOT be mistaken for a jump target (else the trap body is
+            // wrongly filtered out as "the transfer" and the syscall is never emitted).
+            if (E != nullptr && E->Kind == ExprCall && E->Name != "trap") {
                 for (Expr *A : E->Args) {
                     if (A->Kind == ExprName && IsOperandName (A->Name)) { return A->Name; }
                 }

@@ -51,6 +51,7 @@
 #include "RunMethodCall.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
+#include <unistd.h>   // write/read for the obsd-m88k user-space syscall personality
 #include <cstring>
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
@@ -197,6 +198,37 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
     return A;
 }
 
+// One OpenBSD/m88k user-space system call. The guest issues `tb0 0, r0, 450` after loading the
+// syscall number in r13 and arguments in r2.. ; the result is returned in r2. (m88k r[N] lives in
+// CPU_STATE Reg[N+1] -- r0 is a separate hardwired binding, so the bank is offset by one.) This is
+// a minimal personality (exit/read/write) demonstrating the syscall path end-to-end; the full
+// obsd41 syscall table + struct marshalling to libnix is wired on top of this seam. Returns false
+// when the guest should stop (exit), true to resume after the trap.
+static bool
+ObsdM88kSyscall (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize)
+{
+    UINT64 Sc = pState->Reg[14];                          // r13 = syscall number
+    auto   Arg = [&] (int I) -> UINT64 { return pState->Reg[3 + I]; };   // r2=arg0, r3=arg1, ...
+    switch (Sc) {
+    case 1:                                               // exit(code)
+        return false;
+    case 3:                                               // read(fd, buf, len)
+    case 4: {                                             // write(fd, buf, len)
+        UINT64 Fd = Arg (0), Buf = Arg (1), Len = Arg (2);
+        long   N  = -1;
+        if (Buf <= RamSize && Buf + Len <= RamSize) {
+            N = (Sc == 4) ? (long) write ((int) Fd, pRam + Buf, (size_t) Len)
+                          : (long) read ((int) Fd, pRam + Buf, (size_t) Len);
+        }
+        pState->Reg[3] = (UINT64) N;                      // result in r2
+        return true;
+    }
+    default:
+        std::fprintf (stderr, "lcx: unhandled obsd-m88k syscall %llu\n", (unsigned long long) Sc);
+        return false;
+    }
+}
+
 static void
 DumpRegs (ArchSetup CONST &A, CPU_STATE CONST *pState)
 {
@@ -291,6 +323,11 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                 break;
             }
             if (State.SyscallVector != CPU_NO_SYSCALL) {
+                if (std::strcmp (Opt (argc, argv, "--abi", ""), "obsd-m88k") == 0) {
+                    if (!ObsdM88kSyscall (&State, Ram, sizeof (Ram))) { break; }   // exit -> stop
+                    Pc = (CPU_ADDR) State.TrapPc;        // resume after the syscall trap
+                    continue;
+                }
                 break;                                   // a HLT/INT trap with no host handler: stop
             }
             Pc = (CPU_ADDR) State.TrapPc;
