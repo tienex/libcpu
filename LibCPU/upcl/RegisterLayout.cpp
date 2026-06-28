@@ -151,6 +151,7 @@ BuildRegisterLayout (Arch *pArch)
     if (pArch == nullptr || pArch->RegFile == nullptr) { return Layout; }
 
     for (Group CONST *pGroup : pArch->RegFile->Groups) {
+        UINT32 GroupPos = 0;        // position of each member within its group, for the <Group><N> alias
         for (RegDecl CONST *pDecl : pGroup->Regs) {
             UINT32 Width = (pDecl->VType != nullptr) ? pDecl->VType->Width : 0;
             UINT32 Count = RepeatCount (pDecl);
@@ -190,6 +191,22 @@ BuildRegisterLayout (Arch *pArch)
 
                 Layout.PhysIndex[Phys.Name] = Phys.Index;
                 Layout.Phys.push_back (Phys);
+
+                // Positional group alias: every member is also reachable as <GroupName><N> (group S's
+                // pc/npc/ptbr as S0/S1/S2), the control-register-number view software addresses them
+                // by. Modelled as a full-width sub-register so reads/writes hit the same storage.
+                if (Width != 0 && !pGroup->Name.empty ()) {
+                    std::string Alias = pGroup->Name + std::to_string (GroupPos);
+                    if (Alias != Phys.Name) {
+                        RegSub Gs;
+                        Gs.Name   = Alias;
+                        Gs.Parent = Phys.Index;
+                        Gs.Lo     = 0;
+                        Gs.Width  = Width;
+                        Layout.Subs.push_back (Gs);
+                    }
+                }
+                ++GroupPos;
 
                 // Decompose a colon-list splitter into sub-registers / flags. Union
                 // splitters (the FPU sw/cw words) are nested bit maps not needed by the
