@@ -3,11 +3,11 @@
 // operand is a uniform 6-bit specifier: mode (bits 5:3) + register (bits 2:0), giving eight
 // addressing modes -- the orthogonality that makes the PDP-11 a joy to model.
 //
-// SCOPE (first increment): register-direct (Rn), register-deferred (Rn), and indexed X(Rn)/PC-
-// relative modes are expressed here, for BOTH operands, via UPCL `addrmode`. The autoincrement
-// (Rn)+ and autodecrement -(Rn) modes MUTATE the base register as a side effect of the EA, which
-// the `addrmode` construct cannot yet carry -- they are the next increment (an addrmode pre/post
-// side-effect extension that will also serve the VAX and 68k).
+// SCOPE: register-direct Rn, register-deferred (Rn), autoincrement (Rn)+, autodecrement -(Rn), and
+// indexed X(Rn) / PC-relative modes are expressed here, for BOTH operands, via UPCL `addrmode`. The
+// autoincrement/decrement modes use the addrmode pre/post side-effect (post ( Rn += 2 ) bumps the
+// base after the operand is used; pre ( Rn -= 2 ) before). Word forms (+/-2) only so far; the
+// deferred '@' modes, .B byte forms (+/-1), EIS, FP11 and the PMMU are the next increments.
 
 arch "pdp11" {
 
@@ -51,8 +51,8 @@ decoder_operands [
 // Effective-address modes. Two addrmodes (source uses sm/sr, destination uses dm/dr) so a double-
 // operand instruction can carry BOTH 6-bit specifiers in its one 16-bit word; each reads its index
 // extension word from the tail in order. mode==6/7 consume a 16-bit displacement.
-//   0 Rn   register direct      1 (Rn)  register deferred      6 X(Rn) indexed (reg==7 => PC-rel)
-// (autoincrement/decrement modes 2-5 and the deferred '@' modes 3/5/7 are the next increment.)
+//   0 Rn   register direct   1 (Rn) deferred   2 (Rn)+ autoinc   4 -(Rn) autodec   6 X(Rn) indexed
+// (the deferred '@' modes 3/5/7 are the next increment.)
 // ---------------------------------------------------------------------------
 addrmode ea_src ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
 	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
@@ -64,6 +64,23 @@ addrmode ea_src ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
 	sm == 1 && sr == 5 => mem [ r5 ] ;
 	sm == 1 && sr == 6 => mem [ sp ] ;
 	sm == 1 && sr == 7 => mem [ pc ] ;
+	// (Rn)+ autoincrement: use the address, then bump the base by 2 (word).
+	sm == 2 && sr == 0 => mem [ r0 ] post ( r0 += 2 ) ;
+	sm == 2 && sr == 1 => mem [ r1 ] post ( r1 += 2 ) ;
+	sm == 2 && sr == 2 => mem [ r2 ] post ( r2 += 2 ) ;
+	sm == 2 && sr == 3 => mem [ r3 ] post ( r3 += 2 ) ;
+	sm == 2 && sr == 4 => mem [ r4 ] post ( r4 += 2 ) ;
+	sm == 2 && sr == 5 => mem [ r5 ] post ( r5 += 2 ) ;
+	sm == 2 && sr == 6 => mem [ sp ] post ( sp += 2 ) ;
+	sm == 2 && sr == 7 => mem [ pc ] post ( pc += 2 ) ;          // immediate #n: operand follows in-line
+	// -(Rn) autodecrement: bump the base down by 2 first, then use the address.
+	sm == 4 && sr == 0 => pre ( r0 -= 2 ) mem [ r0 ] ;
+	sm == 4 && sr == 1 => pre ( r1 -= 2 ) mem [ r1 ] ;
+	sm == 4 && sr == 2 => pre ( r2 -= 2 ) mem [ r2 ] ;
+	sm == 4 && sr == 3 => pre ( r3 -= 2 ) mem [ r3 ] ;
+	sm == 4 && sr == 4 => pre ( r4 -= 2 ) mem [ r4 ] ;
+	sm == 4 && sr == 5 => pre ( r5 -= 2 ) mem [ r5 ] ;
+	sm == 4 && sr == 6 => pre ( sp -= 2 ) mem [ sp ] ;
 	sm == 6 && sr == 0 => mem [ r0 + disp ] ;
 	sm == 6 && sr == 1 => mem [ r1 + disp ] ;
 	sm == 6 && sr == 2 => mem [ r2 + disp ] ;
@@ -83,6 +100,21 @@ addrmode ea_dst ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
 	dm == 1 && dr == 5 => mem [ r5 ] ;
 	dm == 1 && dr == 6 => mem [ sp ] ;
 	dm == 1 && dr == 7 => mem [ pc ] ;
+	dm == 2 && dr == 0 => mem [ r0 ] post ( r0 += 2 ) ;
+	dm == 2 && dr == 1 => mem [ r1 ] post ( r1 += 2 ) ;
+	dm == 2 && dr == 2 => mem [ r2 ] post ( r2 += 2 ) ;
+	dm == 2 && dr == 3 => mem [ r3 ] post ( r3 += 2 ) ;
+	dm == 2 && dr == 4 => mem [ r4 ] post ( r4 += 2 ) ;
+	dm == 2 && dr == 5 => mem [ r5 ] post ( r5 += 2 ) ;
+	dm == 2 && dr == 6 => mem [ sp ] post ( sp += 2 ) ;
+	dm == 2 && dr == 7 => mem [ pc ] post ( pc += 2 ) ;
+	dm == 4 && dr == 0 => pre ( r0 -= 2 ) mem [ r0 ] ;
+	dm == 4 && dr == 1 => pre ( r1 -= 2 ) mem [ r1 ] ;
+	dm == 4 && dr == 2 => pre ( r2 -= 2 ) mem [ r2 ] ;
+	dm == 4 && dr == 3 => pre ( r3 -= 2 ) mem [ r3 ] ;
+	dm == 4 && dr == 4 => pre ( r4 -= 2 ) mem [ r4 ] ;
+	dm == 4 && dr == 5 => pre ( r5 -= 2 ) mem [ r5 ] ;
+	dm == 4 && dr == 6 => pre ( sp -= 2 ) mem [ sp ] ;
 	dm == 6 && dr == 0 => mem [ r0 + disp ] ;
 	dm == 6 && dr == 1 => mem [ r1 + disp ] ;
 	dm == 6 && dr == 2 => mem [ r2 + disp ] ;

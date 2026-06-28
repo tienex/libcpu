@@ -274,6 +274,15 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
             }
         }
         pOut->MemText = Text;
+        // Autoincrement/decrement side effects: resolve the adjusted base register to its index.
+        if (!R->PreReg.empty ()) {
+            auto P = m_pLayout->PhysIndex.find (R->PreReg);
+            if (P != m_pLayout->PhysIndex.end ()) { pOut->PreReg = P->second; pOut->PreDelta = R->PreDelta; }
+        }
+        if (!R->PostReg.empty ()) {
+            auto P = m_pLayout->PhysIndex.find (R->PostReg);
+            if (P != m_pLayout->PhysIndex.end ()) { pOut->PostReg = P->second; pOut->PostDelta = R->PostDelta; }
+        }
         return true;
     }
     return false;

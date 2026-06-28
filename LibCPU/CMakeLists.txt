@@ -987,6 +987,22 @@ add_test(NAME upcl.mips-interlock COMMAND sh -c
    grep -q 'store.i32'         '${CMAKE_BINARY_DIR}/mips.sc'")
 set_tests_properties(upcl.mips-interlock PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# PDP-11 addressing modes: a double-operand insn with two indexed operands consumes BOTH extension
+# words (multi-EA-per-word decode), and the autoincrement/autodecrement modes emit the base-register
+# side effect -- MOV (R1)+,R2 loads then bumps r1, MOV R0,-(SP) pre-decrements sp then stores.
+add_test(NAME upcl.pdp11 COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; \
+   "$E" upcl decode \"$P\" 0x42 0x14 > '${CMAKE_BINARY_DIR}/pdp11.inc' && \
+   grep -q '0x0000: mov'        '${CMAKE_BINARY_DIR}/pdp11.inc' && \
+   grep -q 'load.i16'           '${CMAKE_BINARY_DIR}/pdp11.inc' && \
+   grep -q 'put r1 <- '         '${CMAKE_BINARY_DIR}/pdp11.inc' && \
+   "$E" upcl decode \"$P\" 0x26 0x10 > '${CMAKE_BINARY_DIR}/pdp11.dec' && \
+   grep -q 'put r6 <- '         '${CMAKE_BINARY_DIR}/pdp11.dec' && \
+   grep -q 'store.i16'          '${CMAKE_BINARY_DIR}/pdp11.dec' && \
+   "$E" upcl decode \"$P\" 0x72 0x1c 0x04 0x00 0x06 0x00 > '${CMAKE_BINARY_DIR}/pdp11.two' && \
+   grep -q '(6 byte'            '${CMAKE_BINARY_DIR}/pdp11.two'")
+set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-

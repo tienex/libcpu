@@ -194,6 +194,12 @@ public:
     bool                     IsReg = false;
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
+    // Side effects on the base register: `pre ( Rn -= N )` is applied BEFORE the EA is taken
+    // (autodecrement -(Rn)); `post ( Rn += N )` AFTER the operand is used (autoincrement (Rn)+).
+    std::string              PreReg;             // "" = none
+    INT32                    PreDelta = 0;
+    std::string              PostReg;            // "" = none
+    INT32                    PostDelta = 0;
     ~AddrRule () { delete Cond; }
 };
 class AddrMode {

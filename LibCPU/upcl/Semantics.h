@@ -67,6 +67,12 @@ public:
     UINT32      Base2    = ~(UINT32) 0;   // second base register index (~0 = none)
     INT64       Disp     = 0;             // signed displacement
     std::string MemText;                  // address rendering for disassembly, e.g. "bx+si"
+    // Addressing-mode side effects (PDP-11 autoincrement/decrement, etc.): adjust a base register
+    // BEFORE the EA (pre, -(Rn)) or AFTER the operand is used (post, (Rn)+). ~0 = none.
+    UINT32      PreReg    = ~(UINT32) 0;
+    INT32       PreDelta  = 0;
+    UINT32      PostReg   = ~(UINT32) 0;
+    INT32       PostDelta = 0;
 };
 
 class Translator {
@@ -137,6 +143,8 @@ private:
     // names -> storage
     void   WriteName (std::string CONST &Name, Value CONST &Rhs);
     void   SetReservation (Value CONST &Addr);     // %LL: remember the reserved address + set LLbit
+    void   AdjustReg (UINT32 Index, INT32 Delta);  // emit r[Index] += Delta (addrmode autoinc/dec)
+    std::vector<std::pair<UINT32, INT32>> m_PostAdjust;  // post-EA register bumps, flushed after the body
     UINT32 WidthOf (Expr *pExpr) CONST;            // a name/cast's static width (no emit)
     bool  FindSub (std::string CONST &Name, RegSub CONST **ppSub) CONST;
     bool  FindFlag (std::string CONST &Name, RegFlag CONST **ppFlag) CONST;
