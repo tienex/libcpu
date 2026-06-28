@@ -1,0 +1,269 @@
+// The DEC Alpha (AXP) instruction set -- a UPCL description.
+//
+// Alpha is a clean 64-bit RISC: fixed 32-bit instructions, load/store, 32 integer registers (R31
+// hardwired 0) and 32 IEEE floating registers (F31 hardwired 0). It has exactly five instruction
+// formats -- Memory, Branch, Operate (register and literal forms), Floating Operate, and PALcode --
+// which this file defines once, then expresses each instruction as an `encode` over one of them.
+//
+// The optional ISA extensions (BWX byte/word, CIX count, FIX float<->int convert, MVI motion-video)
+// are kept in alpha/<feature>.upcl as feature { } blocks and switched on per CPU model, exactly as
+// x86.upcl does with the 80186/NEC/8087 features:
+//
+//     lcx run prog.bin --arch upcl:alpha.upcl          (base = 21064/EV4)
+//     lcx run prog.bin --arch upcl:alpha.upcl@ev6      (21264: + bwx + fix + mvi)
+//
+// (The Sunway SW64 is deliberately NOT modelled here -- it is a separate, Alpha-derived ISA.)
+//
+// SCAFFOLD: the base integer/FP/branch/memory/PAL surface below is representative, not exhaustive;
+// instruction bodies follow the established patterns (r[ ra ] indexes the GPR file; %S sign-extends
+// a field; %M[ ea ] is memory). Fill in the remaining opcodes/function codes against the Alpha
+// Architecture Reference Manual.
+
+arch "alpha" {
+
+	name "DEC Alpha AXP";
+
+	// Alpha is bi-endian but every mainstream OS (Tru64, Linux, OpenVMS) runs it little-endian; the
+	// instruction stream is fetched per default_endian (little).
+	endian little;
+	default_endian little;
+
+	byte_size 8;
+	word_size 64;
+	address_size 64;
+	float_size 64;
+
+	register_file {
+
+		// Integer registers R0..R31; R31 is hardwired to zero (reads 0, writes discarded). R26 is
+		// the return-address register (RA) by convention; R29/R30 are GP/SP -- but those are software
+		// roles, not hardware, so they are plain registers here.
+		group R {
+			[ 31 ** #i64 r?:0 ],     // r0 .. r30
+			[ #i64 r31 <- 0 ]        // r31: the zero register
+		}
+
+		// IEEE floating registers F0..F31; F31 is hardwired to zero.
+		group F {
+			[ 31 ** #f64 f?:0 ],     // f0 .. f30
+			[ #f64 f31 <- 0 ]        // f31: the zero register
+		}
+
+		// The program counter. (The Alpha PC is always longword-aligned; the low 2 bits read 0.)
+		group S {
+			[ #i64 pc -> %PC ]
+		}
+
+		// PALcode / trap vector: CALL_PAL records its 26-bit function here for the host dispatcher
+		// (the OS personality reads it -- callsys, the syscall gate, is PAL function 0x83).
+		group T : [ #i32 trapno ];
+
+	}
+
+}
+
+// Decoder operands. The 5-bit fields select registers (r[ ra ] / f[ fa ]); the immediate fields are
+// held at their encoded widths so %S sign-extends them correctly (disp16, bdisp21) before use.
+decoder_operands [
+	#i5 ra, #i5 rb, #i5 rc,          // integer register selectors
+	#i5 fa, #i5 fb, #i5 fc,          // floating register selectors
+	#i16 disp,                       // memory-format 16-bit signed displacement
+	#i8  lit,                        // operate-format 8-bit literal (zero-extended)
+	#i21 bdisp,                      // branch-format 21-bit signed displacement (scaled x4)
+	#i26 palfn,                      // CALL_PAL 26-bit function
+	#i14 hint                        // JSR-group branch-prediction hint (no execution effect)
+];
+
+// ===========================================================================
+// MEMORY FORMAT  ( op:6 | Ra:5 | Rb:5 | disp:16 )
+//   effective address = Rb + SEXT(disp).  Loads write Ra; stores read Ra.
+// ===========================================================================
+
+// LDA/LDAH: address calculation, no memory reference. LDAH scales the displacement by 65536.
+insn lda  : encode #i32 ( op:6 = 0x08, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "lda",  operands : ra, rb, disp )  => r[ ra ] = r[ rb ] + %S ( disp );
+insn ldah : encode #i32 ( op:6 = 0x09, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "ldah", operands : ra, rb, disp )  => r[ ra ] = r[ rb ] + ( %S ( disp ) << 16 );
+
+// LDL/LDQ: load 32-bit (sign-extended to 64) / 64-bit. LDL_L/LDQ_L are the load-locked variants
+// (atomic primitive); modelled here as plain loads (the lock flag is a system concern).
+insn ldl : encode #i32 ( op:6 = 0x28, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "ldl", operands : ra, rb, disp )
+	=> r[ ra ] = %S ( [ #i64 #i32 %M[ r[ rb ] + %S ( disp ) ] ] );
+insn ldq : encode #i32 ( op:6 = 0x29, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "ldq", operands : ra, rb, disp )
+	=> r[ ra ] = #i64 %M[ r[ rb ] + %S ( disp ) ];
+insn ldq_u : encode #i32 ( op:6 = 0x0b, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "ldq_u", operands : ra, rb, disp )
+	=> r[ ra ] = #i64 %M[ ( r[ rb ] + %S ( disp ) ) & ~ 7 ];   // unaligned: clear low 3 bits
+
+// STL/STQ: store low 32 / full 64. STL_C/STQ_C (store-conditional) deferred with the lock model.
+insn stl : encode #i32 ( op:6 = 0x2c, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "stl", operands : ra, rb, disp )  => #i32 %M[ r[ rb ] + %S ( disp ) ] = r[ ra ];
+insn stq : encode #i32 ( op:6 = 0x2d, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "stq", operands : ra, rb, disp )  => #i64 %M[ r[ rb ] + %S ( disp ) ] = r[ ra ];
+insn stq_u : encode #i32 ( op:6 = 0x0f, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "stq_u", operands : ra, rb, disp )
+	=> #i64 %M[ ( r[ rb ] + %S ( disp ) ) & ~ 7 ] = r[ ra ];
+
+// Floating loads/stores (IEEE single/double). LDS/STS move 32-bit, LDT/STT 64-bit.
+insn ldt : encode #i32 ( op:6 = 0x23, fa:5 -> fa, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "ldt", operands : fa, rb, disp )  => f[ fa ] = #f64 %M[ r[ rb ] + %S ( disp ) ];
+insn stt : encode #i32 ( op:6 = 0x27, fa:5 -> fa, rb:5 -> rb, disp:16 -> disp ),
+	disasm ( mnemonic : "stt", operands : fa, rb, disp )  => #f64 %M[ r[ rb ] + %S ( disp ) ] = f[ fa ];
+
+// ===========================================================================
+// OPERATE FORMAT  -- register form: ( op:6 | Ra:5 | Rb:5 | 0:3 | 0:1 | func:7 | Rc:5 )
+//                    literal  form: ( op:6 | Ra:5 | lit:8 | 1:1 | func:7 | Rc:5 )
+//   Rc = Ra <func> (Rb | ZEXT(lit)).  Each instruction therefore has TWO encodings.
+//   INTA op=0x10 (arith), INTL op=0x11 (logical), INTS op=0x12 (shift), INTM op=0x13 (multiply).
+// ===========================================================================
+
+// --- arithmetic (op 0x10). ADDL/SUBL/MULL operate on 32 bits and sign-extend the result. ---
+insn addq   : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x20, rc:5 -> rc ),
+	disasm ( mnemonic : "addq", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] + r[ rb ];
+insn addq_i : encode #i32 ( op:6 = 0x10, ra:5 -> ra, lit:8 -> lit, li:1 = 1, func:7 = 0x20, rc:5 -> rc ),
+	disasm ( mnemonic : "addq", operands : ra, lit, rc )  => r[ rc ] = r[ ra ] + lit;
+insn subq   : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x29, rc:5 -> rc ),
+	disasm ( mnemonic : "subq", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] - r[ rb ];
+insn subq_i : encode #i32 ( op:6 = 0x10, ra:5 -> ra, lit:8 -> lit, li:1 = 1, func:7 = 0x29, rc:5 -> rc ),
+	disasm ( mnemonic : "subq", operands : ra, lit, rc )  => r[ rc ] = r[ ra ] - lit;
+insn addl   : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x00, rc:5 -> rc ),
+	disasm ( mnemonic : "addl", operands : ra, rb, rc )
+	{ #i32 t = r[ ra ] + r[ rb ]; r[ rc ] = %S ( t ); }    // 32-bit add, sign-extended to 64
+insn s4addq : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x22, rc:5 -> rc ),
+	disasm ( mnemonic : "s4addq", operands : ra, rb, rc )  => r[ rc ] = ( r[ ra ] << 2 ) + r[ rb ];
+insn s8addq : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x32, rc:5 -> rc ),
+	disasm ( mnemonic : "s8addq", operands : ra, rb, rc )  => r[ rc ] = ( r[ ra ] << 3 ) + r[ rb ];
+
+// Compares write 1 / 0 into Rc. CMPULT/CMPULE are unsigned; CMPLT/CMPLE signed.
+insn cmpeq  : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x2d, rc:5 -> rc ),
+	disasm ( mnemonic : "cmpeq",  operands : ra, rb, rc )  => r[ rc ] = ( r[ ra ] == r[ rb ] ) ? 1 : 0;
+insn cmplt  : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x4d, rc:5 -> rc ),
+	disasm ( mnemonic : "cmplt",  operands : ra, rb, rc )  => r[ rc ] = ( %S ( r[ ra ] ) < %S ( r[ rb ] ) ) ? 1 : 0;
+insn cmpult : encode #i32 ( op:6 = 0x10, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x1d, rc:5 -> rc ),
+	disasm ( mnemonic : "cmpult", operands : ra, rb, rc )  => r[ rc ] = ( r[ ra ] < r[ rb ] ) ? 1 : 0;
+
+// --- logical (op 0x11). BIS is OR; BIC/ORNOT/EQV use the complement of Rb. ---
+insn and    : encode #i32 ( op:6 = 0x11, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x00, rc:5 -> rc ),
+	disasm ( mnemonic : "and",   operands : ra, rb, rc )  => r[ rc ] = r[ ra ] & r[ rb ];
+insn bis    : encode #i32 ( op:6 = 0x11, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x20, rc:5 -> rc ),
+	disasm ( mnemonic : "bis",   operands : ra, rb, rc )  => r[ rc ] = r[ ra ] | r[ rb ];
+insn bis_i  : encode #i32 ( op:6 = 0x11, ra:5 -> ra, lit:8 -> lit, li:1 = 1, func:7 = 0x20, rc:5 -> rc ),
+	disasm ( mnemonic : "bis",   operands : ra, lit, rc )  => r[ rc ] = r[ ra ] | lit;
+insn xor    : encode #i32 ( op:6 = 0x11, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x40, rc:5 -> rc ),
+	disasm ( mnemonic : "xor",   operands : ra, rb, rc )  => r[ rc ] = r[ ra ] ^ r[ rb ];
+insn bic    : encode #i32 ( op:6 = 0x11, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x08, rc:5 -> rc ),
+	disasm ( mnemonic : "bic",   operands : ra, rb, rc )  => r[ rc ] = r[ ra ] & ~ r[ rb ];
+insn ornot  : encode #i32 ( op:6 = 0x11, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x28, rc:5 -> rc ),
+	disasm ( mnemonic : "ornot", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] | ~ r[ rb ];
+
+// --- shift (op 0x12). The shift amount is Rb / lit modulo 64. ---
+insn sll : encode #i32 ( op:6 = 0x12, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x39, rc:5 -> rc ),
+	disasm ( mnemonic : "sll", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] << ( r[ rb ] & 63 );
+insn srl : encode #i32 ( op:6 = 0x12, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x34, rc:5 -> rc ),
+	disasm ( mnemonic : "srl", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] >> ( r[ rb ] & 63 );
+insn sra : encode #i32 ( op:6 = 0x12, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x3c, rc:5 -> rc ),
+	disasm ( mnemonic : "sra", operands : ra, rb, rc )  => r[ rc ] = %S ( r[ ra ] ) >> ( r[ rb ] & 63 );
+
+// --- multiply (op 0x13). MULL is the 32-bit form (sign-extended); MULQ the 64-bit. ---
+insn mulq : encode #i32 ( op:6 = 0x13, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x20, rc:5 -> rc ),
+	disasm ( mnemonic : "mulq", operands : ra, rb, rc )  => r[ rc ] = r[ ra ] * r[ rb ];
+insn mull : encode #i32 ( op:6 = 0x13, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x00, rc:5 -> rc ),
+	disasm ( mnemonic : "mull", operands : ra, rb, rc )
+	{ #i32 t = r[ ra ] * r[ rb ]; r[ rc ] = %S ( t ); }    // 32-bit multiply, sign-extended to 64
+
+// ===========================================================================
+// FLOATING OPERATE FORMAT  ( op:6 | Fa:5 | Fb:5 | func:11 | Fc:5 )
+//   The 11-bit function encodes the operation plus the /RND (rounding) and /TRP (trap) qualifiers;
+//   the base (no-qualifier) IEEE-double forms are given here. op 0x16 = FLTI (IEEE arithmetic),
+//   op 0x17 = FLTL (sign-copy / convert / conditional-move).
+// ===========================================================================
+
+insn addt : encode #i32 ( op:6 = 0x16, fa:5 -> fa, fb:5 -> fb, func:11 = 0x0a0, fc:5 -> fc ),
+	disasm ( mnemonic : "addt", operands : fa, fb, fc )  => f[ fc ] = f[ fa ] + f[ fb ];
+insn subt : encode #i32 ( op:6 = 0x16, fa:5 -> fa, fb:5 -> fb, func:11 = 0x0a1, fc:5 -> fc ),
+	disasm ( mnemonic : "subt", operands : fa, fb, fc )  => f[ fc ] = f[ fa ] - f[ fb ];
+insn mult : encode #i32 ( op:6 = 0x16, fa:5 -> fa, fb:5 -> fb, func:11 = 0x0a2, fc:5 -> fc ),
+	disasm ( mnemonic : "mult", operands : fa, fb, fc )  => f[ fc ] = f[ fa ] * f[ fb ];
+insn divt : encode #i32 ( op:6 = 0x16, fa:5 -> fa, fb:5 -> fb, func:11 = 0x0a3, fc:5 -> fc ),
+	disasm ( mnemonic : "divt", operands : fa, fb, fc )  => f[ fc ] = f[ fa ] / f[ fb ];
+
+// CPYS: copy sign of Fa onto magnitude of Fb (the canonical FP register move uses CPYS Fx,Fx,Fy).
+insn cpys : encode #i32 ( op:6 = 0x17, fa:5 -> fa, fb:5 -> fb, func:11 = 0x020, fc:5 -> fc ),
+	disasm ( mnemonic : "cpys", operands : fa, fb, fc )  => f[ fc ] = f[ fb ];   // SCAFFOLD: sign-merge TODO
+
+// ===========================================================================
+// BRANCH FORMAT  ( op:6 | Ra:5 | disp:21 )
+//   target = updated_PC + 4*SEXT(disp).  `pc` reads as updated_PC (this instruction + 4).
+// ===========================================================================
+
+// BR/BSR: unconditional; write the return address (updated PC) into Ra, then transfer. BSR is the
+// call hint (Ra is normally R26/RA); both have identical hardware behaviour.
+jump insn br  : type call, encode #i32 ( op:6 = 0x30, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "br",  operands : ra, bdisp )  { r[ ra ] = pc; pc = pc + ( %S ( bdisp ) << 2 ); }
+jump insn bsr : type call, encode #i32 ( op:6 = 0x34, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "bsr", operands : ra, bdisp )  { r[ ra ] = pc; pc = pc + ( %S ( bdisp ) << 2 ); }
+
+// Conditional branches on the integer Ra (computed-target select form, as the other RISC frontends
+// use, so the branch gates correctly at run time).
+jump insn beq  : type branch, encode #i32 ( op:6 = 0x39, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "beq",  operands : ra, bdisp )  { pc = ( r[ ra ] == 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn bne  : type branch, encode #i32 ( op:6 = 0x3d, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "bne",  operands : ra, bdisp )  { pc = ( r[ ra ] != 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn blt  : type branch, encode #i32 ( op:6 = 0x3a, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "blt",  operands : ra, bdisp )  { pc = ( %S ( r[ ra ] ) <  0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn ble  : type branch, encode #i32 ( op:6 = 0x3b, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "ble",  operands : ra, bdisp )  { pc = ( %S ( r[ ra ] ) <= 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn bge  : type branch, encode #i32 ( op:6 = 0x3e, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "bge",  operands : ra, bdisp )  { pc = ( %S ( r[ ra ] ) >= 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn bgt  : type branch, encode #i32 ( op:6 = 0x3f, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "bgt",  operands : ra, bdisp )  { pc = ( %S ( r[ ra ] ) >  0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn blbc : type branch, encode #i32 ( op:6 = 0x38, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "blbc", operands : ra, bdisp )  { pc = ( ( r[ ra ] & 1 ) == 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+jump insn blbs : type branch, encode #i32 ( op:6 = 0x3c, ra:5 -> ra, bdisp:21 -> bdisp ),
+	disasm ( mnemonic : "blbs", operands : ra, bdisp )  { pc = ( ( r[ ra ] & 1 ) != 0 ) ? ( pc + ( %S ( bdisp ) << 2 ) ) : pc; }
+
+// ===========================================================================
+// JUMP (memory format, op 0x1A)  ( op:6 | Ra:5 | Rb:5 | jfunc:2 | hint:14 )
+//   Ra <- updated_PC ; PC <- Rb & ~3.  jfunc selects JMP(0)/JSR(1)/RET(2)/JSR_COROUTINE(3) --
+//   a prediction hint only; the operation is identical. A computed (indirect) transfer.
+// ===========================================================================
+
+jump insn jmp : type call, encode #i32 ( op:6 = 0x1a, ra:5 -> ra, rb:5 -> rb, jf:2 = 0, hint:14 -> hint ),
+	disasm ( mnemonic : "jmp", operands : ra, rb )  { r[ ra ] = pc; pc = r[ rb ] & ~ 3; }
+jump insn jsr : type call, encode #i32 ( op:6 = 0x1a, ra:5 -> ra, rb:5 -> rb, jf:2 = 1, hint:14 -> hint ),
+	disasm ( mnemonic : "jsr", operands : ra, rb )  { r[ ra ] = pc; pc = r[ rb ] & ~ 3; }
+jump insn ret : type return, encode #i32 ( op:6 = 0x1a, ra:5 -> ra, rb:5 -> rb, jf:2 = 2, hint:14 -> hint ),
+	disasm ( mnemonic : "ret", operands : ra, rb )  { pc = r[ rb ] & ~ 3; }
+
+// ===========================================================================
+// PALcode FORMAT  ( op:6 = 0x00 | func:26 )
+//   CALL_PAL traps to the PAL function `func`. This is the OS gateway: on OSF/1-Linux the syscall
+//   entry is `callsys` (PAL 0x83). The host syscall personality reads trapno and services it.
+// ===========================================================================
+
+jump insn call_pal : type trap, encode #i32 ( op:6 = 0x00, palfn:26 -> palfn ),
+	disasm ( mnemonic : "call_pal", operands : palfn )  { trapno = palfn; @trap ( palfn ); }
+
+// ===========================================================================
+// Optional ISA extensions (feature blocks live in alpha/<feature>.upcl) and the CPU models.
+// ===========================================================================
+
+include "alpha/bwx.upcl";    // byte/word memory + sign-extend  (EV56+)
+include "alpha/fix.upcl";    // float <-> integer register moves (EV6+)
+include "alpha/cix.upcl";    // count: CTPOP / CTLZ / CTTZ       (EV67+)
+include "alpha/mvi.upcl";    // motion-video SIMD-in-GPR          (EV6+)
+
+features {
+	bwx "BWX -- byte/word load/store + SEXTB/SEXTW";
+	fix "FIX -- floating <-> integer register transfers";
+	cix "CIX -- count population/leading-zero/trailing-zero";
+	mvi "MVI -- motion-video (MIN/MAX/PERR/PKx/UNPKx)";
+}
+
+cpu "ev4"  { }                       // 21064  -- base ISA
+cpu "ev5"  { }                       // 21164  -- base ISA
+cpu "ev56" { bwx; }                  // 21164A -- adds BWX
+cpu "ev6"  { bwx; fix; mvi; }        // 21264  -- adds FIX + MVI
+cpu "ev67" { bwx; fix; mvi; cix; }   // 21264A -- adds CIX

@@ -41,6 +41,10 @@ arch "m88k" {
 
 		}
 
+		// Floating-point control registers fcr0..fcr63 (fldcr/fstcr/fxcr access them; fcr62=FPSR,
+		// fcr63=FPCR on the MC88100). A flat bank addressed by the 6-bit control-register number.
+		group FC : [ 64 ** #i32 fcr?:0 ];
+
 		// Trap
 		// trapno holds the trap vector (vec9 is 9-bit, up to 511) -- a 32-bit register so the
 		// dispatcher reads the full number (the old #i5 truncated it).
@@ -50,8 +54,7 @@ arch "m88k" {
 
 }
 
-decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #i32 wmask,
-				 const #i9 vec9,
+decoder_operands [ const #i9 vec9,
 				 // Encoded immediate-form operands: 5-bit GPR selectors (rD[25:21], rS1[20:16])
 				 // and the immediate, held in a 32-bit operand so it widens cleanly for shifts/
 				 // arithmetic (the 16-bit imm16[15:0] field zero-extends into it). r[ idx ]
@@ -62,7 +65,11 @@ decoder_operands [ #i32 dst, #i32 dst2, #f80 xdst, #i32 src1, #i32 src2, const #
 				 // tb0/tb1/bb0/bb1: the tested bit number (D[25:21]); bb0/bb1's 16-bit word offset.
 				 #i5 bit, #i16 boff,
 				 // bcnd: the 5-bit condition selector M[25:21].
-				 #i5 mb ];
+				 #i5 mb,
+				 // ldcr/stcr/xcr: the 5-bit control-register number CR[9:5].
+				 #i5 cr,
+				 // Bit-field immediate (clr/set/ext/extu/mak/rot): width W[9:5] and offset O[4:0].
+				 #i5 bw, #i5 bo ];
 
 // ---------------------------------------------------------------------------
 // Immediate-form integer instructions (major opcode bits[31:26] = 0x10..0x1f):
@@ -110,6 +117,14 @@ insn add_imm   : encode #i32 ( op:6 = 0x1c, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> 
 insn sub_imm   : encode #i32 ( op:6 = 0x1d, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
 	disasm ( mnemonic : "sub", operands : rd, rs1, imm )
 	=> r[ rd ] = %OFTRAP ( r[ rs1 ] - imm, 1 );
+// divu (major 0x1a) / div (major 0x1e, DIVS): unsigned / signed divide by the zero-extended imm16.
+// A zero divisor raises the divide trap in hardware; modelled here as the backend's division.
+insn divu_imm  : encode #i32 ( op:6 = 0x1a, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "divu", operands : rd, rs1, imm )
+	=> r[ rd ] = %U ( r[ rs1 ] / imm );
+insn div_imm   : encode #i32 ( op:6 = 0x1e, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "div", operands : rd, rs1, imm )
+	=> r[ rd ] = %S ( r[ rs1 ] / imm );
 
 // ---------------------------------------------------------------------------
 // Triadic register-form integer instructions (major opcode 0x3d = EXT2):
@@ -166,6 +181,12 @@ insn subu_cio : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x67
 insn mulu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x6c, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "mulu", operands : rd, rs1, rs2 ) => r[ rd ] = %U ( r[ rs1 ] * r[ rs2 ] );
 
+// divu (minor 0x1a -> mc 0x68) / div (minor 0x1e -> mc 0x78, DIVS): unsigned / signed divide.
+insn divu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x68, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "divu", operands : rd, rs1, rs2 ) => r[ rd ] = %U ( r[ rs1 ] / r[ rs2 ] );
+insn divs : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x78, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "div", operands : rd, rs1, rs2 )  => r[ rd ] = %S ( r[ rs1 ] / r[ rs2 ] );
+
 // Logical triadic forms (no carry; mc = minor<<2).
 insn and   : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x40, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "and", operands : rd, rs1, rs2 )    => r[ rd ] = r[ rs1 ] & r[ rs2 ];
@@ -198,26 +219,193 @@ insn cmp_imm : encode #i32 ( op:6 = 0x1f, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> im
 	   | ( ( ( ( ( %U ( r[ rs1 ] ) > %U ( imm ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 8 )
 	   | ( ( ( ( ( %S ( r[ rs1 ] ) > %S ( imm ) ) ? 0xffffffff : 0 ) ^ 6 ) & 0xf ) << 4 ) );
 
-// Triadic shift / bit-find forms under EXT2 (register form: shift/rotate count or source in rS2).
-// mc = minor<<2 (no carry variants). ext/extu shift rS1 right by rS2's low 5 bits (signed/unsigned);
-// rot rotates right; ff1/ff0 find the first set/clear bit of rS1 (two-operand, rS2 unused).
-insn ext  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x90, z:3 = 0, rs2:5 -> rs2 ),
-	disasm ( mnemonic : "ext", operands : rd, rs1, rs2 )  => r[ rd ] = %S ( r[ rs1 ] >> ( r[ rs2 ] & 0x1f ) );
-insn extu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x98, z:3 = 0, rs2:5 -> rs2 ),
-	disasm ( mnemonic : "extu", operands : rd, rs1, rs2 ) => r[ rd ] = %U ( r[ rs1 ] >> ( r[ rs2 ] & 0x1f ) );
-insn rot  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xa8, z:3 = 0, rs2:5 -> rs2 ),
-	disasm ( mnemonic : "rot", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] >>< ( r[ rs2 ] & 0x1f );
+// ff1/ff0 find the first set/clear bit of rS1 (EXT2, two-operand, rS2 unused; mc 0xe8/0xec).
 insn ff1  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xe8, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "ff1", operands : rd, rs1 )       => r[ rd ] = @ffs ( r[ rs1 ] );
 insn ff0  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xec, z:3 = 0, rs2:5 -> rs2 ),
 	disasm ( mnemonic : "ff0", operands : rd, rs1 )       => r[ rd ] = @ffc ( r[ rs1 ] );
 
-// mak/set/clr (bit-field width:offset via rS2 / wmask) still pending an encoded form -- deferred.
+// ---------------------------------------------------------------------------
+// Bit-field instructions, IMMEDIATE form (EXT2, op 0x3d): clr/set/ext/extu/mak/rot with an inline
+// width W = bits[9:5] and offset O = bits[4:0] (written W<O>). sub_opcode = bits[15:10]: clr=0x20,
+// set=0x22, ext=0x24, extu=0x26, mak=0x28, rot=0x2a. A width of 0 means 32 (the whole word). This is
+// the canonical bit-field encoding the assembler emits; the W bits live in the operand fields, so the
+// match key is the 6-bit sub (not the 8-bit mc) -- which is why a non-zero W now decodes.
+//   clr  rD = rS1 with the W bits at O cleared       set  rD = rS1 with the W bits at O set
+//   ext  signed extract of the W-bit field at O      extu unsigned extract of the W-bit field at O
+//   mak  deposit rS1's low W bits at offset O         rot  rotate rS1 right by O (W ignored)
+// ---------------------------------------------------------------------------
+insn clr  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x20, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "clr", operands : rd, rs1, bw, bo )
+	{ #i32 m = ( bw == 0 ) ? 0xffffffff : ( ( 1 << bw ) - 1 ); r[ rd ] = r[ rs1 ] & ~ ( m << bo ); }
+insn set  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x22, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "set", operands : rd, rs1, bw, bo )
+	{ #i32 m = ( bw == 0 ) ? 0xffffffff : ( ( 1 << bw ) - 1 ); r[ rd ] = r[ rs1 ] | ( m << bo ); }
+insn ext  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x24, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "ext", operands : rd, rs1, bw, bo )
+	{ #i32 m = ( bw == 0 ) ? 0xffffffff : ( ( 1 << bw ) - 1 ); #i32 sb = ( bw == 0 ) ? 31 : ( bw - 1 );
+	  #i32 e = ( r[ rs1 ] >> bo ) & m; r[ rd ] = ( e & ( 1 << sb ) ) ? ( e | ~ m ) : e; }
+insn extu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x26, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "extu", operands : rd, rs1, bw, bo )
+	{ #i32 m = ( bw == 0 ) ? 0xffffffff : ( ( 1 << bw ) - 1 ); r[ rd ] = ( r[ rs1 ] >> bo ) & m; }
+insn mak  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x28, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "mak", operands : rd, rs1, bw, bo )
+	{ #i32 m = ( bw == 0 ) ? 0xffffffff : ( ( 1 << bw ) - 1 ); r[ rd ] = ( r[ rs1 ] & m ) << bo; }
+insn rot  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x2a, bw:5 -> bw, bo:5 -> bo ),
+	disasm ( mnemonic : "rot", operands : rd, rs1, bo )   => r[ rd ] = r[ rs1 ] >>< bo;
 
-insn lda      : dst = src1 + ( src2 << 2 );
-insn lda_h    : dst = src1 + ( src2 << 1 );
-insn lda_d    : dst = src1 + ( src2 << 3 );
-insn lda_x    : dst = src1 + ( src2 << 4 );
+// ---------------------------------------------------------------------------
+// Floating point (SFU1, major opcode 0x21). The MC88100 keeps single-precision FP operands in the
+// general registers as IEEE-754 bit patterns, so %FLT reinterprets a GPR's bits as an f32, the
+// operation runs in floating point, and %INT writes the resulting bits back. sub[15:11] selects the
+// operation; the precision field [10:5] = (TD:T1:T2) is 0 here for single precision (.sss). The
+// dyadic forms use rS1/rS2; the conversions use rS2 as the single source. flt converts an integer
+// to float; int/nint/trnc convert float to integer (truncating toward zero for trnc/int).
+// Authoritative sub-opcodes from arch/m88k/m88k_insn.cpp's SFU1 table.
+// ---------------------------------------------------------------------------
+insn fmul : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x00, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fmul.sss", operands : rd, rs1, rs2 )
+	=> r[ rd ] = %INT ( %FLT ( r[ rs1 ] ) * %FLT ( r[ rs2 ] ) );
+insn fadd : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x05, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fadd.sss", operands : rd, rs1, rs2 )
+	=> r[ rd ] = %INT ( %FLT ( r[ rs1 ] ) + %FLT ( r[ rs2 ] ) );
+insn fsub : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x06, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fsub.sss", operands : rd, rs1, rs2 )
+	=> r[ rd ] = %INT ( %FLT ( r[ rs1 ] ) - %FLT ( r[ rs2 ] ) );
+insn fdiv : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x0e, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fdiv.sss", operands : rd, rs1, rs2 )
+	=> r[ rd ] = %INT ( %FLT ( r[ rs1 ] ) / %FLT ( r[ rs2 ] ) );
+
+// flt: integer (rS2) -> single float (rD). int/nint/trnc: single float (rS2) -> integer (rD).
+insn flt  : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x04, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "flt.ss", operands : rd, rs2 )    => r[ rd ] = %INT ( #f32 r[ rs2 ] );
+// int: convert float->int using the CURRENT ROUNDING MODE held in FPCR (fcr63[15:14]): 0=nearest,
+// 1=toward-zero, 2=toward +inf (ceil), 3=toward -inf (floor). This is what distinguishes `int` from
+// the fixed-mode `nint` (always nearest) and `trnc` (always toward zero) -- and it genuinely reads
+// the FP control register.
+insn fint : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x09, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "int.ss", operands : rd, rs2 )
+	{ #f32 f = %FLT ( r[ rs2 ] );
+	  #i32 rm = ( fcr63 >> 14 ) & 3;
+	  #i32 tz = #i32 f;                                        // toward zero
+	  #i32 rn = #i32 ( f + ( ( f >= 0.0 ) ? 0.5 : -0.5 ) );   // nearest
+	  #f32 ft = #f32 tz;
+	  #i32 up = ( f > ft ) ? ( tz + 1 ) : tz;                 // ceil  (+inf)
+	  #i32 dn = ( f < ft ) ? ( tz - 1 ) : tz;                 // floor (-inf)
+	  r[ rd ] = ( rm == 1 ) ? tz : ( rm == 2 ) ? up : ( rm == 3 ) ? dn : rn; }
+insn nint : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x0a, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "nint.ss", operands : rd, rs2 )
+	{ #f32 f = %FLT ( r[ rs2 ] ); r[ rd ] = #i32 ( f + ( ( f >= 0.0 ) ? 0.5 : -0.5 ) ); }
+insn trnc : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x0b, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "trnc.ss", operands : rd, rs2 )   => r[ rd ] = #i32 %FLT ( r[ rs2 ] );
+
+// fcmp: compare the two single-precision operands, depositing the MC88100 relation bit-vector in rD
+// (bit1=ne bit2=eq bit3=gt bit4=le bit5=lt bit6=ge): equal -> eq|le|ge (0x54), greater -> ne|gt|ge
+// (0x4a), less -> ne|le|lt (0x32). The cmp-and-branch idiom (fcmp + bb1 <bit>) tests these.
+insn fcmp : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x07, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fcmp.sss", operands : rd, rs1, rs2 )
+	=> r[ rd ] = ( %FLT ( r[ rs1 ] ) == %FLT ( r[ rs2 ] ) ) ? 0x54 :
+	             ( %FLT ( r[ rs1 ] ) >  %FLT ( r[ rs2 ] ) ) ? 0x4a : 0x32;
+
+// ---- double precision (.ddd): operands are GPR PAIRS r[rD]:r[rD+1] (big-endian: high word first),
+// assembled into a 64-bit value, reinterpreted as an IEEE double, and split back. precision[10:5] =
+// (TD:T1:T2) = 01:01:01 = 0x15 selects double; the sub_opcode is the same as the single forms. ----
+insn fadd_d : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x05, prec:6 = 0x15, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fadd.ddd", operands : rd, rs1, rs2 )
+	{ #i64 a = ( [ #i64 r[ rs1 ] ] << 32 ) | [ #i64 r[ rs1 + 1 ] ];
+	  #i64 b = ( [ #i64 r[ rs2 ] ] << 32 ) | [ #i64 r[ rs2 + 1 ] ];
+	  #i64 z = %INT ( %FLT ( a ) + %FLT ( b ) ); r[ rd ] = z >> 32; r[ rd + 1 ] = z; }
+insn fsub_d : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x06, prec:6 = 0x15, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fsub.ddd", operands : rd, rs1, rs2 )
+	{ #i64 a = ( [ #i64 r[ rs1 ] ] << 32 ) | [ #i64 r[ rs1 + 1 ] ];
+	  #i64 b = ( [ #i64 r[ rs2 ] ] << 32 ) | [ #i64 r[ rs2 + 1 ] ];
+	  #i64 z = %INT ( %FLT ( a ) - %FLT ( b ) ); r[ rd ] = z >> 32; r[ rd + 1 ] = z; }
+insn fmul_d : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x00, prec:6 = 0x15, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fmul.ddd", operands : rd, rs1, rs2 )
+	{ #i64 a = ( [ #i64 r[ rs1 ] ] << 32 ) | [ #i64 r[ rs1 + 1 ] ];
+	  #i64 b = ( [ #i64 r[ rs2 ] ] << 32 ) | [ #i64 r[ rs2 + 1 ] ];
+	  #i64 z = %INT ( %FLT ( a ) * %FLT ( b ) ); r[ rd ] = z >> 32; r[ rd + 1 ] = z; }
+insn fdiv_d : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x0e, prec:6 = 0x15, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fdiv.ddd", operands : rd, rs1, rs2 )
+	{ #i64 a = ( [ #i64 r[ rs1 ] ] << 32 ) | [ #i64 r[ rs1 + 1 ] ];
+	  #i64 b = ( [ #i64 r[ rs2 ] ] << 32 ) | [ #i64 r[ rs2 + 1 ] ];
+	  #i64 z = %INT ( %FLT ( a ) / %FLT ( b ) ); r[ rd ] = z >> 32; r[ rd + 1 ] = z; }
+insn fcmp_d : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x07, prec:6 = 0x15, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fcmp.ddd", operands : rd, rs1, rs2 )
+	{ #i64 a = ( [ #i64 r[ rs1 ] ] << 32 ) | [ #i64 r[ rs1 + 1 ] ];
+	  #i64 b = ( [ #i64 r[ rs2 ] ] << 32 ) | [ #i64 r[ rs2 + 1 ] ];
+	  r[ rd ] = ( %FLT ( a ) == %FLT ( b ) ) ? 0x54 : ( %FLT ( a ) > %FLT ( b ) ) ? 0x4a : 0x32; }
+
+// fcvt: re-round a single-precision value through the FP unit (sub 0x01). Present on the MC88100.
+insn fcvt  : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x01, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fcvt.ss", operands : rd, rs2 )   => r[ rd ] = %INT ( %FLT ( r[ rs2 ] ) );
+
+// ===========================================================================
+// MC88110 EXTENSIONS (feature `m88110`). The base architecture above is the MC88100; the 88110 adds
+// the extended-precision FPU over the x0..x31 registers, scalar fsqrt/mov, the 80-bit ld.x/st.x, and
+// the graphics (SFU2) packed-SIMD unit. cpu "mc88110" enables this feature; "mc88100" does not.
+// ===========================================================================
+feature m88110 {
+
+// extended precision (.xxx): operands are the 80-bit extended registers x0..x31. The x-register forms
+// set bit 15 of the sub_opcode (sub | 0x10); arithmetic is direct on the #f80 register file.
+insn fmul_x : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x10, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fmul.xxx", operands : rd, rs1, rs2 )  => x[ rd ] = x[ rs1 ] * x[ rs2 ];
+insn fadd_x : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x15, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fadd.xxx", operands : rd, rs1, rs2 )  => x[ rd ] = x[ rs1 ] + x[ rs2 ];
+insn fsub_x : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x16, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fsub.xxx", operands : rd, rs1, rs2 )  => x[ rd ] = x[ rs1 ] - x[ rs2 ];
+insn fdiv_x : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x1e, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fdiv.xxx", operands : rd, rs1, rs2 )  => x[ rd ] = x[ rs1 ] / x[ rs2 ];
+insn fcmp_x : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x17, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fcmp.xxx", operands : rd, rs1, rs2 )
+	=> r[ rd ] = ( x[ rs1 ] == x[ rs2 ] ) ? 0x54 : ( x[ rs1 ] > x[ rs2 ] ) ? 0x4a : 0x32;
+
+// fsqrt: single-precision square root (sub 0x0f). mov: copy a GPR single into an extended register
+// (sub 0x08), widening to 80-bit.
+insn fsqrt : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x0f, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "fsqrt.ss", operands : rd, rs2 )  => r[ rd ] = %INT ( @fsqrt ( %FLT ( r[ rs2 ] ) ) );
+insn mov   : encode #i32 ( op:6 = 0x21, rd:5 -> rd, rs1:5 -> rs1, sub:5 = 0x08, prec:6 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "mov", operands : rd, rs2 )       => x[ rd ] = #f80 %FLT ( r[ rs2 ] );
+
+// ld.x / st.x: 80-bit extended float load/store to/from an extended register (immediate form, major
+// 0x0f / 0x0e). The 80-bit datum lives at the effective address; the F register file holds #f80.
+insn ld_x : encode #i32 ( op:6 = 0x0f, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.x", operands : rd, rs1, imm )  => x[ rd ] = #f80 %M[ r[ rs1 ] + imm ];
+insn st_x : encode #i32 ( op:6 = 0x0e, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "st.x", operands : rd, rs1, imm )  => #f80 %M[ r[ rs1 ] + imm ] = x[ rd ];
+
+// Graphics unit (SFU2, major opcode 0x22). Packed SIMD: pmul/padd/psub/pcmp arithmetic and compare,
+// ppack/punpk pack/unpack, prot field rotate. sub5 = bits[15:11]. padd/psub/pcmp use UPCL's vector
+// type (#v4:8) so the operation runs LANE-BY-LANE (a true packed byte add -- no carry across the four
+// 8-bit lanes -- lowered to per-lane SWAR by the framework). Modelled on the 32-bit word with byte
+// lanes; the 64-bit register-pair and the per-size .h/.n widths are a documented simplification.
+insn pmul : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x00, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "pmul", operands : rd, rs1, rs2 )  => r[ rd ] = %U ( r[ rs1 ] * r[ rs2 ] );
+insn padd : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x04, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "padd", operands : rd, rs1, rs2 )  => r[ rd ] = [ #v4:8 r[ rs1 ] ] + [ #v4:8 r[ rs2 ] ];
+insn psub : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x06, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "psub", operands : rd, rs1, rs2 )  => r[ rd ] = [ #v4:8 r[ rs1 ] ] - [ #v4:8 r[ rs2 ] ];
+insn pcmp : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x07, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "pcmp", operands : rd, rs1, rs2 )  => r[ rd ] = [ #v4:8 r[ rs1 ] ] == [ #v4:8 r[ rs2 ] ];
+insn ppack : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x0c, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ppack", operands : rd, rs1, rs2 )  => r[ rd ] = ( r[ rs1 ] << 16 ) | ( r[ rs2 ] & 0xffff );
+insn punpk : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x0d, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "punpk", operands : rd, rs1 )       => r[ rd ] = r[ rs1 ] & 0xffff;
+insn prot  : encode #i32 ( op:6 = 0x22, rd:5 -> rd, rs1:5 -> rs1, sub5:5 = 0x0f, sz:6 -> sz, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "prot", operands : rd, rs1, rs2 )   => r[ rd ] = r[ rs1 ] >>< ( ( r[ rs2 ] >> 5 ) & 0x1f );
+
+}
+
+// lda computes a SCALED effective address (no memory access): rD = rS1 + (rS2 << log2(size)). The
+// register-indexed forms (EXT2, op 0x3d) carry the scale in the function byte: lda.d=0x32 (<<3),
+// lda(word)=0x36 (<<2, defined as lda_r below), lda.h=0x3a (<<1), lda.x=0x3e (<<4).
+insn lda_d : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x32, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "lda.d", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] + ( r[ rs2 ] << 3 );
+insn lda_h : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x3a, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "lda.h", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] + ( r[ rs2 ] << 1 );
+insn lda_x : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x3e, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "lda.x", operands : rd, rs1, rs2 )  => r[ rd ] = r[ rs1 ] + ( r[ rs2 ] << 4 );
 
 // Scalar load/store, immediate form (major opcode bits[31:26]): rD = mem[rS1 + imm16] and stores.
 // imm16 is zero-extended (the operand is #i32). Signed loads (ld.h/ld.b) sign-extend the fetched
@@ -240,20 +428,53 @@ insn st_h  : encode #i32 ( op:6 = 0x0a, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm 
 insn st_b  : encode #i32 ( op:6 = 0x0b, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
 	disasm ( mnemonic : "st.b", operands : rd, rs1, imm )  => #i8 %M[ r[ rs1 ] + imm ] = r[ rd ];
 
-// ld.d/st.d (64-bit register-pair) and ld.x/st.x (80-bit float) immediate forms: deferred
-// (need rD:rD+1 pair access / the F register file).
+// ld.d/st.d: 64-bit doubleword to/from the register pair r[rD]:r[rD+1] (big-endian: the high word
+// is at the lower address). Major 0x04/0x08, immediate-offset form. The ld.x/st.x 80-bit float
+// forms still need the F register file and stay deferred.
+insn ld_d  : encode #i32 ( op:6 = 0x04, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "ld.d", operands : rd, rs1, imm )
+	{ r[ rd ] = #i32 %M[ r[ rs1 ] + imm ]; r[ rd + 1 ] = #i32 %M[ r[ rs1 ] + imm + 4 ]; }
+insn st_d  : encode #i32 ( op:6 = 0x08, rd:5 -> rd, rs1:5 -> rs1, imm:16 -> imm ),
+	disasm ( mnemonic : "st.d", operands : rd, rs1, imm )
+	{ #i32 %M[ r[ rs1 ] + imm ] = r[ rd ]; #i32 %M[ r[ rs1 ] + imm + 4 ] = r[ rd + 1 ]; }
 
-insn xmem {
-	t = #i32 %M[ src1 + src2 ];
-	#i32 %M[ src1 + src2 ] = dst;
-	dst = t;
-}
+// Register-indexed memory (EXT2, major 0x3d). The same loads/stores as the immediate forms, but the
+// effective address is r[rS1] + index, where index is r[rS2] or -- in the SCALED variants (bit 9 of
+// the function byte set, e.g. 0x14 -> 0x16) -- r[rS2] scaled by the access size. The function byte
+// (mc:8 = bits[15:8]) mirrors the immediate major opcodes: 0x05->ld, 0x07->ld.b, 0x03->ld.bu,
+// 0x09->st, 0x0b->st.b, 0x04->ld.d, 0x08->st.d (each << 2 into mc, +2 for the scaled bit). lda
+// computes the scaled address itself (no memory access) -- used for array indexing.
+insn ld_r   : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x14, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ld", operands : rd, rs1, rs2 )    => r[ rd ] = #i32 %M[ r[ rs1 ] + r[ rs2 ] ];
+insn ld_rs  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x16, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ld", operands : rd, rs1, rs2 )    => r[ rd ] = #i32 %M[ r[ rs1 ] + ( r[ rs2 ] << 2 ) ];
+insn ld_b_r : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x1c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ld.b", operands : rd, rs1, rs2 )  => r[ rd ] = %S ( [ #i32 #i8 %M[ r[ rs1 ] + r[ rs2 ] ] ] );
+insn ld_bu_r: encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x0c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "ld.bu", operands : rd, rs1, rs2 ) => r[ rd ] = #i8 %M[ r[ rs1 ] + r[ rs2 ] ];
+insn st_r   : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x24, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "st", operands : rd, rs1, rs2 )    => #i32 %M[ r[ rs1 ] + r[ rs2 ] ] = r[ rd ];
+insn st_rs  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x26, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "st", operands : rd, rs1, rs2 )    => #i32 %M[ r[ rs1 ] + ( r[ rs2 ] << 2 ) ] = r[ rd ];
+insn st_b_r : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x2c, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "st.b", operands : rd, rs1, rs2 )  => #i8 %M[ r[ rs1 ] + r[ rs2 ] ] = r[ rd ];
+insn st_d_r : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x20, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "st.d", operands : rd, rs1, rs2 )
+	{ #i32 %M[ r[ rs1 ] + r[ rs2 ] ] = r[ rd ]; #i32 %M[ r[ rs1 ] + r[ rs2 ] + 4 ] = r[ rd + 1 ]; }
+insn lda_r  : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x36, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "lda", operands : rd, rs1, rs2 )   => r[ rd ] = r[ rs1 ] + ( r[ rs2 ] << 2 );
 
-insn xmem_bu {
-	t = #i8 %M[ src1 + src2 ];
-	#i8 %M[ src1 + src2 ] = dst;
-	dst = t;
-}
+// xmem / xmem.bu: atomic exchange-register-with-memory (EXT2, op 0x3d; function byte 0x04 word /
+// 0x00 byte-unsigned). The word/byte at r[rS1]+r[rS2] is swapped with r[rD] as an INDIVISIBLE,
+// bus-locked read-modify-write -- the m88k's only atomic primitive (spinlocks are built on it). The
+// read is an INTERLOCKED load (%LL: it takes the reservation, marking the access bus-locked) and the
+// paired write completes the locked RMW, so the swap is represented as interlocked, not a plain pair.
+insn xmem : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x04, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "xmem", operands : rd, rs1, rs2 )
+	{ #i32 t = #i32 %LL[ r[ rs1 ] + r[ rs2 ] ]; #i32 %M[ r[ rs1 ] + r[ rs2 ] ] = r[ rd ]; r[ rd ] = t; }
+insn xmem_bu : encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0x00, z:3 = 0, rs2:5 -> rs2 ),
+	disasm ( mnemonic : "xmem.bu", operands : rd, rs1, rs2 )
+	{ #i8 t = #i8 %LL[ r[ rs1 ] + r[ rs2 ] ]; #i8 %M[ r[ rs1 ] + r[ rs2 ] ] = r[ rd ]; r[ rd ] = #i8 t; }
 
 // br: unconditional PC-relative branch (major 0x30), 26-bit SIGNED word offset. Real m88k target
 // is branch_addr + (offset << 2); the PC reads here as the NEXT instruction (branch_addr + 4), so
@@ -267,6 +488,16 @@ jump insn br : type branch, encode #i32 ( op:6 = 0x30, off:26 -> off ),
 jump insn bsr : type call, encode #i32 ( op:6 = 0x32, off:26 -> off ),
 	disasm ( mnemonic : "bsr", operands : off )
 	{ r1 = sxip; sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
+
+// br.n/bsr.n: the delayed (.n) forms of br/bsr (major 0x31/0x33). The delay slot -- the instruction
+// immediately following -- executes before the transfer, so bsr.n's return address (r1) is the
+// instruction PAST the delay slot, i.e. sxip + 4 (sxip already reads as branch + 4).
+jump insn br_n : type branch, delay 1, encode #i32 ( op:6 = 0x31, off:26 -> off ),
+	disasm ( mnemonic : "br.n", operands : off )
+	{ sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
+jump insn bsr_n : type call, delay 1, encode #i32 ( op:6 = 0x33, off:26 -> off ),
+	disasm ( mnemonic : "bsr.n", operands : off )
+	{ r1 = sxip + 4; sxip = ( sxip - 4 ) + ( %S ( off ) << 2 ); }
 
 // bb0/bb1: branch on bit clear/set (major 0x34/0x36). bit[25:21] selects the bit of rS1[20:16];
 // the 16-bit signed word offset scales by 4 off the branch address. The target is computed as a
@@ -334,6 +565,18 @@ jump insn jsr : type call,
 				disasm ( mnemonic : "jsr", operands : rs2 )
 				{ r1 = sxip; sxip = r[ rs2 ]; }
 
+// jmp.n/jsr.n: the delayed (.n) register-indirect forms (EXT2 mc 0xc4/0xcc). The delay slot runs
+// before the transfer; jsr.n therefore links r1 to the instruction past it (sxip + 4). jmp.n is the
+// canonical function return (`jmp.n r1`) once r1 has been restored.
+jump insn jmp_n : type call, delay 1,
+				encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xc4, z:3 = 0, rs2:5 -> rs2 ),
+				disasm ( mnemonic : "jmp.n", operands : rs2 )
+				{ sxip = r[ rs2 ]; }
+jump insn jsr_n : type call, delay 1,
+				encode #i32 ( op:6 = 0x3d, rd:5 -> rd, rs1:5 -> rs1, mc:8 = 0xcc, z:3 = 0, rs2:5 -> rs2 ),
+				disasm ( mnemonic : "jsr.n", operands : rs2 )
+				{ r1 = sxip + 4; sxip = r[ rs2 ]; }
+
 // tb0/tb1: trap on bit clear/set (EXT1 op 0x3c, minor 0x34/0x36). Tests bit D[25:21] of rS1; if
 // clear (tb0) / set (tb1), trap to vector vec9[8:0]. This is the OpenBSD/m88k syscall gateway:
 // `tb0 0, r0, <vec>` always traps (r0 bit 0 is clear). @trap records the vector + raises the host
@@ -349,4 +592,66 @@ jump insn tb0 : type trap,
 				condition ( ( r[ rs1 ] & ( 1 << bit ) ) == 0 ),
 				disasm ( mnemonic : "tb0", operands : bit, rs1, vec9 )
 				{ trapno = vec9; @trap ( vec9 ); }
+
+// ---------------------------------------------------------------------------
+// Control-register access (EXT1, major opcode 0x3c, sub_opcode[15:10]): ldcr reads, stcr writes,
+// xcr exchanges a control register; the 5-bit CR number is bits[9:5]. The modelled control registers
+// are the four the register file declares: cr1=PSR, cr4=SXIP, cr5=SNIP, cr6=SFIP (others read 0).
+// These are SUPERVISOR instructions -- user-space OpenBSD/m88k programs never issue them; they are
+// here for decode completeness and best-effort execution of the modelled registers.
+// ---------------------------------------------------------------------------
+insn ldcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x10, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "ldcr", operands : rd, cr )
+	=> r[ rd ] = ( cr == 1 ) ? psr : ( cr == 4 ) ? sxip : ( cr == 5 ) ? snip : ( cr == 6 ) ? sfip : 0;
+insn stcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x20, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "stcr", operands : rs1, cr )
+	{ psr  = ( cr == 1 ) ? r[ rs1 ] : psr;
+	  sfip = ( cr == 6 ) ? r[ rs1 ] : sfip;
+	  snip = ( cr == 5 ) ? r[ rs1 ] : snip;
+	  sxip = ( cr == 4 ) ? r[ rs1 ] : sxip; }
+insn xcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x30, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "xcr", operands : rd, rs1, cr )
+	{ #i32 old = ( cr == 1 ) ? psr : ( cr == 4 ) ? sxip : ( cr == 5 ) ? snip : ( cr == 6 ) ? sfip : 0;
+	  psr  = ( cr == 1 ) ? r[ rs1 ] : psr;
+	  sfip = ( cr == 6 ) ? r[ rs1 ] : sfip;
+	  snip = ( cr == 5 ) ? r[ rs1 ] : snip;
+	  sxip = ( cr == 4 ) ? r[ rs1 ] : sxip;
+	  r[ rd ] = old; }
+
+// rte: return from exception (EXT1 sub 0x3f) -- resume the faulted instruction stream at the shadow
+// next-instruction pointer (SNIP). The illop1/2/3 sub-encodings (low bits 1/2/3) are unsupervised.
+jump insn rte : type return,
+				encode #i32 ( op:6 = 0x3c, rd:5 = 0, rs1:5 = 0, sub:6 = 0x3f, z:10 = 0 ),
+				disasm ( mnemonic : "rte" )  { sxip = snip; }
+
+// FP control-register access (EXT1 sub 0x12/0x22/0x32): fldcr reads, fstcr writes, fxcr exchanges
+// floating-point control register fcrN (N = bits[9:5]) from/to the fcr bank.
+insn fldcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x12, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "fldcr", operands : rd, cr )       => r[ rd ] = fcr[ cr ];
+insn fstcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x22, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "fstcr", operands : rs1, cr )      => fcr[ cr ] = r[ rs1 ];
+insn fxcr : encode #i32 ( op:6 = 0x3c, rd:5 -> rd, rs1:5 -> rs1, sub:6 = 0x32, cr:5 -> cr, z:5 = 0 ),
+	disasm ( mnemonic : "fxcr", operands : rd, rs1, cr )
+	{ #i32 old = fcr[ cr ]; fcr[ cr ] = r[ rs1 ]; r[ rd ] = old; }
+
+// tbnd: trap on bounds (major 0x3e, immediate form). Raises the bounds-check trap (vector 7) when
+// r[rS1] lies outside [0, imm16] -- i.e. it is unsigned-greater-than the upper bound. The EXT1
+// register form (bound in r[rS2]) is deferred.
+jump insn tbnd : type trap,
+				encode #i32 ( op:6 = 0x3e, z:5 = 0, rs1:5 -> rs1, imm:16 -> imm ),
+				condition ( %U ( r[ rs1 ] ) > %U ( imm ) ),
+				disasm ( mnemonic : "tbnd", operands : rs1, imm )
+				{ trapno = 7; @trap ( 7 ); }
+
+// ---------------------------------------------------------------------------
+// ISA features + CPU models. The base description is the MC88100; the MC88110 adds the `m88110`
+// feature (extended-precision FPU, fsqrt/mov, ld.x/st.x, graphics SIMD). Select with
+// `--arch upcl:m88k.upcl@mc88110` (or @mc88100); the default decodes the full superset.
+// ---------------------------------------------------------------------------
+features {
+	m88110 "MC88110 -- extended-precision FPU (x regs), fsqrt/mov, ld.x/st.x, graphics SIMD unit";
+}
+
+cpu "mc88100" { }
+cpu "mc88110" { m88110; }
 

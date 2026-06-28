@@ -8,6 +8,30 @@ namespace Upcl {
 Decoder::Decoder (Arch *pArch, RegisterLayout CONST *pLayout, std::set<std::string> CONST *pEnabled)
     : m_pArch (pArch), m_pLayout (pLayout), m_pEnabled (pEnabled)
 {
+    // Detect a little-endian, fixed-width (word-oriented) instruction set so its words get byte-
+    // reversed before the MSB-first field extraction (see m_LeWord in Decoder.h). The signal is a
+    // UNIFORM multi-byte encoding width across every instruction: a fixed word ISA (Alpha/MIPS/m88k,
+    // all #i32) has exactly one width, whereas a variable-length byte-stream ISA (x86/6502/8080) mixes
+    // #i8/#i16/#i24 and must keep its per-field little-endian handling instead.
+    UINT32 Common = 0;     // the single width seen so far (0 = none yet)
+    bool   Uniform = true;
+    auto   Note = [&] (UINT32 Bits) {
+        if (Bits == 0) { return; }
+        if (Common == 0) { Common = Bits; }
+        else if (Common != Bits) { Uniform = false; }
+    };
+    if (pArch != nullptr) {
+        for (Insn *I : pArch->Insns) {
+            for (EncAlt *A : I->Encodings) { Note (A->WordBits); }
+        }
+        for (JumpInsn *J : pArch->Jumps) {
+            for (EncAlt *A : J->Encodings) { Note (A->WordBits); }
+        }
+    }
+    if (pArch != nullptr && pArch->Little && Uniform && Common >= 16 && (Common % 8) == 0) {
+        m_LeWord  = true;
+        m_WordLen = Common / 8;
+    }
 }
 
 // Extract Width bits starting at bit BitOff from a big-endian bit-stream over the bytes
@@ -262,13 +286,25 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     UINT32 WordLen = (Bits + 7) / 8;
     if (WordLen == 0 || WordLen > Avail) { return false; }
 
+    // A little-endian fixed-width word (e.g. Alpha) is a little-endian integer in memory; byte-
+    // reverse it so the MSB-first extractor reads the logical encoding, and then extract straight
+    // (no per-field swap -- that is for the byte-stream CISC path). Other arches read in place.
+    UINT8        Rev[16];
+    UINT8 CONST *pWord  = pBytes;
+    bool         Little = m_pArch->Little;
+    if (m_LeWord && WordLen == m_WordLen && WordLen <= sizeof (Rev)) {
+        for (UINT32 I = 0; I < WordLen; ++I) { Rev[I] = pBytes[WordLen - 1 - I]; }
+        pWord  = Rev;
+        Little = false;
+    }
+
     // Extract the fixed opcode-word fields, checking the constant (opcode) fields. Tail fields
     // (immediates after a variable-length addressing mode) are NOT in the word -- read below.
     std::map<std::string, UINT64> FV;
     UINT32 BitOff = 0;
     for (EncField CONST &F : pAlt->Fields) {
         if (F.Tail) { continue; }
-        UINT64 V = ExtractField (pBytes, BitOff, F.Width, m_pArch->Little);
+        UINT64 V = ExtractField (pWord, BitOff, F.Width, Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
         BitOff += F.Width;

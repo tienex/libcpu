@@ -1,0 +1,21 @@
+// Alpha CIX -- Count Extension (feature `cix`, EV67 / 21264A onwards). Bit-population and
+// leading/trailing-zero counts on a 64-bit operand. Operate format in op 0x1c (FPTI); Ra is SBZ,
+// the source is Rb (or the literal), the result goes to Rc.
+//
+// SCAFFOLD: CTPOP/CTLZ/CTTZ map to single emitter primitives (a popcount / count-leading-zeros /
+// count-trailing-zeros builtin) rather than the binary-op forms; wire those bodies to the emitter's
+// bit-count operations. Encodings below are correct; bodies are TODO.
+
+feature cix {
+
+	// CTPOP: number of set bits in Rb.
+	insn ctpop : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x30, rc:5 -> rc ),
+		disasm ( mnemonic : "ctpop", operands : rb, rc )  => r[ rc ] = r[ rc ];   // TODO: popcount(r[rb])
+
+	// CTLZ / CTTZ: count leading / trailing zero bits of Rb.
+	insn ctlz : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x32, rc:5 -> rc ),
+		disasm ( mnemonic : "ctlz", operands : rb, rc )  => r[ rc ] = r[ rc ];    // TODO: clz(r[rb])
+	insn cttz : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x33, rc:5 -> rc ),
+		disasm ( mnemonic : "cttz", operands : rb, rc )  => r[ rc ] = r[ rc ];    // TODO: ctz(r[rb])
+
+}

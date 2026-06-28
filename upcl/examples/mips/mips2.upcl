@@ -1,0 +1,42 @@
+// MIPS II additions (feature `mips2`, R6000): synchronisation (ll/sc, sync), trap-on-condition,
+// and the branch-likely forms (the delay slot is nullified when the branch is NOT taken). The
+// branch-likely ops were removed in Release 6, so an r6 model does not list this feature.
+
+feature mips2 {
+
+	// Load-linked / store-conditional: the MIPS atomic read-modify-write primitive. ll reads a word
+	// AND takes a reservation on the address (%LL); sc stores rt to that word only while the
+	// reservation still holds (%SC), writing the 0/1 success result back into rt. The reservation is
+	// modelled by the framework -- see %LL / %SC -- so this is real interlock logic, not a plain load.
+	insn ll : encode #i32 ( op:6 = 0x30, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "ll", operands : rt, imm, rs )  => r[ rt ] = %S ( [ #i64 #i32 %LL[ r[ rs ] + %S ( imm ) ] ] );
+	insn sc : encode #i32 ( op:6 = 0x38, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "sc", operands : rt, imm, rs )  => r[ rt ] = #i32 %SC[ r[ rs ] + %S ( imm ) ] <- r[ rt ];
+
+	// SYNC: memory barrier -- a no-op in this in-order model.
+	insn sync : encode #i32 ( op:6 = 0x00, sa2:15 = 0, sa:5 -> sa, funct:6 = 0x0f ),
+		disasm ( mnemonic : "sync", operands : sa )  => r0 = r0;
+
+	// Trap-on-condition (register form, SPECIAL funct 0x30..0x36). Traps when the condition holds.
+	// SCAFFOLD: the conditional @trap needs a control construct (gated trap) -- bodies are no-ops for
+	// now, like the other TODOs (ins/wsbh/clz). The encodings decode correctly.
+	insn teq  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, code:10 = 0, funct:6 = 0x34 ),
+		disasm ( mnemonic : "teq",  operands : rs, rt )  => r0 = r0;
+	insn tne  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, code:10 = 0, funct:6 = 0x36 ),
+		disasm ( mnemonic : "tne",  operands : rs, rt )  => r0 = r0;
+	insn tge  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, code:10 = 0, funct:6 = 0x30 ),
+		disasm ( mnemonic : "tge",  operands : rs, rt )  => r0 = r0;
+	insn tlt  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, code:10 = 0, funct:6 = 0x32 ),
+		disasm ( mnemonic : "tlt",  operands : rs, rt )  => r0 = r0;
+
+	// Branch-likely: like beq/bne/blez/bgtz but the delay slot is annulled when not taken.
+	jump insn beql  : type branch, delay 1, encode #i32 ( op:6 = 0x14, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "beql",  operands : rs, rt, imm )  { pc = ( r[ rs ] == r[ rt ] ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+	jump insn bnel  : type branch, delay 1, encode #i32 ( op:6 = 0x15, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "bnel",  operands : rs, rt, imm )  { pc = ( r[ rs ] != r[ rt ] ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+	jump insn blezl : type branch, delay 1, encode #i32 ( op:6 = 0x16, rs:5 -> rs, rt:5 = 0, imm:16 -> imm ),
+		disasm ( mnemonic : "blezl", operands : rs, imm )  { pc = ( %S ( r[ rs ] ) <= 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+	jump insn bgtzl : type branch, delay 1, encode #i32 ( op:6 = 0x17, rs:5 -> rs, rt:5 = 0, imm:16 -> imm ),
+		disasm ( mnemonic : "bgtzl", operands : rs, imm )  { pc = ( %S ( r[ rs ] ) >  0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+
+}

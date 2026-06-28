@@ -1,0 +1,52 @@
+// MIPS Release 6 (feature `r6`). The R6 redesign drops the HI/LO multiply/divide, the branch-likely
+// ops, lwl/lwr/swl/swr, and movz/movn, and adds: multiply/divide that write a GPR directly
+// (mul/muh/div/mod and the unsigned forms), the select ops (seleqz/selnez, replacing movz/movn),
+// PC-relative address formation (auipc), and COMPACT branches that have NO delay slot. An r6 CPU
+// model omits the pre-R6 features, so the reused opcodes (e.g. SPECIAL funct 0x18) carry only their
+// R6 meaning -- distinguished here by the sa field acting as a sub-opcode.
+
+feature r6 {
+
+	// ---- multiply / divide writing a GPR (sa selects low/high result). ----
+	insn mul_r6  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x02, funct:6 = 0x18 ),
+		disasm ( mnemonic : "mul",  operands : rd, rs, rt )  { #i32 t = r[ rs ] * r[ rt ]; r[ rd ] = %S ( t ); }
+	insn muh     : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x03, funct:6 = 0x18 ),
+		disasm ( mnemonic : "muh",  operands : rd, rs, rt )
+		{ #i64 p = %S ( [ #i32 r[ rs ] ] ) * %S ( [ #i32 r[ rt ] ] ); r[ rd ] = %S ( [ #i32 ( p >> 32 ) ] ); }
+	insn div_r6  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x02, funct:6 = 0x1a ),
+		disasm ( mnemonic : "div",  operands : rd, rs, rt )
+		{ #i32 t = %S ( [ #i32 r[ rs ] ] ) / %S ( [ #i32 r[ rt ] ] ); r[ rd ] = %S ( t ); }
+	insn mod_r6  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x03, funct:6 = 0x1a ),
+		disasm ( mnemonic : "mod",  operands : rd, rs, rt )
+		{ #i32 t = %S ( [ #i32 r[ rs ] ] ) % %S ( [ #i32 r[ rt ] ] ); r[ rd ] = %S ( t ); }
+	insn divu_r6 : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x02, funct:6 = 0x1b ),
+		disasm ( mnemonic : "divu", operands : rd, rs, rt )
+		{ #i32 t = [ #i32 r[ rs ] ] / [ #i32 r[ rt ] ]; r[ rd ] = %S ( t ); }
+	insn modu_r6 : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x03, funct:6 = 0x1b ),
+		disasm ( mnemonic : "modu", operands : rd, rs, rt )
+		{ #i32 t = [ #i32 r[ rs ] ] % [ #i32 r[ rt ] ]; r[ rd ] = %S ( t ); }
+
+	// ---- select (replaces movz/movn): rd = rs if rt is zero / non-zero, else 0. ----
+	insn seleqz : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x35 ),
+		disasm ( mnemonic : "seleqz", operands : rd, rs, rt )  => r[ rd ] = ( r[ rt ] == 0 ) ? r[ rs ] : 0;
+	insn selnez : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x37 ),
+		disasm ( mnemonic : "selnez", operands : rd, rs, rt )  => r[ rd ] = ( r[ rt ] != 0 ) ? r[ rs ] : 0;
+
+	// ---- PC-relative address (PCREL, op 0x3b). auipc: rs = PC + SEXT(imm << 16). ----
+	insn auipc : encode #i32 ( op:6 = 0x3b, rs:5 -> rs, sub:5 = 0x1e, imm:16 -> imm ),
+		disasm ( mnemonic : "auipc", operands : rs, imm )  { #i32 t = pc + ( %S ( imm ) << 16 ); r[ rs ] = %S ( t ); }
+
+	// ---- compact branches: NO delay slot (note the absence of `delay 1`). ----
+	// bc/balc: unconditional 26-bit; target = (PC+4) + SEXT(offset)<<2. balc links r31.
+	jump insn bc   : type branch, encode #i32 ( op:6 = 0x32, target:26 -> target ),
+		disasm ( mnemonic : "bc",   operands : target )  { pc = pc + ( %S ( target ) << 2 ); }
+	jump insn balc : type call,   encode #i32 ( op:6 = 0x3a, target:26 -> target ),
+		disasm ( mnemonic : "balc", operands : target )  { r31 = pc; pc = pc + ( %S ( target ) << 2 ); }
+
+	// beqzc/bnezc: compact, test rs (must be non-zero in the encoding), 21-bit offset, no delay slot.
+	jump insn beqzc : type branch, encode #i32 ( op:6 = 0x36, rs:5 -> rs, off:21 -> imm ),
+		disasm ( mnemonic : "beqzc", operands : rs, imm )  { pc = ( r[ rs ] == 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : pc; }
+	jump insn bnezc : type branch, encode #i32 ( op:6 = 0x3e, rs:5 -> rs, off:21 -> imm ),
+		disasm ( mnemonic : "bnezc", operands : rs, imm )  { pc = ( r[ rs ] != 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : pc; }
+
+}

@@ -65,6 +65,15 @@ private:
     Arch                          *m_pArch;
     RegisterLayout CONST          *m_pLayout;
     std::set<std::string> CONST   *m_pEnabled;
+
+    // A little-endian, fixed-width (word-oriented) instruction set -- e.g. DEC Alpha -- stores each
+    // instruction as a little-endian integer of m_WordLen bytes. The field extractor reads bits
+    // MSB-first (correct for big-endian RISC and for the byte-stream of a CISC like x86), so such a
+    // word must be byte-reversed before extraction. Detected (in the constructor) as: the arch is
+    // little-endian AND every encoding is the SAME multi-byte width -- which distinguishes a fixed
+    // word ISA from a variable-length byte-stream ISA (x86/6502/8080 mix #i8/#i16/#i24).
+    bool                           m_LeWord  = false;
+    UINT32                         m_WordLen = 0;        // the fixed instruction width in bytes
 };
 
 } // namespace Upcl

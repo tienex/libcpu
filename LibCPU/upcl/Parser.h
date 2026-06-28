@@ -65,7 +65,7 @@ private:
     BitBind    *ParseTypedValueBind ();           // a union entry: `<type> ( vb | [ vb, ... ] )`
     BitBind    *ParseValueBind ();                // `id ( -> %m | <- src | <-> src | <- (e) )?` | <expr>
     std::string ParseQualifiedName ();            // `id` or `id.field`
-    void        ConsumeRepeatTail ();             // a repeatable-id tail: `? ( : <count> )?`
+    UINT64      ConsumeRepeatTail ();             // a repeatable-id tail: `? ( : <start> )?`; returns start
     bool        StartsSplitter () CONST;
     void       ParseFormats (Arch *pArch);      // the `formats { ... }` block
     Insn      *ParseInsnDecl ();                 // optional [attrs] then `insn ...` (new syntax)
@@ -103,6 +103,7 @@ private:
     Expr *ParsePrimary ();
     Expr *ParsePostfix (Expr *pBase);            // bit-slice e[a:b], member e.f
     Expr *ParseMemRef (SRC_LOC Loc, Type *pVType); // the `[expr]` tail of %M / %MEM (meta consumed)
+    Expr *ParseStoreCond (SRC_LOC Loc, Type *pVType); // the `[addr] <- value` tail of %SC (meta consumed)
     void  ParseCallArgs (Expr *pCall);           // `( <expr> (, <expr>)* )` -> pCall->Args
     static UINT32 InfixBp (TOKEN_KIND Kind);
 

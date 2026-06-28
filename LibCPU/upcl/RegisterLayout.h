@@ -36,6 +36,8 @@ public:
     bool        IsPc  = false;   // bound to the meta PC
     bool        IsPsr = false;   // bound to the meta PSR (the flags word)
     bool        Float = false;   // a floating-point register (#f<width>, e.g. an 8087 st)
+    bool        ZeroWired = false; // hardwired to zero (a `<- 0` alias, e.g. the m88k/RISC r0):
+                                   //   reads yield 0 and writes are discarded
 };
 
 // A register array: a repeated declaration (`8 ** #f80 st?`) addressed by a runtime index. The
@@ -46,6 +48,8 @@ public:
     UINT32      BaseIndex = 0;
     UINT32      Count     = 0;
     UINT32      Width     = 0;
+    UINT32      Start     = 0;   // the architectural index of element 0 (`r?:1` -> 1, so r[1] is
+                                 //   the first array slot and r[0] resolves below the array)
     bool        Float     = false;
 };
 
@@ -92,6 +96,15 @@ public:
         return (I != ~(UINT32) 0) ? Phys[I].Name : std::string ();
     }
 };
+
+// The synthesised reservation state backing load-linked / store-conditional (%LL / %SC): a
+// validity bit and the reserved address. These physical registers are appended to the layout only
+// when the description actually uses %LL / %SC, so an arch that never does is unchanged.
+CHAR8 CONST *ReservationBitName ();    // the LLbit register name
+CHAR8 CONST *ReservationAddrName ();   // the reserved-address register name
+
+// True if any instruction body in pArch uses an interlocked memory access (%LL or %SC).
+bool ArchUsesInterlock (Arch *pArch);
 
 // Flatten pArch's register_file into a RegisterLayout. Empty if pArch has no register_file
 // (a new-syntax description that used the flat `registers` list instead).

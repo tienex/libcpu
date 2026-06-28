@@ -1,0 +1,27 @@
+// Alpha BWX -- Byte/Word Extension (feature `bwx`, EV56 / 21164A onwards). Adds direct byte and
+// word memory access (the base ISA can only load/store aligned longwords/quadwords) plus the
+// SEXTB/SEXTW sign-extend operates. A CPU model with this feature decodes these.
+
+feature bwx {
+
+	// Byte/word loads -- zero-extended into the 64-bit Ra. (Signed loads are done with a following
+	// SEXTB/SEXTW.) Memory format, like the base loads.
+	insn ldbu : encode #i32 ( op:6 = 0x0a, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+		disasm ( mnemonic : "ldbu", operands : ra, rb, disp )  => r[ ra ] = #i8  %M[ r[ rb ] + %S ( disp ) ];
+	insn ldwu : encode #i32 ( op:6 = 0x0c, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+		disasm ( mnemonic : "ldwu", operands : ra, rb, disp )  => r[ ra ] = #i16 %M[ r[ rb ] + %S ( disp ) ];
+
+	// Byte/word stores -- write the low 8 / 16 bits of Ra.
+	insn stb : encode #i32 ( op:6 = 0x0e, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+		disasm ( mnemonic : "stb", operands : ra, rb, disp )  => #i8  %M[ r[ rb ] + %S ( disp ) ] = r[ ra ];
+	insn stw : encode #i32 ( op:6 = 0x0d, ra:5 -> ra, rb:5 -> rb, disp:16 -> disp ),
+		disasm ( mnemonic : "stw", operands : ra, rb, disp )  => #i16 %M[ r[ rb ] + %S ( disp ) ] = r[ ra ];
+
+	// SEXTB/SEXTW -- sign-extend the low byte/word of Rb (or the literal) into Rc. Operate format
+	// (op 0x1c, the FPTI group); Ra is SBZ. Unary, so only the register/literal Rb is read.
+	insn sextb : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x00, rc:5 -> rc ),
+		disasm ( mnemonic : "sextb", operands : rb, rc )  { #i8  t = r[ rb ]; r[ rc ] = %S ( t ); }
+	insn sextw : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x01, rc:5 -> rc ),
+		disasm ( mnemonic : "sextw", operands : rb, rc )  { #i16 t = r[ rb ]; r[ rc ] = %S ( t ); }
+
+}

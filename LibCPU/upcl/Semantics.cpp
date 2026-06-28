@@ -139,8 +139,36 @@ Translator::FindArray (Expr *pBase) CONST
 Value
 Translator::RegBankAddr (RegArray CONST &Arr, Value CONST &Idx)
 {
-    Value Slot = Bin (BinAdd, Const (64, Arr.BaseIndex), Coerce (Idx, 64, false));
+    // The physical slot is BaseIndex + (architectural index - Start): a `r?:1` array holds r1..rN
+    // at BaseIndex.., so r[k] maps to BaseIndex + k - 1 and r[0] resolves below the array (the
+    // separate hardwired r0). For the common Start==0 array this is just BaseIndex + Idx.
+    Value Slot = Bin (BinAdd, Const (64, Arr.BaseIndex - Arr.Start), Coerce (Idx, 64, false));
     return Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Slot);
+}
+
+// A register index that is a compile-time constant: a literal, or a decoder operand bound to an
+// immediate (the m88k rd/rs1/rs2 fields). Lets the translator fold a hardwired-zero access.
+bool
+Translator::TryConstIndex (Expr *pIdx, UINT64 *pVal) CONST
+{
+    if (pIdx == nullptr) { return false; }
+    if (pIdx->Kind == ExprInt) { *pVal = pIdx->Int; return true; }
+    if (pIdx->Kind == ExprName) {
+        auto O = m_Operands.find (pIdx->Name);
+        if (O != m_Operands.end () && O->second.Kind == Operand::Imm) { *pVal = O->second.ImmValue; return true; }
+    }
+    return false;
+}
+
+// Does `array[idx]` resolve, at translation time, to a hardwired-zero physical register (r0)?
+// The physical slot is BaseIndex + (idx - Start); only a compile-time-constant index can be folded.
+bool
+Translator::ZeroWiredSlot (RegArray CONST &Arr, Expr *pIdx) CONST
+{
+    UINT64 K = 0;
+    if (!TryConstIndex (pIdx, &K)) { return false; }
+    UINT64 Slot = (UINT64) Arr.BaseIndex + K - Arr.Start;
+    return Slot < m_Layout.Phys.size () && m_Layout.Phys[(size_t) Slot].ZeroWired;
 }
 
 bool
@@ -455,10 +483,41 @@ Translator::EvalExpr (Expr *pExpr)
     }
 
     case ExprBinary: {
-        bool Signed = false;
         CPU_CMP Pred;
         Value A = EvalExpr (pExpr->Args[0]);
         Value B = EvalExpr (pExpr->Args[1]);
+        // Packed SIMD: if either operand is a vector (#vN:W), do the op LANE-BY-LANE (SWAR) -- each
+        // lane is computed in its own width so carries never cross lanes. A compare yields an all-ones
+        // mask per lane (the usual SIMD result). This is how UPCL represents GPR SIMD on a scalar
+        // emitter: the lanes are extracted, operated, and recombined with shifts/ors.
+        if (A.Lanes > 0 || B.Lanes > 0) {
+            UINT32 N  = (A.Lanes > 0) ? A.Lanes : B.Lanes;
+            UINT32 W  = (A.Bits ? A.Bits : B.Bits);
+            UINT32 LW = W / N;
+            bool   VSigned = A.Signed || B.Signed;
+            bool   IsCmp = MapCompare (pExpr->Op, VSigned, &Pred);
+            Value  Acc = Const (W, 0);
+            for (UINT32 i = 0; i < N; ++i) {
+                Value la = Extract (A, i * LW, LW);
+                Value lb = Extract (B, i * LW, LW);
+                Value lr;
+                if (IsCmp) {
+                    Value c = Cmp (Pred, la, lb);                  // 1-bit lane predicate
+                    Value ones = Const (LW, 0); ones = Bin (BinSub, ones, Const (LW, 1)); // all-ones
+                    Value zero = Const (LW, 0);
+                    ComPtr<ICpuValue> sel;
+                    m_pE->Select (c.V, ones.V, zero.V, &sel);
+                    lr = Pool (std::move (sel), LW);
+                } else {
+                    lr = Bin (MapBinop (pExpr->Op, VSigned), la, lb);  // lane-width arithmetic wraps in-lane
+                }
+                Value wide = Coerce (lr, W, false);
+                if (i != 0) { wide = Bin (BinShl, wide, Const (W, i * LW)); }
+                Acc = Bin (BinOr, Acc, wide);
+            }
+            Acc.Lanes = N;
+            return Acc;
+        }
         // A floating-point operand makes this a float operation (the 8087's arithmetic).
         if (A.Float || B.Float) {
             if (MapCompareF (pExpr->Op, &Pred)) { return Cmp (Pred, A, B); }
@@ -466,19 +525,41 @@ Translator::EvalExpr (Expr *pExpr)
             R.Float = true;
             return R;
         }
+        // The operation is signed if either operand was marked signed via %S (so a narrower operand
+        // sign-extends to width, and < / <= / > / >= and / and % select their signed forms).
+        bool Signed = A.Signed || B.Signed;
         // Compares and AndCom/OrCom/XorCom need shaping before the op.
         if (MapCompare (pExpr->Op, Signed, &Pred)) {
-            B = Coerce (B, A.Bits, false);
+            B = Coerce (B, A.Bits, Signed);
             return Cmp (Pred, A, B);
         }
         if (pExpr->Op == TokAndCom || pExpr->Op == TokOrCom || pExpr->Op == TokXorCom) {
             B = Un (UnCom, B);
         }
-        B = Coerce (B, A.Bits, false);
-        return Bin (MapBinop (pExpr->Op, Signed), A, B);
+        B = Coerce (B, A.Bits, Signed);
+        Value R = Bin (MapBinop (pExpr->Op, Signed), A, B);
+        R.Signed = Signed;            // a signed result stays signed for any further widening
+        return R;
     }
 
     case ExprAugment: {
+        // %FLT / %INT: a BITCAST (reinterpret the bit pattern), not a value conversion. %FLT reads an
+        // integer's bits as an IEEE float of the same width (an f32 held in a 32-bit GPR); %INT reads
+        // a float's bits back as an integer. Used by FP instructions whose operands live in GPRs.
+        if (pExpr->Name == "FLT") {
+            if (pExpr->Args.empty ()) { return Const (m_WordBits, 0); }
+            Value A = EvalExpr (pExpr->Args[0]);
+            Value R = CastTo (CastIToFBits, A, A.Bits);
+            R.Float = true;
+            return R;
+        }
+        if (pExpr->Name == "INT") {
+            if (pExpr->Args.empty ()) { return Const (m_WordBits, 0); }
+            Value A = EvalExpr (pExpr->Args[0]);
+            Value R = CastTo (CastFToIBits, A, A.Bits);
+            R.Float = false;
+            return R;
+        }
         // %S / %U mark the wrapped expression's signedness; %ORD/%UNO/%OFTRAP are FP
         // predicates not used by the integer core -- pass the value through.
         bool Signed = (pExpr->Name == "S");
@@ -499,12 +580,27 @@ Translator::EvalExpr (Expr *pExpr)
             // %S ( [ #iN expr ] ) -- the widening cast sign-extends (cbw/cwd).
             UINT32 Bits = (Inner->VType != nullptr) ? Inner->VType->Width : m_WordBits;
             Value A = EvalExpr (Inner->Args[0]);
-            return Coerce (A, Bits, Signed);
+            Value R = Coerce (A, Bits, Signed);
+            R.Signed = Signed;
+            return R;
         }
-        return EvalExpr (Inner);
+        // A bare operand (`%S(imm)` / `%U(rs)`): widen to the word with the marked signedness, and
+        // tag it so a surrounding binary op extends and compares/divides with the same signedness.
+        Value R = Coerce (EvalExpr (Inner), m_WordBits, Signed);
+        R.Signed = Signed;
+        return R;
     }
 
     case ExprCast: {
+        // A vector cast (#vN:W) REINTERPRETS the operand's bits as N lanes of W bits -- no value
+        // change, just a tag so a subsequent binary op runs lane-by-lane (see ExprBinary).
+        if (pExpr->VType != nullptr && pExpr->VType->Kind == TypeVector) {
+            UINT32 VBits = pExpr->VType->Lanes * pExpr->VType->Width;
+            Value  A = Coerce (EvalExpr (pExpr->Args[0]), VBits, false);
+            A.Lanes = pExpr->VType->Lanes;
+            A.Float = false;
+            return A;
+        }
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
         bool   ToFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
         // A cast of an integer literal builds the constant directly at the target width, so a
@@ -533,6 +629,10 @@ Translator::EvalExpr (Expr *pExpr)
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
         bool   IsFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
         Value Addr = EvalExpr (pExpr->Args[0]);
+        // A load-linked (%LL) reads memory AND establishes a reservation on the address (the
+        // hardware LLbit + reserved address) -- a later %SC to the same address succeeds only while
+        // that reservation holds. The reservation is synthesised architectural state.
+        if (pExpr->Linked) { SetReservation (Addr); }
         ComPtr<ICpuValue> V;
         m_pE->Load (Addr.V, Bits, &V);
         Value Out = Pool (std::move (V), Bits);
@@ -540,6 +640,34 @@ Translator::EvalExpr (Expr *pExpr)
         // loaded integer bits as a float of that width (an 8087 FLD m32real / m64real).
         if (IsFloat) { Out = CastTo (CastIToFBits, Out, Bits); Out.Float = true; }
         return Out;
+    }
+
+    case ExprStoreCond: {
+        // %SC[addr] <- value : store-conditional. Succeeds (yields 1) only if the reservation set by
+        // the matching %LL is still held for this address; otherwise it yields 0 and leaves memory
+        // unchanged. Lowered with the existing Load/Store/Select -- no atomic emitter primitive
+        // needed -- which models the uniprocessor (no foreign writer) case faithfully.
+        UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
+        Value  Addr = EvalExpr (pExpr->Args[0]);
+        Value  Val  = Coerce (EvalExpr (pExpr->Args[1]), Bits, false);
+        // ok = llbit AND (lladdr == addr)
+        Value  LlBit  = EvalName (ReservationBitName ());
+        Value  LlAddr = EvalName (ReservationAddrName ());
+        Value  BitSet = Cmp (CmpNe, LlBit, Const (LlBit.Bits, 0));
+        Value  Match  = Cmp (CmpEq, LlAddr, Coerce (Addr, LlAddr.Bits, false));
+        Value  Ok     = Bin (BinAnd, BitSet, Match);
+        // memory <- ok ? value : memory  (a conditional store via select on the current contents)
+        ComPtr<ICpuValue> Cur;
+        m_pE->Load (Addr.V, Bits, &Cur);
+        Value  CurV = Pool (std::move (Cur), Bits);
+        ComPtr<ICpuValue> Sel;
+        m_pE->Select (Ok.V, Val.V, CurV.V, &Sel);
+        Value  Stored = Pool (std::move (Sel), Bits);
+        m_pE->Store (Stored.V, Addr.V, Bits);
+        // The reservation is consumed whether or not the store happened.
+        Value Zero = Const (m_WordBits, 0);
+        WriteName (ReservationBitName (), Zero);
+        return Coerce (Ok, m_WordBits, false);          // the 0/1 success bit
     }
 
     case ExprSelect: {
@@ -592,6 +720,9 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprIndex: {
         RegArray CONST *pArr = FindArray (pExpr->Args[0]);
         if (pArr != nullptr) {                       // st[i]: a register-array element via the bank
+            if (ZeroWiredSlot (*pArr, pExpr->Args[1])) {  // a hardwired-zero register (r0) reads 0
+                return Const (pArr->Width, 0);
+            }
             Value Idx  = EvalExpr (pExpr->Args[1]);
             Value Addr = RegBankAddr (*pArr, Idx);
             ComPtr<ICpuValue> V;
@@ -991,6 +1122,7 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
     case ExprIndex: {
         RegArray CONST *pArr = FindArray (pLhs->Args[0]);
         if (pArr != nullptr) {                       // st[i] = ... : a register-array element
+            if (ZeroWiredSlot (*pArr, pLhs->Args[1])) { return; }  // writes to r0 are discarded
             Value Idx  = EvalExpr (pLhs->Args[1]);
             Value Addr = RegBankAddr (*pArr, Idx);
             Value V    = Coerce (Rhs, pArr->Width, false);   // float: widths match, a no-op
@@ -1073,6 +1205,17 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
     if (FindFlag (Name, &pFlag)) { SetFlagBit (*pFlag, Rhs); return; }
 
     m_Env[Name] = Rhs;                       // an otherwise-unknown name: a fresh local
+}
+
+// A load-linked establishes a reservation: remember the accessed address and raise the LLbit. A
+// later %SC compares against these (see ExprStoreCond). The reservation registers were synthesised
+// into the layout (see BuildRegisterLayout) when the description used %LL / %SC.
+void
+Translator::SetReservation (Value CONST &Addr)
+{
+    Value One = Const (m_WordBits, 1);
+    WriteName (ReservationBitName (), One);
+    WriteName (ReservationAddrName (), Addr);
 }
 
 // ---- macros ---------------------------------------------------------------

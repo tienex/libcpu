@@ -168,6 +168,22 @@ Parser::ParseMemRef (SRC_LOC Loc, Type *pVType)
     return E;
 }
 
+// %SC[addr] <- value : a store-conditional. The `[addr]` is the target cell, the `<- value` is the
+// datum to store if the reservation (set by a prior %LL) is still held; the expression yields the
+// 0/1 success bit. The leading %SC (and any width type) is already consumed.
+Expr *
+Parser::ParseStoreCond (SRC_LOC Loc, Type *pVType)
+{
+    Expr *E = new Expr (ExprStoreCond);
+    E->Loc = Loc; E->VType = pVType;
+    Expect (TokLBracket, "after %SC");
+    E->Args.push_back (ParseExpr (0));                       // the address
+    Expect (TokRBracket, "to close %SC[...]");
+    Expect (TokBindLeft, "after %SC[..] -- a store-conditional needs `<- value`");
+    E->Args.push_back (ParseExpr (0));                       // the value to store
+    return E;
+}
+
 // A parenthesised, comma-separated argument list into pCall->Args (the '(' is current).
 void
 Parser::ParseCallArgs (Expr *pCall)
@@ -217,7 +233,10 @@ Parser::ParsePrimary ()
             Expect (TokRParen, "to close %CC(...)");
             return E;
         }
-        if (Name == "S" || Name == "U" || Name == "OFTRAP" || Name == "ORD" || Name == "UNO") {
+        if (Name == "S" || Name == "U" || Name == "OFTRAP" || Name == "ORD" || Name == "UNO"
+            || Name == "FLT" || Name == "INT") {
+            // %FLT / %INT: reinterpret the operand's BITS as float / integer (a bitcast, not a value
+            // conversion) at the same width -- e.g. an IEEE single held in a 32-bit GPR.
             Expr *E = new Expr (ExprAugment); E->Loc = Loc; E->Name = Name;
             Expect (TokLParen, "after the augment");
             E->Args.push_back (ParseExpr (0));
@@ -227,6 +246,14 @@ Parser::ParsePrimary ()
         }
         if (Name == "M" || Name == "MEM") {
             return ParseMemRef (Loc, nullptr);
+        }
+        if (Name == "LL") {                                 // %LL[addr] -- a load-linked read
+            Expr *E = ParseMemRef (Loc, nullptr);
+            E->Linked = true;
+            return E;
+        }
+        if (Name == "SC") {                                 // %SC[addr] <- value -- store-conditional
+            return ParseStoreCond (Loc, nullptr);
         }
         Expr *E = new Expr (ExprMeta); E->Loc = Loc; E->Name = Name;   // %PC, %V, %result, ...
         return E;
@@ -240,18 +267,8 @@ Parser::ParsePrimary ()
         return E;
     }
 
-    // typed memory: #t %M[expr]
-    if (m_Cur.Kind == TokType) {
-        Type *T = ParseType ();
-        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM")) {
-            Advance ();
-            return ParseMemRef (Loc, T);
-        }
-        delete T;
-        std::string M = "a type in an expression must introduce a memory reference (#t %M[..])";
-        m_pDiag->Report (SevError, Loc, M);
-        Expr *E = new Expr (ExprInt); E->Loc = Loc; return E;
-    }
+    // NB: a leading type (#t %M[..] typed memory, or a #t expr cast) is handled one level up in
+    // ParsePrefix, so a type token never reaches here.
 
     // cast: [ #t expr ]
     if (m_Cur.Kind == TokLBracket) {
@@ -361,6 +378,31 @@ Parser::ParsePrefix ()
         Expr *E = new Expr (ExprUnary);
         E->Loc = Loc; E->Op = K;
         E->Args.push_back (ParseExpr (11));             // prefix binds tighter than any infix
+        return E;
+    }
+    // A bare type prefix is either typed memory (#t %M[..]) or a cast of the following expression
+    // (#t expr, e.g. #i32 r[rs] or a chained #i64 #i32 r[rs]). The cast binds like a prefix unary
+    // operator -- tighter than any infix, so `#i32 a + b` is `(#i32 a) + b`, and chains right.
+    if (K == TokType) {
+        SRC_LOC Loc = m_Cur.Loc;
+        Type   *T   = ParseType ();
+        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM")) {
+            Advance ();
+            return ParsePostfix (ParseMemRef (Loc, T));     // typed memory reference
+        }
+        if (m_Cur.Kind == TokMeta && m_Cur.Text == "LL") {  // typed load-linked: #t %LL[addr]
+            Advance ();
+            Expr *E = ParseMemRef (Loc, T);
+            E->Linked = true;
+            return ParsePostfix (E);
+        }
+        if (m_Cur.Kind == TokMeta && m_Cur.Text == "SC") {  // typed store-conditional: #t %SC[addr] <- v
+            Advance ();
+            return ParseStoreCond (Loc, T);
+        }
+        Expr *E = new Expr (ExprCast);
+        E->Loc = Loc; E->VType = T;
+        E->Args.push_back (ParsePrefix ());
         return E;
     }
     return ParsePostfix (ParsePrimary ());
@@ -612,16 +654,18 @@ Parser::ParseQualifiedName ()
 }
 
 // A repeatable identifier's tail: an optional `?`, then an optional `: <number>` or
-// `: ( <expr> )` repeat count (e.g. `st?`, `sp?:( sr.state )`). The count is consumed but
-// not yet retained (register repetition is handled at register-file build time).
-void
+// `: ( <expr> )` start index (e.g. `st?`, `r?:1`, `sp?:( sr.state )`). Returns the literal start
+// index (the `: <number>` form, e.g. `r?:1` -> r1..rN) so the register-file builder can number the
+// copies from it; the `: ( <expr> )` form is a dynamic window selector and yields a start of 0.
+UINT64
 Parser::ConsumeRepeatTail ()
 {
-    if (!Accept (TokQuestion)) { return; }
+    if (!Accept (TokQuestion)) { return 0; }
     if (Accept (TokColon)) {
         if (Accept (TokLParen)) { delete ParseExpr (0); Expect (TokRParen, "to close the repeat count"); }
-        else { UINT64 V = 0; ExpectInt (&V, "as the repeat count"); }
+        else { UINT64 V = 0; ExpectInt (&V, "as the start index"); return V; }
     }
+    return 0;
 }
 
 // Would the current token begin a register splitter (vs an alias)?  A splitter starts with
@@ -743,7 +787,7 @@ Parser::ParseRegDecl ()
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
     if (m_Cur.Kind == TokIdent) {
         R->Name = m_Cur.Text; Advance ();
-        if (m_Cur.Kind == TokQuestion) { R->Repeatable = true; ConsumeRepeatTail (); }
+        if (m_Cur.Kind == TokQuestion) { R->Repeatable = true; R->RepeatStart = ConsumeRepeatTail (); }
     } else { std::string M = std::string ("expected a register name, found ") + TokenName (m_Cur.Kind);
              m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
     if (m_Cur.Kind == TokArrow || m_Cur.Kind == TokBindLeft) { R->Binding = ParseRegBinding (); }

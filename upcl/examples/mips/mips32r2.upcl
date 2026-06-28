@@ -1,0 +1,30 @@
+// MIPS32 Release 2 additions (feature `mips32r2`): the SPECIAL3 group (op 0x1f) bit-field
+// extract/insert, rotates, and the BSHFL sign-extend / byte-swap ops.
+
+feature mips32r2 {
+
+	// ext: rt = bits [lsb +: size] of rs, zero-extended. The rd field encodes size-1 (msbd), the
+	// sa field encodes the low bit (lsb).
+	insn ext : encode #i32 ( op:6 = 0x1f, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x00 ),
+		disasm ( mnemonic : "ext", operands : rt, rs, sa, rd )
+		=> r[ rt ] = ( r[ rs ] >> sa ) & ( ( [ #i64 1 ] << ( rd + 1 ) ) - 1 );
+
+	// ins: insert size bits of rt into rs at lsb (a mask-and-merge). SCAFFOLD: body TODO.
+	insn ins : encode #i32 ( op:6 = 0x1f, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x04 ),
+		disasm ( mnemonic : "ins", operands : rt, rs, sa, rd )  => r[ rt ] = r[ rt ];   // TODO: bitfield insert
+
+	// rotr / rotrv: rotate the 32-bit rt right by sa / rs. Distinguished from srl/srlv by the R bit
+	// (bit 21) being set.
+	insn rotr  : encode #i32 ( op:6 = 0x00, z:4 = 0, rbit:1 = 1, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x02 ),
+		disasm ( mnemonic : "rotr",  operands : rd, rt, sa )
+		{ #i32 v = r[ rt ]; #i32 t = ( v >> sa ) | ( v << ( ( 32 - sa ) & 31 ) ); r[ rd ] = %S ( t ); }
+
+	// BSHFL (funct 0x20): seb/seh sign-extend the byte/halfword; wsbh swaps bytes within halfwords.
+	insn seb : encode #i32 ( op:6 = 0x1f, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x10, funct:6 = 0x20 ),
+		disasm ( mnemonic : "seb", operands : rd, rt )  { #i8  t = r[ rt ]; r[ rd ] = %S ( t ); }
+	insn seh : encode #i32 ( op:6 = 0x1f, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x18, funct:6 = 0x20 ),
+		disasm ( mnemonic : "seh", operands : rd, rt )  { #i16 t = r[ rt ]; r[ rd ] = %S ( t ); }
+	insn wsbh : encode #i32 ( op:6 = 0x1f, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 = 0x02, funct:6 = 0x20 ),
+		disasm ( mnemonic : "wsbh", operands : rd, rt )  => r[ rd ] = r[ rd ];   // TODO: swap bytes in halfwords
+
+}

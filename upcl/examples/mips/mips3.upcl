@@ -1,0 +1,37 @@
+// MIPS III additions (feature `mips3`, R4000): the 64-bit doubleword integer instructions and the
+// 64-bit / unsigned-word loads and stores. These operate on the full 64-bit register (no 32-bit
+// sign-extension truncation).
+
+feature mips3 {
+
+	// Doubleword arithmetic (full 64-bit). daddu/dsubu never trap; dadd/dsub trap on overflow.
+	insn daddu  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x2d ),
+		disasm ( mnemonic : "daddu",  operands : rd, rs, rt )  => r[ rd ] = r[ rs ] + r[ rt ];
+	insn dsubu  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x2f ),
+		disasm ( mnemonic : "dsubu",  operands : rd, rs, rt )  => r[ rd ] = r[ rs ] - r[ rt ];
+	insn dadd   : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x2c ),
+		disasm ( mnemonic : "dadd",   operands : rd, rs, rt )  => r[ rd ] = %OFTRAP ( r[ rs ] + r[ rt ], 1 );
+	insn daddiu : encode #i32 ( op:6 = 0x19, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "daddiu", operands : rt, rs, imm )  => r[ rt ] = r[ rs ] + %S ( imm );
+
+	// Doubleword shifts. The "32" forms add 32 to the shift amount (sa is 0..31).
+	insn dsll   : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x38 ),
+		disasm ( mnemonic : "dsll",   operands : rd, rt, sa )  => r[ rd ] = r[ rt ] << sa;
+	insn dsrl   : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x3a ),
+		disasm ( mnemonic : "dsrl",   operands : rd, rt, sa )  => r[ rd ] = r[ rt ] >> sa;
+	insn dsra   : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x3b ),
+		disasm ( mnemonic : "dsra",   operands : rd, rt, sa )  => r[ rd ] = %S ( r[ rt ] ) >> sa;
+	insn dsll32 : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x3c ),
+		disasm ( mnemonic : "dsll32", operands : rd, rt, sa )  => r[ rd ] = r[ rt ] << ( sa + 32 );
+	insn dsllv  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x14 ),
+		disasm ( mnemonic : "dsllv",  operands : rd, rt, rs )  => r[ rd ] = r[ rt ] << ( r[ rs ] & 63 );
+
+	// Doubleword loads/stores; lwu zero-extends a 32-bit load (vs lw's sign-extend).
+	insn ld  : encode #i32 ( op:6 = 0x37, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "ld",  operands : rt, imm, rs )  => r[ rt ] = #i64 %M[ r[ rs ] + %S ( imm ) ];
+	insn sd  : encode #i32 ( op:6 = 0x3f, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "sd",  operands : rt, imm, rs )  => #i64 %M[ r[ rs ] + %S ( imm ) ] = r[ rt ];
+	insn lwu : encode #i32 ( op:6 = 0x27, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "lwu", operands : rt, imm, rs )  => r[ rt ] = #i32 %M[ r[ rs ] + %S ( imm ) ];
+
+}

@@ -1,0 +1,27 @@
+// MIPS32 Release 1 additions (feature `mips32`): the SPECIAL2 group (op 0x1c) -- a 3-operand
+// multiply writing a GPR (mul), multiply-accumulate into HI:LO (madd/msub), and count-leading-
+// zeros/ones (clz/clo).
+
+feature mips32 {
+
+	// mul: rd = low 32 of rs*rt, sign-extended. (Unlike mult, it writes a GPR directly.)
+	insn mul : encode #i32 ( op:6 = 0x1c, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x02 ),
+		disasm ( mnemonic : "mul", operands : rd, rs, rt )  { #i32 t = r[ rs ] * r[ rt ]; r[ rd ] = %S ( t ); }
+
+	// madd/msub: 32x32 product added to / subtracted from the 64-bit HI:LO.
+	insn madd  : encode #i32 ( op:6 = 0x1c, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x00 ),
+		disasm ( mnemonic : "madd",  operands : rs, rt )
+		{ #i64 acc = ( hi << 32 ) | [ #i64 #i32 lo ]; acc = acc + %S ( [ #i32 r[ rs ] ] ) * %S ( [ #i32 r[ rt ] ] );
+		  lo = %S ( [ #i32 acc ] ); hi = %S ( [ #i32 ( acc >> 32 ) ] ); }
+	insn maddu : encode #i32 ( op:6 = 0x1c, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x01 ),
+		disasm ( mnemonic : "maddu", operands : rs, rt )
+		{ #i64 acc = ( hi << 32 ) | [ #i64 #i32 lo ]; acc = acc + [ #i64 #i32 r[ rs ] ] * [ #i64 #i32 r[ rt ] ];
+		  lo = %S ( [ #i32 acc ] ); hi = %S ( [ #i32 ( acc >> 32 ) ] ); }
+
+	// clz/clo: count leading zeros / ones of the 32-bit rs into rd (a bit-count primitive).
+	insn clz : encode #i32 ( op:6 = 0x1c, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x20 ),
+		disasm ( mnemonic : "clz", operands : rd, rs )  => r[ rd ] = r[ rd ];   // SCAFFOLD: clz(low32(rs)) TODO
+	insn clo : encode #i32 ( op:6 = 0x1c, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x21 ),
+		disasm ( mnemonic : "clo", operands : rd, rs )  => r[ rd ] = r[ rd ];   // SCAFFOLD: clo(low32(rs)) TODO
+
+}

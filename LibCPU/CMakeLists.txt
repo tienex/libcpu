@@ -590,6 +590,44 @@ if(TARGET interp_backend)
        --arch 'upcl:${CMAKE_CURRENT_SOURCE_DIR}/test/branch.upcl') && \
      echo \"$OUT\" | grep -q 'r0 =000f' && echo \"$OUT\" | grep -q 'r1 =0007'")
 
+  # m88k user-space OpenBSD emulation, generated from upcl/examples/m88k.upcl (big-endian, the full
+  # syscall ABI). The image is a freestanding "hello" writer: it sets r13=4 (SYS_write), r2=1 (stdout),
+  # r3=0x20 (the string), r4=6 (length), traps via `tb0 0,r0,450` (the OpenBSD syscall gate -> vector
+  # 0x1c2), then sets r13=1 (SYS_exit), r2=0 and traps again. The "hello\n" bytes sit at offset 0x20.
+  # --abi obsd-m88k routes the trap vector through the host syscall shim, so the guest write reaches
+  # real stdout. Proves the generated frontend + the trap/syscall seam end to end.
+  add_test(NAME upcl.m88k-syscall COMMAND sh -c
+    "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x59\\xa0\\x00\\x04\\x58\\x40\\x00\\x01\\x58\\x60\\x00\\x20\\x58\\x80\\x00\\x06\\xf0\\x00\\xd1\\xc2\\x59\\xa0\\x00\\x01\\x58\\x40\\x00\\x00\\xf0\\x00\\xd1\\xc2\\x68\\x65\\x6c\\x6c\\x6f\\x0a' \
+       > '${CMAKE_BINARY_DIR}/hello.m88k' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k' --arch \"upcl:$M\" --abi obsd-m88k | grep -q '^hello$'")
+
+  # The same image wrapped in a real OpenBSD/m88k a.out exec header (OMAGIC): a_midmag packs
+  # MID_M88K(153)<<16 | 0407 = 0x00990107, a_text=0x20, a_data=6, a_entry=0; the 38-byte image
+  # follows the 32-byte header. --load aout validates the machine id, strips the header, loads
+  # text+data at base 0, and takes the entry from a_entry. Exercises the a.out loader, not just
+  # a flat image: a non-m88k a.out is rejected, and a non-zero a_entry is honored.
+  add_test(NAME upcl.m88k-aout COMMAND sh -c
+    "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x00\\x99\\x01\\x07\\x00\\x00\\x00\\x20\\x00\\x00\\x00\\x06\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x59\\xa0\\x00\\x04\\x58\\x40\\x00\\x01\\x58\\x60\\x00\\x20\\x58\\x80\\x00\\x06\\xf0\\x00\\xd1\\xc2\\x59\\xa0\\x00\\x01\\x58\\x40\\x00\\x00\\xf0\\x00\\xd1\\xc2\\x68\\x65\\x6c\\x6c\\x6f\\x0a' \
+       > '${CMAKE_BINARY_DIR}/hello.m88k.aout' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k.aout' --arch \"upcl:$M\" --abi obsd-m88k --load aout | grep -q '^hello$'")
+
+  # A REAL OpenBSD/m88k binary: test/bin/m88k/openbsd/sync (a ZMAGIC a.out). lcx maps the whole file
+  # at the m88k text base (0x1000), builds the argc/argv/envp entry stack, and runs crt0 -> main. The
+  # binary issues the genuine OpenBSD syscalls sync(36) and exit(1) through the `tb0 0,r0,128` gate
+  # (vector 0x80). This exercises the full chain end to end on real compiler output: the ZMAGIC loader,
+  # the uframe, the hardwired-zero r0 (RISC register file), the delayed branches (br.n/bsr.n/jmp.n/
+  # jsr.n), the register-indexed loads/stores, and the carry-flag syscall ABI. LCX_STRACE logs each
+  # syscall; the test confirms the real sync(36) fired and the process exited (no hang/crash).
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/m88k/openbsd/sync")
+    add_test(NAME upcl.m88k-obsd-sync COMMAND sh -c
+      "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+       B='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/m88k/openbsd/sync'; \
+       LCX_STRACE=1 \"$E\" run \"$B\" --arch \"upcl:$M\" --abi obsd-m88k --load aout 2>&1 | grep -q 'r13=36'")
+    set_tests_properties(upcl.m88k-obsd-sync PROPERTIES TIMEOUT 60)
+  endif()
+
   # Floating-point foundation: 80-bit (long double) FP registers, BinF* arithmetic, and int<->float
   # casts through the emitter ABI + interpreter. fp.upcl loads small integers as floats, computes,
   # and stores the result back to an integer register. The decisive program is (5 / 2) * 2: real
@@ -914,6 +952,40 @@ add_test(NAME upcl.decode COMMAND sh -c
      0x00 0x22 0x18 0x20 0x00 0x22 0x28 0x25 > '${CMAKE_BINARY_DIR}/decode.risc' && \
    grep -q 'add    rd=0x3 rs=0x1 rt=0x2' '${CMAKE_BINARY_DIR}/decode.risc' && \
    grep -q 'or     rd=0x5 rs=0x1 rt=0x2' '${CMAKE_BINARY_DIR}/decode.risc'")
+
+# MIPS (I .. 64R6): decode a few big-endian words from upcl/examples/mips.upcl and check both the
+# decode AND the semantics of the %S sign-extension fix -- addiu must SIGN-extend its immediate
+# (sext.i64, not zext), slt must select the SIGNED compare (slt, not sltu), and jr ra must decode.
+add_test(NAME upcl.decode-mips COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl' \
+     0x24 0x02 0x12 0x34 0x00 0x22 0x18 0x2a 0x8c 0xa4 0x00 0x08 0x03 0xe0 0x00 0x08 \
+       > '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q 'addiu  imm=0x1234 rs=0x0 rt=0x2' '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q 'sext.i64'                        '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q 'slt    rd=0x3 rs=0x1 rt=0x2'     '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q ' slt '                           '${CMAKE_BINARY_DIR}/decode.mips' && \
+   ! grep -q ' sltu '                        '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q 'lw     imm=0x8 rs=0x5 rt=0x4'    '${CMAKE_BINARY_DIR}/decode.mips' && \
+   grep -q 'jr     rs=0x1f'                  '${CMAKE_BINARY_DIR}/decode.mips'")
+set_tests_properties(upcl.decode-mips PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
+# MIPS ll/sc interlock: %LL must take a reservation (write the synthesised LLbit r69 + address r70
+# then load), and %SC must lower to a reservation check (llbit != 0 AND lladdr == addr) gating a
+# select-based conditional store, then write the 0/1 success back -- proving the interlock logic.
+add_test(NAME upcl.mips-interlock COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl' \
+     0xc0 0xa4 0x00 0x08 > '${CMAKE_BINARY_DIR}/mips.ll' && \
+   grep -q '0x0000: ll'        '${CMAKE_BINARY_DIR}/mips.ll' && \
+   grep -q 'put r69 <- '       '${CMAKE_BINARY_DIR}/mips.ll' && \
+   grep -q 'put r70 <- '       '${CMAKE_BINARY_DIR}/mips.ll' && \
+   '$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl' \
+     0xe0 0xa4 0x00 0x08 > '${CMAKE_BINARY_DIR}/mips.sc' && \
+   grep -q '0x0000: sc'        '${CMAKE_BINARY_DIR}/mips.sc' && \
+   grep -q 'get r69'           '${CMAKE_BINARY_DIR}/mips.sc' && \
+   grep -q 'get r70'           '${CMAKE_BINARY_DIR}/mips.sc' && \
+   grep -q 'select '           '${CMAKE_BINARY_DIR}/mips.sc' && \
+   grep -q 'store.i32'         '${CMAKE_BINARY_DIR}/mips.sc'")
+set_tests_properties(upcl.mips-interlock PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
@@ -1629,6 +1701,38 @@ if(TARGET interp_backend)
         "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-wine.sh" "${CMAKE_BINARY_DIR}/libnix-win")
       set_tests_properties(libnix.windows-wine PROPERTIES TIMEOUT 300 FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
     endif ()
+  endif ()
+
+  # libnix host-portability cross-check: build the haiku / os2 / vms source SELECTIONS (CORE + BSD
+  # family, via -DNIX_HOST_PROFILE) on this POSIX/BSD-family build host and run the host-op
+  # conformance test (nixtest) for each. Proves those hosts' selection compiles, links and passes
+  # the conformance surface (file ops, time, hostname, credentials, signals, loopback sockets)
+  # even where their own toolchain is unavailable. Needs only cmake + a POSIX host (not Wine/MinGW).
+  if (NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-profiles.sh")
+    add_test(NAME libnix.host-profiles COMMAND sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-profiles.sh" "${CMAKE_BINARY_DIR}/libnix-prof")
+    set_tests_properties(libnix.host-profiles PROPERTIES TIMEOUT 300
+      FAIL_REGULAR_EXPRESSION "FAIL:" PASS_REGULAR_EXPRESSION "PASS: libnix host profile 'vms'")
+  endif ()
+
+  # Native Haiku compile: build libnix with the real Haiku cross toolchain (x86_64-unknown-haiku-gcc)
+  # against Haiku's actual system headers. Skips cleanly when the toolchain is absent (set
+  # HAIKU_CROSS_DIR + HAIKU_SRC), exactly as the win32 gate skips without MinGW/Wine. This is the
+  # genuine native-toolchain compile of the Haiku port (where the header/symbol portability bugs live).
+  if (NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-haiku.sh")
+    add_test(NAME libnix.haiku-native COMMAND sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-haiku.sh" "${CMAKE_BINARY_DIR}/libnix-haiku")
+    set_tests_properties(libnix.haiku-native PROPERTIES TIMEOUT 300 FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+  endif ()
+
+  # OS/2 header-accurate compile: build libnix against the real OS/2 libc (kLIBC) headers with a
+  # 32-bit x86 GCC. Auto-fetches the open kLIBC headers; skips cleanly without an x86 GCC. Same
+  # standard as the Haiku gate (the runnable-binary step additionally needs the bitwiseworks OS/2
+  # GCC's LX backend, which runs on OS/2).
+  if (NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-os2.sh")
+    add_test(NAME libnix.os2-native COMMAND sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/run-libnix-os2.sh" "${CMAKE_BINARY_DIR}/libnix-os2")
+    set_tests_properties(libnix.os2-native PROPERTIES TIMEOUT 300 FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
   endif ()
 
   # End-to-end M24 boot: attach a bootable 360 KB diskette image (generated by mk_m24boot.py) to the

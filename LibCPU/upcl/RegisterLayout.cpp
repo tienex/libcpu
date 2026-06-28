@@ -83,6 +83,60 @@ RepeatCount (RegDecl CONST *pDecl)
     return 1;
 }
 
+CHAR8 CONST *
+ReservationBitName ()
+{
+    return "__llbit";
+}
+
+CHAR8 CONST *
+ReservationAddrName ()
+{
+    return "__lladdr";
+}
+
+// Does this expression tree contain an interlocked memory access (%LL load-linked or %SC
+// store-conditional)?
+static bool
+ExprUsesInterlock (Expr *pExpr)
+{
+    if (pExpr == nullptr) { return false; }
+    if (pExpr->Kind == ExprStoreCond) { return true; }
+    if (pExpr->Kind == ExprMem && pExpr->Linked) { return true; }
+    for (Expr *A : pExpr->Args) { if (ExprUsesInterlock (A)) { return true; } }
+    return false;
+}
+
+static bool
+StmtUsesInterlock (Stmt *pStmt)
+{
+    if (pStmt == nullptr) { return false; }
+    if (ExprUsesInterlock (pStmt->Lhs) || ExprUsesInterlock (pStmt->Rhs)
+        || ExprUsesInterlock (pStmt->Cond)) {
+        return true;
+    }
+    for (Stmt *S : pStmt->Body) { if (StmtUsesInterlock (S)) { return true; } }
+    for (Stmt *S : pStmt->Then) { if (StmtUsesInterlock (S)) { return true; } }
+    for (Stmt *S : pStmt->Else) { if (StmtUsesInterlock (S)) { return true; } }
+    for (Stmt *S : pStmt->Init) { if (StmtUsesInterlock (S)) { return true; } }
+    for (Stmt *S : pStmt->Step) { if (StmtUsesInterlock (S)) { return true; } }
+    return false;
+}
+
+bool
+ArchUsesInterlock (Arch *pArch)
+{
+    if (pArch == nullptr) { return false; }
+    for (Insn *pInsn : pArch->Insns) {
+        for (Stmt *S : pInsn->Semantics) { if (StmtUsesInterlock (S)) { return true; } }
+    }
+    for (JumpInsn *pJump : pArch->Jumps) {
+        for (Stmt *S : pJump->Pre) { if (StmtUsesInterlock (S)) { return true; } }
+        for (Stmt *S : pJump->Action) { if (StmtUsesInterlock (S)) { return true; } }
+    }
+    return false;
+}
+
 RegisterLayout
 BuildRegisterLayout (Arch *pArch)
 {
@@ -97,19 +151,24 @@ BuildRegisterLayout (Arch *pArch)
 
             // A repeated declaration (`8 ** #f80 st?`) is also a register ARRAY -- the base name
             // (st) addresses its elements by a runtime index (an FPU stack, a RISC register file).
+            // The array element numbering starts at `name?:Start` (r?:1 -> r1..rN) so a separate
+            // hardwired r0 (declared before it) keeps slot 0 and the bank indexes line up: r[k]
+            // resolves to BaseIndex + k - Start (computed in the translator's RegBankAddr).
+            UINT32 Start = (UINT32) pDecl->RepeatStart;
             if (Count > 1) {
                 RegArray Arr;
                 Arr.Name      = pDecl->Name;
                 Arr.BaseIndex = (UINT32) Layout.Phys.size ();
                 Arr.Count     = Count;
                 Arr.Width     = Width;
+                Arr.Start     = Start;
                 Arr.Float     = (pDecl->VType != nullptr && pDecl->VType->Kind == TypeFloat);
                 Layout.Arrays.push_back (Arr);
             }
 
             for (UINT32 Copy = 0; Copy < Count; ++Copy) {
                 RegPhys Phys;
-                Phys.Name  = (Count > 1) ? (pDecl->Name + std::to_string (Copy)) : pDecl->Name;
+                Phys.Name  = (Count > 1) ? (pDecl->Name + std::to_string (Start + Copy)) : pDecl->Name;
                 Phys.Index = (UINT32) Layout.Phys.size ();
                 Phys.Width = Width;
                 Phys.Float = (pDecl->VType != nullptr && pDecl->VType->Kind == TypeFloat);
@@ -117,6 +176,10 @@ BuildRegisterLayout (Arch *pArch)
                 if (pDecl->Binding != nullptr) {
                     Phys.IsPc  = (pDecl->Binding->Meta == "PC");
                     Phys.IsPsr = (pDecl->Binding->Meta == "PSR");
+                    // A `<- 0` constant alias hardwires the register to zero (the m88k/RISC r0).
+                    Expr *pAlias = pDecl->Binding->AliasExpr;
+                    Phys.ZeroWired = (Count == 1 && pAlias != nullptr
+                                      && pAlias->Kind == ExprInt && pAlias->Int == 0);
                 }
 
                 Layout.PhysIndex[Phys.Name] = Phys.Index;
@@ -131,6 +194,28 @@ BuildRegisterLayout (Arch *pArch)
                 }
             }
         }
+    }
+
+    // Synthesise the load-linked / store-conditional reservation state when the description uses it
+    // (%LL / %SC). These are ordinary physical registers -- read/written through GetRegister /
+    // PutRegister like any other -- so every backend supports the interlock with no new primitive.
+    if (ArchUsesInterlock (pArch)) {
+        UINT32 WordW = pArch->WordSize ? pArch->WordSize : 32;
+        UINT32 AddrW = pArch->AddressSize ? pArch->AddressSize : WordW;
+
+        RegPhys Bit;
+        Bit.Name  = ReservationBitName ();        // the LLbit: nonzero while a reservation is held
+        Bit.Index = (UINT32) Layout.Phys.size ();
+        Bit.Width = WordW;
+        Layout.PhysIndex[Bit.Name] = Bit.Index;
+        Layout.Phys.push_back (Bit);
+
+        RegPhys Adr;
+        Adr.Name  = ReservationAddrName ();       // the reserved address (compared by %SC)
+        Adr.Index = (UINT32) Layout.Phys.size ();
+        Adr.Width = AddrW;
+        Layout.PhysIndex[Adr.Name] = Adr.Index;
+        Layout.Phys.push_back (Adr);
     }
 
     return Layout;

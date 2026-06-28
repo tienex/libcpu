@@ -1,0 +1,256 @@
+// The MIPS instruction set, MIPS I through MIPS64 Release 6 -- a UPCL description.
+//
+// One unified 64-bit model: the general registers are 64-bit (MIPS III onward); the 32-bit ISA
+// levels (MIPS I/II) use the word/halfword ops, which produce a 32-bit result SIGN-EXTENDED into
+// the 64-bit register -- exactly how a MIPS64 part executes 32-bit code. Each ISA level is a
+// `feature`, switched on by a `cpu` model, as x86.upcl does for its generations:
+//
+//     lcx run prog.bin --arch upcl:mips.upcl@mips1      (R2000/R3000)
+//     lcx run prog.bin --arch upcl:mips.upcl@mips64r6   (Release 6)
+//
+// MIPS has three instruction formats -- R (op|rs|rt|rd|sa|funct), I (op|rs|rt|imm16), J (op|tgt26)
+// -- plus the coprocessor-1 (FPU) forms. Every branch and jump has a ONE-INSTRUCTION DELAY SLOT
+// (modelled with `delay 1`, like the m88k .n branches): the next instruction always executes before
+// the transfer, so a taken branch's target is computed from pc (which reads as the delay-slot
+// address, i.e. branch+4) and the not-taken path falls through to branch+8.
+//
+// Release 6 is a deliberate redesign: it REMOVES the branch-likely ops, the unaligned lwl/lwr/swl/
+// swr, movz/movn, and the HI/LO mult/div (replaced by mul/muh/div/mod writing a GPR directly), and
+// REUSES some freed opcodes for new compact branches and PC-relative ops. Because a model only
+// decodes the features it lists, the pre-R6 and R6 meanings of a reused opcode never collide -- an
+// r6 model simply omits the pre-R6 features. The pre-R6 core lives here; r6 deltas in mips/r6.upcl.
+
+arch "mips" {
+
+	name "MIPS (I .. 64R6)";
+
+	endian both;
+	default_endian big;
+
+	byte_size 8;
+	word_size 64;
+	address_size 64;
+	float_size 64;
+
+	register_file {
+
+		// General registers r0..r31. r0 is hardwired to zero (reads 0, writes discarded); r31 is the
+		// ordinary link register `ra` (jal/jalr/bltzal write the return address there).
+		group R {
+			[ #i64 r0 <- 0 ],        // r0: the zero register
+			[ 31 ** #i64 r?:1 ]      // r1 .. r31 (r31 = ra, the link register)
+		}
+
+		// Multiply/divide result registers (pre-R6). HI:LO hold the 64-bit product / the
+		// quotient (LO) and remainder (HI).
+		group M {
+			[ #i64 hi ],
+			[ #i64 lo ]
+		}
+
+		// Coprocessor 1: 32 floating registers (IEEE single/double share the file).
+		group F {
+			[ 32 ** #f64 f?:0 ]
+		}
+
+		// Special: the program counter and its delay-slot successor.
+		group S {
+			[ #i64 pc  -> %PC ],
+			[ #i64 npc -> %NPC ]
+		}
+
+		// Trap vector for SYSCALL/BREAK (the OS personality reads it).
+		group T : [ #i32 trapno ];
+
+	}
+
+}
+
+// Decoder operands: the 5-bit register selectors r[rs]/r[rt]/r[rd] and f[fs]..; the immediate /
+// shift-amount / branch-offset / jump-target fields at their encoded widths (so %S sign-extends).
+decoder_operands [
+	#i5 rs, #i5 rt, #i5 rd, #i5 sa,       // R/I register selectors + shift amount
+	#i5 fs, #i5 ft, #i5 fd,               // coprocessor-1 register selectors
+	#i16 imm,                             // I-type 16-bit immediate / displacement
+	#i26 target                           // J-type 26-bit jump target
+];
+
+// ===========================================================================
+// MIPS I -- the base ISA (R2000/R3000). Comprehensive integer core.
+// ===========================================================================
+
+// ---- I-type arithmetic / logical immediates (op = function) ----
+// addi traps on overflow; addiu does not (the "u" is "no trap", not "unsigned"). The 32-bit result
+// is sign-extended into the 64-bit register.
+insn addiu : encode #i32 ( op:6 = 0x09, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "addiu", operands : rt, rs, imm )  { #i32 t = r[ rs ] + %S ( imm ); r[ rt ] = %S ( t ); }
+insn addi  : encode #i32 ( op:6 = 0x08, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "addi",  operands : rt, rs, imm )  { #i32 t = %OFTRAP ( r[ rs ] + %S ( imm ), 1 ); r[ rt ] = %S ( t ); }
+insn slti  : encode #i32 ( op:6 = 0x0a, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "slti",  operands : rt, rs, imm )  => r[ rt ] = ( %S ( r[ rs ] ) < %S ( imm ) ) ? 1 : 0;
+insn sltiu : encode #i32 ( op:6 = 0x0b, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "sltiu", operands : rt, rs, imm )  { #i64 i = %S ( imm ); r[ rt ] = ( r[ rs ] < i ) ? 1 : 0; }
+insn andi  : encode #i32 ( op:6 = 0x0c, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "andi",  operands : rt, rs, imm )  => r[ rt ] = r[ rs ] & imm;
+insn ori   : encode #i32 ( op:6 = 0x0d, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "ori",   operands : rt, rs, imm )  => r[ rt ] = r[ rs ] | imm;
+insn xori  : encode #i32 ( op:6 = 0x0e, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "xori",  operands : rt, rs, imm )  => r[ rt ] = r[ rs ] ^ imm;
+// lui: load the immediate into bits 31..16, sign-extended to 64 (the classic high-half load).
+insn lui   : encode #i32 ( op:6 = 0x0f, rs:5 = 0, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lui",   operands : rt, imm )  { #i32 t = imm << 16; r[ rt ] = %S ( t ); }
+
+// ---- R-type arithmetic / logical (op = 0x00, the operation is in `funct`) ----
+insn addu : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x21 ),
+	disasm ( mnemonic : "addu", operands : rd, rs, rt )  { #i32 t = r[ rs ] + r[ rt ]; r[ rd ] = %S ( t ); }
+insn add  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x20 ),
+	disasm ( mnemonic : "add",  operands : rd, rs, rt )  { #i32 t = %OFTRAP ( r[ rs ] + r[ rt ], 1 ); r[ rd ] = %S ( t ); }
+insn subu : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x23 ),
+	disasm ( mnemonic : "subu", operands : rd, rs, rt )  { #i32 t = r[ rs ] - r[ rt ]; r[ rd ] = %S ( t ); }
+insn sub  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x22 ),
+	disasm ( mnemonic : "sub",  operands : rd, rs, rt )  { #i32 t = %OFTRAP ( r[ rs ] - r[ rt ], 1 ); r[ rd ] = %S ( t ); }
+insn and  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x24 ),
+	disasm ( mnemonic : "and",  operands : rd, rs, rt )  => r[ rd ] = r[ rs ] & r[ rt ];
+insn or   : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x25 ),
+	disasm ( mnemonic : "or",   operands : rd, rs, rt )  => r[ rd ] = r[ rs ] | r[ rt ];
+insn xor  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x26 ),
+	disasm ( mnemonic : "xor",  operands : rd, rs, rt )  => r[ rd ] = r[ rs ] ^ r[ rt ];
+insn nor  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x27 ),
+	disasm ( mnemonic : "nor",  operands : rd, rs, rt )  => r[ rd ] = ~ ( r[ rs ] | r[ rt ] );
+insn slt  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x2a ),
+	disasm ( mnemonic : "slt",  operands : rd, rs, rt )  => r[ rd ] = ( %S ( r[ rs ] ) < %S ( r[ rt ] ) ) ? 1 : 0;
+insn sltu : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x2b ),
+	disasm ( mnemonic : "sltu", operands : rd, rs, rt )  => r[ rd ] = ( r[ rs ] < r[ rt ] ) ? 1 : 0;
+
+// ---- shifts (R-type). The constant-amount forms use `sa`; the variable forms use rs (mod 32). ----
+insn sll  : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x00 ),
+	disasm ( mnemonic : "sll",  operands : rd, rt, sa )  { #i32 t = r[ rt ] << sa; r[ rd ] = %S ( t ); }
+insn srl  : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x02 ),
+	disasm ( mnemonic : "srl",  operands : rd, rt, sa )  { #i32 t = [ #i32 r[ rt ] ] >> sa; r[ rd ] = %S ( t ); }
+insn sra  : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 -> rt, rd:5 -> rd, sa:5 -> sa, funct:6 = 0x03 ),
+	disasm ( mnemonic : "sra",  operands : rd, rt, sa )  { #i32 t = %S ( [ #i32 r[ rt ] ] ) >> sa; r[ rd ] = %S ( t ); }
+insn sllv : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x04 ),
+	disasm ( mnemonic : "sllv", operands : rd, rt, rs )  { #i32 t = r[ rt ] << ( r[ rs ] & 31 ); r[ rd ] = %S ( t ); }
+insn srlv : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x06 ),
+	disasm ( mnemonic : "srlv", operands : rd, rt, rs )  { #i32 t = [ #i32 r[ rt ] ] >> ( r[ rs ] & 31 ); r[ rd ] = %S ( t ); }
+insn srav : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x07 ),
+	disasm ( mnemonic : "srav", operands : rd, rt, rs )  { #i32 t = %S ( [ #i32 r[ rt ] ] ) >> ( r[ rs ] & 31 ); r[ rd ] = %S ( t ); }
+
+// ---- multiply / divide into HI:LO (pre-R6) ----
+insn mult  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x18 ),
+	disasm ( mnemonic : "mult",  operands : rs, rt )
+	{ #i64 p = %S ( [ #i32 r[ rs ] ] ) * %S ( [ #i32 r[ rt ] ] ); lo = %S ( [ #i32 p ] ); hi = %S ( [ #i32 ( p >> 32 ) ] ); }
+insn multu : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x19 ),
+	disasm ( mnemonic : "multu", operands : rs, rt )
+	{ #i64 p = [ #i64 #i32 r[ rs ] ] * [ #i64 #i32 r[ rt ] ]; lo = %S ( [ #i32 p ] ); hi = %S ( [ #i32 ( p >> 32 ) ] ); }
+insn div   : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x1a ),
+	disasm ( mnemonic : "div",   operands : rs, rt )
+	{ lo = %S ( [ #i32 ( %S ( [ #i32 r[ rs ] ] ) / %S ( [ #i32 r[ rt ] ] ) ) ] ); hi = %S ( [ #i32 ( %S ( [ #i32 r[ rs ] ] ) % %S ( [ #i32 r[ rt ] ] ) ) ] ); }
+insn divu  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 = 0, sa:5 = 0, funct:6 = 0x1b ),
+	disasm ( mnemonic : "divu",  operands : rs, rt )
+	{ lo = %S ( [ #i32 ( [ #i32 r[ rs ] ] / [ #i32 r[ rt ] ] ) ] ); hi = %S ( [ #i32 ( [ #i32 r[ rs ] ] % [ #i32 r[ rt ] ] ) ] ); }
+insn mfhi  : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 = 0, rd:5 -> rd, sa:5 = 0, funct:6 = 0x10 ),
+	disasm ( mnemonic : "mfhi", operands : rd )  => r[ rd ] = hi;
+insn mflo  : encode #i32 ( op:6 = 0x00, rs:5 = 0, rt:5 = 0, rd:5 -> rd, sa:5 = 0, funct:6 = 0x12 ),
+	disasm ( mnemonic : "mflo", operands : rd )  => r[ rd ] = lo;
+insn mthi  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 = 0, rd:5 = 0, sa:5 = 0, funct:6 = 0x11 ),
+	disasm ( mnemonic : "mthi", operands : rs )  => hi = r[ rs ];
+insn mtlo  : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 = 0, rd:5 = 0, sa:5 = 0, funct:6 = 0x13 ),
+	disasm ( mnemonic : "mtlo", operands : rs )  => lo = r[ rs ];
+
+// ---- loads (I-type; effective address = rs + SEXT(imm)). 32-bit/16-bit/8-bit, sign- or zero- ----
+insn lw  : encode #i32 ( op:6 = 0x23, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lw",  operands : rt, imm, rs )  => r[ rt ] = %S ( [ #i64 #i32 %M[ r[ rs ] + %S ( imm ) ] ] );
+insn lh  : encode #i32 ( op:6 = 0x21, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lh",  operands : rt, imm, rs )  => r[ rt ] = %S ( [ #i64 #i16 %M[ r[ rs ] + %S ( imm ) ] ] );
+insn lhu : encode #i32 ( op:6 = 0x25, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lhu", operands : rt, imm, rs )  => r[ rt ] = #i16 %M[ r[ rs ] + %S ( imm ) ];
+insn lb  : encode #i32 ( op:6 = 0x20, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lb",  operands : rt, imm, rs )  => r[ rt ] = %S ( [ #i64 #i8 %M[ r[ rs ] + %S ( imm ) ] ] );
+insn lbu : encode #i32 ( op:6 = 0x24, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "lbu", operands : rt, imm, rs )  => r[ rt ] = #i8 %M[ r[ rs ] + %S ( imm ) ];
+
+// ---- stores ----
+insn sw : encode #i32 ( op:6 = 0x2b, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "sw", operands : rt, imm, rs )  => #i32 %M[ r[ rs ] + %S ( imm ) ] = r[ rt ];
+insn sh : encode #i32 ( op:6 = 0x29, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "sh", operands : rt, imm, rs )  => #i16 %M[ r[ rs ] + %S ( imm ) ] = r[ rt ];
+insn sb : encode #i32 ( op:6 = 0x28, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "sb", operands : rt, imm, rs )  => #i8 %M[ r[ rs ] + %S ( imm ) ] = r[ rt ];
+
+// ===========================================================================
+// Control transfer -- every branch/jump has a one-instruction DELAY SLOT (delay 1).
+// ===========================================================================
+
+// Jumps (J-type). The target keeps the top 4 bits of the (delay-slot) PC and supplies bits 27..2.
+jump insn j   : type branch, delay 1, encode #i32 ( op:6 = 0x02, target:26 -> target ),
+	disasm ( mnemonic : "j",   operands : target )  { pc = ( pc & ~ [ #i64 0xfffffff ] ) | ( [ #i64 target ] << 2 ); }
+jump insn jal : type call,   delay 1, encode #i32 ( op:6 = 0x03, target:26 -> target ),
+	disasm ( mnemonic : "jal", operands : target )  { r31 = pc + 4; pc = ( pc & ~ [ #i64 0xfffffff ] ) | ( [ #i64 target ] << 2 ); }
+
+// Register jumps (R-type). jr is the canonical return (`jr ra`); jalr links into rd (default r31).
+jump insn jr   : type return, delay 1, encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 = 0, rd:5 = 0, sa:5 = 0, funct:6 = 0x08 ),
+	disasm ( mnemonic : "jr",   operands : rs )      { pc = r[ rs ]; }
+jump insn jalr : type call,   delay 1, encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 = 0, rd:5 -> rd, sa:5 = 0, funct:6 = 0x09 ),
+	disasm ( mnemonic : "jalr", operands : rd, rs )  { r[ rd ] = pc + 4; pc = r[ rs ]; }
+
+// Conditional branches (I-type, delay slot). Target = (branch+4) + SEXT(offset)<<2; pc reads as
+// branch+4. The select form (taken ? target : fall-through-past-delay-slot) gates correctly.
+jump insn beq  : type branch, delay 1, encode #i32 ( op:6 = 0x04, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "beq",  operands : rs, rt, imm )  { pc = ( r[ rs ] == r[ rt ] ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn bne  : type branch, delay 1, encode #i32 ( op:6 = 0x05, rs:5 -> rs, rt:5 -> rt, imm:16 -> imm ),
+	disasm ( mnemonic : "bne",  operands : rs, rt, imm )  { pc = ( r[ rs ] != r[ rt ] ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn blez : type branch, delay 1, encode #i32 ( op:6 = 0x06, rs:5 -> rs, rt:5 = 0, imm:16 -> imm ),
+	disasm ( mnemonic : "blez", operands : rs, imm )  { pc = ( %S ( r[ rs ] ) <= 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn bgtz : type branch, delay 1, encode #i32 ( op:6 = 0x07, rs:5 -> rs, rt:5 = 0, imm:16 -> imm ),
+	disasm ( mnemonic : "bgtz", operands : rs, imm )  { pc = ( %S ( r[ rs ] ) >  0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+
+// REGIMM (op 0x01): the rt field selects bltz/bgez (and their link forms). bltzal/bgezal link r31.
+jump insn bltz   : type branch, delay 1, encode #i32 ( op:6 = 0x01, rs:5 -> rs, rt:5 = 0x00, imm:16 -> imm ),
+	disasm ( mnemonic : "bltz",   operands : rs, imm )  { pc = ( %S ( r[ rs ] ) <  0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn bgez   : type branch, delay 1, encode #i32 ( op:6 = 0x01, rs:5 -> rs, rt:5 = 0x01, imm:16 -> imm ),
+	disasm ( mnemonic : "bgez",   operands : rs, imm )  { pc = ( %S ( r[ rs ] ) >= 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn bltzal : type call,   delay 1, encode #i32 ( op:6 = 0x01, rs:5 -> rs, rt:5 = 0x10, imm:16 -> imm ),
+	disasm ( mnemonic : "bltzal", operands : rs, imm )  { r31 = pc + 4; pc = ( %S ( r[ rs ] ) <  0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+jump insn bgezal : type call,   delay 1, encode #i32 ( op:6 = 0x01, rs:5 -> rs, rt:5 = 0x11, imm:16 -> imm ),
+	disasm ( mnemonic : "bgezal", operands : rs, imm )  { r31 = pc + 4; pc = ( %S ( r[ rs ] ) >= 0 ) ? ( pc + ( %S ( imm ) << 2 ) ) : ( pc + 4 ); }
+
+// ---- system ----
+jump insn syscall : type trap, encode #i32 ( op:6 = 0x00, code:20 -> target, funct:6 = 0x0c ),
+	disasm ( mnemonic : "syscall", operands : target )  { trapno = 0; @trap ( 0 ); }
+jump insn break   : type trap, encode #i32 ( op:6 = 0x00, code:20 -> target, funct:6 = 0x0d ),
+	disasm ( mnemonic : "break",   operands : target )  { trapno = 1; @trap ( 1 ); }
+
+// ===========================================================================
+// ISA levels (feature blocks in mips/<level>.upcl) and the CPU models.
+// ===========================================================================
+
+include "mips/mips2.upcl";    // MIPS II: ll/sc, trap-on-condition, branch-likely, sync
+include "mips/mips3.upcl";    // MIPS III: 64-bit doubleword integer + ld/sd/lwu
+include "mips/mips4.upcl";    // MIPS IV: movz/movn, prefetch
+include "mips/mips32.upcl";   // MIPS32 r1: mul, clz/clo, madd/msub
+include "mips/mips32r2.upcl"; // MIPS32 r2: ext/ins, rotr, seb/seh, wsbh
+include "mips/fpu.upcl";      // Coprocessor 1: IEEE single/double arithmetic + transfers
+include "mips/r6.upcl";       // Release 6: mul/muh/div/mod, compact + PC-relative branches, auipc
+
+features {
+	mips2    "MIPS II  -- ll/sc, trap-on-condition, branch-likely, sync";
+	mips3    "MIPS III -- 64-bit doubleword integer ops (daddu/dsll/ld/sd/lwu)";
+	mips4    "MIPS IV  -- conditional moves (movz/movn), prefetch";
+	mips32   "MIPS32   -- mul, clz/clo, madd/msub";
+	mips32r2 "MIPS32R2 -- ext/ins, rotr, seb/seh, wsbh, rdhwr";
+	fpu      "Coprocessor 1 -- IEEE floating point";
+	r6       "Release 6 -- mul/muh/div/mod, compact/PC-rel branches, auipc (drops HI/LO + likely)";
+}
+
+// Pre-R6 levels are cumulative; R6 omits the removed pre-R6 features and adds `r6`.
+cpu "mips1"    { }
+cpu "mips2"    { mips2; fpu; }
+cpu "mips3"    { mips2; mips3; fpu; }
+cpu "mips4"    { mips2; mips3; mips4; fpu; }
+cpu "mips32"   { mips2; mips4; mips32; fpu; }
+cpu "mips32r2" { mips2; mips4; mips32; mips32r2; fpu; }
+cpu "mips64"   { mips2; mips3; mips4; mips32; fpu; }
+cpu "mips64r2" { mips2; mips3; mips4; mips32; mips32r2; fpu; }
+cpu "mips32r6" { mips32; mips32r2; fpu; r6; }
+cpu "mips64r6" { mips3; mips32; mips32r2; fpu; r6; }

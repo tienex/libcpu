@@ -53,7 +53,8 @@ typedef enum _EXPR_KIND {
     ExprMeta,       // %Name (augment or meta-register reference)   (Name)
     ExprMember,     // a.b  (Args[0]=base, Name=member)  or  a.[m,n] (Members)
     ExprCast,       // [ <VType> <expr> ]             (VType, Args[0])
-    ExprMem,        // %M[addr]  or  <VType> %M[addr]  (VType?, Args[0]=addr)
+    ExprMem,        // %M[addr]  or  <VType> %M[addr]  (VType?, Args[0]=addr); Linked => %LL[addr]
+    ExprStoreCond,  // %SC[addr] <- value  (VType?, Args[0]=addr, Args[1]=value); yields 0/1 success
     ExprBitSlice,   // operand[a:b] or operand[a..b]  (Args[0]=op, Args[1]=a, Args[2]=b; RangeInclusive)
     ExprBitCombine, // ( a : b : c )                  (Args, MSB-first)
     ExprSelect,     // cond ? a : b                   (Args[0..2])
@@ -72,6 +73,7 @@ public:
     TOKEN_KIND               Op   = TokUnknown; // ExprUnary / ExprBinary
     std::vector<Expr *>      Args;
     Type                    *VType = nullptr;   // ExprCast / ExprMem / ExprIs (owned)
+    bool                     Linked = false;     // ExprMem: a load-linked (%LL) memory reference
     bool                     RangeInclusive = true;   // ExprBitSlice: [a:b] (true) vs [a..b] (false)
     std::vector<std::string> Members;           // ExprMember: a.[m,n]
     std::vector<std::string> CcFlags;           // ExprCC: which condition bits
@@ -457,6 +459,7 @@ public:
     Type        *VType = nullptr;        // owned
     std::string  Name;
     bool         Repeatable = false;     // declared as `name?` (st?)
+    UINT64       RepeatStart = 0;         // `name?:N` start index (r?:1 -> r1..rN); default 0
     Expr        *RepeatCount = nullptr;  // `N ** <type> <name>`  (owned)
     RegBinding  *Binding = nullptr;      // owned
     ~RegDecl () { delete VType; delete RepeatCount; delete Binding; }

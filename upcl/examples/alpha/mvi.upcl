@@ -1,0 +1,23 @@
+// Alpha MVI -- Motion Video Instructions (feature `mvi`, EV6 / 21264 onwards). A small SIMD set that
+// treats a 64-bit integer register as packed bytes/words: per-lane min/max, pixel error (PERR), and
+// pack/unpack between byte and word lanes. Operate format in op 0x1c (FPTI).
+//
+// SCAFFOLD: these are genuinely vector (per-lane) operations -- modelling them needs lane-wise
+// extraction/combination in the body, so they are left as documented stubs with the correct
+// encodings. Fill the bodies with the packed-lane semantics from the Alpha ARM (MVI chapter).
+
+feature mvi {
+
+	// MINUB8 / MAXUB8: per-byte unsigned min / max of the eight byte lanes of Ra and Rb.
+	insn minub8 : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x3a, rc:5 -> rc ),
+		disasm ( mnemonic : "minub8", operands : ra, rb, rc )  => r[ rc ] = r[ rc ];   // TODO: per-byte umin
+	insn maxub8 : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x3c, rc:5 -> rc ),
+		disasm ( mnemonic : "maxub8", operands : ra, rb, rc )  => r[ rc ] = r[ rc ];   // TODO: per-byte umax
+
+	// PERR: sum of absolute byte differences of Ra and Rb (motion-estimation primitive).
+	insn perr : encode #i32 ( op:6 = 0x1c, ra:5 -> ra, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x31, rc:5 -> rc ),
+		disasm ( mnemonic : "perr", operands : ra, rb, rc )  => r[ rc ] = r[ rc ];     // TODO: sum |a_i - b_i|
+
+	// TODO: PKLB/PKWB (pack), UNPKBL/UNPKBW (unpack), MINSB8/MAXSB8/MINUW4/... (signed + word lanes).
+
+}

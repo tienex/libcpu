@@ -53,6 +53,11 @@
 #include <cstdio>
 #include <unistd.h>   // write/read/close/getpid for the obsd-m88k user-space syscall personality
 #include <fcntl.h>    // open
+#include <cerrno>     // errno -> the m88k carry/r2 error convention
+#include <ctime>      // clock_gettime for gettimeofday/clock_gettime
+#include <sys/time.h> // struct timeval / gettimeofday
+#include <sys/uio.h>  // writev/readv iovec marshalling
+#include <csignal>    // kill(2) for the obsd-m88k personality
 #include <cstring>
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
@@ -150,7 +155,7 @@ struct ArchSetup {
 static Upcl::Module *UpclParse (CHAR8 CONST *pFile, Upcl::SourceManager &Sm);   // fwd
 
 static ArchSetup
-MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
+MakeArch (CHAR8 CONST *pName, UINT8 *pRam, UINT64 RamSize, CPU_STATE *pState)
 {
     ArchSetup A;
     A.pArch = nullptr;
@@ -194,53 +199,225 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, CPU_STATE *pState)
         A.RegBytes = 2;
     }
     if (A.pArch != nullptr) {
-        A.pArch->SetCodeMemory (pRam, 65536);
+        A.pArch->SetCodeMemory (pRam, RamSize);
     }
     return A;
 }
 
+// OpenBSD/m88k process break (heap) pointer, tracked across brk(2)/sbrk calls. g_BrkBase is the
+// initial break set by the loader to the end of bss; g_BrkCur is the current break. A flat-RAM
+// emulator has no page tables, so brk just bumps a pointer and validates it against RAM.
+static UINT64 g_BrkBase = 0;
+static UINT64 g_BrkCur  = 0;
+
+// m88k r[N] maps directly to CPU_STATE.Reg[N] (r0 is the hardwired-zero slot Reg[0]; the frontend
+// reads it as 0 and discards writes). These index the SP and link registers the entry state needs.
+#define M88K_REG(n)  ((UINT32) (n))                           // m88k r[n] -> CPU_STATE.Reg[n]
+#define M88K_SP      M88K_REG (31)                            // r31 stack pointer  -> Reg[31]
+#define M88K_LINK    M88K_REG (1)                             // r1  link register  -> Reg[1]
+
 // One OpenBSD/m88k user-space system call. The guest issues `tb0 0, r0, 450` after loading the
-// syscall number in r13 and arguments in r2.. ; the result is returned in r2. (m88k r[N] lives in
-// CPU_STATE Reg[N+1] -- r0 is a separate hardwired binding, so the bank is offset by one.) This is
-// a minimal personality (exit/read/write) demonstrating the syscall path end-to-end; the full
-// obsd41 syscall table + struct marshalling to libnix is wired on top of this seam. Returns false
-// when the guest should stop (exit), true to resume after the trap.
+// syscall number in r13 and arguments in r2.. ; the result is returned in r2. (m88k r[N] maps
+// directly to CPU_STATE Reg[N]; r0 is the hardwired-zero slot.)
+//
+// The OpenBSD/m88k kernel ABI signals an error by SETTING THE CARRY FLAG (PSR C, bit 28) and
+// returning the errno in r2; on success the carry is clear and r2 holds the return value. libc's
+// cerror stub branches on that carry, so this shim must drive Flag[FlagCarry] -- not just r2 --
+// for errno propagation to work. Host errno values are BSD-derived and match OpenBSD's for the
+// common range, so they pass through directly.
+//
+// This is a host-backed personality (the real obsd41 + libnix marshalling is wired on top of the
+// same seam); it covers the syscalls a static OpenBSD/m88k user binary issues at startup and for
+// basic I/O. The numbers are OpenBSD 4.1's (test/libnix/obsd41/obsd41.sc). Returns false when the
+// guest should stop (exit), true to resume after the trap.
 static bool
 ObsdM88kSyscall (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize)
 {
-    UINT64 Sc = pState->Reg[14];                          // r13 = syscall number
-    auto   Arg = [&] (int I) -> UINT64 { return pState->Reg[3 + I]; };   // r2=arg0, r3=arg1, ...
+    UINT64 Sc  = pState->Reg[13];                         // r13 = syscall number
+    auto   Arg = [&] (int I) -> UINT64 { return pState->Reg[2 + I]; };   // r2=arg0, r3=arg1, ...
+    if (std::getenv ("LCX_STRACE") != nullptr) {
+        std::fprintf (stderr, "lcx strace: @%#llx vector=%#llx r13=%llu (%#llx, %#llx, %#llx)\n",
+                      (unsigned long long) pState->TrapPc, (unsigned long long) pState->SyscallVector,
+                      (unsigned long long) Sc, (unsigned long long) Arg (0),
+                      (unsigned long long) Arg (1), (unsigned long long) Arg (2));
+        if (std::getenv ("LCX_STRACE_REGS") != nullptr) {
+            for (int K = 0; K < 32; K++) {
+                std::fprintf (stderr, "  Reg[%2d]=%08llx%s", K,
+                              (unsigned long long) (pState->Reg[K] & 0xffffffff), (K % 4 == 3) ? "\n" : "");
+            }
+            UINT64 Tp = pState->TrapPc;
+            if (Tp >= 8 && Tp + 4 <= RamSize) {
+                std::fprintf (stderr, "  code @%#llx: %02x%02x%02x%02x %02x%02x%02x%02x [tb0:%02x%02x%02x%02x]\n",
+                              (unsigned long long) (Tp - 8),
+                              pRam[Tp - 8], pRam[Tp - 7], pRam[Tp - 6], pRam[Tp - 5],
+                              pRam[Tp - 4], pRam[Tp - 3], pRam[Tp - 2], pRam[Tp - 1],
+                              pRam[Tp], pRam[Tp + 1], pRam[Tp + 2], pRam[Tp + 3]);
+            }
+        }
+    }
+    auto   Ok  = [&] (UINT64 V) -> bool {                 // success: r2 = value, carry clear
+        pState->Reg[2] = V;
+        pState->Flag[FlagCarry] = 0;
+        return true;
+    };
+    auto   Fail = [&] (int E) -> bool {                   // error: r2 = errno, carry set
+        pState->Reg[2] = (UINT64) (UINT32) E;
+        pState->Flag[FlagCarry] = 1;
+        return true;
+    };
+    auto   InRam = [&] (UINT64 A, UINT64 N) -> bool { return A <= RamSize && A + N <= RamSize; };
+    auto   WBe32 = [&] (UINT64 A, UINT32 V) {
+        if (InRam (A, 4)) {
+            pRam[A] = (UINT8) (V >> 24); pRam[A + 1] = (UINT8) (V >> 16);
+            pRam[A + 2] = (UINT8) (V >> 8); pRam[A + 3] = (UINT8) V;
+        }
+    };
+    auto   RBe32 = [&] (UINT64 A) -> UINT32 {
+        return InRam (A, 4) ? (UINT32) ((pRam[A] << 24) | (pRam[A + 1] << 16) | (pRam[A + 2] << 8) | pRam[A + 3]) : 0;
+    };
+
     switch (Sc) {
     case 1:                                               // exit(code)
         return false;
+
     case 3:                                               // read(fd, buf, len)
     case 4: {                                             // write(fd, buf, len)
         UINT64 Fd = Arg (0), Buf = Arg (1), Len = Arg (2);
-        long   N  = -1;
-        if (Buf <= RamSize && Buf + Len <= RamSize) {
-            N = (Sc == 4) ? (long) write ((int) Fd, pRam + Buf, (size_t) Len)
-                          : (long) read ((int) Fd, pRam + Buf, (size_t) Len);
-        }
-        pState->Reg[3] = (UINT64) N;                      // result in r2
-        return true;
+        if (!InRam (Buf, Len)) { return Fail (EFAULT); }
+        long N = (Sc == 4) ? (long) write ((int) Fd, pRam + Buf, (size_t) Len)
+                           : (long) read ((int) Fd, pRam + Buf, (size_t) Len);
+        return (N < 0) ? Fail (errno) : Ok ((UINT64) N);
     }
+
     case 5: {                                             // open(path, flags, mode)
         UINT64 PathA = Arg (0);
-        long   Fd    = -1;
-        // OpenBSD O_* flags are BSD-derived and match the host's, so they pass through directly.
-        if (PathA < RamSize) { Fd = (long) open ((char CONST *) (pRam + PathA), (int) Arg (1), (int) Arg (2)); }
-        pState->Reg[3] = (UINT64) Fd;
-        return true;
+        if (PathA >= RamSize) { return Fail (EFAULT); }
+        long Fd = (long) open ((char CONST *) (pRam + PathA), (int) Arg (1), (int) Arg (2));
+        return (Fd < 0) ? Fail (errno) : Ok ((UINT64) Fd);
     }
-    case 6:                                               // close(fd)
-        pState->Reg[3] = (UINT64) (long) close ((int) Arg (0));
-        return true;
-    case 20:                                              // getpid
-        pState->Reg[3] = (UINT64) (long) getpid ();
-        return true;
+
+    case 6: {                                             // close(fd)
+        long R = (long) close ((int) Arg (0));
+        return (R < 0) ? Fail (errno) : Ok (0);
+    }
+
+    case 17: {                                            // brk(addr) -> new break (or current if 0)
+        UINT64 Addr = Arg (0);
+        if (Addr == 0) { return Ok (g_BrkCur); }
+        if (Addr < g_BrkBase || Addr >= RamSize - 0x10000) { return Fail (ENOMEM); }
+        g_BrkCur = Addr;
+        return Ok (Addr);
+    }
+
+    case 20: return Ok ((UINT64) (long) getpid ());       // getpid
+    case 24: return Ok ((UINT64) (long) getuid ());       // getuid
+    case 25: return Ok ((UINT64) (long) geteuid ());      // geteuid
+    case 43: return Ok ((UINT64) (long) getegid ());      // getegid
+    case 47: return Ok ((UINT64) (long) getgid ());       // getgid
+    case 39: return Ok ((UINT64) (long) getppid ());      // getppid
+
+    case 36:                                              // sync(void)
+        sync ();
+        return Ok (0);
+
+    case 37: {                                            // kill(pid, sig) -- only allow self/own group
+        long R = (long) kill ((int) Arg (0), (int) Arg (1));
+        return (R < 0) ? Fail (errno) : Ok (0);
+    }
+
+    case 41: {                                            // dup(fd)
+        long R = (long) dup ((int) Arg (0));
+        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
+    }
+    case 90: {                                            // dup2(from, to)
+        long R = (long) dup2 ((int) Arg (0), (int) Arg (1));
+        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
+    }
+
+    case 92: {                                            // fcntl(fd, cmd, arg)
+        long R = (long) fcntl ((int) Arg (0), (int) Arg (1), (long) Arg (2));
+        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
+    }
+
+    case 199: {                                           // lseek(fd, pad, off_hi, off_lo, whence)
+        // OpenBSD m88k passes the 64-bit offset as a register pair after a padding word; the
+        // whence follows. r2=fd, r3=pad, r4:r5 = offset, r6 = whence.
+        UINT64 Off = ((UINT64) Arg (2) << 32) | (UINT32) Arg (3);
+        long long R = (long long) lseek ((int) Arg (0), (off_t) Off, (int) Arg (4));
+        if (R < 0) { return Fail (errno); }
+        // 64-bit result returns in r2:r3 (high:low).
+        pState->Reg[3] = (UINT64) (UINT32) ((UINT64) R & 0xffffffff);  // r3 = low
+        return Ok ((UINT64) (UINT32) ((UINT64) R >> 32));              // r2 = high
+    }
+
+    case 120:                                             // readv(fd, iov, iovcnt)
+    case 121: {                                           // writev(fd, iov, iovcnt)
+        UINT64 Fd = Arg (0), IovA = Arg (1), Cnt = Arg (2);
+        long Total = 0;
+        for (UINT64 I = 0; I < Cnt; I++) {
+            UINT64 Base = RBe32 (IovA + I * 8);
+            UINT64 Ln   = RBe32 (IovA + I * 8 + 4);
+            if (Ln == 0) { continue; }
+            if (!InRam (Base, Ln)) { return Fail (EFAULT); }
+            long N = (Sc == 121) ? (long) write ((int) Fd, pRam + Base, (size_t) Ln)
+                                 : (long) read ((int) Fd, pRam + Base, (size_t) Ln);
+            if (N < 0) { return (Total > 0) ? Ok ((UINT64) Total) : Fail (errno); }
+            Total += N;
+            if ((UINT64) N < Ln) { break; }
+        }
+        return Ok ((UINT64) Total);
+    }
+
+    case 116: {                                           // gettimeofday(tv, tz)
+        UINT64 Tv = Arg (0);
+        struct timeval Now;
+        gettimeofday (&Now, nullptr);
+        if (Tv != 0) {
+            WBe32 (Tv, (UINT32) Now.tv_sec);              // struct timeval { int32 tv_sec; int32 tv_usec }
+            WBe32 (Tv + 4, (UINT32) Now.tv_usec);
+        }
+        return Ok (0);
+    }
+
+    case 232: {                                           // clock_gettime(clk_id, tp)
+        UINT64 Tp = Arg (1);
+        struct timespec Ts;
+        clock_gettime (CLOCK_REALTIME, &Ts);
+        if (Tp != 0) {
+            WBe32 (Tp, (UINT32) Ts.tv_sec);              // struct timespec { int32 tv_sec; int32 tv_nsec }
+            WBe32 (Tp + 4, (UINT32) Ts.tv_nsec);
+        }
+        return Ok (0);
+    }
+
+    case 253: return Ok (0);                              // issetugid -> not set-uid/gid
+    case 60:  return Ok (0);                              // umask -> report previous mask 0 (no-op)
+    case 298: return Ok (0);                              // sched_yield
+    case 299: return Ok ((UINT64) (long) getpid ());      // getthrid -> the single thread id
+
+    // Signal + memory-protection calls a static binary issues at startup that a flat-RAM,
+    // single-threaded model can satisfy as a no-op success (carry clear, r2 = 0).
+    case 46:                                              // sigaction
+    case 48:                                              // sigprocmask
+    case 53:                                              // osigaltstack
+    case 288:                                             // sigaltstack
+    case 74:                                              // mprotect
+    case 75:                                              // madvise
+    case 73:                                              // munmap
+        return Ok (0);
+
+    case 54: {                                            // ioctl(fd, request, arg)
+        // The only ioctls a basic CLI binary issues are terminal queries (isatty -> TIOCGETA);
+        // report "not a tty" so output goes to the block path. ENOTTY keeps stdio happy.
+        return Fail (ENOTTY);
+    }
+
     default:
-        std::fprintf (stderr, "lcx: unhandled obsd-m88k syscall %llu\n", (unsigned long long) Sc);
-        return false;
+        // Unimplemented: return ENOSYS rather than killing the guest, so it can decide how to
+        // cope (most abort, but some probe-and-fall-back). Logged once-per-call for triage.
+        std::fprintf (stderr, "lcx: unhandled obsd-m88k syscall %llu (returning ENOSYS)\n",
+                      (unsigned long long) Sc);
+        return Fail (78);                                 // OpenBSD ENOSYS
     }
 }
 
@@ -254,6 +431,53 @@ DumpRegs (ArchSetup CONST &A, CPU_STATE CONST *pState)
         if (++Col % 4 == 0) { std::printf ("\n"); }
     }
     if (Col % 4 != 0) { std::printf ("\n"); }
+}
+
+// The host environment, for passing envp through to an OpenBSD/m88k guest. (An executable may
+// reference `environ` directly; macOS declares it for the main program image.)
+extern "C" char **environ;
+
+// Build the OpenBSD/m88k user-space entry stack ("uframe") near the top of RAM and return the guest
+// stack pointer. At process entry r31 points at argc, immediately followed by the argv[] pointer
+// vector (NULL-terminated), then the envp[] pointer vector (NULL-terminated); the argument and
+// environment strings are packed above the vectors. argc and every guest pointer are big-endian
+// 32-bit. (Mirrors the old run88 openbsd_m88k_setup_uframe.)
+static UINT64
+SetupObsdM88kStack (UINT8 *pRam, UINT64 RamSize, std::vector<std::string> CONST &Args, char **ppEnv)
+{
+    auto WBe32 = [&] (UINT64 A, UINT32 V) {
+        pRam[A] = (UINT8) (V >> 24); pRam[A + 1] = (UINT8) (V >> 16);
+        pRam[A + 2] = (UINT8) (V >> 8); pRam[A + 3] = (UINT8) V;
+    };
+    std::vector<char CONST *> Env;
+    for (char **p = ppEnv; p != nullptr && *p != nullptr; ++p) { Env.push_back (*p); }
+
+    // Pack the strings downward from a 16-aligned point just below the top of RAM.
+    UINT64 P = (RamSize - 16) & ~UINT64_C (15);
+    std::vector<UINT64> ArgAddr, EnvAddr;
+    for (std::string CONST &S : Args) {
+        P -= S.size () + 1;
+        std::memcpy (pRam + P, S.c_str (), S.size () + 1);
+        ArgAddr.push_back (P);
+    }
+    for (char CONST *e : Env) {
+        size_t L = std::strlen (e);
+        P -= L + 1;
+        std::memcpy (pRam + P, e, L + 1);
+        EnvAddr.push_back (P);
+    }
+
+    // The pointer vector -- argc, argv[0..], NULL, envp[0..], NULL -- sits below the strings with the
+    // stack pointer 16-aligned. The returned SP points at argc, exactly where m88k crt0 expects r31.
+    UINT64 NWords = 1 + Args.size () + 1 + Env.size () + 1;
+    UINT64 Sp = (P - NWords * 4) & ~UINT64_C (15);
+    UINT64 A  = Sp;
+    WBe32 (A, (UINT32) Args.size ()); A += 4;
+    for (UINT64 Ad : ArgAddr) { WBe32 (A, (UINT32) Ad); A += 4; }
+    WBe32 (A, 0); A += 4;
+    for (UINT64 Ad : EnvAddr) { WBe32 (A, (UINT32) Ad); A += 4; }
+    WBe32 (A, 0); A += 4;
+    return Sp;
 }
 
 // --- subcommands -----------------------------------------------------------
@@ -274,24 +498,72 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         std::printf ("lcx: cannot load backend '%s'\n", BackendPath (argc, argv, pArgv0).c_str ());
         return 2;
     }
-    static UINT8 Ram[65536];
+    // A user-space guest (an OpenBSD/m88k a.out) needs a real address space: text at a low base,
+    // a heap above bss, and a stack near the top. 64 MiB holds every binary in test/bin/m88k plus
+    // its stack and heap. (v20/6502 images use a fraction of this; the cost is one zeroing memset.)
+    static UINT8 Ram[64u * 1024 * 1024];
     std::memset (Ram, 0, sizeof (Ram));
     UINT64 Len = 0;
     if (!LoadImage (pImage, Ram, sizeof (Ram), &Len)) {
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
+    // --load aout: parse an OpenBSD/m88k a.out exec header (big-endian; mid=153=m88k) and lay the
+    // segments out per the magic:
+    //   ZMAGIC (0413): the header is the front of the text segment; the kernel maps the whole file
+    //                  at the text base (0x1000 on m88k -- so a_entry is the canonical 0x1020), with
+    //                  data following text and bss zeroed above.
+    //   OMAGIC/NMAGIC (0407/0410): impure; strip the 32-byte header and load text+data at base 0.
+    // The break (heap) starts at the end of bss in both cases.
+    UINT64 AoutEntry = ~(UINT64) 0;
+    if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
+        if (Len < 32) { std::printf ("lcx: a.out too small\n"); return 2; }
+        auto Be32 = [&] (UINT64 O) -> UINT32 {
+            return (UINT32) ((Ram[O] << 24) | (Ram[O + 1] << 16) | (Ram[O + 2] << 8) | Ram[O + 3]);
+        };
+        UINT32 MidMag = Be32 (0);
+        UINT32 Mid    = (MidMag >> 16) & 0x3ff;
+        UINT32 Magic  = MidMag & 0xffff;
+        UINT32 ATxt = Be32 (4), AData = Be32 (8), ABss = Be32 (12), AEntry = Be32 (20);
+        if (Mid != 153) { std::printf ("lcx: not an m88k a.out (mid=%u)\n", (unsigned) Mid); return 2; }
+        UINT64 Seg = (UINT64) ATxt + AData;
+        UINT64 TxtBase, BssEnd;
+        if (Magic == 0x10b) {                                // ZMAGIC: map whole file at the text base
+            TxtBase = 0x1000;
+            if (Len < Seg) { std::printf ("lcx: a.out truncated (text+data)\n"); return 2; }
+            if (TxtBase + Seg + ABss > sizeof (Ram)) { std::printf ("lcx: a.out too large for RAM\n"); return 2; }
+            std::memmove (Ram + TxtBase, Ram, (size_t) Seg);                  // header is front of text
+            std::memset (Ram, 0, (size_t) TxtBase);                          // NULL page below text
+            std::memset (Ram + TxtBase + Seg, 0, (size_t) (sizeof (Ram) - (TxtBase + Seg)));  // bss + rest
+            BssEnd = TxtBase + Seg + ABss;
+        } else {                                             // OMAGIC/NMAGIC: strip header, load at 0
+            TxtBase = 0;
+            if (32 + Seg > sizeof (Ram)) { std::printf ("lcx: a.out too large for RAM\n"); return 2; }
+            std::memmove (Ram, Ram + 32, (size_t) Seg);
+            std::memset (Ram + Seg, 0, (size_t) (sizeof (Ram) - Seg));
+            BssEnd = Seg + ABss;
+        }
+        AoutEntry = AEntry;
+        Len = TxtBase + Seg;
+        g_BrkBase = g_BrkCur = (BssEnd + 0xfff) & ~UINT64_C (0xfff);          // page-align the heap base
+        std::printf ("lcx: loaded m88k a.out (%s): text=0x%x data=0x%x bss=0x%x entry=0x%x base=0x%llx\n",
+                     Magic == 0x10b ? "ZMAGIC" : (Magic == 0x108 ? "NMAGIC" : "OMAGIC"),
+                     (unsigned) ATxt, (unsigned) AData, (unsigned) ABss, (unsigned) AEntry,
+                     (unsigned long long) TxtBase);
+    }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
     State.RamSize = sizeof (Ram);
     CHAR8 CONST *pArchName = Opt (argc, argv, "--arch", "v20");
-    ArchSetup A = MakeArch (pArchName, Ram, &State);
+    ArchSetup A = MakeArch (pArchName, Ram, sizeof (Ram), &State);
     if (A.pArch == nullptr) {
         std::printf ("lcx %s: could not build the '%s' architecture\n", pVerb, pArchName);
         pBackend->Release ();
         return 1;
     }
-    CPU_ADDR Entry = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
+    CPU_ADDR Entry = (AoutEntry != ~(UINT64) 0)
+                       ? (CPU_ADDR) AoutEntry
+                       : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     CPU_ADDR End   = (CPU_ADDR) Len;
     bool Cache = Flag (argc, argv, "--cache");
 
@@ -305,6 +577,26 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                 if (Idx < 32) { State.Reg[Idx] = (UINT64) std::strtoull (pEq + 1, nullptr, 0); }
             }
         }
+    }
+
+    // OpenBSD/m88k user-space entry state: build the argc/argv/envp stack frame and point the stack
+    // (r31) and link (r1) registers at it. Guest argv[0] is the image path; tokens after --args
+    // become argv[1..]. (Done after --reg so an explicit --reg can still override if needed.)
+    if (std::strcmp (Opt (argc, argv, "--abi", ""), "obsd-m88k") == 0) {
+        std::vector<std::string> GuestArgs;
+        GuestArgs.push_back (pImage);
+        bool After = false;
+        for (int I = 1; I < argc; I++) {
+            if (After) {
+                GuestArgs.push_back (argv[I]);
+            } else if (std::strcmp (argv[I], "--args") == 0) {
+                After = true;
+            }
+        }
+        UINT64 Sp = SetupObsdM88kStack (Ram, sizeof (Ram), GuestArgs, environ);
+        State.Reg[M88K_SP]   = Sp;        // r31 -> argc
+        State.Reg[M88K_LINK] = 0;         // r1: crt0 calls exit(), so the link is never returned through
+        if (g_BrkBase == 0) { g_BrkBase = g_BrkCur = ((UINT64) End + 0xfff) & ~UINT64_C (0xfff); }
     }
 
     std::printf ("lcx %s: %s, %llu bytes, %s%s\n", pVerb, pArchName,
@@ -397,7 +689,7 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
-    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, sizeof (Ram), &State);
     CPU_ARCH_INFO Info;
     std::memset (&Info, 0, sizeof (Info));
     A.pArch->GetInfo (&Info);
@@ -442,7 +734,7 @@ CmdDebug (int argc, char **argv, CHAR8 CONST *pArgv0)
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
     State.RamSize = sizeof (Ram);
-    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, sizeof (Ram), &State);
     Debugger Debugger (A.pArch, pBackend, Ram, sizeof (Ram), &State, 0, (CPU_ADDR) Len,
                          A.Regs, A.RegBytes, A.Flags);
     int Rc = Debugger.Repl ();
@@ -469,7 +761,7 @@ CmdAot (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
-    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, &State);
+    ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, sizeof (Ram), &State);
     CPU_ADDR Entry = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     LC_NATIVE_OPTIONS NOpt;
     CHAR8 CONST *pRes = Opt (argc, argv, "--result", nullptr);
@@ -689,7 +981,11 @@ private:
         return N[Pred];
     }
     static CHAR8 CONST *CastName (CPU_CAST Op) {
-        static CHAR8 CONST *N[] = { "trunc", "zext", "sext" };
+        // One entry per CPU_CAST value, in enum order. (Missing the float casts here previously read
+        // past the array end -- printing garbage like "P" for a reinterpret bitcast.)
+        static CHAR8 CONST *N[] = { "trunc", "zext", "sext",
+                                    "sitofp", "fptosi", "fpext", "fptrunc",
+                                    "bitcast.itof", "bitcast.ftoi" };
         return N[Op];
     }
     static CHAR8 CONST *FlagName (CPU_FLAG Flag) {
@@ -767,8 +1063,11 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                 Pos += 1;
                 continue;
             }
-            // Disassembly line: the instruction and each resolved operand.
-            std::printf ("0x%04llx: %-6s", (unsigned long long) Pos, D.pInsn->Name.c_str ());
+            // Disassembly line: the instruction and each resolved operand. A decoded entry is
+            // either a regular insn (pInsn) or a jump insn (pJump) -- print whichever was matched.
+            CHAR8 CONST *pName = (D.pInsn != nullptr) ? D.pInsn->Name.c_str ()
+                               : (D.pJump != nullptr) ? D.pJump->Name.c_str () : "?";
+            std::printf ("0x%04llx: %-6s", (unsigned long long) Pos, pName);
             for (auto CONST &Kv : D.Operands) {
                 Upcl::Operand CONST &Op = Kv.second;
                 if (Op.Kind == Upcl::Operand::Reg) {
@@ -779,11 +1078,17 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
             }
             std::printf ("   (%u byte(s))\n", D.Length);
 
-            // Translate the body with the decoded operands bound to their locations.
+            // Translate the body with the decoded operands bound to their locations. A jump insn
+            // keeps its body in Pre + Action (regular insns keep theirs in Semantics).
             RecordingEmitter Em;
             Upcl::Translator Tr (Layout, pArch, &Em, WordBits);
             for (auto CONST &Kv : D.Operands) { Upcl::Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
-            Tr.Emit (D.pInsn->Semantics);
+            if (D.pInsn != nullptr) {
+                Tr.Emit (D.pInsn->Semantics);
+            } else if (D.pJump != nullptr) {
+                Tr.Emit (D.pJump->Pre);
+                Tr.Emit (D.pJump->Action);
+            }
 
             Pos += D.Length;
         }
@@ -2115,7 +2420,7 @@ CmdShadow (int argc, char **argv, char *pArgv0)
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
     State.RamSize = sizeof (Ram);
-    ArchSetup A = MakeArch ("v20", Ram, &State);
+    ArchSetup A = MakeArch ("v20", Ram, sizeof (Ram), &State);
 
     ICpuCode *pCode = nullptr;
     HRESULT hr = GenerateShadowUnit (A.pArch, pBackend, 0, 0x100, &pCode);

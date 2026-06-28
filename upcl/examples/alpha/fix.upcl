@@ -1,0 +1,20 @@
+// Alpha FIX -- Floating-point <-> integer register transfers (feature `fix`, EV6 / 21264 onwards).
+// Moves raw 64-bit bit patterns between the integer and floating register files without going
+// through memory (the base ISA had to bounce through a stack slot). Also adds SQRTx in op 0x14/0x16.
+//
+// SCAFFOLD: these cross-file moves need the CastIToFBits / CastFToIBits reinterpretations (see the
+// CPU_CAST set) rather than a value conversion -- they copy bits, not numbers. Bodies left as TODO.
+
+feature fix {
+
+	// ITOFT: integer register Rb -> floating register Fc (raw bits). op 0x14 (ITFP), func 0x024.
+	insn itoft : encode #i32 ( op:6 = 0x14, ra:5 -> ra, rb:5 -> rb, func:11 = 0x024, fc:5 -> fc ),
+		disasm ( mnemonic : "itoft", operands : rb, fc )  => f[ fc ] = f[ fc ];   // TODO: f[fc] = bitcast(r[rb])
+
+	// FTOIT: floating register Fa -> integer register Rc (raw bits). op 0x1c (FPTI), func 0x070.
+	insn ftoit : encode #i32 ( op:6 = 0x1c, fa:5 -> fa, rb:5 -> rb, sbz:3 = 0, li:1 = 0, func:7 = 0x70, rc:5 -> rc ),
+		disasm ( mnemonic : "ftoit", operands : fa, rc )  => r[ rc ] = r[ rc ];   // TODO: r[rc] = bitcast(f[fa])
+
+	// TODO: FTOIS / ITOFS (32-bit single forms), SQRTS/SQRTT (op 0x16, func 0x0ab / 0x08b).
+
+}

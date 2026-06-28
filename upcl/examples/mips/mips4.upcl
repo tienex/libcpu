@@ -1,0 +1,16 @@
+// MIPS IV additions (feature `mips4`, R5000/R8000/R10000): the integer conditional moves and the
+// prefetch hint. (Release 6 replaced movz/movn with seleqz/selnez, so r6 models omit this feature.)
+
+feature mips4 {
+
+	// movz/movn: move rs into rd if rt is zero / non-zero, respectively (SPECIAL funct 0x0a/0x0b).
+	insn movz : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x0a ),
+		disasm ( mnemonic : "movz", operands : rd, rs, rt )  => r[ rd ] = ( r[ rt ] == 0 ) ? r[ rs ] : r[ rd ];
+	insn movn : encode #i32 ( op:6 = 0x00, rs:5 -> rs, rt:5 -> rt, rd:5 -> rd, sa:5 = 0, funct:6 = 0x0b ),
+		disasm ( mnemonic : "movn", operands : rd, rs, rt )  => r[ rd ] = ( r[ rt ] != 0 ) ? r[ rs ] : r[ rd ];
+
+	// pref: a cache-prefetch hint -- architecturally a no-op for an emulator.
+	insn pref : encode #i32 ( op:6 = 0x33, rs:5 -> rs, hint:5 -> rt, imm:16 -> imm ),
+		disasm ( mnemonic : "pref", operands : rt, imm, rs )  => r0 = r0;
+
+}

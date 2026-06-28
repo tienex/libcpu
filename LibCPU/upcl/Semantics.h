@@ -42,9 +42,11 @@ namespace Upcl {
 // the expression tree so casts, bit-fields and flag tests use the right size.
 class Value {
 public:
-    ICpuValue *V     = nullptr;
-    UINT32     Bits  = 0;
-    bool       Float = false;    // the value is an IEEE float (drives BinF*/CastF* selection)
+    ICpuValue *V      = nullptr;
+    UINT32     Bits   = 0;
+    bool       Float  = false;   // the value is an IEEE float (drives BinF*/CastF* selection)
+    bool       Signed = false;   // %S marks the value signed (drives sext widening + signed compare/div)
+    UINT32     Lanes  = 0;       // >0 => a packed SIMD vector of this many lanes (lane width = Bits/Lanes)
 };
 
 // A decoded operand: the storage a decoder operand (src/dst/...) resolved to. The location
@@ -111,6 +113,8 @@ private:
     Value EvalExpr (Expr *pExpr);
     Value EvalName (std::string CONST &Name);
     Value ReadOperand (Operand CONST &Op);   // read a decoded operand location
+    bool  TryConstIndex (Expr *pIdx, UINT64 *pVal) CONST; // a compile-time-constant register index
+    bool  ZeroWiredSlot (RegArray CONST &Arr, Expr *pIdx) CONST; // index resolves to a hardwired-0 reg
     Value MemAddress (Operand CONST &Op);     // the effective address of a memory operand
     Value EvalMember (Expr *pExpr);          // a.b  -> a sub-field of register a
     Value EvalCC (Expr *pExpr);              // %CC ( expr [, flags] )
@@ -132,6 +136,7 @@ private:
 
     // names -> storage
     void   WriteName (std::string CONST &Name, Value CONST &Rhs);
+    void   SetReservation (Value CONST &Addr);     // %LL: remember the reserved address + set LLbit
     UINT32 WidthOf (Expr *pExpr) CONST;            // a name/cast's static width (no emit)
     bool  FindSub (std::string CONST &Name, RegSub CONST **ppSub) CONST;
     bool  FindFlag (std::string CONST &Name, RegFlag CONST **ppFlag) CONST;

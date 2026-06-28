@@ -1,0 +1,46 @@
+// MIPS Coprocessor 1 -- IEEE floating point (feature `fpu`). The COP1 opcode is 0x11; the format
+// (fmt) lives in the rs field: 0x10 = S (single), 0x11 = D (double); the operation is in funct.
+// The data-transfer forms (mfc1/mtc1/...) select on rs instead. The 32 float registers share one
+// file (f0..f31); this models the double-precision (.d) arithmetic fully -- single-precision (.s)
+// follows the identical pattern and is noted where precision differs.
+//
+// SCAFFOLD: mfc1/mtc1 move raw bit patterns between GPR and FPR (CastF<->I reinterpretations, like
+// the Alpha FIX moves) -- bodies marked TODO. The arithmetic and load/store forms are complete.
+
+feature fpu {
+
+	// ---- FP loads / stores (I-type). Single = 32-bit, double = 64-bit. ----
+	insn lwc1 : encode #i32 ( op:6 = 0x31, rs:5 -> rs, ft:5 -> ft, imm:16 -> imm ),
+		disasm ( mnemonic : "lwc1", operands : ft, imm, rs )  => f[ ft ] = #f64 #i32 %M[ r[ rs ] + %S ( imm ) ];
+	insn ldc1 : encode #i32 ( op:6 = 0x35, rs:5 -> rs, ft:5 -> ft, imm:16 -> imm ),
+		disasm ( mnemonic : "ldc1", operands : ft, imm, rs )  => f[ ft ] = #f64 %M[ r[ rs ] + %S ( imm ) ];
+	insn swc1 : encode #i32 ( op:6 = 0x39, rs:5 -> rs, ft:5 -> ft, imm:16 -> imm ),
+		disasm ( mnemonic : "swc1", operands : ft, imm, rs )  => #i32 %M[ r[ rs ] + %S ( imm ) ] = f[ ft ];
+	insn sdc1 : encode #i32 ( op:6 = 0x3d, rs:5 -> rs, ft:5 -> ft, imm:16 -> imm ),
+		disasm ( mnemonic : "sdc1", operands : ft, imm, rs )  => #f64 %M[ r[ rs ] + %S ( imm ) ] = f[ ft ];
+
+	// ---- GPR <-> FPR transfers (COP1, selected by rs). Raw bit moves. ----
+	insn mfc1 : encode #i32 ( op:6 = 0x11, rs:5 = 0x00, rt:5 -> rt, fs:5 -> fs, z:11 = 0 ),
+		disasm ( mnemonic : "mfc1", operands : rt, fs )  => r[ rt ] = r[ rt ];   // TODO: r[rt] = sext32(bitcast f[fs])
+	insn mtc1 : encode #i32 ( op:6 = 0x11, rs:5 = 0x04, rt:5 -> rt, fs:5 -> fs, z:11 = 0 ),
+		disasm ( mnemonic : "mtc1", operands : rt, fs )  => f[ fs ] = f[ fs ];   // TODO: f[fs] = bitcast(low32 r[rt])
+
+	// ---- double-precision arithmetic (fmt = D = 0x11) ----
+	insn add_d : encode #i32 ( op:6 = 0x11, fmt:5 = 0x11, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x00 ),
+		disasm ( mnemonic : "add.d", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] + f[ ft ];
+	insn sub_d : encode #i32 ( op:6 = 0x11, fmt:5 = 0x11, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x01 ),
+		disasm ( mnemonic : "sub.d", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] - f[ ft ];
+	insn mul_d : encode #i32 ( op:6 = 0x11, fmt:5 = 0x11, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x02 ),
+		disasm ( mnemonic : "mul.d", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] * f[ ft ];
+	insn div_d : encode #i32 ( op:6 = 0x11, fmt:5 = 0x11, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x03 ),
+		disasm ( mnemonic : "div.d", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] / f[ ft ];
+	insn mov_d : encode #i32 ( op:6 = 0x11, fmt:5 = 0x11, ft:5 = 0, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x06 ),
+		disasm ( mnemonic : "mov.d", operands : fd, fs )  => f[ fd ] = f[ fs ];
+
+	// ---- single-precision arithmetic (fmt = S = 0x10) -- same ops, 32-bit operands. ----
+	insn add_s : encode #i32 ( op:6 = 0x11, fmt:5 = 0x10, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x00 ),
+		disasm ( mnemonic : "add.s", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] + f[ ft ];
+	insn mul_s : encode #i32 ( op:6 = 0x11, fmt:5 = 0x10, ft:5 -> ft, fs:5 -> fs, fd:5 -> fd, funct:6 = 0x02 ),
+		disasm ( mnemonic : "mul.s", operands : fd, fs, ft )  => f[ fd ] = f[ fs ] * f[ ft ];
+
+}
