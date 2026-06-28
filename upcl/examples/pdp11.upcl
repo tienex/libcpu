@@ -1,0 +1,152 @@
+// DEC PDP-11 -- the clean, orthogonal 16-bit minicomputer that fathered the VAX. Eight general
+// registers R0..R7 (R6 = SP, R7 = PC), little-endian, word-addressable with byte access. Every
+// operand is a uniform 6-bit specifier: mode (bits 5:3) + register (bits 2:0), giving eight
+// addressing modes -- the orthogonality that makes the PDP-11 a joy to model.
+//
+// SCOPE (first increment): register-direct (Rn), register-deferred (Rn), and indexed X(Rn)/PC-
+// relative modes are expressed here, for BOTH operands, via UPCL `addrmode`. The autoincrement
+// (Rn)+ and autodecrement -(Rn) modes MUTATE the base register as a side effect of the EA, which
+// the `addrmode` construct cannot yet carry -- they are the next increment (an addrmode pre/post
+// side-effect extension that will also serve the VAX and 68k).
+
+arch "pdp11" {
+
+	name "DEC PDP-11";
+
+	endian little;
+	byte_size 8;
+	word_size 16;
+	address_size 16;
+	float_size 32;
+
+	register_file {
+
+		// R0..R7. R6 is the stack pointer, R7 is the program counter; one group so the 6-bit
+		// operand specifier indexes all eight uniformly (and they gain R0..R7 group aliases).
+		group R {
+			[ 6 ** #i16 r?:0 ],          // r0 .. r5
+			[ #i16 sp ],                 // r6 = SP
+			[ #i16 pc -> %PC ]           // r7 = PC
+		}
+
+		// Processor status word; the condition codes occupy the low four bits:
+		// C (bit 0), V (bit 1), Z (bit 2), N (bit 3); T (trace) is bit 4.
+		group S {
+			[ #i16 psw -> %PSR #i16 explicit
+				( #i11 0 : #i1 T : #i1 N -> %N : #i1 Z -> %Z : #i1 V -> %V : #i1 C -> %C ) ]
+		}
+
+	}
+
+}
+
+decoder_operands [
+	#i16 src, #i16 dst,        // the resolved source / destination operands (register or memory)
+	#i16 imm,                  // an index / PC-relative extension word
+	#i8  boff,                 // branch instructions: signed 8-bit word offset
+	#i6  trapn                 // EMT/TRAP code; rts register
+];
+
+// ---------------------------------------------------------------------------
+// Effective-address modes. Two addrmodes (source uses sm/sr, destination uses dm/dr) so a double-
+// operand instruction can carry BOTH 6-bit specifiers in its one 16-bit word; each reads its index
+// extension word from the tail in order. mode==6/7 consume a 16-bit displacement.
+//   0 Rn   register direct      1 (Rn)  register deferred      6 X(Rn) indexed (reg==7 => PC-rel)
+// (autoincrement/decrement modes 2-5 and the deferred '@' modes 3/5/7 are the next increment.)
+// ---------------------------------------------------------------------------
+addrmode ea_src ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
+	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
+	sm == 1 && sr == 0 => mem [ r0 ] ;
+	sm == 1 && sr == 1 => mem [ r1 ] ;
+	sm == 1 && sr == 2 => mem [ r2 ] ;
+	sm == 1 && sr == 3 => mem [ r3 ] ;
+	sm == 1 && sr == 4 => mem [ r4 ] ;
+	sm == 1 && sr == 5 => mem [ r5 ] ;
+	sm == 1 && sr == 6 => mem [ sp ] ;
+	sm == 1 && sr == 7 => mem [ pc ] ;
+	sm == 6 && sr == 0 => mem [ r0 + disp ] ;
+	sm == 6 && sr == 1 => mem [ r1 + disp ] ;
+	sm == 6 && sr == 2 => mem [ r2 + disp ] ;
+	sm == 6 && sr == 3 => mem [ r3 + disp ] ;
+	sm == 6 && sr == 4 => mem [ r4 + disp ] ;
+	sm == 6 && sr == 5 => mem [ r5 + disp ] ;
+	sm == 6 && sr == 6 => mem [ sp + disp ] ;
+	sm == 6 && sr == 7 => mem [ pc + disp ] ;
+}
+addrmode ea_dst ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
+	dm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
+	dm == 1 && dr == 0 => mem [ r0 ] ;
+	dm == 1 && dr == 1 => mem [ r1 ] ;
+	dm == 1 && dr == 2 => mem [ r2 ] ;
+	dm == 1 && dr == 3 => mem [ r3 ] ;
+	dm == 1 && dr == 4 => mem [ r4 ] ;
+	dm == 1 && dr == 5 => mem [ r5 ] ;
+	dm == 1 && dr == 6 => mem [ sp ] ;
+	dm == 1 && dr == 7 => mem [ pc ] ;
+	dm == 6 && dr == 0 => mem [ r0 + disp ] ;
+	dm == 6 && dr == 1 => mem [ r1 + disp ] ;
+	dm == 6 && dr == 2 => mem [ r2 + disp ] ;
+	dm == 6 && dr == 3 => mem [ r3 + disp ] ;
+	dm == 6 && dr == 4 => mem [ r4 + disp ] ;
+	dm == 6 && dr == 5 => mem [ r5 + disp ] ;
+	dm == 6 && dr == 6 => mem [ sp + disp ] ;
+	dm == 6 && dr == 7 => mem [ pc + disp ] ;
+}
+
+// ---------------------------------------------------------------------------
+// Double-operand instructions (opcode bits 15:12): op:4, src-spec (sm:sr), dst-spec (dm:dr). dst =
+// dst <op> src; MOV copies, CMP/BIT only set the condition codes. %CC records the flags.
+// ---------------------------------------------------------------------------
+insn mov  : encode #i16 ( op:4 = 0x1, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "mov",  operands : src, dst )  => dst = %CC ( src );
+insn cmp  : encode #i16 ( op:4 = 0x2, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "cmp",  operands : src, dst )  => %CC ( src - dst );
+insn bit  : encode #i16 ( op:4 = 0x3, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "bit",  operands : src, dst )  => %CC ( dst & src );
+insn bic  : encode #i16 ( op:4 = 0x4, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "bic",  operands : src, dst )  => dst = %CC ( dst &~ src );
+insn bis  : encode #i16 ( op:4 = 0x5, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "bis",  operands : src, dst )  => dst = %CC ( dst | src );
+insn add  : encode #i16 ( op:4 = 0x6, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "add",  operands : src, dst )  => dst = %CC ( dst + src );
+insn sub  : encode #i16 ( op:4 = 0xe, sm:3, sr:3 -> src @ea_src, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "sub",  operands : src, dst )  => dst = %CC ( dst - src );
+
+// ---------------------------------------------------------------------------
+// Single-operand instructions (opcode bits 15:6): op:10, dst-spec (dm:dr).
+// ---------------------------------------------------------------------------
+insn clr  : encode #i16 ( op:10 = 0x028, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "clr",  operands : dst )  => dst = %CC ( 0 );
+insn com  : encode #i16 ( op:10 = 0x029, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "com",  operands : dst )  => dst = %CC ( ~ dst );
+insn inc  : encode #i16 ( op:10 = 0x02a, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "inc",  operands : dst )  => dst = %CC ( dst + 1 );
+insn dec  : encode #i16 ( op:10 = 0x02b, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "dec",  operands : dst )  => dst = %CC ( dst - 1 );
+insn neg  : encode #i16 ( op:10 = 0x02c, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "neg",  operands : dst )  => dst = %CC ( 0 - dst );
+insn tst  : encode #i16 ( op:10 = 0x02f, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "tst",  operands : dst )  => %CC ( dst );
+
+// ---------------------------------------------------------------------------
+// Branches (op:8, signed 8-bit word offset; target = pc + 2*offset). The PC already reads as the
+// next instruction. Conditions test the codes set by the preceding compare.
+// ---------------------------------------------------------------------------
+jump insn br  : type branch, encode #i16 ( op:8 = 0x01, boff:8 -> boff ),
+	disasm ( mnemonic : "br",  operands : boff )  { pc = pc + ( %S ( boff ) << 1 ); }
+jump insn bne : type branch, encode #i16 ( op:8 = 0x02, boff:8 -> boff ),
+	disasm ( mnemonic : "bne", operands : boff )  { pc = ( %Z == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn beq : type branch, encode #i16 ( op:8 = 0x03, boff:8 -> boff ),
+	disasm ( mnemonic : "beq", operands : boff )  { pc = ( %Z != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bmi : type branch, encode #i16 ( op:8 = 0x80, boff:8 -> boff ),
+	disasm ( mnemonic : "bmi", operands : boff )  { pc = ( %N != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bpl : type branch, encode #i16 ( op:8 = 0x81, boff:8 -> boff ),
+	disasm ( mnemonic : "bpl", operands : boff )  { pc = ( %N == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+
+// JMP and the trap family.
+jump insn jmp : type branch, encode #i16 ( op:10 = 0x001, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "jmp", operands : dst )  { pc = dst; }
+jump insn trap : type trap, encode #i16 ( op:8 = 0x88, trapn:8 -> trapn ),
+	disasm ( mnemonic : "trap", operands : trapn )  { @trap ( 0x22 ); }
+jump insn emt  : type trap, encode #i16 ( op:8 = 0x89, trapn:8 -> trapn ),
+	disasm ( mnemonic : "emt",  operands : trapn )  { @trap ( 0x18 ); }

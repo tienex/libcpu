@@ -1140,12 +1140,24 @@ Parser::ParseEncAlt ()
     }
     Expect (TokRParen, "to close the encoding field list");
 
-    // A field that follows an `@addrmode` operand is positioned in the byte tail, after that
-    // mode's variable-length displacement -- so it is NOT part of the fixed `#iN` opcode word.
-    bool PastAddrMode = false;
-    for (EncField &F : A->Fields) {
-        if (PastAddrMode) { F.Tail = true; }
-        if (!F.AddrMode.empty ()) { PastAddrMode = true; }
+    // Decide which fields live in the fixed opcode word and which are in the byte tail (read after
+    // any addressing-mode extension words). When the word width is known (`encode #iN`), a field is
+    // a tail field exactly when it starts BEYOND the word -- so all the selector sub-fields inside
+    // the word stay in it (e.g. the PDP-11's two 6-bit src/dst specifiers, sm:sr and dm:dr, in one
+    // 16-bit word), while a trailing immediate (x86's iw after ModR/M) falls into the tail. Without
+    // a declared word width, fall back to the legacy rule: a plain field after an @addrmode is tail.
+    if (A->WordBits != 0) {
+        UINT32 Off = 0;
+        for (EncField &F : A->Fields) {
+            if (Off >= A->WordBits) { F.Tail = true; }
+            Off += F.Width;
+        }
+    } else {
+        bool PastAddrMode = false;
+        for (EncField &F : A->Fields) {
+            if (PastAddrMode && F.AddrMode.empty ()) { F.Tail = true; }
+            if (!F.AddrMode.empty ()) { PastAddrMode = true; }
+        }
     }
 
     if (A->WordBits != 0 && A->WordFieldBits () != A->WordBits) {
