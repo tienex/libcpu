@@ -31,25 +31,15 @@ Translator::Bind (std::string CONST &Name, Value CONST &Val)
     m_Env[Name] = Val;
 }
 
-// Emit r[Index] += Delta -- the autoincrement/autodecrement register bump.
-void
-Translator::AdjustReg (UINT32 Index, INT32 Delta)
-{
-    RegPhys CONST &P = m_Layout.Phys[Index];
-    ComPtr<ICpuValue> V; m_pE->GetRegister (P.Index, P.Width, &V);
-    Value Cur = Pool (std::move (V), P.Width);
-    Value Nv  = Bin (BinAdd, Cur, Const (P.Width, (UINT64) (INT64) Delta));
-    m_pE->PutRegister (P.Index, Nv.V, P.Width, FALSE);
-}
-
 void
 Translator::BindOperand (std::string CONST &Name, Operand CONST &Op)
 {
     m_Operands[Name] = Op;
-    // Autodecrement -(Rn): adjust the base register BEFORE the EA is taken (so the operand reads the
-    // decremented address). Autoincrement (Rn)+: defer the bump until AFTER the body uses the operand.
-    if (Op.PreReg  != ~(UINT32) 0) { AdjustReg (Op.PreReg, Op.PreDelta); }
-    if (Op.PostReg != ~(UINT32) 0) { m_PostAdjust.push_back ({ Op.PostReg, Op.PostDelta }); }
+    // Autodecrement -(Rn): the `pre { }` block runs BEFORE the EA is taken (so the operand reads the
+    // decremented address). Autoincrement (Rn)+: defer the `post { }` block until AFTER the body uses
+    // the operand, so the base register is bumped exactly once regardless of read/write count.
+    if (Op.Pre  != nullptr) { for (Stmt *S : *Op.Pre) { EmitStmt (S); } }
+    if (Op.Post != nullptr) { m_PostBlocks.push_back (Op.Post); }
 }
 
 // ---- emitter helpers ------------------------------------------------------
@@ -884,10 +874,10 @@ Translator::Emit (std::vector<Stmt *> CONST &Body)
     for (Stmt *S : Body) {
         if (!EmitStmt (S)) { Ok = false; }
     }
-    // Flush addressing-mode post-increments ((Rn)+) AFTER the body has used the operands, so each
-    // base register is bumped exactly once regardless of how many times the operand was accessed.
-    for (auto CONST &PA : m_PostAdjust) { AdjustReg (PA.first, PA.second); }
-    m_PostAdjust.clear ();
+    // Run addressing-mode post { } blocks ((Rn)+) AFTER the body has used the operands, so each base
+    // register is bumped exactly once regardless of how many times the operand was accessed.
+    for (std::vector<Stmt *> CONST *Blk : m_PostBlocks) { for (Stmt *S : *Blk) { EmitStmt (S); } }
+    m_PostBlocks.clear ();
     return Ok;
 }
 

@@ -263,6 +263,22 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
                     char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) pOut->Disp);
                     Text += B;
                 }
+            } else if (!T.RegGroup.empty ()) {
+                // %REG[group, field]: the base is group <group>'s element selected by field <field>.
+                // Resolve via the group's positional alias (<group><N>), then fall back to a direct
+                // physical name -- yielding the base register's physical index.
+                UINT64 Idx = Fields.count (T.RegField) ? Fields.at (T.RegField) : 0;
+                std::string Name = T.RegGroup + std::to_string ((unsigned long long) Idx);
+                UINT32 Phys = ~(UINT32) 0;
+                auto P = m_pLayout->PhysIndex.find (Name);
+                if (P != m_pLayout->PhysIndex.end ()) { Phys = P->second; }
+                else { for (RegSub CONST &S : m_pLayout->Subs) { if (S.Name == Name) { Phys = S.Parent; break; } } }
+                if (Phys != ~(UINT32) 0) {
+                    if (NBases == 0) { pOut->Base1 = Phys; NBases++; }
+                    else if (NBases == 1) { pOut->Base2 = Phys; NBases++; }
+                    if (!Text.empty ()) { Text += "+"; }
+                    Text += Name;
+                }
             } else {
                 auto P = m_pLayout->PhysIndex.find (T.Reg);
                 if (P != m_pLayout->PhysIndex.end ()) {
@@ -274,15 +290,10 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
             }
         }
         pOut->MemText = Text;
-        // Autoincrement/decrement side effects: resolve the adjusted base register to its index.
-        if (!R->PreReg.empty ()) {
-            auto P = m_pLayout->PhysIndex.find (R->PreReg);
-            if (P != m_pLayout->PhysIndex.end ()) { pOut->PreReg = P->second; pOut->PreDelta = R->PreDelta; }
-        }
-        if (!R->PostReg.empty ()) {
-            auto P = m_pLayout->PhysIndex.find (R->PostReg);
-            if (P != m_pLayout->PhysIndex.end ()) { pOut->PostReg = P->second; pOut->PostDelta = R->PostDelta; }
-        }
+        // Autoincrement/decrement side-effect blocks: the translator runs pre { } before the EA and
+        // post { } after the operand is used (see Translator::BindOperand / Emit).
+        if (!R->Pre.empty ())  { pOut->Pre  = &R->Pre; }
+        if (!R->Post.empty ()) { pOut->Post = &R->Post; }
         return true;
     }
     return false;

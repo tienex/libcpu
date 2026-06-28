@@ -55,74 +55,44 @@ decoder_operands [
 // (the deferred '@' modes 3/5/7 are the next increment.)
 // ---------------------------------------------------------------------------
 addrmode ea_src ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
-	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
-	sm == 1 && sr == 0 => mem [ r0 ] ;
-	sm == 1 && sr == 1 => mem [ r1 ] ;
-	sm == 1 && sr == 2 => mem [ r2 ] ;
-	sm == 1 && sr == 3 => mem [ r3 ] ;
-	sm == 1 && sr == 4 => mem [ r4 ] ;
-	sm == 1 && sr == 5 => mem [ r5 ] ;
-	sm == 1 && sr == 6 => mem [ sp ] ;
-	sm == 1 && sr == 7 => mem [ pc ] ;
-	// (Rn)+ autoincrement: use the address, then bump the base by 2 (word).
-	sm == 2 && sr == 0 => mem [ r0 ] post ( r0 += 2 ) ;
-	sm == 2 && sr == 1 => mem [ r1 ] post ( r1 += 2 ) ;
-	sm == 2 && sr == 2 => mem [ r2 ] post ( r2 += 2 ) ;
-	sm == 2 && sr == 3 => mem [ r3 ] post ( r3 += 2 ) ;
-	sm == 2 && sr == 4 => mem [ r4 ] post ( r4 += 2 ) ;
-	sm == 2 && sr == 5 => mem [ r5 ] post ( r5 += 2 ) ;
-	sm == 2 && sr == 6 => mem [ sp ] post ( sp += 2 ) ;
-	sm == 2 && sr == 7 => mem [ pc ] post ( pc += 2 ) ;          // immediate #n: operand follows in-line
-	// -(Rn) autodecrement: bump the base down by 2 first, then use the address.
-	sm == 4 && sr == 0 => pre ( r0 -= 2 ) mem [ r0 ] ;
-	sm == 4 && sr == 1 => pre ( r1 -= 2 ) mem [ r1 ] ;
-	sm == 4 && sr == 2 => pre ( r2 -= 2 ) mem [ r2 ] ;
-	sm == 4 && sr == 3 => pre ( r3 -= 2 ) mem [ r3 ] ;
-	sm == 4 && sr == 4 => pre ( r4 -= 2 ) mem [ r4 ] ;
-	sm == 4 && sr == 5 => pre ( r5 -= 2 ) mem [ r5 ] ;
-	sm == 4 && sr == 6 => pre ( sp -= 2 ) mem [ sp ] ;
-	sm == 6 && sr == 0 => mem [ r0 + disp ] ;
-	sm == 6 && sr == 1 => mem [ r1 + disp ] ;
-	sm == 6 && sr == 2 => mem [ r2 + disp ] ;
-	sm == 6 && sr == 3 => mem [ r3 + disp ] ;
-	sm == 6 && sr == 4 => mem [ r4 + disp ] ;
-	sm == 6 && sr == 5 => mem [ r5 + disp ] ;
-	sm == 6 && sr == 6 => mem [ sp + disp ] ;
-	sm == 6 && sr == 7 => mem [ pc + disp ] ;
+	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;        // Rn  register direct
+	sm == 1 => %M [ %REG[ R, sr ] ] ;                          // (Rn)  register deferred
+	sm == 2 && sr == 0 => %M [ %REG[ R, sr ] ] post { r0 += 2; } ;   // (Rn)+ autoincrement
+	sm == 2 && sr == 1 => %M [ %REG[ R, sr ] ] post { r1 += 2; } ;
+	sm == 2 && sr == 2 => %M [ %REG[ R, sr ] ] post { r2 += 2; } ;
+	sm == 2 && sr == 3 => %M [ %REG[ R, sr ] ] post { r3 += 2; } ;
+	sm == 2 && sr == 4 => %M [ %REG[ R, sr ] ] post { r4 += 2; } ;
+	sm == 2 && sr == 5 => %M [ %REG[ R, sr ] ] post { r5 += 2; } ;
+	sm == 2 && sr == 6 => %M [ %REG[ R, sr ] ] post { sp += 2; } ;
+	sm == 2 && sr == 7 => %M [ %REG[ R, sr ] ] post { pc += 2; } ;
+	sm == 4 && sr == 0 => pre { r0 -= 2; } %M [ %REG[ R, sr ] ] ;    // -(Rn) autodecrement
+	sm == 4 && sr == 1 => pre { r1 -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 4 && sr == 2 => pre { r2 -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 4 && sr == 3 => pre { r3 -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 4 && sr == 4 => pre { r4 -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 4 && sr == 5 => pre { r5 -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 4 && sr == 6 => pre { sp -= 2; } %M [ %REG[ R, sr ] ] ;
+	sm == 6 => %M [ %REG[ R, sr ] + disp ] ;                   // X(Rn) indexed (sr==7 => PC-relative)
 }
 addrmode ea_dst ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
 	dm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
-	dm == 1 && dr == 0 => mem [ r0 ] ;
-	dm == 1 && dr == 1 => mem [ r1 ] ;
-	dm == 1 && dr == 2 => mem [ r2 ] ;
-	dm == 1 && dr == 3 => mem [ r3 ] ;
-	dm == 1 && dr == 4 => mem [ r4 ] ;
-	dm == 1 && dr == 5 => mem [ r5 ] ;
-	dm == 1 && dr == 6 => mem [ sp ] ;
-	dm == 1 && dr == 7 => mem [ pc ] ;
-	dm == 2 && dr == 0 => mem [ r0 ] post ( r0 += 2 ) ;
-	dm == 2 && dr == 1 => mem [ r1 ] post ( r1 += 2 ) ;
-	dm == 2 && dr == 2 => mem [ r2 ] post ( r2 += 2 ) ;
-	dm == 2 && dr == 3 => mem [ r3 ] post ( r3 += 2 ) ;
-	dm == 2 && dr == 4 => mem [ r4 ] post ( r4 += 2 ) ;
-	dm == 2 && dr == 5 => mem [ r5 ] post ( r5 += 2 ) ;
-	dm == 2 && dr == 6 => mem [ sp ] post ( sp += 2 ) ;
-	dm == 2 && dr == 7 => mem [ pc ] post ( pc += 2 ) ;
-	dm == 4 && dr == 0 => pre ( r0 -= 2 ) mem [ r0 ] ;
-	dm == 4 && dr == 1 => pre ( r1 -= 2 ) mem [ r1 ] ;
-	dm == 4 && dr == 2 => pre ( r2 -= 2 ) mem [ r2 ] ;
-	dm == 4 && dr == 3 => pre ( r3 -= 2 ) mem [ r3 ] ;
-	dm == 4 && dr == 4 => pre ( r4 -= 2 ) mem [ r4 ] ;
-	dm == 4 && dr == 5 => pre ( r5 -= 2 ) mem [ r5 ] ;
-	dm == 4 && dr == 6 => pre ( sp -= 2 ) mem [ sp ] ;
-	dm == 6 && dr == 0 => mem [ r0 + disp ] ;
-	dm == 6 && dr == 1 => mem [ r1 + disp ] ;
-	dm == 6 && dr == 2 => mem [ r2 + disp ] ;
-	dm == 6 && dr == 3 => mem [ r3 + disp ] ;
-	dm == 6 && dr == 4 => mem [ r4 + disp ] ;
-	dm == 6 && dr == 5 => mem [ r5 + disp ] ;
-	dm == 6 && dr == 6 => mem [ sp + disp ] ;
-	dm == 6 && dr == 7 => mem [ pc + disp ] ;
+	dm == 1 => %M [ %REG[ R, dr ] ] ;
+	dm == 2 && dr == 0 => %M [ %REG[ R, dr ] ] post { r0 += 2; } ;
+	dm == 2 && dr == 1 => %M [ %REG[ R, dr ] ] post { r1 += 2; } ;
+	dm == 2 && dr == 2 => %M [ %REG[ R, dr ] ] post { r2 += 2; } ;
+	dm == 2 && dr == 3 => %M [ %REG[ R, dr ] ] post { r3 += 2; } ;
+	dm == 2 && dr == 4 => %M [ %REG[ R, dr ] ] post { r4 += 2; } ;
+	dm == 2 && dr == 5 => %M [ %REG[ R, dr ] ] post { r5 += 2; } ;
+	dm == 2 && dr == 6 => %M [ %REG[ R, dr ] ] post { sp += 2; } ;
+	dm == 2 && dr == 7 => %M [ %REG[ R, dr ] ] post { pc += 2; } ;
+	dm == 4 && dr == 0 => pre { r0 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 1 => pre { r1 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 2 => pre { r2 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 3 => pre { r3 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 4 => pre { r4 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 5 => pre { r5 -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 4 && dr == 6 => pre { sp -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 6 => %M [ %REG[ R, dr ] + disp ] ;
 }
 
 // ---------------------------------------------------------------------------

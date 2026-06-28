@@ -1271,16 +1271,8 @@ Parser::ParseAddrRule ()
     if (AtKeyword ("default")) { Advance (); }
     else { R->Cond = ParseExpr (0); }
     if (Accept (TokAssign)) { Accept (TokGt); }     // the '=>' arrow
-    // `pre ( Rn -= N )` -- autodecrement applied before the effective address is taken.
-    if (AtKeyword ("pre")) {
-        Advance (); Expect (TokLParen, "after 'pre'");
-        if (m_Cur.Kind == TokIdent) { R->PreReg = m_Cur.Text; Advance (); }
-        bool Neg = (m_Cur.Kind == TokMinusEq);
-        if (m_Cur.Kind == TokPlusEq || m_Cur.Kind == TokMinusEq) { Advance (); }
-        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected '+=' or '-=' in pre(...)"); }
-        if (m_Cur.Kind == TokInt) { R->PreDelta = (INT32) (Neg ? -(INT64) m_Cur.Int : (INT64) m_Cur.Int); Advance (); }
-        Expect (TokRParen, "to close pre(...)");
-    }
+    // `pre { ... }` -- statements run before the effective address is taken (autodecrement -(Rn)).
+    if (AtKeyword ("pre")) { Advance (); ParseBlock (&R->Pre); }
     if (AtKeyword ("reg")) {
         Advance ();
         R->IsReg = true;
@@ -1289,12 +1281,23 @@ Parser::ParseAddrRule ()
             do { if (m_Cur.Kind == TokIdent) { R->RegMap.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
         }
         Expect (TokRBracket, "to close the register list");
-    } else if (AtKeyword ("mem")) {
+    } else if (AtKeyword ("mem") || (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM"))) {
+        // The operand is a MEMORY cell at the address that follows. Spelled `%M[..]` (consistent with
+        // memory access elsewhere) or the legacy `mem[..]`; either way it declares the operand's
+        // LOCATION -- the actual load/store happens when the instruction body uses the operand.
         Advance ();
         Expect (TokLBracket, "to open the address");
         do {
             AddrTerm T;
-            if (m_Cur.Kind == TokIdent) {
+            if (m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {        // %REG[ group, field ]
+                Advance ();
+                Expect (TokLBracket, "after %REG");
+                if (m_Cur.Kind == TokIdent) { T.RegGroup = m_Cur.Text; Advance (); }
+                Expect (TokComma, "in %REG[group, field]");
+                if (m_Cur.Kind == TokIdent) { T.RegField = m_Cur.Text; Advance (); }
+                Expect (TokRBracket, "to close %REG[...]");
+                R->Mem.push_back (T);
+            } else if (m_Cur.Kind == TokIdent) {
                 std::string Id = m_Cur.Text;
                 Advance ();
                 if (Id == "disp")        { T.Disp = true; T.DispBits = 0; }
@@ -1308,16 +1311,8 @@ Parser::ParseAddrRule ()
     } else {
         m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected 'reg' or 'mem' in an addrmode rule");
     }
-    // `post ( Rn += N )` -- autoincrement applied after the operand is used.
-    if (AtKeyword ("post")) {
-        Advance (); Expect (TokLParen, "after 'post'");
-        if (m_Cur.Kind == TokIdent) { R->PostReg = m_Cur.Text; Advance (); }
-        bool Neg = (m_Cur.Kind == TokMinusEq);
-        if (m_Cur.Kind == TokPlusEq || m_Cur.Kind == TokMinusEq) { Advance (); }
-        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected '+=' or '-=' in post(...)"); }
-        if (m_Cur.Kind == TokInt) { R->PostDelta = (INT32) (Neg ? -(INT64) m_Cur.Int : (INT64) m_Cur.Int); Advance (); }
-        Expect (TokRParen, "to close post(...)");
-    }
+    // `post { ... }` -- statements run after the operand is used (autoincrement (Rn)+).
+    if (AtKeyword ("post")) { Advance (); ParseBlock (&R->Post); }
     Expect (TokSemi, "after an addrmode rule");
     return R;
 }

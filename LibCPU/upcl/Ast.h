@@ -183,9 +183,14 @@ public:
 // displacement (bare `disp` = the default-size clause, or `disp8` / `disp16` fixed).
 class AddrTerm {
 public:
-    std::string Reg;     // a base register name ("" if a displacement term)
+    std::string Reg;     // a base register name ("" if a displacement / indexed term)
     bool        Disp = false;   // a displacement term
     UINT32      DispBits = 0;    // 0 = the addrmode's default disp clause; else fixed (8/16)
+    // A FIELD-INDEXED base register: `%REG[ <group>, <field> ]` -- the base is group <group>'s element
+    // selected at decode by the value of decoder field <field>. Collapses one rule per register into
+    // one (the PDP-11's `%M[ %REG[R, dr] + disp ]` covers all eight registers).
+    std::string RegGroup;       // "" if not an indexed term
+    std::string RegField;       // the decoder field that selects the register within the group
 };
 class AddrRule {
 public:
@@ -194,13 +199,12 @@ public:
     bool                     IsReg = false;
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
-    // Side effects on the base register: `pre ( Rn -= N )` is applied BEFORE the EA is taken
-    // (autodecrement -(Rn)); `post ( Rn += N )` AFTER the operand is used (autoincrement (Rn)+).
-    std::string              PreReg;             // "" = none
-    INT32                    PreDelta = 0;
-    std::string              PostReg;            // "" = none
-    INT32                    PostDelta = 0;
-    ~AddrRule () { delete Cond; }
+    // Side-effect blocks: `pre { ... }` runs BEFORE the effective address is taken (autodecrement
+    // -(Rn)); `post { ... }` runs AFTER the operand is used (autoincrement (Rn)+). Statement blocks,
+    // so a mode can do any register bookkeeping (a simple `Rn += 2`, or more for richer modes).
+    std::vector<Stmt *>      Pre;                // owned
+    std::vector<Stmt *>      Post;               // owned
+    ~AddrRule () { delete Cond; for (Stmt *S : Pre) { delete S; } for (Stmt *S : Post) { delete S; } }
 };
 class AddrMode {
 public:
