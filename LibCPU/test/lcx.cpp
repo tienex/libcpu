@@ -1011,15 +1011,40 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
     bool Emit    = pVerb != nullptr && std::strcmp (pVerb, "emit") == 0;
     bool Decode  = pVerb != nullptr && std::strcmp (pVerb, "decode") == 0;
     bool Gen     = pVerb != nullptr && std::strcmp (pVerb, "gen") == 0;
-    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit && !Decode && !Gen)) {
+    bool MmuV    = pVerb != nullptr && std::strcmp (pVerb, "mmu") == 0;
+    if (pFile == nullptr || (!Check && !Produce && !Lex && !Emit && !Decode && !Gen && !MmuV)) {
         std::printf ("usage: lcx upcl check   <file.upcl>            validate + summarise\n"
                      "       lcx upcl produce <file.upcl>            build the frontend + round-trip its encodings\n"
                      "       lcx upcl lex     <file.upcl>            dump the token stream (lexer development aid)\n"
                      "       lcx upcl emit    <file.upcl> <insn>     translate one instruction body to emitter SSA\n"
                      "       lcx upcl decode  <file.upcl> <bytes..>  decode a byte stream + translate each insn\n"
+                     "       lcx upcl mmu     <file.upcl>            translate the MMU page-table walk to SSA\n"
                      "       lcx upcl gen     <file.upcl> <factory> [cpu]   generate a C++ frontend (to stdout)\n"
                      "  (to execute a program: lcx run|translate <image> --arch upcl:<file.upcl>)\n");
         return 2;
+    }
+    if (MmuV) {
+        Upcl::SourceManager Sm;
+        Upcl::Module *pMod = UpclParse (pFile, Sm);
+        if (pMod == nullptr || pMod->Archs.empty ()) { return 1; }
+        Upcl::Arch *pArch = pMod->Archs[0];
+        if (pArch->Mmu == nullptr) { std::printf ("lcx upcl mmu: arch '%s' has no mmu { } block\n", pArch->Name.c_str ()); return 1; }
+        Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
+        UINT32 WordBits = pArch->WordSize ? pArch->WordSize : 32;
+        RecordingEmitter Em;
+        Upcl::Translator Tr (Layout, pArch, &Em, WordBits);
+        std::printf ("mmu translate (page_size %u):\n", pArch->Mmu->PageSize);
+        std::vector<ComPtr<ICpuValue>> Inputs;
+        for (Upcl::DecoderOperand *P : pArch->Mmu->Params) {
+            UINT32 Bits = (P->VType != nullptr) ? P->VType->Width : WordBits;
+            ComPtr<ICpuValue> V (Em.Input (P->Name.c_str (), Bits));
+            Upcl::Value Bound; Bound.V = V.Get (); Bound.Bits = Bits;
+            Tr.Bind (P->Name, Bound);
+            Inputs.push_back (std::move (V));
+        }
+        bool Ok = Tr.Emit (pArch->Mmu->Body);
+        if (!Ok) { std::printf ("  ; (some statements not translated)\n"); }
+        return 0;
     }
     if (Gen) {
         CHAR8 CONST *pCreate = Positional (argc, argv, 2);

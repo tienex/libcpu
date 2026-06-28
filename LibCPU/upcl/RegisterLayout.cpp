@@ -90,6 +90,12 @@ ReservationBitName ()
 }
 
 CHAR8 CONST *
+MmuResultName ()
+{
+    return "__mmu_pa";       // the physical address the MMU table-walk (%PA) produces
+}
+
+CHAR8 CONST *
 ReservationAddrName ()
 {
     return "__lladdr";
@@ -216,6 +222,18 @@ BuildRegisterLayout (Arch *pArch)
         Adr.Width = AddrW;
         Layout.PhysIndex[Adr.Name] = Adr.Index;
         Layout.Phys.push_back (Adr);
+    }
+
+    // Synthesise the MMU translation-result register when the arch describes an mmu { } -- the
+    // table-walk assigns the physical address to %PA, which libcpu's TLB reads to install the entry.
+    if (pArch->Mmu != nullptr) {
+        UINT32 AddrW = pArch->AddressSize ? pArch->AddressSize : (pArch->WordSize ? pArch->WordSize : 32);
+        RegPhys Pa;
+        Pa.Name  = MmuResultName ();
+        Pa.Index = (UINT32) Layout.Phys.size ();
+        Pa.Width = AddrW;
+        Layout.PhysIndex[Pa.Name] = Pa.Index;
+        Layout.Phys.push_back (Pa);
     }
 
     return Layout;

@@ -58,6 +58,7 @@ private:
 
     // old .def register_file: register_file { group <id> { [ <reg_decl> ], ... } ... }
     void        ParseRegisterFile (Arch *pArch);
+    void        ParseMmu (Arch *pArch);            // `mmu { page_size N; translate(...) { ... } }`
     Group      *ParseGroup ();
     RegDecl    *ParseRegDecl ();                  // `[ (e **)? <type> <name> ( -> bind | <- alias )? ]`
     RegBinding *ParseRegBinding ();               // after `->` / `<-`

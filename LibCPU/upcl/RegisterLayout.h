@@ -102,6 +102,7 @@ public:
 // when the description actually uses %LL / %SC, so an arch that never does is unchanged.
 CHAR8 CONST *ReservationBitName ();    // the LLbit register name
 CHAR8 CONST *ReservationAddrName ();   // the reserved-address register name
+CHAR8 CONST *MmuResultName ();         // the MMU translation result (%PA) register name
 
 // True if any instruction body in pArch uses an interlocked memory access (%LL or %SC).
 bool ArchUsesInterlock (Arch *pArch);

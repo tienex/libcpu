@@ -536,6 +536,23 @@ public:
     }
 };
 
+// The memory-management unit description: how the architecture translates a virtual address to a
+// physical one. `page_size` is the granularity libcpu's internal TLB caches at; `translate(...)` is
+// the hardware table-walk (the TLB-refill handler) -- it reads page-table entries from PHYSICAL
+// memory (%PM[..]), checks validity/protection, assigns the result to %PA, and raises @fault(vec)
+// on a translation fault. libcpu provides the TLB; this expresses what fills it.
+class Mmu {
+public:
+    SRC_LOC                       Loc = 0;
+    UINT32                        PageSize = 0;   // TLB page granularity in bytes
+    std::vector<DecoderOperand *> Params;         // translate(...) parameters (va, acc, ...) -- owned
+    std::vector<Stmt *>           Body;           // the table-walk statements -- owned
+    ~Mmu () {
+        for (DecoderOperand *P : Params) { delete P; }
+        for (Stmt *S : Body) { delete S; }
+    }
+};
+
 class Arch {
 public:
     std::string              Name;          // arch "<name>"
@@ -552,6 +569,7 @@ public:
                                           //   0 shift = a flat hexadecimal address (the default).
     std::vector<Reg>         Registers;     // new-syntax flat register list
     RegisterFile            *RegFile = nullptr;  // old-syntax register_file (owned)
+    Mmu                     *Mmu = nullptr;  // optional MMU description (mmu { ... }) (owned)
     std::vector<Feature>     Features;       // declared ISA features (features { ... })
     std::vector<Cpu *>       Cpus;           // CPU models (cpu "..." { ... })
     std::vector<Format *>    Formats;
@@ -567,6 +585,7 @@ public:
 
     ~Arch () {
         delete RegFile;
+        delete Mmu;
         for (Cpu *C : Cpus) { delete C; }
         for (Format *F : Formats) { delete F; }
         for (Insn *I : Insns) { delete I; }

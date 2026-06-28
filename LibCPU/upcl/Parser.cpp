@@ -244,7 +244,9 @@ Parser::ParsePrimary ()
             Expect (TokRParen, "to close the augment");
             return E;
         }
-        if (Name == "M" || Name == "MEM") {
+        if (Name == "M" || Name == "MEM" || Name == "PM") {
+            // %PM[addr] is a PHYSICAL (untranslated) memory access -- used by the MMU table-walk to
+            // read page-table entries; in the flat model it lowers to the same Load as %M.
             return ParseMemRef (Loc, nullptr);
         }
         if (Name == "LL") {                                 // %LL[addr] -- a load-linked read
@@ -386,9 +388,9 @@ Parser::ParsePrefix ()
     if (K == TokType) {
         SRC_LOC Loc = m_Cur.Loc;
         Type   *T   = ParseType ();
-        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM")) {
+        if (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM" || m_Cur.Text == "PM")) {
             Advance ();
-            return ParsePostfix (ParseMemRef (Loc, T));     // typed memory reference
+            return ParsePostfix (ParseMemRef (Loc, T));     // typed memory reference (%M / %PM)
         }
         if (m_Cur.Kind == TokMeta && m_Cur.Text == "LL") {  // typed load-linked: #t %LL[addr]
             Advance ();
@@ -1288,7 +1290,48 @@ Parser::ParseAddrRule ()
     return R;
 }
 
-// `macro <id> ( <params> ) : <stmt> ;`  |  `macro <id> ( <params> ) { body }`.
+// `mmu { page_size <N>; translate ( <#type name>, ... ) { <walk> } }` -- the MMU description: the
+// page granularity for libcpu's internal TLB, and the table-walk that fills it.
+void
+Parser::ParseMmu (Arch *pArch)
+{
+    Advance ();                                     // 'mmu'
+    Mmu *M = new Mmu ();
+    M->Loc = m_Cur.Loc;
+    Expect (TokLBrace, "after 'mmu'");
+    while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
+        if (AtKeyword ("page_size")) {
+            Advance ();
+            if (m_Cur.Kind == TokInt) { M->PageSize = (UINT32) m_Cur.Int; Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a page size (bytes)"); }
+            Expect (TokSemi, "after page_size");
+        } else if (AtKeyword ("translate")) {
+            Advance ();
+            Expect (TokLParen, "after 'translate'");
+            if (m_Cur.Kind != TokRParen) {
+                do {
+                    DecoderOperand *P = new DecoderOperand ();
+                    P->Loc = m_Cur.Loc;
+                    if (m_Cur.Kind == TokType) { P->VType = ParseType (); }
+                    if (m_Cur.Kind == TokIdent) { P->Name = m_Cur.Text; Advance (); }
+                    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a translate parameter name"); }
+                    M->Params.push_back (P);
+                } while (Accept (TokComma));
+            }
+            Expect (TokRParen, "to close translate(...)");
+            if (m_Cur.Kind == TokLBrace) { ParseBlock (&M->Body); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected '{' for the translate body"); }
+        } else {
+            std::string Msg = std::string ("expected 'page_size' or 'translate' in mmu, found ") + TokenName (m_Cur.Kind);
+            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
+            break;
+        }
+    }
+    Expect (TokRBrace, "to close 'mmu { ... }'");
+    delete pArch->Mmu;
+    pArch->Mmu = M;
+}
+
 void
 Parser::ParseMacro (Arch *pArch)
 {
@@ -1813,6 +1856,8 @@ Parser::ParseToplevel (Module *M)
             ParseAddrMode (M->Archs.back ());
         } else if (AtKeyword ("address_display")) {
             ParseAddressDisplay (M->Archs.back ());
+        } else if (AtKeyword ("mmu")) {
+            ParseMmu (M->Archs.back ());                 // MMU description (page-table walk)
         } else if (AtKeyword ("macro")) {
             ParseMacro (M->Archs.back ());
         } else if (AtKeyword ("jump")) {

@@ -1088,6 +1088,9 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         return;
 
     case ExprMeta:
+        // %PA = ... is the MMU table-walk's output: store the physical address into the synthesised
+        // result register that libcpu's TLB reads to install the translation.
+        if (pLhs->Name == "PA") { WriteName (MmuResultName (), Rhs); return; }
         // A meta-flag write (%C/%Z/%N/%V = ...) is a real flag write, so route it through
         // WriteName, which resolves flags (FindFlag -> SetFlagBit) and falls back to an env
         // local for names that are neither register nor flag -- preserving %result and other
@@ -1225,7 +1228,8 @@ Translator::EmitMacroStmt (Expr *pCall)
 {
     // @trap ( vector ) -- a builtin: record the vector and trap to the host (a software
     // interrupt, or HLT's wait-on-interrupt). Emitted via the syscall capability.
-    if (pCall->Name == "trap") {
+    // @fault ( vector ) is the MMU's translation-fault flavour -- same trap/resume mechanism.
+    if (pCall->Name == "trap" || pCall->Name == "fault") {
         ICpuSyscallEmitter *pSys = nullptr;
         if (SUCCEEDED (m_pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
             UINT64 Vec = 0;

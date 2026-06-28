@@ -1,0 +1,58 @@
+// A demonstration of UPCL expressing an MMU's inner workings: a classic two-level 32-bit paged
+// translation. libcpu provides the TLB internally (caching virtual->physical at `page_size`
+// granularity); this description is the hardware table-walk that fills it on a miss.
+//
+//   virtual address:  [31:22] level-1 index | [21:12] level-2 index | [11:0] page offset
+//   each PTE is 4 bytes:  bit 0 = present, bit 1 = writable, [31:12] = next-level / frame base
+//   PTBR (a control register) holds the physical base of the level-1 page table.
+
+arch "mmu32" {
+
+	name "UPCL two-level paged MMU demonstration";
+
+	endian big;
+	byte_size 8;
+	word_size 32;
+	address_size 32;
+	float_size 32;
+
+	register_file {
+		group R {
+			[ #i32 r0 <- 0 ],
+			[ 31 ** #i32 r?:1 ]
+		}
+		group S {
+			[ #i32 pc   -> %PC ],
+			[ #i32 npc  -> %NPC ],
+			[ #i32 ptbr ]                 // page-table base register (level-1 table, physical)
+		}
+		group T : [ #i32 trapno ];
+	}
+
+}
+
+// The MMU. translate() takes the virtual address `va` and the access kind `acc` (0=read, 1=write,
+// 2=execute); it reads the two page-table entries from PHYSICAL memory (%PM -- untranslated, so the
+// walk itself never recurses through the TLB), checks present/writable, raises @fault(14) (a page
+// fault) on a violation, and assigns the resulting physical address to %PA. libcpu's internal TLB
+// caches the %PA result keyed on va's page, so translate only runs on a TLB miss.
+mmu {
+	page_size 4096;
+
+	translate ( #i32 va, #i2 acc ) {
+		// level 1: index by va[31:22], scaled by 4 (PTE size), off the page-table base.
+		#i32 l1e = #i32 %PM[ ptbr + ( ( va >> 22 ) << 2 ) ];
+		if ( ( l1e & 1 ) == 0 ) { trapno = 14; @fault ( 14 ); }
+
+		// level 2: index by va[21:12] off the level-1 entry's frame base.
+		#i32 l2e = #i32 %PM[ ( l1e & ~ 0xfff ) + ( ( ( va >> 12 ) & 0x3ff ) << 2 ) ];
+		if ( ( l2e & 1 ) == 0 ) { trapno = 14; @fault ( 14 ); }
+
+		// protection: a write (acc == 1) to a non-writable page faults.
+		if ( ( acc == 1 ) && ( ( l2e & 2 ) == 0 ) ) { trapno = 14; @fault ( 14 ); }
+
+		// physical address = frame base (l2e[31:12]) | page offset (va[11:0]).
+		%PA = ( l2e & ~ 0xfff ) | ( va & 0xfff );
+	}
+
+}
