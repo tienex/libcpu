@@ -64,7 +64,7 @@ arch "ns32k" {
 // instruction formats; it is the single orthogonal EA selector covering all
 // addressing modes for both source and destination operands.
 //
-// GEN-MODE TABLE (5-bit field value → mode):
+// GEN-MODE TABLE (5-bit field value -> mode):
 //   0x00..0x07   Register direct:   Rn  (n = g)
 //   0x08..0x0F   Register relative: disp(Rn)  (n = g & 7; varlen disp)
 //   0x10..0x12   Memory relative:   disp2(disp1(Rn))  (TWO varlen disps -- Task 6)
@@ -87,10 +87,10 @@ arch "ns32k" {
 //   0x16        external (EXT[mod, disp])
 //   0x17        TOS (top-of-stack push/pop)
 //
-// The immediate rule (0x14) uses `disp varlen` as a decode-phase proxy since the
-// UPCL parser does not yet have a fixed-width big-endian inline-immediate keyword;
-// the real NS32000 immediate is a fixed-width BE value (operand-width bytes), not
-// the self-describing varlen format. This is sufficient for decode/disasm display.
+// The immediate rule (0x14) uses E5 fixed-width big-endian immediates: `#i32:be imm`
+// (double), `#i16:be imm` (word), `#i8 imm` (byte) in the three width-pinned variants.
+// The addrmode formal parameter `g` is bound positionally via E4 (`@gen(field)`), so a
+// single addrmode definition serves multiple operand slots in two-operand instructions.
 // ---------------------------------------------------------------------------
 
 // `gen` -- double-width (32-bit) default. Used by most two-address instructions.
@@ -106,8 +106,8 @@ addrmode gen ( g ) {
     g == 0x0D => #i32 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i32 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i32 %M [ r7 + disp varlen ] ;
-    // Immediate (src-only): inline big-endian value; varlen used as proxy (see note above).
-    g == 0x14 => #i32 %M [ disp varlen ] ;
+    // Immediate (src-only): fixed-width 32-bit big-endian value following the opcode byte (E5).
+    g == 0x14 => #i32:be imm ;
     // Absolute: @disp -- one varlen displacement is the absolute address.
     g == 0x15 => #i32 %M [ disp varlen ] ;
     // FP/SP/SB/PC-relative: disp(FP/SP/SB/PC).
@@ -135,7 +135,8 @@ addrmode gen_b ( g ) {
     g == 0x0D => #i8 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i8 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i8 %M [ r7 + disp varlen ] ;
-    g == 0x14 => #i8 %M [ disp varlen ] ;
+    // Immediate (src-only): fixed-width 8-bit value following the opcode byte (E5).
+    g == 0x14 => #i8 imm ;
     g == 0x15 => #i8 %M [ disp varlen ] ;
     g == 0x18 => #i8 %M [ fp + disp varlen ] ;
     g == 0x19 => #i8 %M [ sp + disp varlen ] ;
@@ -158,7 +159,8 @@ addrmode gen_w ( g ) {
     g == 0x0D => #i16 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i16 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i16 %M [ r7 + disp varlen ] ;
-    g == 0x14 => #i16 %M [ disp varlen ] ;
+    // Immediate (src-only): fixed-width 16-bit big-endian value following the opcode byte (E5).
+    g == 0x14 => #i16:be imm ;
     g == 0x15 => #i16 %M [ disp varlen ] ;
     g == 0x18 => #i16 %M [ fp + disp varlen ] ;
     g == 0x19 => #i16 %M [ sp + disp varlen ] ;
@@ -171,10 +173,11 @@ addrmode gen_w ( g ) {
 }
 
 // ---------------------------------------------------------------------------
-// Probe instruction (temporary; Task 11 removes it). Exercises `gen` decode:
-// 8-bit encoding: op(3)=0, m(5) -> src @gen. Byte layout: op at bits 7:5,
-// gen-mode at bits 4:0. Example: 0x00 = r0 (reg-direct), 0x15 0x10 = @0x10 (absolute).
+// Probe instruction (temporary; Task 11 removes it). Exercises `gen` decode with E4
+// positional binding: op(3)=0, g(5) -> src @gen(g). Byte layout: op at bits 7:5,
+// gen-mode at bits 4:0. Example: 0x00 = r0 (reg-direct), 0x15 0x10 = @0x10 (absolute),
+// 0x14 0x00 0x00 0x00 0x42 = immediate 0x42 (5 bytes total, proving E5 fixed-width).
 // ---------------------------------------------------------------------------
-insn _probe : encode #i8 ( op:3 = 0x0, g:5 -> src @gen ),
+insn _probe : encode #i8 ( op:3 = 0x0, g:5 -> src @gen(g) ),
     disasm ( mnemonic : "_probe", operands : src )
     { r0 = r0; }

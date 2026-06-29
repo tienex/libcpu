@@ -1108,12 +1108,13 @@ add_test(NAME upcl.check-ns32k COMMAND sh -c
 set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 
 # NS32000 gen addressing modes: parse + decode. The `_probe` instruction (op:3=0, g:5->@gen)
-# exercises the full gen addrmode table at the three byte/word/double widths. Assertions:
-#   0x00         -> register-direct g=0 -> r0
-#   0x15 0x10    -> absolute g=0x15, varlen disp 0x10 -> [0x10]
-#   0x08 0x05    -> register-relative r0+5 -> [r0+0x5]
-#   0x18 0x20    -> FP-relative -> [fp+0x20]
-#   0x1E 0x0A    -> scaled-index @gen[r1+r2*4] (index byte 0x0A: basegen=r1, ireg=2, scale=4)
+# exercises the full gen addrmode table. Assertions:
+#   0x00              -> register-direct g=0 -> r0
+#   0x15 0x10         -> absolute g=0x15, varlen disp 0x10 -> [0x10]
+#   0x08 0x05         -> register-relative r0+5 -> [r0+0x5]
+#   0x18 0x20         -> FP-relative -> [fp+0x20]
+#   0x1E 0x0A         -> scaled-index @gen[r1+r2*4] (index byte 0x0A: basegen=r1, ireg=2, scale=4)
+#   0x14 0x00 0x00 0x00 0x42 -> immediate g=0x14, 4 BE bytes -> value 0x42, length = 5 bytes (E5 fixed-width)
 add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl check \"$M\" > /dev/null && \
@@ -1121,7 +1122,9 @@ add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x15 0x10 | grep -q '0x10' && \
    \"$E\" upcl decode \"$M\" 0x08 0x05 | grep -q 'r0+0x5' && \
    \"$E\" upcl decode \"$M\" 0x18 0x20 | grep -q 'fp+0x20' && \
-   \"$E\" upcl decode \"$M\" 0x1E 0x0A | grep -q 'r2\\*4'")
+   \"$E\" upcl decode \"$M\" 0x1E 0x0A | grep -q 'r2\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '0x42' && \
+   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '5 byte'")
 set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
