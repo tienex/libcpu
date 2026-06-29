@@ -669,6 +669,10 @@ addrmode gen_f ( g ) {
 // `gen_l` -- double-precision (#f64) source. Register-direct uses the even-indexed FPU
 // registers as the base of a pair (f0=lsw of l0, f2=lsw of l1, etc.). Memory accesses
 // are 8-byte wide (#f64). TOS pops 8 bytes (sp += 8).
+// NOTE: gen_l accepts all 8 register codes (g=0..7) at the decode level. The NS32081
+// hardware requires an even register (g=0,2,4,6 for l0..l3); using an odd register is
+// UNPREDICTABLE on real silicon. Enforcement of the even-only constraint is deferred to
+// the execution phase; decode/disasm accepts the full range.
 addrmode gen_l ( g ) {
     g < 0x08 => #f64 reg [ f0, f1, f2, f3, f4, f5, f6, f7 ] ;
     g == 0x08 => #f64 %M [ r0 + disp varlen ] ;
@@ -2187,9 +2191,8 @@ insn setcfg : encode #i24 ( gen0:5 = 0x0, opts:4 -> opts, op:7 = OP7_SETCFG, fmt
 //
 // FLAG MODEL (NS32000 PSR FPU trap):
 //   PSR.F (bit 5) is set by the CPU when the FPU requests a trap. The FPU's own exception
-//   status is in FSR.TT (bits[2:0]). Float compare (CMPf) sets FSR flags but does NOT
-//   update PSR.N/Z/C/L -- the caller must explicitly propagate FSR condition codes to PSR
-//   via software if needed. Accordingly CMPf/CMPl instruction bodies write FSR only.
+//   status is in FSR.TT (bits[2:0]). Float compare (CMPf) delivers its result to the CPU
+//   which sets PSR N/Z/L exactly as integer CMP does; FSR is not written by CMP.
 //
 // Encodings derived verbatim from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]).
 // Cross-checked against NS32081 (July 1988) and NS32381 (April 1991) datasheets.
@@ -2257,21 +2260,21 @@ feature fpu {
         { dst = dst / src; }
 
     // ---------------------------------------------------------------------------
-    // CMPf/CMPl: compare src and dst; set FSR condition flags (no dst write).
+    // CMPf/CMPl: compare src and dst; set PSR flags (no dst write).
     //   (op = FOP11_CMP = 0x2; cmpf=0x09be, cmpl=0x08be).
-    // The NS32081 PRM (sec. 2.2.3): compare updates TT in FSR but does NOT touch PSR
-    // N/Z/L/C flags. We write fsr with a synthetic condition encoding for the decoder
-    // milestone; a full body would record the compare result for Bcond instructions.
+    // The NS32000 CPU, not the FPU, captures the comparison result and posts it directly
+    // into PSR N/Z/L -- identical to integer CMP.  %Z = equal, %N = (src > dst) signed-
+    // float sense, PSR_L = (src > dst) for the unsigned-style L flag (mirrors cmpb/cmpd).
     // Both operands are read-only (no write-back): gen2 uses gen_f / gen_l (source form).
     // ---------------------------------------------------------------------------
     insn cmpf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f(gen2), op:4 = FOP11_CMP, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
         disasm ( mnemonic : "cmpf", operands : src, dst )
-        { #f32 d = dst - src;
-          fsr = ( fsr & 0xfffffff8 ) | ( ( d < 0.0 ) ? 0x2 : ( ( d == 0.0 ) ? 0x0 : 0x0 ) ); }
+        { %Z = ( src == dst ) ? 1 : 0; %N = ( src > dst ) ? 1 : 0;
+          psr = ( psr &~ PSR_L ) | ( ( src > dst ) ? PSR_L : 0 ); }
     insn cmpl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l(gen2), op:4 = FOP11_CMP, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
         disasm ( mnemonic : "cmpl", operands : src, dst )
-        { #f64 d = dst - src;
-          fsr = ( fsr & 0xfffffff8 ) | ( ( d < 0.0 ) ? 0x2 : ( ( d == 0.0 ) ? 0x0 : 0x0 ) ); }
+        { %Z = ( src == dst ) ? 1 : 0; %N = ( src > dst ) ? 1 : 0;
+          psr = ( psr &~ PSR_L ) | ( ( src > dst ) ? PSR_L : 0 ); }
 
     // ---------------------------------------------------------------------------
     // NEGf/NEGl: dst = -src  (op = FOP11_NEG = 0x5; negf=0x15be, negl=0x14be).
@@ -2445,8 +2448,11 @@ feature fpu {
     // =========================================================================
 
     // ---------------------------------------------------------------------------
-    // POLYf/POLYl -- polynomial evaluation: dst = poly(src, dst).
+    // POLYf/POLYl -- polynomial evaluation: dst = sum_k(coeff_k * dst^k), src = coeff vector.
     //   (op=FOP12_POLY=2, f=FMT11_F/L; polyf=0x09fe, polyl=0x08fe)
+    // PLACEHOLDER body -- real POLY semantics (Horner-scheme multiply-accumulate over the
+    // src coefficient array, with hardware loop control) are deferred to the execution phase;
+    // decode/disasm only.
     // ---------------------------------------------------------------------------
     insn polyf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_POLY, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
         disasm ( mnemonic : "polyf", operands : src, dst )
@@ -2456,8 +2462,10 @@ feature fpu {
         { dst = dst * dst + src; }
 
     // ---------------------------------------------------------------------------
-    // DOTf/DOTl -- dot (inner) product: dst = dst * src + dst.
+    // DOTf/DOTl -- dot (inner) product: dst = sum_k(src_k * dst_k) over a vector pair.
     //   (op=FOP12_DOT=3, f=FMT11_F/L; dotf=0x0dfe, dotl=0x0cfe)
+    // PLACEHOLDER body -- real DOT semantics (multiply-accumulate over src/dst vector arrays,
+    // with hardware loop control) are deferred to the execution phase; decode/disasm only.
     // ---------------------------------------------------------------------------
     insn dotf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_DOT, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
         disasm ( mnemonic : "dotf", operands : src, dst )
@@ -2467,10 +2475,12 @@ feature fpu {
         { dst = dst * src; }
 
     // ---------------------------------------------------------------------------
-    // SCALBf/SCALBl -- scale binary (dst = dst * 2^src): dst scaled by integer src.
+    // SCALBf/SCALBl -- scale binary: dst = dst * 2^src (src is an integer exponent).
     //   (op=FOP12_SCALB=4, f=FMT11_F/L; scalbf=0x11fe, scalbl=0x10fe)
     //   The integer scaling operand is passed via gen1 (typed float here for uniformity;
     //   the hardware interprets it as an integer exponent scale factor).
+    // PLACEHOLDER body -- real SCALB semantics (adjust IEEE-754 biased exponent by integer src,
+    // saturate on overflow/underflow) are deferred to the execution phase; decode/disasm only.
     // ---------------------------------------------------------------------------
     insn scalbf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_SCALB, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
         disasm ( mnemonic : "scalbf", operands : src, dst )
@@ -2482,6 +2492,9 @@ feature fpu {
     // ---------------------------------------------------------------------------
     // LOGBf/LOGBl -- extract binary exponent: dst = unbiased_exponent(src) as a float.
     //   (op=FOP12_LOGB=5, f=FMT11_F/L; logbf=0x15fe, logbl=0x14fe)
+    // PLACEHOLDER body -- real LOGB semantics (extract and unbias the IEEE-754 exponent field,
+    // return as a float; handle zero/denormal/inf/NaN) are deferred to the execution phase;
+    // decode/disasm only.
     // ---------------------------------------------------------------------------
     insn logbf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_LOGB, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
         disasm ( mnemonic : "logbf", operands : src, dst )
