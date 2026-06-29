@@ -77,6 +77,38 @@ arch "ns32k" {
             [ #i32 fsr ]
         }
 
+        // NS32082/NS32382 external MMU and NS32532/732 on-chip MMU registers. The 4-bit
+        // selector embedded in LMR/SMR chooses one of these 16 slots.
+        //
+        // NS32082/NS32382 (mmureg_032 in gas/config/tc-ns32k.c):
+        //   bpr0(0), bpr1(1), pf0(4), pf1(5), sc(8), msr(0xa), bcnt(0xb),
+        //   ptb0(0xc), ptb1(0xd), eia(0xf).
+        //
+        // NS32532/732 on-chip (mmureg_532):
+        //   mcr(9), msr(0xa), tear(0xb), ptb0(0xc), ptb1(0xd), ivar0(0xe), ivar1(0xf).
+        //
+        // The register file holds 16 slots 0..15 covering the union of both sets.  Slots
+        // not used by a given chip (e.g. selector 0 = bpr0 on 082/382, unused on 532) are
+        // architecturally reserved; the register file models the worst-case capacity.
+        group M {
+            [ #i32 bpr0  ],                 // 0x0 -- BPR0  (breakpoint register 0; 082/382)
+            [ #i32 bpr1  ],                 // 0x1 -- BPR1  (breakpoint register 1; 082/382)
+            [ #i32 mr2   ],                 // 0x2 -- reserved
+            [ #i32 mr3   ],                 // 0x3 -- reserved
+            [ #i32 pf0   ],                 // 0x4 -- PF0   (page fault 0; 082/382)
+            [ #i32 pf1   ],                 // 0x5 -- PF1   (page fault 1; 082/382)
+            [ #i32 mr6   ],                 // 0x6 -- reserved
+            [ #i32 mr7   ],                 // 0x7 -- reserved
+            [ #i32 sc    ],                 // 0x8 -- SC    (software counter; 082/382)
+            [ #i32 mcr   ],                 // 0x9 -- MCR   (MMU control reg; 532/732 on-chip)
+            [ #i32 msr   ],                 // 0xa -- MSR   (MMU status reg; both 082/382 and 532/732)
+            [ #i32 tear  ],                 // 0xb -- TEAR/BCNT (translation exception addr; 532/732; BCNT on 082/382)
+            [ #i32 ptb0  ],                 // 0xc -- PTB0  (page table base 0; both)
+            [ #i32 ptb1  ],                 // 0xd -- PTB1  (page table base 1; both)
+            [ #i32 ivar0 ],                 // 0xe -- IVAR0/EIA (interrupt vector 0; 532/732; EIA on 082/382)
+            [ #i32 ivar1 ]                  // 0xf -- IVAR1 (interrupt vector 1; 532/732)
+        }
+
     }
 
 }
@@ -189,6 +221,71 @@ const PREG_CFG     = 0xc;   // 0xc -- CFG (configuration register; written by SE
 const PREG_PSR     = 0xd;   // 0xd -- PSR (processor status register)
 const PREG_INTBASE = 0xe;   // 0xe -- INTBASE (interrupt base address)
 const PREG_MOD     = 0xf;   // 0xf -- MOD (module register)
+
+// ---------------------------------------------------------------------------
+// Symbolic constants for the MMU and CACHE instructions (Task 13). All opcode seeds
+// derived verbatim from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]) and
+// cross-checked against `opcodes/ns32k-dis.c` and `gas/config/tc-ns32k.c`.
+//
+// All MMU/MOVSU/MOVUS/CINV instructions are 24-bit. The NS32000 Format 14 escape byte
+// is 0x1e (bits[7:0]); MOVSU/MOVUS use Format 16 with escape byte 0xae.
+//
+// LMR/SMR (Format 14, 15-bit opcode): gen:5 : mmureg:4 : op7:7 : fmt:8(=0x1e)
+//   lmr=0x0b1e (opcode_id_size=15): bits[14:8]=0x0b, bits[7:0]=0x1e.
+//   smr=0x0f1e (opcode_id_size=15): bits[14:8]=0x0f, bits[7:0]=0x1e.
+//   In UPCL: 24-bit = gen:5 | mmureg:4 | op7:7 | fmt:8(=FMT14_BYTE).
+const FMT14_BYTE = 0x1e;   // Format 14 escape byte (MMU instructions)
+const OP7_LMR = 0x0b;      // LMR 7-bit mid opcode (bits[14:8] of the 24-bit word)
+const OP7_SMR = 0x0f;      // SMR 7-bit mid opcode (bits[14:8] of the 24-bit word)
+
+// RDVAL/WRVAL (Format 14, 19-bit fixed opcode): gen:5 : op19:19
+//   rdval=0x0031e (opcode_id_size=19): gen:5 at bits[23:19], op19=0x0031e at bits[18:0].
+//   wrval=0x0071e (opcode_id_size=19): gen:5 at bits[23:19], op19=0x0071e at bits[18:0].
+const OP19_RDVAL = 0x0031e;  // RDVAL 19-bit fixed opcode (bits[18:0] of the 24-bit word)
+const OP19_WRVAL = 0x0071e;  // WRVAL 19-bit fixed opcode (bits[18:0] of the 24-bit word)
+
+// MOVSU/MOVUS (Format 16, 14-bit opcode): gen1:5 : gen2:5 : op14:14
+//   Escape byte 0xae at bits[7:0]; bits[13:8] carry the upper 6 opcode bits.
+//   movsub=0x0cae movsuw=0x0dae movsud=0x0fae (0b00_1100/0d/0f ... ae)
+//   movusb=0x1cae movusw=0x1dae movusd=0x1fae (0b01_1100/1d/1f ... ae)
+const FMT16_BYTE = 0xae;      // Format 16 escape byte (MOVSU/MOVUS instructions)
+const OP14_MOVSUB = 0x0cae;   // MOVSUb 14-bit opcode seed (binutils seed verbatim)
+const OP14_MOVSUW = 0x0dae;   // MOVSUw 14-bit opcode seed
+const OP14_MOVSUD = 0x0fae;   // MOVSUd 14-bit opcode seed
+const OP14_MOVUSB = 0x1cae;   // MOVUSb 14-bit opcode seed
+const OP14_MOVUSW = 0x1dae;   // MOVUSw 14-bit opcode seed
+const OP14_MOVUSD = 0x1fae;   // MOVUSd 14-bit opcode seed
+
+// CINV (Format 14, 14-bit opcode): gen:5 : opts:4 : zero:1 : op14:14
+//   cinv=0x271e (opcode_id_size=14): bits[13:0]=0x271e. Bit14=0 (forced by the seed).
+//   The 4-bit option field opts occupies bits[18:15] (between gen:5 at [23:19] and the
+//   14-bit opcode at [13:0]); bit[14] is always 0 to complete the 24-bit instruction.
+//   opts bit-mask: bit0=d (invalidate D-cache), bit1=i (I-cache), bit2=a (both/all).
+const OP14_CINV = 0x271e;   // CINV 14-bit opcode seed (bits[13:0] of the 24-bit word)
+
+// MMU register selector values (4-bit field in LMR/SMR). Two tables exist in binutils:
+//   mmureg_032 for NS32082/NS32382 external MMU: bpr0(0), bpr1(1), pf0(4), pf1(5),
+//     sc(8), msr(0xa), bcnt(0xb), ptb0(0xc), ptb1(0xd), eia(0xf).
+//   mmureg_532 for NS32532/732 on-chip MMU: mcr(9), msr(0xa), tear(0xb),
+//     ptb0(0xc), ptb1(0xd), ivar0(0xe), ivar1(0xf).
+// MREG_* constants cover the union; both chips share ptb0/ptb1/msr.
+const MREG_BPR0  = 0x0;   // 0x0 -- BPR0  (breakpoint reg 0; 082/382)
+const MREG_BPR1  = 0x1;   // 0x1 -- BPR1  (breakpoint reg 1; 082/382)
+const MREG_PF0   = 0x4;   // 0x4 -- PF0   (page fault address 0; 082/382)
+const MREG_PF1   = 0x5;   // 0x5 -- PF1   (page fault address 1; 082/382)
+const MREG_SC    = 0x8;   // 0x8 -- SC    (software counter; 082/382)
+const MREG_MCR   = 0x9;   // 0x9 -- MCR   (MMU control register; 532/732 on-chip)
+const MREG_MSR   = 0xa;   // 0xa -- MSR   (MMU status register; both 082/382 and 532/732)
+const MREG_TEAR  = 0xb;   // 0xb -- TEAR/BCNT (translation exception addr; 532/732; BCNT on 082/382)
+const MREG_PTB0  = 0xc;   // 0xc -- PTB0  (page table base 0; both 082/382 and 532/732)
+const MREG_PTB1  = 0xd;   // 0xd -- PTB1  (page table base 1; both 082/382 and 532/732)
+const MREG_IVAR0 = 0xe;   // 0xe -- IVAR0/EIA (intr vector 0; 532/732; EIA on 082/382)
+const MREG_IVAR1 = 0xf;   // 0xf -- IVAR1 (interrupt vector 1; 532/732)
+
+// CINV option bit masks (4-bit opts field, binutils opt_C[]):
+const CINV_D = 0x1;   // bit0 -- d (invalidate data cache)
+const CINV_I = 0x2;   // bit1 -- i (invalidate instruction cache)
+const CINV_A = 0x4;   // bit2 -- a (invalidate all caches)
 
 // ---------------------------------------------------------------------------
 // Symbolic constants for the control-transfer section (Task 10). Every magic number the
@@ -2506,12 +2603,155 @@ feature fpu {
 }
 
 // ===========================================================================
+// NS32082/NS32382 MEMORY-MANAGEMENT UNIT (feature `mmu`).
+//
+// The NS32082 (external MMU for NS32032/NS32016) and its drop-in successor the
+// NS32382 add virtual-address translation via a page-table walk driven by PTB0/PTB1.
+// The NS32532/NS32732 integrate an equivalent MMU on-chip.  All MMU-capable chips
+// share the same privileged instruction set: LMR, SMR, RDVAL, WRVAL, MOVSU, MOVUS.
+//
+// Instructions are 24-bit (Format 14, escape byte 0x1e, or Format 16 escape 0xae
+// for MOVSU/MOVUS).
+//
+// REGISTER SELECTOR: the 4-bit `mmureg` field in LMR/SMR names one entry from the
+// MMU register group M (see `register_file`). The selector values are the MREG_*
+// constants defined in the const block above.
+//
+// RDVAL / WRVAL: validate a virtual address for read or write access from
+// supervisor mode.  The sole operand is a gen address-form (A = gen except imm/reg).
+// On completion PSR.F is SET if the access is permitted; cleared if not (the CPU does
+// NOT trap -- the software test-and-branch on PSR.F follows in the instruction stream).
+//
+// MOVSU / MOVUS: copy a word across the user/supervisor boundary.  Three widths
+// exist (b/w/d).  Both operands are gen address-forms.
+//   MOVSU: supervisor space -> user space  (src=supervisor EA, dst=user EA).
+//   MOVUS: user space -> supervisor space  (src=user EA,       dst=supervisor EA).
+//
+// Encodings derived verbatim from GNU binutils `include/opcode/ns32k.h`
+// (ns32k_opcodes[]) and verified against `gas/config/tc-ns32k.c`.
+// ===========================================================================
+
+feature mmu {
+
+    // =========================================================================
+    // LMRd -- load MMU register. Transfers the 32-bit value at the gen EA (src)
+    // into the MMU register selected by the 4-bit `mmureg` field.
+    // Layout (24-bit, Format 14): gen:5 | mmureg:4 | op7:7(=OP7_LMR) | fmt:8(=FMT14_BYTE)
+    // Binutils seed: lmr=0x0b1e (opcode_id_size=15, operands="2D1M").
+    // The binutils operand order is dst-first (slot 2 = gen dword) then src-MMU-reg (slot 1).
+    // UPCL follows the natural lmr dst,mmureg order: dst is the gen EA, mreg is the selector.
+    // =========================================================================
+    insn lmr : encode #i24 ( gen1:5 -> dst @gen_dst(gen1), mreg:4 -> mreg, op7:7 = OP7_LMR, fmt:8 = FMT14_BYTE ),
+        disasm ( mnemonic : "lmr", operands : mreg, dst )
+        { dst = %REG[ M, mreg ]; }
+
+    // =========================================================================
+    // SMRd -- store to MMU register.  Reads the gen operand (src) and writes it
+    // into the MMU register selected by `mmureg`.
+    // Layout (24-bit, Format 14): gen:5 | mmureg:4 | op7:7(=OP7_SMR) | fmt:8(=FMT14_BYTE)
+    // Binutils seed: smr=0x0f1e (opcode_id_size=15, operands="2I1M").
+    // Binutils type "I" = integer writable gen (memory or register, not immediate).
+    // =========================================================================
+    insn smr : encode #i24 ( gen1:5 -> src @gen(gen1), mreg:4 -> mreg, op7:7 = OP7_SMR, fmt:8 = FMT14_BYTE ),
+        disasm ( mnemonic : "smr", operands : mreg, src )
+        { %REG[ M, mreg ] = src; }
+
+    // =========================================================================
+    // RDVAL -- validate a virtual address for read access.
+    // Layout (24-bit, Format 14): gen:5 | op19:19(=OP19_RDVAL)
+    // Binutils seed: rdval=0x0031e (opcode_id_size=19, operands="1A").
+    // The gen operand is an address-form only (A: no register-direct, no immediate).
+    // PSR.F is set if the read access is permitted; cleared if not.
+    // =========================================================================
+    insn rdval : encode #i24 ( gen1:5 -> ea @gen(gen1), op19:19 = OP19_RDVAL ),
+        disasm ( mnemonic : "rdval", operands : ea )
+        { psr = ( psr &~ PSR_F ) | PSR_F; }
+
+    // =========================================================================
+    // WRVAL -- validate a virtual address for write access.
+    // Layout (24-bit, Format 14): gen:5 | op19:19(=OP19_WRVAL)
+    // Binutils seed: wrval=0x0071e (opcode_id_size=19, operands="1A").
+    // PSR.F is set if the write access is permitted; cleared if not.
+    // =========================================================================
+    insn wrval : encode #i24 ( gen1:5 -> ea @gen(gen1), op19:19 = OP19_WRVAL ),
+        disasm ( mnemonic : "wrval", operands : ea )
+        { psr = ( psr &~ PSR_F ) | PSR_F; }
+
+    // =========================================================================
+    // MOVSU -- move word from supervisor space to user space.
+    // Both src and dst are address-forms (A: memory EA, no register-direct, no imm).
+    // Layout (24-bit, Format 16): gen1:5 | gen2:5 | op14:14(=OP14_MOVSUx)
+    // Binutils seeds: movsub=0x0cae, movsuw=0x0dae, movsud=0x0fae (operands="1A2A").
+    // =========================================================================
+    insn movsub : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op14:14 = OP14_MOVSUB ),
+        disasm ( mnemonic : "movsub", operands : src, dst )
+        { dst = src; }
+    insn movsuw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op14:14 = OP14_MOVSUW ),
+        disasm ( mnemonic : "movsuw", operands : src, dst )
+        { dst = src; }
+    insn movsud : encode #i24 ( gen1:5 -> src @gen(gen1), gen2:5 -> dst @gen_dst(gen2), op14:14 = OP14_MOVSUD ),
+        disasm ( mnemonic : "movsud", operands : src, dst )
+        { dst = src; }
+
+    // =========================================================================
+    // MOVUS -- move word from user space to supervisor space.
+    // Layout (24-bit, Format 16): gen1:5 | gen2:5 | op14:14(=OP14_MOVUSx)
+    // Binutils seeds: movusb=0x1cae, movusw=0x1dae, movusd=0x1fae (operands="1A2A").
+    // =========================================================================
+    insn movusb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op14:14 = OP14_MOVUSB ),
+        disasm ( mnemonic : "movusb", operands : src, dst )
+        { dst = src; }
+    insn movusw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op14:14 = OP14_MOVUSW ),
+        disasm ( mnemonic : "movusw", operands : src, dst )
+        { dst = src; }
+    insn movusd : encode #i24 ( gen1:5 -> src @gen(gen1), gen2:5 -> dst @gen_dst(gen2), op14:14 = OP14_MOVUSD ),
+        disasm ( mnemonic : "movusd", operands : src, dst )
+        { dst = src; }
+
+}
+
+// ===========================================================================
+// NS32532/NS32732 ON-CHIP CACHE CONTROL (feature `cache`).
+//
+// The NS32532 and NS32732 integrate separate on-chip instruction and data caches.
+// CINV (cache invalidate) is the only privileged cache-management instruction.
+// It is NOT present on the NS32032/NS32332 (which have no on-chip cache).
+//
+// CINV invalidates one or both caches based on the 3-bit option field:
+//   opts bit0 (CINV_D = 0x1): invalidate data cache.
+//   opts bit1 (CINV_I = 0x2): invalidate instruction cache.
+//   opts bit2 (CINV_A = 0x4): invalidate all caches.
+// The gen operand supplies an optional address hint (may be r0/ignored in practice).
+//
+// ENCODING (24-bit, Format 14):
+//   bits[23:19] = gen (5-bit EA -- the address hint; may be register-direct r0)
+//   bits[18:15] = opts (4-bit cache-select bitmask; only bits[2:0] are used)
+//   bit[14]     = 0 (forced by the 14-bit opcode seed 0x271e which has bit13 set)
+//   bits[13:0]  = 0x271e (14-bit opcode discriminator)
+// Binutils seed: cinv=0x271e (opcode_id_size=14, operands="2D1C").
+// ===========================================================================
+
+feature cache {
+
+    // =========================================================================
+    // CINV -- cache invalidate.
+    // Layout (24-bit, Format 14): gen:5 | opts:4 | zero:1 | op14:14(=OP14_CINV)
+    // Binutils seed: cinv=0x271e (opcode_id_size=14, operands="2D1C").
+    // opts bitmask: CINV_D(0x1)=data-cache, CINV_I(0x2)=I-cache, CINV_A(0x4)=all.
+    // =========================================================================
+    insn cinv : encode #i24 ( gen1:5 -> ea @gen(gen1), opts:4 -> opts, zero:1 = 0x0, op14:14 = OP14_CINV ),
+        disasm ( mnemonic : "cinv", operands : opts, ea )
+        { /* flush cache; no architectural register side-effect */ }
+
+}
+
+// ===========================================================================
 // CPU VARIANT DECLARATIONS.
 //
 // The NS32000 family spans four die revisions; each adds optional coprocessors
 // and memory-management hardware. The `fpu` feature adds NS32081/NS32381 floating-
-// point instructions (Tasks 12); the `mmu` and `cache` features are placeholders
-// for NS32082/NS32382 (Task 13) and NS32532/NS32732 cache control respectively.
+// point instructions; the `mmu` feature adds NS32082/NS32382 (and on-chip 532/732)
+// MMU instructions; the `cache` feature adds NS32532/NS32732 CINV cache control.
 // ===========================================================================
 features {
     fpu    "NS32081/NS32381 floating-point coprocessor (movf/addf/movbf/roundfb/lfsr/sfsr/...)";

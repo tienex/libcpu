@@ -1402,6 +1402,46 @@ add_test(NAME upcl.ns32k-fpu COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x55 0xfe | grep -q 'logbf'")
 set_tests_properties(upcl.ns32k-fpu PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
+# NS32082/NS32382 MMU + NS32532/NS32732 cache (feature `mmu` + feature `cache`).
+# Encodings from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]) and
+# `gas/config/tc-ns32k.c` (mmureg_032 / mmureg_532 tables).
+#
+# ENCODING NOTES (24-bit instructions, bytes MSB-first to the decoder):
+#   Format 14 (FMT14=0x1e): gen:5 | field:4 | op7:7 | fmt:8(=0x1e)
+#     lmr  gen=r1 mreg=ptb0(0xc) op7=0x0b: (1<<19)|(0xc<<15)|(0x0b<<8)|0x1e = 0x0e0b1e -> 0x0e 0x0b 0x1e
+#     smr  gen=r0 mreg=msr(0xa)  op7=0x0f: (0<<19)|(0xa<<15)|(0x0f<<8)|0x1e = 0x050f1e -> 0x05 0x0f 0x1e
+#     rdval gen=r0: (0<<19)|0x0031e = 0x00031e -> 0x00 0x03 0x1e
+#     wrval gen=r0: (0<<19)|0x0071e = 0x00071e -> 0x00 0x07 0x1e
+#   Format 14 (CINV, 14-bit opcode): gen:5 | opts:4 | zero:1 | op14:14(=0x271e)
+#     cinv gen=r0 opts=CINV_I(2): (0<<19)|(2<<15)|(0<<14)|0x271e = 0x01271e -> 0x01 0x27 0x1e
+#   Format 16 (FMT16=0xae): gen1:5 | gen2:5 | op14:14
+#     movsud gen1=r1(src) gen2=r2(dst): (1<<19)|(2<<14)|0x0fae = 0x088fae -> 0x08 0x8f 0xae
+#     movusd gen1=r0(src) gen2=r0(dst): (0<<19)|(0<<14)|0x1fae = 0x001fae -> 0x00 0x1f 0xae
+add_test(NAME upcl.ns32k-mmu COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x1e | grep -q 'lmr' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x1e | grep -q 'dst=r1' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x1e | grep -q 'mreg=0xc' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x1e | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x05 0x0f 0x1e | grep -q 'smr' && \
+   \"$E\" upcl decode \"$M\" 0x05 0x0f 0x1e | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x05 0x0f 0x1e | grep -q 'mreg=0xa' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x03 0x1e | grep -q 'rdval' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x03 0x1e | grep -q 'ea=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x1e | grep -q 'wrval' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x1e | grep -q 'ea=r0' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x8f 0xae | grep -q 'movsud' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x8f 0xae | grep -q 'src=r1' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x8f 0xae | grep -q 'dst=r2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x1f 0xae | grep -q 'movusd' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x27 0x1e | grep -q 'cinv' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x27 0x1e | grep -q 'opts=0x2' && \
+   printf '\\x01\\x27\\x1e' > '${CMAKE_BINARY_DIR}/cinv.bin' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/cinv.bin' --count 1 --arch \"upcl:\$M@ns32532\" | grep -q 'cinv' && \
+   ! \"$E\" disasm '${CMAKE_BINARY_DIR}/cinv.bin' --count 1 --arch \"upcl:\$M@ns32032\" | grep -q 'cinv'")
+set_tests_properties(upcl.ns32k-mmu PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,
