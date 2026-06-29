@@ -58,3 +58,123 @@ arch "ns32k" {
     }
 
 }
+
+// ---------------------------------------------------------------------------
+// NS32000 general addressing mode (`gen`). The 5-bit gen field appears in most
+// instruction formats; it is the single orthogonal EA selector covering all
+// addressing modes for both source and destination operands.
+//
+// GEN-MODE TABLE (5-bit field value → mode):
+//   0x00..0x07   Register direct:   Rn  (n = g)
+//   0x08..0x0F   Register relative: disp(Rn)  (n = g & 7; varlen disp)
+//   0x10..0x12   Memory relative:   disp2(disp1(Rn))  (TWO varlen disps -- Task 6)
+//   0x13         Reserved
+//   0x14         Immediate:         value follows big-endian (width = operand width)
+//   0x15         Absolute:          @disp  (one varlen disp = address)
+//   0x16         External:          EXT(mod, disp)  (Task 6)
+//   0x17         TOS:               Top-of-stack (Task 6)
+//   0x18         FP relative:       disp(FP)
+//   0x19         SP relative:       disp(SP)
+//   0x1A         SB relative:       disp(SB)
+//   0x1B         PC relative:       disp(PC)
+//   0x1C..0x1F   Scaled index:      base[Rn:B/W/D/Q]; scale = 1<<(g&3), index byte consumed
+//
+// Sources: NS32000 Programmer's Reference Manual (National Semiconductor, 1984),
+// binutils opcodes/ns32k-dis.c + include/opcode/ns32k.h + gas/config/tc-ns32k.c.
+//
+// THREE MODES NOT YET IMPLEMENTED (Task 6):
+//   0x10..0x12  memory-relative (two varlen disps)
+//   0x16        external (EXT[mod, disp])
+//   0x17        TOS (top-of-stack push/pop)
+//
+// The immediate rule (0x14) uses `disp varlen` as a decode-phase proxy since the
+// UPCL parser does not yet have a fixed-width big-endian inline-immediate keyword;
+// the real NS32000 immediate is a fixed-width BE value (operand-width bytes), not
+// the self-describing varlen format. This is sufficient for decode/disasm display.
+// ---------------------------------------------------------------------------
+
+// `gen` -- double-width (32-bit) default. Used by most two-address instructions.
+addrmode gen ( g ) {
+    // Register direct: Rn where n = g (0..7).
+    g < 0x08 => #i32 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+    // Register relative: disp(Rn); eight rules, one per register, to avoid a g&7 expression.
+    g == 0x08 => #i32 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #i32 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #i32 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #i32 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #i32 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #i32 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #i32 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #i32 %M [ r7 + disp varlen ] ;
+    // Immediate (src-only): inline big-endian value; varlen used as proxy (see note above).
+    g == 0x14 => #i32 %M [ disp varlen ] ;
+    // Absolute: @disp -- one varlen displacement is the absolute address.
+    g == 0x15 => #i32 %M [ disp varlen ] ;
+    // FP/SP/SB/PC-relative: disp(FP/SP/SB/PC).
+    g == 0x18 => #i32 %M [ fp + disp varlen ] ;
+    g == 0x19 => #i32 %M [ sp + disp varlen ] ;
+    g == 0x1A => #i32 %M [ sb + disp varlen ] ;
+    g == 0x1B => #i32 %M [ pc + disp varlen ] ;
+    // Scaled index: base[Rn:B/W/D/Q]. Consumes an index byte (basegen:5)(ireg:3),
+    // recurses into @gen to resolve the base EA, then adds R[ireg] * scale.
+    // Four rules for scale = 1/2/4/8 (g & 3 = 0/1/2/3).
+    g == 0x1C => #i32 %M [ @gen[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #i32 %M [ @gen[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #i32 %M [ @gen[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #i32 %M [ @gen[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// `gen_b` -- byte-width (8-bit) variant. Used by byte-operand instructions.
+addrmode gen_b ( g ) {
+    g < 0x08 => #i8 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+    g == 0x08 => #i8 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #i8 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #i8 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #i8 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #i8 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #i8 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #i8 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #i8 %M [ r7 + disp varlen ] ;
+    g == 0x14 => #i8 %M [ disp varlen ] ;
+    g == 0x15 => #i8 %M [ disp varlen ] ;
+    g == 0x18 => #i8 %M [ fp + disp varlen ] ;
+    g == 0x19 => #i8 %M [ sp + disp varlen ] ;
+    g == 0x1A => #i8 %M [ sb + disp varlen ] ;
+    g == 0x1B => #i8 %M [ pc + disp varlen ] ;
+    g == 0x1C => #i8 %M [ @gen_b[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #i8 %M [ @gen_b[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #i8 %M [ @gen_b[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #i8 %M [ @gen_b[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// `gen_w` -- word-width (16-bit) variant. Used by word-operand instructions.
+addrmode gen_w ( g ) {
+    g < 0x08 => #i16 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+    g == 0x08 => #i16 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #i16 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #i16 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #i16 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #i16 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #i16 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #i16 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #i16 %M [ r7 + disp varlen ] ;
+    g == 0x14 => #i16 %M [ disp varlen ] ;
+    g == 0x15 => #i16 %M [ disp varlen ] ;
+    g == 0x18 => #i16 %M [ fp + disp varlen ] ;
+    g == 0x19 => #i16 %M [ sp + disp varlen ] ;
+    g == 0x1A => #i16 %M [ sb + disp varlen ] ;
+    g == 0x1B => #i16 %M [ pc + disp varlen ] ;
+    g == 0x1C => #i16 %M [ @gen_w[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #i16 %M [ @gen_w[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #i16 %M [ @gen_w[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #i16 %M [ @gen_w[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// ---------------------------------------------------------------------------
+// Probe instruction (temporary; Task 11 removes it). Exercises `gen` decode:
+// 8-bit encoding: op(3)=0, m(5) -> src @gen. Byte layout: op at bits 7:5,
+// gen-mode at bits 4:0. Example: 0x00 = r0 (reg-direct), 0x15 0x10 = @0x10 (absolute).
+// ---------------------------------------------------------------------------
+insn _probe : encode #i8 ( op:3 = 0x0, g:5 -> src @gen ),
+    disasm ( mnemonic : "_probe", operands : src )
+    { r0 = r0; }
