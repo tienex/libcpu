@@ -1115,6 +1115,11 @@ set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|
 #   0x18 0x20         -> FP-relative -> [fp+0x20]
 #   0x1E 0x0A         -> scaled-index @gen[r1+r2*4] (index byte 0x0A: basegen=r1, ireg=2, scale=4)
 #   0x14 0x00 0x00 0x00 0x42 -> immediate g=0x14, 4 BE bytes -> value 0x42, length = 5 bytes (E5 fixed-width)
+# Hard modes (Task 6):
+#   0x10 0x04 0x08    -> memory-relative FP: disp2(disp1(FP)); both disps consumed, length = 3 bytes
+#   0x11 0x04 0x08    -> memory-relative SP: two varlen disps, length = 3 bytes
+#   0x16 0x04 0x08    -> external EXT(disp1)+disp2; MOD-based, two disps consumed, length = 3 bytes
+#   0x17              -> TOS source (pop): [sp] with post sp+=4, length = 1 byte
 add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl check \"$M\" > /dev/null && \
@@ -1124,7 +1129,16 @@ add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x18 0x20 | grep -q 'fp+0x20' && \
    \"$E\" upcl decode \"$M\" 0x1E 0x0A | grep -q 'r2\\*4' && \
    \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '0x42' && \
-   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '5 byte'")
+   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q 'fp' && \
+   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '0x4' && \
+   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '0x8' && \
+   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x11 0x04 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q 'mod' && \
+   \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 | grep -q 'sp' && \
+   \"$E\" upcl decode \"$M\" 0x17 | grep -q '1 byte'")
 set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
