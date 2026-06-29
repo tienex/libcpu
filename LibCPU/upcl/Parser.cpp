@@ -1241,6 +1241,8 @@ Parser::ParseEncField (EncField *pField)
         if (AtKeyword ("rel")) { pField->Relative = true; Advance (); }
         // -> op sx : sign-extend the field value to the machine word (a short signed immediate).
         if (AtKeyword ("sx")) { pField->SignExt = true; Advance (); }
+        // -> op be : extract this field big-endian, overriding the arch endian setting.
+        if (AtKeyword ("be")) { pField->BigEndian = true; Advance (); }
         // -> op @<addrmode> : the field selects through an addressing mode.
         if (m_Cur.Kind == TokMacroIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
         else if (Accept (TokAt) && m_Cur.Kind == TokIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
@@ -1321,6 +1323,8 @@ Parser::ParseAddrRule ()
                 else if (Id == "disp8")  { T.Disp = true; T.DispBits = 8; }
                 else if (Id == "disp16") { T.Disp = true; T.DispBits = 16; }
                 else                     { T.Reg = Id; }
+                // disp be : read this displacement big-endian, overriding the arch endianness.
+                if (T.Disp && AtKeyword ("be")) { T.DispBigEndian = true; Advance (); }
                 R->Mem.push_back (T);
             }
         } while (Accept (TokPlus));

@@ -276,7 +276,8 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
                 if (DispBits > 0) {
                     UINT32 DispBytes = DispBits / 8;
                     if (DispBytes > TailAvail) { return false; }
-                    pOut->Disp = SignExtend (ExtractField (pTail, 0, DispBits, m_pArch->Little), DispBits);
+                    bool DispLittle = T.DispBigEndian ? false : m_pArch->Little;
+                    pOut->Disp = SignExtend (ExtractField (pTail, 0, DispBits, DispLittle), DispBits);
                     *pExtraBytes += DispBytes;
                     if (!Text.empty ()) { Text += "+"; }
                     char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) pOut->Disp);
@@ -343,7 +344,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     UINT32 BitOff = 0;
     for (EncField CONST &F : pAlt->Fields) {
         if (F.Tail) { continue; }
-        UINT64 V = ExtractField (pWord, BitOff, F.Width, Little);
+        UINT64 V = ExtractField (pWord, BitOff, F.Width, F.BigEndian ? false : Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
         BitOff += F.Width;
@@ -368,7 +369,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
         if (!F.Tail) { continue; }
         UINT32 FieldBytes = (F.Width + 7) / 8;
         if ((UINT64) TailOff + FieldBytes > Avail) { return false; }
-        UINT64 V = ExtractField (pBytes + TailOff, 0, F.Width, m_pArch->Little);
+        UINT64 V = ExtractField (pBytes + TailOff, 0, F.Width, F.BigEndian ? false : m_pArch->Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
         TailOff += FieldBytes;

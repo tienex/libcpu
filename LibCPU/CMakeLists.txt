@@ -1012,6 +1012,11 @@ add_test(NAME upcl.pdp11 COMMAND sh -c
    grep -q 'fadd '              '${CMAKE_BINARY_DIR}/pdp11.addf'")
 set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
+# imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
+add_test(NAME upcl.engine-be COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_be.upcl' 0xAA 0x12 0x34 | grep '0x1234'")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

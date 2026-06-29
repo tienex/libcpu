@@ -186,6 +186,8 @@ public:
     std::string Reg;     // a base register name ("" if a displacement / indexed term)
     bool        Disp = false;   // a displacement term
     UINT32      DispBits = 0;    // 0 = the addrmode's default disp clause; else fixed (8/16)
+    bool        DispBigEndian = false; // `disp be` / `disp8 be` / `disp16 be`: read this
+                                      //   displacement big-endian, overriding the arch endianness.
     // A FIELD-INDEXED base register: `%REG[ <group>, <field> ]` -- the base is group <group>'s element
     // selected at decode by the value of decoder field <field>. Collapses one rule per register into
     // one (the PDP-11's `%M[ %REG[R, dr] + disp ]` covers all eight registers).
@@ -252,6 +254,10 @@ public:
     bool                     SignExt = false; // `-> op sx`: sign-extend the field value to the
                                           //   machine word width (e.g. `0x83 /digit ib`'s imm8
                                           //   becomes a 16-bit operand). Architecture-neutral.
+    bool                     BigEndian = false; // `-> op be`: extract this field big-endian
+                                          //   regardless of the arch `endian` setting. Needed
+                                          //   for mixed-endian ISAs (e.g. NS32000 stores its
+                                          //   immediates big-endian inside a little-endian arch).
     bool                     Tail = false; // the field follows an `@addrmode` operand, so it is
                                           //   positioned in the byte tail AFTER that mode's
                                           //   variable-length displacement (e.g. the immediate of

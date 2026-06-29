@@ -1,0 +1,15 @@
+// Minimal arch to prove per-field big-endian extraction in a little-endian arch.
+arch "_test_be" {
+    name "be test";
+    endian little;
+    byte_size 8;
+    word_size 16;
+    address_size 16;
+    register_file { group R { [ #i16 r0 -> %PC ] } }
+}
+// 1-byte opcode 0xAA, then a 16-bit immediate read BIG-ENDIAN.
+// The arch is little-endian, but `be` on the imm field forces big-endian extraction,
+// so bytes 0xAA 0x12 0x34 decode as imm=0x1234 (not the LE value 0x3412).
+insn ld : encode #i8 ( op:8 = 0xAA, imm:16 -> imm be ),
+    disasm ( mnemonic : "ld", operands : imm )
+    { r0 = imm; }
