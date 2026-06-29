@@ -1118,6 +1118,7 @@ set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|
 # Hard modes (Task 6):
 #   0x10 0x04 0x08    -> memory-relative FP: disp2(disp1(FP)); both disps consumed, length = 3 bytes
 #   0x11 0x04 0x08    -> memory-relative SP: two varlen disps, length = 3 bytes
+#   0x12 0x04 0x08    -> memory-relative SB: disp2(disp1(SB)); both disps consumed, length = 3 bytes
 #   0x16 0x04 0x08    -> external EXT(disp1)+disp2; MOD-based, two disps consumed, length = 3 bytes
 #   0x17              -> TOS source (pop): [sp] with post sp+=4, length = 1 byte
 add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
@@ -1135,6 +1136,8 @@ add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '0x8' && \
    \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '3 byte' && \
    \"$E\" upcl decode \"$M\" 0x11 0x04 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x12 0x04 0x08 | grep -q 'sb' && \
+   \"$E\" upcl decode \"$M\" 0x12 0x04 0x08 | grep -q '3 byte' && \
    \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q 'mod' && \
    \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q '3 byte' && \
    \"$E\" upcl decode \"$M\" 0x17 | grep -q 'sp' && \

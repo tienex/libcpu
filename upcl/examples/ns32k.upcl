@@ -121,12 +121,16 @@ addrmode gen ( g ) {
     // Memory-relative: disp2(disp1(FP/SP/SB)).  EA = disp2 + mem[base + disp1].  Two varlen
     // displacements are consumed left-to-right; both appear in the decoded text and the length
     // accounts for both.  (The intermediate mem[] dereference is instruction-body semantics.)
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i32 %M [ fp + disp varlen + disp varlen ] ;  // disp2(disp1(FP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i32 %M [ sp + disp varlen + disp varlen ] ;  // disp2(disp1(SP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i32 %M [ sb + disp varlen + disp varlen ] ;  // disp2(disp1(SB))
     // External: EXT(disp1)+disp2.  EA = disp2 + mem[mem[MOD+4] + disp1].  MOD+4 is the link-
     // table base pointer in the module descriptor (NS32000 PRM sec. 2.2).  Two varlen
     // displacements consumed left-to-right; double dereference is instruction-body semantics.
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i32 %M [ mod + disp varlen + disp varlen ] ;
     // TOS (top-of-stack) -- SOURCE (pop) form: read [SP] then SP += 4.  The matching DESTINATION
     // (push) form lives in gen_dst: SP -= 4 pre-decrement then write [SP].
@@ -160,9 +164,13 @@ addrmode gen_b ( g ) {
     g == 0x0D => #i8 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i8 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i8 %M [ r7 + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i8 %M [ fp + disp varlen + disp varlen ] ;  // disp2(disp1(FP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i8 %M [ sp + disp varlen + disp varlen ] ;  // disp2(disp1(SP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i8 %M [ sb + disp varlen + disp varlen ] ;  // disp2(disp1(SB))
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i8 %M [ mod + disp varlen + disp varlen ] ;
     // TOS -- SOURCE (pop) form: read [SP] then SP += 1 (byte operand).
     g == 0x17 => #i8 %M [ sp ] post { sp += 1; } ;
@@ -190,9 +198,13 @@ addrmode gen_w ( g ) {
     g == 0x0D => #i16 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i16 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i16 %M [ r7 + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i16 %M [ fp + disp varlen + disp varlen ] ;  // disp2(disp1(FP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i16 %M [ sp + disp varlen + disp varlen ] ;  // disp2(disp1(SP))
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i16 %M [ sb + disp varlen + disp varlen ] ;  // disp2(disp1(SB))
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i16 %M [ mod + disp varlen + disp varlen ] ;
     // TOS -- SOURCE (pop) form: read [SP] then SP += 2 (word operand).
     g == 0x17 => #i16 %M [ sp ] post { sp += 2; } ;
@@ -228,13 +240,17 @@ addrmode gen_dst ( g ) {
     g == 0x0D => #i32 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i32 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i32 %M [ r7 + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i32 %M [ fp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i32 %M [ sp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i32 %M [ sb + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i32 %M [ mod + disp varlen + disp varlen ] ;
     // TOS -- DESTINATION (push) form: SP -= 4, then write [SP].
     g == 0x17 => pre { sp -= 4; } #i32 %M [ sp ] ;
-    g == 0x14 => #i32:be imm ;
+    // Immediate (0x14) is source-only in NS32000 -- you cannot write to a literal; omitted from gen_dst.
     g == 0x15 => #i32 %M [ disp varlen ] ;
     g == 0x18 => #i32 %M [ fp + disp varlen ] ;
     g == 0x19 => #i32 %M [ sp + disp varlen ] ;
@@ -257,13 +273,17 @@ addrmode gen_dst_b ( g ) {
     g == 0x0D => #i8 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i8 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i8 %M [ r7 + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i8 %M [ fp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i8 %M [ sp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i8 %M [ sb + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i8 %M [ mod + disp varlen + disp varlen ] ;
     // TOS -- DESTINATION (push) form: SP -= 1, then write [SP].
     g == 0x17 => pre { sp -= 1; } #i8 %M [ sp ] ;
-    g == 0x14 => #i8 imm ;
+    // Immediate (0x14) is source-only in NS32000 -- you cannot write to a literal; omitted from gen_dst_b.
     g == 0x15 => #i8 %M [ disp varlen ] ;
     g == 0x18 => #i8 %M [ fp + disp varlen ] ;
     g == 0x19 => #i8 %M [ sp + disp varlen ] ;
@@ -286,13 +306,17 @@ addrmode gen_dst_w ( g ) {
     g == 0x0D => #i16 %M [ r5 + disp varlen ] ;
     g == 0x0E => #i16 %M [ r6 + disp varlen ] ;
     g == 0x0F => #i16 %M [ r7 + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x10 => #i16 %M [ fp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x11 => #i16 %M [ sp + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem<width>[base + disp1]; the instruction BODY must do the inner load -- do NOT use this flat operand address directly.
     g == 0x12 => #i16 %M [ sb + disp varlen + disp varlen ] ;
+    // WARNING: real EA = disp2 + Mem32[Mem32[MOD+4] + disp1]; the +4 link-table offset and BOTH dereferences must be done in the instruction BODY -- this flat operand address is decode/length only.
     g == 0x16 => #i16 %M [ mod + disp varlen + disp varlen ] ;
     // TOS -- DESTINATION (push) form: SP -= 2, then write [SP].
     g == 0x17 => pre { sp -= 2; } #i16 %M [ sp ] ;
-    g == 0x14 => #i16:be imm ;
+    // Immediate (0x14) is source-only in NS32000 -- you cannot write to a literal; omitted from gen_dst_w.
     g == 0x15 => #i16 %M [ disp varlen ] ;
     g == 0x18 => #i16 %M [ fp + disp varlen ] ;
     g == 0x19 => #i16 %M [ sp + disp varlen ] ;
