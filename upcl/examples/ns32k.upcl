@@ -66,6 +66,68 @@ decoder_operands [
 ];
 
 // ---------------------------------------------------------------------------
+// PSR bit masks. PSR bit layout (LSB first): C=0 T=1 L=2 F=5 Z=6 N=7 U=8 S=9 P=10 I=11.
+// Each const is the one-hot mask for that bit within the 16-bit PSR register.
+const PSR_C = 0x001;   // bit  0 -- carry
+const PSR_T = 0x002;   // bit  1 -- trace
+const PSR_L = 0x004;   // bit  2 -- less-than / link (UNSIGNED greater-than result of CMP)
+const PSR_F = 0x020;   // bit  5 -- floating-point trap / flag (set by TBIT/SBIT/CBIT/IBIT)
+const PSR_Z = 0x040;   // bit  6 -- zero
+const PSR_N = 0x080;   // bit  7 -- negative / signed greater-than result of CMP
+const PSR_U = 0x100;   // bit  8 -- user mode
+const PSR_S = 0x200;   // bit  9 -- stack-switched by trap
+const PSR_P = 0x400;   // bit 10 -- parity error
+const PSR_I = 0x800;   // bit 11 -- interrupt enable
+
+// ---------------------------------------------------------------------------
+// Opcode seeds for Tasks 7-9 (data-movement / ALU / logical / shift / bit /
+// bit-field / string / BCD / array).  Format byte constants:
+const FMT6_BYTE = 0x4e;   // Format 6 selector byte (NEG/ABS/COM/NOT/ROT/ASH/LSH/BIT/BCD/...)
+const FMT7_BYTE = 0xce;   // Format 7 selector byte (MUL/QUO/REM/DIV/MOD/DEI/MEI/MOVZ/MOVX/EXTS/INSS)
+const FMT8_BYTE = 0x6e;   // Format 8-variant selector byte (FFS, CVTP)
+const FMT5_BYTE = 0x0e;   // Format 5 selector byte (string instructions)
+
+// Format 4 (16-bit) op4 codes (instruction group select field, 4 bits):
+const OP4_ADD  = 0x0;   // ADD  -- addb/addw/addd
+const OP4_CMP  = 0x1;   // CMP  -- cmpb/cmpw/cmpd (non-conventional flags)
+const OP4_BIC  = 0x2;   // BIC  -- bicb/bicw/bicd (dst &~ src)
+const OP4_CBIT = 0x2;   // CBIT -- cbitb/cbitw/cbitd (Format 6) -- shares value with BIC
+const OP4_CBITI= 0x3;   // CBITI-- cbitib/cbitiw/cbitid (Format 6, interlocked)
+const OP4_ADDC = 0x4;   // ADDC -- addcb/addcw/addcd (add with carry)
+const OP4_MOV  = 0x5;   // MOV  -- movb/movw/movd (also MOVZBW in Fmt7)
+const OP4_OR   = 0x6;   // OR   -- orb/orw/ord; also SBIT (Fmt6) -- shares value
+const OP4_SBIT = 0x6;   // SBIT -- sbitb/sbitw/sbitd (Format 6)
+const OP4_SBITI= 0x7;   // SBITI-- sbitib/sbitiw/sbitid (Format 6, interlocked)
+const OP4_NEG  = 0x8;   // NEG  -- negb/negw/negd (Format 6); MUL (Format 7)
+const OP4_MUL  = 0x8;   // MUL  -- mulb/mulw/muld (Format 7)
+const OP4_ADDR = 0x9;   // ADDR -- addr (D form only); MEI (Format 7); NOT (Format 6)
+const OP4_MEI  = 0x9;   // MEI  -- meib/meiw/meid (Format 7)
+const OP4_NOT  = 0x9;   // NOT  -- notb/notw/notd (Format 6)
+const OP4_AND  = 0xa;   // AND  -- andb/andw/andd
+const OP4_DEI  = 0xb;   // DEI  -- deib/deiw/deid (Format 7); SUBP (Format 6)
+const OP4_SUBP = 0xb;   // SUBP -- subpb/subpw/subpd (Format 6 BCD)
+const OP4_ABS  = 0xc;   // ABS  -- absb/absw/absd (Format 6); QUO (Format 7)
+const OP4_QUO  = 0xc;   // QUO  -- quob/quow/quod (Format 7)
+const OP4_COM  = 0xd;   // COM  -- comb/comw/comd (Format 6); REM (Format 7); TBIT (Fmt4)
+const OP4_TBIT = 0xd;   // TBIT -- tbitb/tbitw/tbitd (Format 4)
+const OP4_REM  = 0xd;   // REM  -- remb/remw/remd (Format 7)
+const OP4_IBIT = 0xe;   // IBIT -- ibitb/ibitw/ibitd (Format 6); MOD (Format 7)
+const OP4_MOD  = 0xe;   // MOD  -- modb/modw/modd (Format 7)
+const OP4_XOR  = 0xe;   // XOR  -- xorb/xorw/xord (Format 4) -- shares value with IBIT/MOD
+const OP4_SUBC = 0xc;   // SUBC -- subcb/subcw/subcd (Format 4) -- shares value with ABS/QUO
+const OP4_DIV  = 0xf;   // DIV  -- divb/divw/divd (Format 7); ADDP (Format 6)
+const OP4_ADDP = 0xf;   // ADDP -- addpb/addpw/addpd (Format 6 BCD)
+const OP4_SUB  = 0x8;   // SUB  -- subb/subw/subd (Format 4) -- shares value with NEG/MUL
+
+// Format 2 op5 codes (5-bit field):
+const OP5_ADDQ = 0x3;    // ADDQ -- addqb/addqw/addqd
+const OP5_CMPQ = 0x7;    // CMPQ -- cmpqb/cmpqw/cmpqd (non-conventional flags)
+const OP5_MOVQ = 0x17;   // MOVQ -- movqb/movqw/movqd
+
+// Format 6 FFS/CVTP (fmt byte 0x6e) op4 codes:
+const OP4_FFS  = 0x1;    // FFS  -- ffsb/ffsw/ffsd (Format 6, 0x6e)
+
+// ---------------------------------------------------------------------------
 // Symbolic constants for the control-transfer section (Task 10). Every magic number the
 // Bcond table, the Format-1/2/3 opcode seeds, and the trap vectors would otherwise carry
 // is named here, so the encodings read against their architectural meaning rather than
@@ -446,65 +508,65 @@ insn _probe : encode #i8 ( op:3 = 0x0, g:5 -> src @gen(g) ),
 // binutils seeds: addb=0x00 addw=0x01 addd=0x03 -> op=0x0, i in {00,01,11}; etc.).
 // ---------------------------------------------------------------------------
 
-// MOVi: dst = src (op4 = 0x5; movb=0x14 movw=0x15 movd=0x17). N/Z from the value.
-insn movb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x5, i:2 = 0x0 ),
+// MOVi: dst = src (op4 = OP4_MOV; movb=0x14 movw=0x15 movd=0x17). N/Z from the value.
+insn movb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_MOV, i:2 = 0x0 ),
     disasm ( mnemonic : "movb", operands : src, dst )  => dst = %CC ( src );
-insn movw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x1 ),
+insn movw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_MOV, i:2 = 0x1 ),
     disasm ( mnemonic : "movw", operands : src, dst )  => dst = %CC ( src );
-insn movd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x5, i:2 = 0x3 ),
+insn movd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_MOV, i:2 = 0x3 ),
     disasm ( mnemonic : "movd", operands : src, dst )  => dst = %CC ( src );
 
-// ADDi: dst = dst + src (op4 = 0x0; addb=0x00 addw=0x01 addd=0x03).
-insn addb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x0, i:2 = 0x0 ),
+// ADDi: dst = dst + src (op4 = OP4_ADD; addb=0x00 addw=0x01 addd=0x03).
+insn addb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_ADD, i:2 = 0x0 ),
     disasm ( mnemonic : "addb", operands : src, dst )  => dst = %CC ( dst + src );
-insn addw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x0, i:2 = 0x1 ),
+insn addw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_ADD, i:2 = 0x1 ),
     disasm ( mnemonic : "addw", operands : src, dst )  => dst = %CC ( dst + src );
-insn addd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x0, i:2 = 0x3 ),
+insn addd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_ADD, i:2 = 0x3 ),
     disasm ( mnemonic : "addd", operands : src, dst )  => dst = %CC ( dst + src );
 
-// ADDCi: dst = dst + src + carry (op4 = 0x4; addcb=0x10 addcw=0x11 addcd=0x13).
-insn addcb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x4, i:2 = 0x0 ),
+// ADDCi: dst = dst + src + carry (op4 = OP4_ADDC; addcb=0x10 addcw=0x11 addcd=0x13).
+insn addcb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_ADDC, i:2 = 0x0 ),
     disasm ( mnemonic : "addcb", operands : src, dst )  => dst = %CC ( dst + src + %C );
-insn addcw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x4, i:2 = 0x1 ),
+insn addcw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_ADDC, i:2 = 0x1 ),
     disasm ( mnemonic : "addcw", operands : src, dst )  => dst = %CC ( dst + src + %C );
-insn addcd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x4, i:2 = 0x3 ),
+insn addcd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_ADDC, i:2 = 0x3 ),
     disasm ( mnemonic : "addcd", operands : src, dst )  => dst = %CC ( dst + src + %C );
 
-// SUBi: dst = dst - src (op4 = 0x8; subb=0x20 subw=0x21 subd=0x23).
-insn subb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x8, i:2 = 0x0 ),
+// SUBi: dst = dst - src (op4 = OP4_SUB; subb=0x20 subw=0x21 subd=0x23).
+insn subb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_SUB, i:2 = 0x0 ),
     disasm ( mnemonic : "subb", operands : src, dst )  => dst = %CC ( dst - src );
-insn subw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x8, i:2 = 0x1 ),
+insn subw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_SUB, i:2 = 0x1 ),
     disasm ( mnemonic : "subw", operands : src, dst )  => dst = %CC ( dst - src );
-insn subd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x8, i:2 = 0x3 ),
+insn subd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_SUB, i:2 = 0x3 ),
     disasm ( mnemonic : "subd", operands : src, dst )  => dst = %CC ( dst - src );
 
-// SUBCi: dst = dst - src - carry (op4 = 0xc; subcb=0x30 subcw=0x31 subcd=0x33).
-insn subcb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xc, i:2 = 0x0 ),
+// SUBCi: dst = dst - src - carry (op4 = OP4_SUBC; subcb=0x30 subcw=0x31 subcd=0x33).
+insn subcb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_SUBC, i:2 = 0x0 ),
     disasm ( mnemonic : "subcb", operands : src, dst )  => dst = %CC ( dst - src - %C );
-insn subcw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xc, i:2 = 0x1 ),
+insn subcw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_SUBC, i:2 = 0x1 ),
     disasm ( mnemonic : "subcw", operands : src, dst )  => dst = %CC ( dst - src - %C );
-insn subcd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xc, i:2 = 0x3 ),
+insn subcd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_SUBC, i:2 = 0x3 ),
     disasm ( mnemonic : "subcd", operands : src, dst )  => dst = %CC ( dst - src - %C );
 
 // CMPi src1, src2 -- NON-CONVENTIONAL. Z = (src1 == src2); N = SIGNED greater-than;
-// L (PSR bit 2) = UNSIGNED greater-than. (op4 = 0x1; cmpb=0x04 cmpw=0x05 cmpd=0x07.)
+// L (PSR bit 2) = UNSIGNED greater-than. (op4 = OP4_CMP; cmpb=0x04 cmpw=0x05 cmpd=0x07.)
 // gen1 = src1 (first/source), gen2 = src2; neither is written.
-insn cmpb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_b(gen2), op:4 = 0x1, i:2 = 0x0 ),
+insn cmpb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_b(gen2), op:4 = OP4_CMP, i:2 = 0x0 ),
     disasm ( mnemonic : "cmpb", operands : src, dst )
     { %Z = ( src == dst ) ? 1 : 0; %N = ( %S ( src ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( src ) > %U ( dst ) ) ? 0x4 : 0 ); }
-insn cmpw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_w(gen2), op:4 = 0x1, i:2 = 0x1 ),
+      psr = ( psr &~ PSR_L ) | ( ( %U ( src ) > %U ( dst ) ) ? PSR_L : 0 ); }
+insn cmpw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_w(gen2), op:4 = OP4_CMP, i:2 = 0x1 ),
     disasm ( mnemonic : "cmpw", operands : src, dst )
     { %Z = ( src == dst ) ? 1 : 0; %N = ( %S ( src ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( src ) > %U ( dst ) ) ? 0x4 : 0 ); }
-insn cmpd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),   op:4 = 0x1, i:2 = 0x3 ),
+      psr = ( psr &~ PSR_L ) | ( ( %U ( src ) > %U ( dst ) ) ? PSR_L : 0 ); }
+insn cmpd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),   op:4 = OP4_CMP, i:2 = 0x3 ),
     disasm ( mnemonic : "cmpd", operands : src, dst )
     { %Z = ( src == dst ) ? 1 : 0; %N = ( %S ( src ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( src ) > %U ( dst ) ) ? 0x4 : 0 ); }
+      psr = ( psr &~ PSR_L ) | ( ( %U ( src ) > %U ( dst ) ) ? PSR_L : 0 ); }
 
-// ADDR: dst = effective address of src (op4 = 0x9, D form only; addr=0x27). The SOURCE
+// ADDR: dst = effective address of src (op4 = OP4_ADDR, D form only; addr=0x27). The SOURCE
 // is an address-form operand (no immediate); @lea yields its EA, not its contents.
-insn addr : encode #i16 ( gen1:5 -> src @gen(gen1), gen2:5 -> dst @gen_dst(gen2), op:4 = 0x9, i:2 = 0x3 ),
+insn addr : encode #i16 ( gen1:5 -> src @gen(gen1), gen2:5 -> dst @gen_dst(gen2), op:4 = OP4_ADDR, i:2 = 0x3 ),
     disasm ( mnemonic : "addr", operands : src, dst )  => dst = @lea ( src );
 
 // ---------------------------------------------------------------------------
@@ -513,37 +575,37 @@ insn addr : encode #i16 ( gen1:5 -> src @gen(gen1), gen2:5 -> dst @gen_dst(gen2)
 // cmpq=0x1c/1d/1f -> op5=0x7, movq=0x5c/5d/5f -> op5=0x17.
 // ---------------------------------------------------------------------------
 
-// MOVQi: dst = sign-extended quick (op5 = 0x17).
-insn movqb : encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, op:5 = 0x17, i:2 = 0x0 ),
+// MOVQi: dst = sign-extended quick (op5 = OP5_MOVQ).
+insn movqb : encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, op:5 = OP5_MOVQ, i:2 = 0x0 ),
     disasm ( mnemonic : "movqb", operands : quick, dst )  => dst = %CC ( #i8 %S ( quick ) );
-insn movqw : encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, op:5 = 0x17, i:2 = 0x1 ),
+insn movqw : encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, op:5 = OP5_MOVQ, i:2 = 0x1 ),
     disasm ( mnemonic : "movqw", operands : quick, dst )  => dst = %CC ( #i16 %S ( quick ) );
-insn movqd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2),   quick:4 -> quick, op:5 = 0x17, i:2 = 0x3 ),
+insn movqd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2),   quick:4 -> quick, op:5 = OP5_MOVQ, i:2 = 0x3 ),
     disasm ( mnemonic : "movqd", operands : quick, dst )  => dst = %CC ( #i32 %S ( quick ) );
 
-// ADDQi: dst = dst + sign-extended quick (op5 = 0x3).
-insn addqb : encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, op:5 = 0x3, i:2 = 0x0 ),
+// ADDQi: dst = dst + sign-extended quick (op5 = OP5_ADDQ).
+insn addqb : encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, op:5 = OP5_ADDQ, i:2 = 0x0 ),
     disasm ( mnemonic : "addqb", operands : quick, dst )  => dst = %CC ( dst + #i8 %S ( quick ) );
-insn addqw : encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, op:5 = 0x3, i:2 = 0x1 ),
+insn addqw : encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, op:5 = OP5_ADDQ, i:2 = 0x1 ),
     disasm ( mnemonic : "addqw", operands : quick, dst )  => dst = %CC ( dst + #i16 %S ( quick ) );
-insn addqd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2),   quick:4 -> quick, op:5 = 0x3, i:2 = 0x3 ),
+insn addqd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2),   quick:4 -> quick, op:5 = OP5_ADDQ, i:2 = 0x3 ),
     disasm ( mnemonic : "addqd", operands : quick, dst )  => dst = %CC ( dst + #i32 %S ( quick ) );
 
-// CMPQi: compare dst against sign-extended quick (op5 = 0x7). NON-CONVENTIONAL flags,
+// CMPQi: compare dst against sign-extended quick (op5 = OP5_CMPQ). NON-CONVENTIONAL flags,
 // as CMPi: Z = equal, N = signed greater, L = unsigned greater. Here src1 = quick,
 // src2 = dst (binutils operand order "2D1q": gen is operand 2, quick is operand 1).
-insn cmpqb : encode #i16 ( gen2:5 -> dst @gen_b(gen2), quick:4 -> quick, op:5 = 0x7, i:2 = 0x0 ),
+insn cmpqb : encode #i16 ( gen2:5 -> dst @gen_b(gen2), quick:4 -> quick, op:5 = OP5_CMPQ, i:2 = 0x0 ),
     disasm ( mnemonic : "cmpqb", operands : quick, dst )
     { #i8 q = %S ( quick ); %Z = ( q == dst ) ? 1 : 0; %N = ( %S ( q ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( q ) > %U ( dst ) ) ? 0x4 : 0 ); }
-insn cmpqw : encode #i16 ( gen2:5 -> dst @gen_w(gen2), quick:4 -> quick, op:5 = 0x7, i:2 = 0x1 ),
+      psr = ( psr &~ PSR_L ) | ( ( %U ( q ) > %U ( dst ) ) ? PSR_L : 0 ); }
+insn cmpqw : encode #i16 ( gen2:5 -> dst @gen_w(gen2), quick:4 -> quick, op:5 = OP5_CMPQ, i:2 = 0x1 ),
     disasm ( mnemonic : "cmpqw", operands : quick, dst )
     { #i16 q = %S ( quick ); %Z = ( q == dst ) ? 1 : 0; %N = ( %S ( q ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( q ) > %U ( dst ) ) ? 0x4 : 0 ); }
-insn cmpqd : encode #i16 ( gen2:5 -> dst @gen(gen2), quick:4 -> quick, op:5 = 0x7, i:2 = 0x3 ),
+      psr = ( psr &~ PSR_L ) | ( ( %U ( q ) > %U ( dst ) ) ? PSR_L : 0 ); }
+insn cmpqd : encode #i16 ( gen2:5 -> dst @gen(gen2), quick:4 -> quick, op:5 = OP5_CMPQ, i:2 = 0x3 ),
     disasm ( mnemonic : "cmpqd", operands : quick, dst )
     { #i32 q = %S ( quick ); %Z = ( q == dst ) ? 1 : 0; %N = ( %S ( q ) > %S ( dst ) ) ? 1 : 0;
-      psr = ( psr &~ 0x4 ) | ( ( %U ( q ) > %U ( dst ) ) ? 0x4 : 0 ); }
+      psr = ( psr &~ PSR_L ) | ( ( %U ( q ) > %U ( dst ) ) ? PSR_L : 0 ); }
 
 // ---------------------------------------------------------------------------
 // Format 6 -- one-operand-style ALU (fmt byte 0x4e). NEG/ABS/COM/NOT. Two gen
@@ -551,20 +613,20 @@ insn cmpqd : encode #i16 ( gen2:5 -> dst @gen(gen2), quick:4 -> quick, op:5 = 0x
 // op4=0xc; comb=0x344e -> op4=0xd; notb=0x244e -> op4=0x9).
 // ---------------------------------------------------------------------------
 
-// NEGi: dst = -src (op4 = 0x8).
-insn negb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x8, i:2 = 0x0, fmt:8 = 0x4e ),
+// NEGi: dst = -src (op4 = OP4_NEG).
+insn negb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_NEG, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "negb", operands : src, dst )  => dst = %CC ( 0 - src );
-insn negw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x8, i:2 = 0x1, fmt:8 = 0x4e ),
+insn negw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_NEG, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "negw", operands : src, dst )  => dst = %CC ( 0 - src );
-insn negd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x8, i:2 = 0x3, fmt:8 = 0x4e ),
+insn negd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_NEG, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "negd", operands : src, dst )  => dst = %CC ( 0 - src );
 
-// ABSi: dst = |src| (signed absolute value; op4 = 0xc).
-insn absb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xc, i:2 = 0x0, fmt:8 = 0x4e ),
+// ABSi: dst = |src| (signed absolute value; op4 = OP4_ABS).
+insn absb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_ABS, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "absb", operands : src, dst )  => dst = %CC ( ( %S ( src ) < 0 ) ? ( 0 - src ) : src );
-insn absw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xc, i:2 = 0x1, fmt:8 = 0x4e ),
+insn absw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_ABS, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "absw", operands : src, dst )  => dst = %CC ( ( %S ( src ) < 0 ) ? ( 0 - src ) : src );
-insn absd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xc, i:2 = 0x3, fmt:8 = 0x4e ),
+insn absd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_ABS, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "absd", operands : src, dst )  => dst = %CC ( ( %S ( src ) < 0 ) ? ( 0 - src ) : src );
 
 // ---------------------------------------------------------------------------
@@ -573,56 +635,56 @@ insn absd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen
 // divb=0x3cce -> 0xf; modb=0x38ce -> 0xe; deib=0x2cce -> 0xb; meib=0x24ce -> 0x9).
 // ---------------------------------------------------------------------------
 
-// MULi: dst = dst * src (op4 = 0x8).
-insn mulb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x8, i:2 = 0x0, fmt:8 = 0xce ),
+// MULi: dst = dst * src (op4 = OP4_MUL).
+insn mulb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_MUL, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "mulb", operands : src, dst )  => dst = %CC ( dst * src );
-insn mulw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x8, i:2 = 0x1, fmt:8 = 0xce ),
+insn mulw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_MUL, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "mulw", operands : src, dst )  => dst = %CC ( dst * src );
-insn muld : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x8, i:2 = 0x3, fmt:8 = 0xce ),
+insn muld : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_MUL, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "muld", operands : src, dst )  => dst = %CC ( dst * src );
 
-// QUOi: dst = dst / src, signed, truncated toward zero (op4 = 0xc).
-insn quob : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xc, i:2 = 0x0, fmt:8 = 0xce ),
+// QUOi: dst = dst / src, signed, truncated toward zero (op4 = OP4_QUO).
+insn quob : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_QUO, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "quob", operands : src, dst )  => dst = %CC ( %S ( dst ) / %S ( src ) );
-insn quow : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xc, i:2 = 0x1, fmt:8 = 0xce ),
+insn quow : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_QUO, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "quow", operands : src, dst )  => dst = %CC ( %S ( dst ) / %S ( src ) );
-insn quod : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xc, i:2 = 0x3, fmt:8 = 0xce ),
+insn quod : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_QUO, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "quod", operands : src, dst )  => dst = %CC ( %S ( dst ) / %S ( src ) );
 
-// REMi: dst = dst % src (remainder of the QUO truncated division; op4 = 0xd).
-insn remb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xd, i:2 = 0x0, fmt:8 = 0xce ),
+// REMi: dst = dst % src (remainder of the QUO truncated division; op4 = OP4_REM).
+insn remb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_REM, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "remb", operands : src, dst )  => dst = %CC ( %S ( dst ) % %S ( src ) );
-insn remw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xd, i:2 = 0x1, fmt:8 = 0xce ),
+insn remw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_REM, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "remw", operands : src, dst )  => dst = %CC ( %S ( dst ) % %S ( src ) );
-insn remd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xd, i:2 = 0x3, fmt:8 = 0xce ),
+insn remd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_REM, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "remd", operands : src, dst )  => dst = %CC ( %S ( dst ) % %S ( src ) );
 
-// DIVi: dst = dst / src, signed, FLOORED toward negative infinity (op4 = 0xf). The
+// DIVi: dst = dst / src, signed, FLOORED toward negative infinity (op4 = OP4_DIV). The
 // NS32000 DIV rounds toward -inf (unlike QUO which truncates toward zero).
-insn divb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xf, i:2 = 0x0, fmt:8 = 0xce ),
+insn divb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_DIV, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "divb", operands : src, dst )
     { #i8 n = dst; #i8 d = src; #i8 q = %S ( n ) / %S ( d ); #i8 r = %S ( n ) % %S ( d );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( d ) < 0 ) ) ) ? ( q - 1 ) : q ); }
-insn divw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xf, i:2 = 0x1, fmt:8 = 0xce ),
+insn divw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_DIV, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "divw", operands : src, dst )
     { #i16 n = dst; #i16 d = src; #i16 q = %S ( n ) / %S ( d ); #i16 r = %S ( n ) % %S ( d );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( d ) < 0 ) ) ) ? ( q - 1 ) : q ); }
-insn divd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xf, i:2 = 0x3, fmt:8 = 0xce ),
+insn divd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_DIV, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "divd", operands : src, dst )
     { #i32 n = dst; #i32 d = src; #i32 q = %S ( n ) / %S ( d ); #i32 r = %S ( n ) % %S ( d );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( d ) < 0 ) ) ) ? ( q - 1 ) : q ); }
 
 // MODi: dst = dst MOD src -- the modulus matching DIV's floored division, so the
-// remainder takes the SIGN OF THE DIVISOR (op4 = 0xe).
-insn modb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xe, i:2 = 0x0, fmt:8 = 0xce ),
+// remainder takes the SIGN OF THE DIVISOR (op4 = OP4_MOD).
+insn modb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_MOD, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "modb", operands : src, dst )
     { #i8 r = %S ( dst ) % %S ( src );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( src ) < 0 ) ) ) ? ( r + src ) : r ); }
-insn modw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xe, i:2 = 0x1, fmt:8 = 0xce ),
+insn modw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_MOD, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "modw", operands : src, dst )
     { #i16 r = %S ( dst ) % %S ( src );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( src ) < 0 ) ) ) ? ( r + src ) : r ); }
-insn modd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xe, i:2 = 0x3, fmt:8 = 0xce ),
+insn modd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_MOD, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "modd", operands : src, dst )
     { #i32 r = %S ( dst ) % %S ( src );
       dst = %CC ( ( ( r != 0 ) && ( ( %S ( r ) < 0 ) != ( %S ( src ) < 0 ) ) ) ? ( r + src ) : r ); }
@@ -632,15 +694,15 @@ insn modd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen
 // quotient goes to dst|1 and the remainder to dst (op4 = 0xb). Modelled for the
 // register-direct dst form (the only form that names a usable pair); `dst` is the
 // register the gen mode selected. (NS32000 PRM sec. 4: DEI is UNSIGNED.)
-insn deib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xb, i:2 = 0x0, fmt:8 = 0xce ),
+insn deib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_DEI, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "deib", operands : src, dst )
     { #i16 num = ( ( %REG[ R, gen2 | 1 ] & 0xff ) << 8 ) | ( dst & 0xff ); #i16 d = src & 0xff;
       dst = num % d; %REG[ R, gen2 | 1 ] = num / d; }
-insn deiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xb, i:2 = 0x1, fmt:8 = 0xce ),
+insn deiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_DEI, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "deiw", operands : src, dst )
     { #i32 num = ( ( %REG[ R, gen2 | 1 ] & 0xffff ) << 16 ) | ( dst & 0xffff ); #i32 d = src & 0xffff;
       dst = num % d; %REG[ R, gen2 | 1 ] = num / d; }
-insn deid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xb, i:2 = 0x3, fmt:8 = 0xce ),
+insn deid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_DEI, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "deid", operands : src, dst )
     { #i64 num = ( ( %REG[ R, gen2 | 1 ] & 0xffffffff ) << 32 ) | ( dst & 0xffffffff ); #i64 d = src & 0xffffffff;
       dst = num % d; %REG[ R, gen2 | 1 ] = num / d; }
@@ -648,33 +710,33 @@ insn deid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen
 // MEIi -- extended (unsigned) MULTIPLY: dst * src yields a double-width product whose
 // low half goes to dst and high half to the register dst|1 (op4 = 0x9). Modelled for
 // the register-direct dst form. (NS32000 PRM sec. 4: MEI is UNSIGNED.)
-insn meib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x9, i:2 = 0x0, fmt:8 = 0xce ),
+insn meib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_MEI, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "meib", operands : src, dst )
     { #i16 p = ( dst & 0xff ) * ( src & 0xff ); dst = p & 0xff; %REG[ R, gen2 | 1 ] = ( p >> 8 ) & 0xff; }
-insn meiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x9, i:2 = 0x1, fmt:8 = 0xce ),
+insn meiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_MEI, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "meiw", operands : src, dst )
     { #i32 p = ( dst & 0xffff ) * ( src & 0xffff ); dst = p & 0xffff; %REG[ R, gen2 | 1 ] = ( p >> 16 ) & 0xffff; }
-insn meid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x9, i:2 = 0x3, fmt:8 = 0xce ),
+insn meid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_MEI, i:2 = 0x3, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "meid", operands : src, dst )
     { #i64 p = ( dst & 0xffffffff ) * ( src & 0xffffffff ); dst = p & 0xffffffff; %REG[ R, gen2 | 1 ] = ( p >> 32 ) & 0xffffffff; }
 
 // MOVZiD / MOVZBW -- zero-extend src into a wider dst (Format 7, fmt 0xce). Distinct
 // opcodes per (src,dst) width pair: movzbw=0x14ce (op4=0x5,i=0), movzbd=0x18ce
 // (op4=0x6,i=0), movzwd=0x19ce (op4=0x6,i=1). The dst width is the WIDE form.
-insn movzbw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x0, fmt:8 = 0xce ),
+insn movzbw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movzbw", operands : src, dst )  => dst = %CC ( #i16 ( src & 0xff ) );
-insn movzbd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x0, fmt:8 = 0xce ),
+insn movzbd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movzbd", operands : src, dst )  => dst = %CC ( #i32 ( src & 0xff ) );
-insn movzwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x1, fmt:8 = 0xce ),
+insn movzwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movzwd", operands : src, dst )  => dst = %CC ( #i32 ( src & 0xffff ) );
 
 // MOVXiD / MOVXBW -- sign-extend src into a wider dst (via %S). movxbw=0x10ce
 // (op4=0x4,i=0), movxbd=0x1cce (op4=0x7,i=0), movxwd=0x1dce (op4=0x7,i=1).
-insn movxbw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x4, i:2 = 0x0, fmt:8 = 0xce ),
+insn movxbw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x4, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movxbw", operands : src, dst )  => dst = %CC ( #i16 %S ( src ) );
-insn movxbd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x0, fmt:8 = 0xce ),
+insn movxbd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x0, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movxbd", operands : src, dst )  => dst = %CC ( #i32 %S ( src ) );
-insn movxwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x1, fmt:8 = 0xce ),
+insn movxwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x1, fmt:8 = FMT7_BYTE ),
     disasm ( mnemonic : "movxwd", operands : src, dst )  => dst = %CC ( #i32 %S ( src ) );
 
 // ===========================================================================
@@ -694,51 +756,51 @@ insn movxwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(g
 //   @gen_dst) because the base address is read for addressing but not written.
 // ===========================================================================
 
-// ANDi: dst = dst & src (op4 = 0xa).
-insn andb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xa, i:2 = 0x0 ),
+// ANDi: dst = dst & src (op4 = OP4_AND).
+insn andb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_AND, i:2 = 0x0 ),
     disasm ( mnemonic : "andb", operands : src, dst )  => dst = %CC ( dst & src );
-insn andw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xa, i:2 = 0x1 ),
+insn andw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_AND, i:2 = 0x1 ),
     disasm ( mnemonic : "andw", operands : src, dst )  => dst = %CC ( dst & src );
-insn andd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xa, i:2 = 0x3 ),
+insn andd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_AND, i:2 = 0x3 ),
     disasm ( mnemonic : "andd", operands : src, dst )  => dst = %CC ( dst & src );
 
-// ORi: dst = dst | src (op4 = 0x6).
-insn orb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x6, i:2 = 0x0 ),
+// ORi: dst = dst | src (op4 = OP4_OR).
+insn orb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_OR, i:2 = 0x0 ),
     disasm ( mnemonic : "orb", operands : src, dst )  => dst = %CC ( dst | src );
-insn orw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x6, i:2 = 0x1 ),
+insn orw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_OR, i:2 = 0x1 ),
     disasm ( mnemonic : "orw", operands : src, dst )  => dst = %CC ( dst | src );
-insn ord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x3 ),
+insn ord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_OR, i:2 = 0x3 ),
     disasm ( mnemonic : "ord", operands : src, dst )  => dst = %CC ( dst | src );
 
-// BICi: dst = dst & ~src (bit clear; op4 = 0x2).
-insn bicb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0 ),
+// BICi: dst = dst & ~src (bit clear; op4 = OP4_BIC).
+insn bicb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_BIC, i:2 = 0x0 ),
     disasm ( mnemonic : "bicb", operands : src, dst )  => dst = %CC ( dst &~ src );
-insn bicw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1 ),
+insn bicw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_BIC, i:2 = 0x1 ),
     disasm ( mnemonic : "bicw", operands : src, dst )  => dst = %CC ( dst &~ src );
-insn bicd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3 ),
+insn bicd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_BIC, i:2 = 0x3 ),
     disasm ( mnemonic : "bicd", operands : src, dst )  => dst = %CC ( dst &~ src );
 
-// XORi: dst = dst ^ src (op4 = 0xe).
-insn xorb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xe, i:2 = 0x0 ),
+// XORi: dst = dst ^ src (op4 = OP4_XOR).
+insn xorb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_XOR, i:2 = 0x0 ),
     disasm ( mnemonic : "xorb", operands : src, dst )  => dst = %CC ( dst ^ src );
-insn xorw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xe, i:2 = 0x1 ),
+insn xorw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_XOR, i:2 = 0x1 ),
     disasm ( mnemonic : "xorw", operands : src, dst )  => dst = %CC ( dst ^ src );
-insn xord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xe, i:2 = 0x3 ),
+insn xord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_XOR, i:2 = 0x3 ),
     disasm ( mnemonic : "xord", operands : src, dst )  => dst = %CC ( dst ^ src );
 
-// TBITi: test bit (src = bit-offset, dst = base address; F <- bit value; op4 = 0xd).
+// TBITi: test bit (src = bit-offset, dst = base address; F <- bit value; op4 = OP4_TBIT).
 // Per NS32000 PRM: the addressed bit is (dst + src) where src is a SIGNED bit offset
 // relative to the byte addressed by dst. The F PSR flag (bit 5) is set to the bit value.
 // gen2 is read as address (@gen, not @gen_dst) since only the F flag is written.
-insn tbitb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_b(gen2), op:4 = 0xd, i:2 = 0x0 ),
+insn tbitb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_b(gen2), op:4 = OP4_TBIT, i:2 = 0x0 ),
     disasm ( mnemonic : "tbitb", operands : src, dst )
-    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 7 ) ) & 1 ) ? 0x20 : 0 ); }
-insn tbitw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_w(gen2), op:4 = 0xd, i:2 = 0x1 ),
+    { psr = ( psr &~ PSR_F ) | ( ( ( dst >> ( src & 7 ) ) & 1 ) ? PSR_F : 0 ); }
+insn tbitw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_w(gen2), op:4 = OP4_TBIT, i:2 = 0x1 ),
     disasm ( mnemonic : "tbitw", operands : src, dst )
-    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 15 ) ) & 1 ) ? 0x20 : 0 ); }
-insn tbitd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),   op:4 = 0xd, i:2 = 0x3 ),
+    { psr = ( psr &~ PSR_F ) | ( ( ( dst >> ( src & 15 ) ) & 1 ) ? PSR_F : 0 ); }
+insn tbitd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),   op:4 = OP4_TBIT, i:2 = 0x3 ),
     disasm ( mnemonic : "tbitd", operands : src, dst )
-    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 31 ) ) & 1 ) ? 0x20 : 0 ); }
+    { psr = ( psr &~ PSR_F ) | ( ( ( dst >> ( src & 31 ) ) & 1 ) ? PSR_F : 0 ); }
 
 // ===========================================================================
 // SHIFT/ROTATE instructions (NS32000 Format 6, 24-bit, fmt byte 0x4e).
@@ -761,40 +823,40 @@ insn tbitd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),
 // Masking with (width-1) normalises the signed count to 0..(width-1), which is
 // always non-negative, so a single left-rotate suffices (rot right by k equals
 // rot left by width-k, which the mask already expresses).
-insn rotb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x0, i:2 = 0x0, fmt:8 = 0x4e ),
+insn rotb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x0, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "rotb", operands : src, dst )
     { #i8 cnt = %S ( src ) & 7;
       dst = %CC ( ( dst << cnt ) | ( dst >> ( 8 - cnt ) ) ); }
-insn rotw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x0, i:2 = 0x1, fmt:8 = 0x4e ),
+insn rotw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x0, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "rotw", operands : src, dst )
     { #i8 cnt = %S ( src ) & 15;
       dst = %CC ( ( dst << cnt ) | ( dst >> ( 16 - cnt ) ) ); }
-insn rotd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x0, i:2 = 0x3, fmt:8 = 0x4e ),
+insn rotd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x0, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "rotd", operands : src, dst )
     { #i8 cnt = %S ( src ) & 31;
       dst = %CC ( ( dst << cnt ) | ( dst >> ( 32 - cnt ) ) ); }
 
 // ASHi: arithmetic shift dst by src (signed byte count; op4 = 0x1).
 // Positive count = shift left; negative count = arithmetic right shift.
-insn ashb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x1, i:2 = 0x0, fmt:8 = 0x4e ),
+insn ashb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x1, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ashb", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i8 %S ( dst ) >> ( 0 - cnt ) ) ); }
-insn ashw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = 0x4e ),
+insn ashw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ashw", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i16 %S ( dst ) >> ( 0 - cnt ) ) ); }
-insn ashd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = 0x4e ),
+insn ashd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ashd", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i32 %S ( dst ) >> ( 0 - cnt ) ) ); }
 
 // LSHi: logical shift dst by src (signed byte count; op4 = 0x5).
 // Positive = left shift (zero-fill right); negative = logical right shift (zero-fill left).
-insn lshb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x5, i:2 = 0x0, fmt:8 = 0x4e ),
+insn lshb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x5, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "lshb", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
-insn lshw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x1, fmt:8 = 0x4e ),
+insn lshw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "lshw", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
-insn lshd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x5, i:2 = 0x3, fmt:8 = 0x4e ),
+insn lshd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x5, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "lshd", operands : src, dst )
     { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
 
@@ -810,20 +872,20 @@ insn lshd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen
 //   operand; the general form used here matches the PRM (any non-zero -> 0, zero -> 1).
 // ===========================================================================
 
-// COMi: dst = ~src (op4 = 0xd).
-insn comb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xd, i:2 = 0x0, fmt:8 = 0x4e ),
+// COMi: dst = ~src (op4 = OP4_COM).
+insn comb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_COM, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "comb", operands : src, dst )  => dst = %CC ( ~src );
-insn comw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xd, i:2 = 0x1, fmt:8 = 0x4e ),
+insn comw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_COM, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "comw", operands : src, dst )  => dst = %CC ( ~src );
-insn comd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xd, i:2 = 0x3, fmt:8 = 0x4e ),
+insn comd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_COM, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "comd", operands : src, dst )  => dst = %CC ( ~src );
 
-// NOTi: dst = (src == 0) ? 1 : 0  (boolean NOT; op4 = 0x9).
-insn notb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x9, i:2 = 0x0, fmt:8 = 0x4e ),
+// NOTi: dst = (src == 0) ? 1 : 0  (boolean NOT; op4 = OP4_NOT).
+insn notb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_NOT, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "notb", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
-insn notw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x9, i:2 = 0x1, fmt:8 = 0x4e ),
+insn notw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_NOT, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "notw", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
-insn notd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x9, i:2 = 0x3, fmt:8 = 0x4e ),
+insn notd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_NOT, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "notd", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
 
 // ===========================================================================
@@ -855,89 +917,89 @@ insn notd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen
 // the bit-offset (@gen, read-only).
 // ===========================================================================
 
-// SBITi: F = bit; bit = 1 (set bit; op4 = 0x6).
-insn sbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x6, i:2 = 0x0, fmt:8 = 0x4e ),
+// SBITi: F = bit; bit = 1 (set bit; op4 = OP4_SBIT).
+insn sbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_SBIT, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitb", operands : src, dst )
     { #i8 bit = ( src & 7 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
-insn sbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x6, i:2 = 0x1, fmt:8 = 0x4e ),
+insn sbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_SBIT, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitw", operands : src, dst )
     { #i8 bit = ( src & 15 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
-insn sbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x3, fmt:8 = 0x4e ),
+insn sbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_SBIT, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitd", operands : src, dst )
     { #i8 bit = ( src & 31 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
 
-// CBITi: F = bit; bit = 0 (clear bit; op4 = 0x2).
-insn cbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0x4e ),
+// CBITi: F = bit; bit = 0 (clear bit; op4 = OP4_CBIT).
+insn cbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_CBIT, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitb", operands : src, dst )
     { #i8 bit = ( src & 7 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
-insn cbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0x4e ),
+insn cbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_CBIT, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitw", operands : src, dst )
     { #i8 bit = ( src & 15 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
-insn cbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0x4e ),
+insn cbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_CBIT, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitd", operands : src, dst )
     { #i8 bit = ( src & 31 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
 
-// IBITi: F = bit; bit = ~bit (invert bit; op4 = 0xe).
-insn ibitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xe, i:2 = 0x0, fmt:8 = 0x4e ),
+// IBITi: F = bit; bit = ~bit (invert bit; op4 = OP4_IBIT).
+insn ibitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_IBIT, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ibitb", operands : src, dst )
     { #i8 bit = ( src & 7 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst ^ ( 1 << bit ); }
-insn ibitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xe, i:2 = 0x1, fmt:8 = 0x4e ),
+insn ibitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_IBIT, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ibitw", operands : src, dst )
     { #i8 bit = ( src & 15 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst ^ ( 1 << bit ); }
-insn ibitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xe, i:2 = 0x3, fmt:8 = 0x4e ),
+insn ibitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_IBIT, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "ibitd", operands : src, dst )
     { #i8 bit = ( src & 31 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst ^ ( 1 << bit ); }
 
-// SBITIi: interlocked (atomic) set bit -- semantics identical to SBITi (op4 = 0x7).
-insn sbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x7, i:2 = 0x0, fmt:8 = 0x4e ),
+// SBITIi: interlocked (atomic) set bit -- semantics identical to SBITi (op4 = OP4_SBITI).
+insn sbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_SBITI, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitib", operands : src, dst )
     { #i8 bit = ( src & 7 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
-insn sbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x7, i:2 = 0x1, fmt:8 = 0x4e ),
+insn sbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_SBITI, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitiw", operands : src, dst )
     { #i8 bit = ( src & 15 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
-insn sbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x3, fmt:8 = 0x4e ),
+insn sbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_SBITI, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "sbitid", operands : src, dst )
     { #i8 bit = ( src & 31 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst | ( 1 << bit ); }
 
-// CBITIi: interlocked (atomic) clear bit -- semantics identical to CBITi (op4 = 0x3).
-insn cbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0x4e ),
+// CBITIi: interlocked (atomic) clear bit -- semantics identical to CBITi (op4 = OP4_CBITI).
+insn cbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_CBITI, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitib", operands : src, dst )
     { #i8 bit = ( src & 7 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
-insn cbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0x4e ),
+insn cbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_CBITI, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitiw", operands : src, dst )
     { #i8 bit = ( src & 15 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
-insn cbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0x4e ),
+insn cbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_CBITI, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "cbitid", operands : src, dst )
     { #i8 bit = ( src & 31 );
-      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      psr = ( psr &~ PSR_F ) | ( ( ( dst >> bit ) & 1 ) ? PSR_F : 0 );
       dst = dst &~ ( 1 << bit ); }
 
 // ===========================================================================
@@ -977,7 +1039,7 @@ insn cbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(g
 // FFS semantics: scan src from bit 0; dst = first '1' position, or width if none.
 // The body uses a sequence of guarded assignments to accumulate the lowest set bit
 // index without deep ternary nesting (UPCL expression depth is limited).
-insn ffsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x1, i:2 = 0x0, fmt:8 = 0x6e ),
+insn ffsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_FFS, i:2 = 0x0, fmt:8 = FMT8_BYTE ),
     disasm ( mnemonic : "ffsb", operands : src, dst )
     { #i8 v = src & 0xff;
       %Z = ( v == 0 ) ? 1 : 0;
@@ -990,7 +1052,7 @@ insn ffsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(g
       dst = ( ( v & 0x04 ) != 0 ) ? 2 : dst;
       dst = ( ( v & 0x02 ) != 0 ) ? 1 : dst;
       dst = ( ( v & 0x01 ) != 0 ) ? 0 : dst; }
-insn ffsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = 0x6e ),
+insn ffsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_FFS, i:2 = 0x1, fmt:8 = FMT8_BYTE ),
     disasm ( mnemonic : "ffsw", operands : src, dst )
     { #i16 v = src & 0xffff;
       %Z = ( v == 0 ) ? 1 : 0;
@@ -1011,7 +1073,7 @@ insn ffsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(g
       dst = ( ( v & 0x0004 ) != 0 ) ?  2 : dst;
       dst = ( ( v & 0x0002 ) != 0 ) ?  1 : dst;
       dst = ( ( v & 0x0001 ) != 0 ) ?  0 : dst; }
-insn ffsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = 0x6e ),
+insn ffsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_FFS, i:2 = 0x3, fmt:8 = FMT8_BYTE ),
     disasm ( mnemonic : "ffsd", operands : src, dst )
     { #i32 v = src;
       %Z = ( v == 0 ) ? 1 : 0;
@@ -1117,32 +1179,32 @@ insn insd : encode #i24 ( gen2:5 -> src @gen(gen2),   gen1:5 -> dst @gen_dst(gen
 // automatically classifies it as a tail field -- it is consumed AFTER all gen extensions and
 // adds one byte to the decoded instruction length. The offset is (offs_len & 7) and the
 // length is ((offs_len >> 3) & 0x1f) + 1.
-insn extsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn extsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "extsb", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
-insn extsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn extsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "extsw", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
-insn extsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn extsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "extsd", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
 
 // INSSi: insert short bit-field (op4=0x2, fmt=0xce). Same trailing G:5 g:3 byte as EXTSi.
 // The bit-offset is (offs_len & 7) and the length is ((offs_len >> 3) & 0x1f) + 1.
-insn inssb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn inssb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "inssb", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       #i8 mask = ( 1 << len ) - 1;
       dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
-insn inssw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn inssw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "inssw", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       #i16 mask = ( 1 << len ) - 1;
       dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
-insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = FMT7_BYTE, offs_len:8 -> offs_len ),
     disasm ( mnemonic : "inssd", operands : src, dst, offs_len )
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       #i32 mask = ( 1 << len ) - 1;
@@ -1185,137 +1247,137 @@ insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(ge
 // Advance R1, R2 by element width per iteration (backward if opts & 0x1).
 // W/U options stop on match/mismatch of element; PSR.F = 1 if stopped early.
 // (sub=0, T=0, i=0/1/3, base=0x0e)
-insn movsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = 0x0e ),
+insn movsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "movsb", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ];
           if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s != d ) { psr = psr | PSR_F; r0 = 0; }
           } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s == d ) { psr = psr | PSR_F; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
-insn movsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x1, base:8 = 0x0e ),
+insn movsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x1, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "movsw", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ];
           if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s != d ) { psr = psr | PSR_F; r0 = 0; }
           } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s == d ) { psr = psr | PSR_F; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
-insn movsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x3, base:8 = 0x0e ),
+insn movsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x3, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "movsd", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ];
           if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s != d ) { psr = psr | PSR_F; r0 = 0; }
           } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
               %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              if ( s == d ) { psr = psr | PSR_F; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
 
 // MOVSi (translate): same as MOVSi but source element is used as index into translate table
 // at R3; the translated byte is written to [R2]. T=1, sub=0, i=0 (always byte-indexed).
-insn movst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = 0x0e ),
+insn movst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "movst", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
           if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
               %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1;
-              if ( t != d ) { psr = psr | 0x20; r0 = 0; }
+              if ( t != d ) { psr = psr | PSR_F; r0 = 0; }
           } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
               %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1;
-              if ( t == d ) { psr = psr | 0x20; r0 = 0; }
+              if ( t == d ) { psr = psr | PSR_F; r0 = 0; }
           } else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; } } }
 
 // CMPSi: compare string -- compare R0 elements at [R1] vs [R2]; element width = byte/word/double.
 // Advance R1, R2 per iteration. PSR.F = 1 if the loop was terminated early by W/U option.
 // (sub=1, T=0, i=0/1/3, base=0x0e)
-insn cmpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = 0x0e ),
+insn cmpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "cmpsb", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
-insn cmpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x1, base:8 = 0x0e ),
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | PSR_F; r0 = 0; } } } }
+insn cmpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x1, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "cmpsw", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
-insn cmpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x3, base:8 = 0x0e ),
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | PSR_F; r0 = 0; } } } }
+insn cmpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x3, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "cmpsd", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | PSR_F; r0 = 0; } } } }
 
 // CMPSi (translate): compare with R3-based translation. T=1, sub=1, i=0 (byte index).
-insn cmpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = 0x0e ),
+insn cmpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "cmpst", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
           r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( t != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( t == d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( t != d ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( t == d ) { psr = psr | PSR_F; r0 = 0; } } } }
 
 // SKPSi: skip string -- advance R1 (and R2) while/until elements match condition.
 // (sub=3, T=0, i=0/1/3, base=0x0e). PSR.F=1 on early termination (W/U match).
-insn skpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = 0x0e ),
+insn skpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "skpsb", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
-insn skpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x1, base:8 = 0x0e ),
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | PSR_F; r0 = 0; } } } }
+insn skpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x1, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "skpsw", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
-insn skpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x3, base:8 = 0x0e ),
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | PSR_F; r0 = 0; } } } }
+insn skpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x3, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "skpsd", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | PSR_F; r0 = 0; } } } }
 
 // SKPSi (translate): skip with translation through R3 table. T=1, sub=3, i=0 (byte index).
-insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = 0x0e ),
+insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = FMT5_BYTE ),
     disasm ( mnemonic : "skpst", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
-      psr = psr &~ 0x20;
+      psr = psr &~ PSR_F;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x4 ) != 0 ) { if ( t != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
-          else if ( ( opts & 0x2 ) != 0 ) { if ( t == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( t != 0 ) { psr = psr | PSR_F; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( t == 0 ) { psr = psr | PSR_F; r0 = 0; } } } }
 
 // ===========================================================================
 // BCD instructions (NS32000 Format 6, 24-bit, fmt byte 0x4e).
@@ -1334,25 +1396,25 @@ insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, 
 //   SUBPi: subpb=0x2c4e subpw=0x2d4e subpd=0x2f4e -> op4=0xb, i in {0,1,3}, fmt=0x4e
 // ===========================================================================
 
-// ADDPi: dst = dst + src (BCD packed; carry from binary add; op4=0xf).
-insn addpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xf, i:2 = 0x0, fmt:8 = 0x4e ),
+// ADDPi: dst = dst + src (BCD packed; carry from binary add; op4=OP4_ADDP).
+insn addpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_ADDP, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "addpb", operands : src, dst )
     { #i8 res = dst + src + %C; %C = ( ( #i16 ( dst & 0xff ) + ( src & 0xff ) + %C ) > 0xff ) ? 1 : 0; dst = res; }
-insn addpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xf, i:2 = 0x1, fmt:8 = 0x4e ),
+insn addpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_ADDP, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "addpw", operands : src, dst )
     { #i16 res = dst + src + %C; %C = ( ( #i32 ( dst & 0xffff ) + ( src & 0xffff ) + %C ) > 0xffff ) ? 1 : 0; dst = res; }
-insn addpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xf, i:2 = 0x3, fmt:8 = 0x4e ),
+insn addpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_ADDP, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "addpd", operands : src, dst )
     { #i32 res = dst + src + %C; %C = ( ( #i64 ( dst & 0xffffffff ) + ( src & 0xffffffff ) + %C ) > 0xffffffff ) ? 1 : 0; dst = res; }
 
-// SUBPi: dst = dst - src (BCD packed; borrow into carry; op4=0xb).
-insn subpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xb, i:2 = 0x0, fmt:8 = 0x4e ),
+// SUBPi: dst = dst - src (BCD packed; borrow into carry; op4=OP4_SUBP).
+insn subpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = OP4_SUBP, i:2 = 0x0, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "subpb", operands : src, dst )
     { #i8 res = dst - src - %C; %C = ( ( #i16 ( dst & 0xff ) < ( src & 0xff ) + %C ) ) ? 1 : 0; dst = res; }
-insn subpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xb, i:2 = 0x1, fmt:8 = 0x4e ),
+insn subpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = OP4_SUBP, i:2 = 0x1, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "subpw", operands : src, dst )
     { #i16 res = dst - src - %C; %C = ( ( #i32 ( dst & 0xffff ) < ( src & 0xffff ) + %C ) ) ? 1 : 0; dst = res; }
-insn subpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xb, i:2 = 0x3, fmt:8 = 0x4e ),
+insn subpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = OP4_SUBP, i:2 = 0x3, fmt:8 = FMT6_BYTE ),
     disasm ( mnemonic : "subpd", operands : src, dst )
     { #i32 res = dst - src - %C; %C = ( ( #i64 ( dst & 0xffffffff ) < ( src & 0xffffffff ) + %C ) ) ? 1 : 0; dst = res; }
 
@@ -1391,15 +1453,15 @@ insn subpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(ge
 insn checkb : encode #i24 ( gen2:5 -> lo @gen_b(gen2), gen1:5 -> hi @gen_b(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x0ee ),
     disasm ( mnemonic : "checkb", operands : rn, lo, hi )
     { #i8 idx = %REG[ R, rn ] & 0xff;
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xff ) ) || ( %S ( idx ) > %S ( hi & 0xff ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ PSR_F ) | ( ( ( %S ( idx ) < %S ( lo & 0xff ) ) || ( %S ( idx ) > %S ( hi & 0xff ) ) ) ? PSR_F : 0 ); }
 insn checkw : encode #i24 ( gen2:5 -> lo @gen_w(gen2), gen1:5 -> hi @gen_w(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x1ee ),
     disasm ( mnemonic : "checkw", operands : rn, lo, hi )
     { #i16 idx = %REG[ R, rn ] & 0xffff;
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xffff ) ) || ( %S ( idx ) > %S ( hi & 0xffff ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ PSR_F ) | ( ( ( %S ( idx ) < %S ( lo & 0xffff ) ) || ( %S ( idx ) > %S ( hi & 0xffff ) ) ) ? PSR_F : 0 ); }
 insn checkd : encode #i24 ( gen2:5 -> lo @gen(gen2),   gen1:5 -> hi @gen(gen1),   reg:3 -> rn, i:2 = 0x1, base:9 = 0x1ee ),
     disasm ( mnemonic : "checkd", operands : rn, lo, hi )
     { #i32 idx = %REG[ R, rn ];
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo ) ) || ( %S ( idx ) > %S ( hi ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ PSR_F ) | ( ( ( %S ( idx ) < %S ( lo ) ) || ( %S ( idx ) > %S ( hi ) ) ) ? PSR_F : 0 ); }
 
 // INDEXi: R[reg] = R[reg] * (gen1 + 1) + gen2 (array subscript accumulation).
 // Encodings: indexb i_upcl=2 base9=0x02e; indexw i_upcl=2 base9=0x12e; indexd i_upcl=3 base9=0x12e.
@@ -1465,8 +1527,8 @@ addrmode bd_ge ( c ) { c == COND_GE => #i8 %M [ pc + disp varlen ] ; }
 addrmode bd_br ( c ) { c == COND_BR => #i8 %M [ pc + disp varlen ] ; }
 
 // The L flag (PSR bit 2, the UNSIGNED-greater result of CMP) has no %-meta-role, so the
-// conditions that test it read it directly out of `psr` with mask 0x4. The F flag (PSR
-// bit 5) is read with mask 0x20. Z and N use their meta-roles %Z / %N.
+// conditions that test it read it directly out of `psr` with mask PSR_L (0x4). The F flag
+// (PSR bit 5) is read with mask PSR_F (0x20). Z and N use their meta-roles %Z / %N.
 //
 // Bcond cc: pc = cond ? @lea(target) : pc. Each `disp` operand is the PC-relative target.
 jump insn beq : type branch, encode #i8 ( cond:4 -> disp @bd_eq(cond), op:4 = FMT0_SEL ) priority 1,
@@ -1481,12 +1543,18 @@ jump insn bcs : type branch, encode #i8 ( cond:4 -> disp @bd_cs(cond), op:4 = FM
 jump insn bcc : type branch, encode #i8 ( cond:4 -> disp @bd_cc(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bcc", operands : disp )
     { pc = ( %C == 0 ) ? @lea ( disp ) : pc; }
+// BHI/BLS test the L flag (PSR bit 2 = PSR_L). The single-flag form (HI=L, LS=!L) is the
+// manual's condition-table entry and is equivalent to the two-flag (L && !Z) / (!L || Z)
+// test under spec-conformant CMP, which sets Z=1 => L=0 and Z=0 => L reflects the comparison.
 jump insn bhi : type branch, encode #i8 ( cond:4 -> disp @bd_hi(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bhi", operands : disp )
-    { pc = ( ( psr & 0x4 ) != 0 ) ? @lea ( disp ) : pc; }
+    { pc = ( ( psr & PSR_L ) != 0 ) ? @lea ( disp ) : pc; }
 jump insn bls : type branch, encode #i8 ( cond:4 -> disp @bd_ls(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bls", operands : disp )
-    { pc = ( ( psr & 0x4 ) == 0 ) ? @lea ( disp ) : pc; }
+    { pc = ( ( psr & PSR_L ) == 0 ) ? @lea ( disp ) : pc; }
+// BGT/BLE test the N flag (PSR bit 7 = PSR_N). The single-flag form (GT=N, LE=!N) is the
+// manual's condition-table entry and is equivalent to the two-flag (N && !Z) / (!N || Z)
+// test under spec-conformant CMP, which sets Z=1 => N=0 and Z=0 => N reflects the comparison.
 jump insn bgt : type branch, encode #i8 ( cond:4 -> disp @bd_gt(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bgt", operands : disp )
     { pc = ( %N != 0 ) ? @lea ( disp ) : pc; }
@@ -1495,16 +1563,16 @@ jump insn ble : type branch, encode #i8 ( cond:4 -> disp @bd_le(cond), op:4 = FM
     { pc = ( %N == 0 ) ? @lea ( disp ) : pc; }
 jump insn bfs : type branch, encode #i8 ( cond:4 -> disp @bd_fs(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bfs", operands : disp )
-    { pc = ( ( psr & 0x20 ) != 0 ) ? @lea ( disp ) : pc; }
+    { pc = ( ( psr & PSR_F ) != 0 ) ? @lea ( disp ) : pc; }
 jump insn bfc : type branch, encode #i8 ( cond:4 -> disp @bd_fc(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bfc", operands : disp )
-    { pc = ( ( psr & 0x20 ) == 0 ) ? @lea ( disp ) : pc; }
+    { pc = ( ( psr & PSR_F ) == 0 ) ? @lea ( disp ) : pc; }
 jump insn blo : type branch, encode #i8 ( cond:4 -> disp @bd_lo(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "blo", operands : disp )
-    { pc = ( ( ( psr & 0x4 ) == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
+    { pc = ( ( ( psr & PSR_L ) == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
 jump insn bhs : type branch, encode #i8 ( cond:4 -> disp @bd_hs(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bhs", operands : disp )
-    { pc = ( ( ( psr & 0x4 ) != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
+    { pc = ( ( ( psr & PSR_L ) != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
 jump insn blt : type branch, encode #i8 ( cond:4 -> disp @bd_lt(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "blt", operands : disp )
     { pc = ( ( %N == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
@@ -1645,7 +1713,7 @@ insn dia  : encode #i8 ( op:8 = OP_DIA  ),  disasm ( mnemonic : "dia"  )  => r0 
 // FLAG / SVC / BPT -- traps. FLAG traps if PSR.F is set; SVC and BPT trap unconditionally.
 // @trap(vector) raises the corresponding NS32000 trap (handler at INTBASE + vector*4).
 jump insn flag : type trap, encode #i8 ( op:8 = OP_FLAG ),
-    disasm ( mnemonic : "flag" )  { if ( ( psr & 0x20 ) != 0 ) { @trap ( TRAP_FLG ); } }
+    disasm ( mnemonic : "flag" )  { if ( ( psr & PSR_F ) != 0 ) { @trap ( TRAP_FLG ); } }
 jump insn svc  : type trap, encode #i8 ( op:8 = OP_SVC ),
     disasm ( mnemonic : "svc"  )  { @trap ( TRAP_SVC ); }
 jump insn bpt  : type trap, encode #i8 ( op:8 = OP_BPT ),
