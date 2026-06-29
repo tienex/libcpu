@@ -1350,6 +1350,58 @@ add_test(NAME upcl.ns32k-sys COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x0b 0x0e | grep -q '3 byte'")
 set_tests_properties(upcl.ns32k-sys PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
+# NS32081/NS32381 FPU (feature `fpu`). Byte sequences derived from GNU binutils
+# `include/opcode/ns32k.h` seeds (ns32k_opcodes[]), verified against the NS32081 (July 1988)
+# and NS32381 (April 1991) datasheets.
+#
+# ENCODING NOTES (24-bit instructions, bytes MSB-first to the decoder):
+#   Format 11 (FMT11=0xBE): gen1:5 gen2:5 op:4 f:2 fmt:8(=0xBE)
+#     addf  gen1=0 gen2=0 op=0 f=1: (0<<19)|(0<<14)|(0<<10)|(1<<8)|0xBE = 0x0001BE -> 0x00 0x01 0xBE
+#     movf  gen1=1 gen2=2 op=1 f=1: (1<<19)|(2<<14)|(1<<10)|(1<<8)|0xBE = 0x0885BE -> 0x08 0x85 0xBE
+#     cmpf  gen1=0 gen2=1 op=2 f=1: (0<<19)|(1<<14)|(2<<10)|(1<<8)|0xBE = 0x0049BE -> 0x00 0x49 0xBE
+#     movl  gen1=0 gen2=2 op=1 f=0: (0<<19)|(2<<14)|(1<<10)|(0<<8)|0xBE = 0x0084BE -> 0x00 0x84 0xBE
+#   Format 9 (FMT9=0x3E): gen1:5 gen2:5 op:3 f:1 i:2 fmt:8(=0x3E)
+#     movbf gen1=0 gen2=0 op=0 f=1 i=0: (0<<19)|(0<<14)|(0<<11)|(1<<10)|(0<<8)|0x3E = 0x00043E -> 0x00 0x04 0x3E
+#     movdf gen1=0 gen2=0 op=0 f=1 i=3: (0<<19)|(0<<14)|(0<<11)|(1<<10)|(3<<8)|0x3E = 0x00073E -> 0x00 0x07 0x3E
+#     movfl gen1=0 gen2=2 sub=0x1b:     (0<<19)|(2<<14)|(0x1b<<8)|0x3E = 0x009B3E -> 0x00 0x9B 0x3E
+#     lfsr  gen1=0 op=0x0f3e:            0x000F3E -> 0x00 0x0F 0x3E
+#     sfsr  gen1=r0 gen2=0 op=6 f=1 i=3: (0<<19)|(0<<14)|(6<<11)|(1<<10)|(3<<8)|0x3E = 0x00373E -> 0x00 0x37 0x3E
+#   Format 12 (FMT12=0xFE): gen1:5 gen2:5 op:4 f:2 fmt:8(=0xFE)
+#     polyf gen1=0 gen2=1 op=2 f=1:  (0<<19)|(1<<14)|(2<<10)|(1<<8)|0xFE = 0x0049FE -> 0x00 0x49 0xFE
+#     logbf gen1=0 gen2=1 op=5 f=1:  (0<<19)|(1<<14)|(5<<10)|(1<<8)|0xFE = 0x0055FE -> 0x00 0x55 0xFE
+add_test(NAME upcl.ns32k-fpu COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x00 0x01 0xbe | grep -q 'addf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x01 0xbe | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x01 0xbe | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x01 0xbe | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x85 0xbe | grep -q 'movf' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x85 0xbe | grep -q 'src=f1' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x85 0xbe | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x49 0xbe | grep -q 'cmpf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x49 0xbe | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x49 0xbe | grep -q 'dst=f1' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x84 0xbe | grep -q 'movl' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x84 0xbe | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x84 0xbe | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x04 0x3e | grep -q 'movbf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x04 0x3e | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x04 0x3e | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x3e | grep -q 'movdf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x3e | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x3e | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x9b 0x3e | grep -q 'movfl' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x9b 0x3e | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x9b 0x3e | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x0f 0x3e | grep -q 'lfsr' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x0f 0x3e | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x37 0x3e | grep -q 'sfsr' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x37 0x3e | grep -q 'dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x49 0xfe | grep -q 'polyf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x55 0xfe | grep -q 'logbf'")
+set_tests_properties(upcl.ns32k-fpu PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

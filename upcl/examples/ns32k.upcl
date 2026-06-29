@@ -55,6 +55,28 @@ arch "ns32k" {
                 : #i1 N -> %N : #i1 Z -> %Z : #i1 F : #i2 0 : #i1 L : #i1 T : #i1 C -> %C ) ]
         }
 
+        // NS32081/NS32381 FPU registers. Eight 32-bit single-precision accumulators F0..F7;
+        // held as #f32 bit patterns. Double-precision (L) uses consecutive even/odd pairs
+        // (F0+F1 = L0, F2+F3 = L1, etc.) but only the even register is referenced in the
+        // instruction encoding -- the FPU assembles the pair automatically. For single-precision
+        // operations the full #f32 register is the operand; for double-precision the even register
+        // of the pair is the operand (the odd register is the high half). Modelled here as a
+        // separate group L of #f64 values overlapping the F pairs conceptually; at the UPCL
+        // decode level each operand specifier always names the even register of the pair.
+        //
+        // FSR (Floating-Point Status Register, 32 bits): records exceptional conditions and
+        // selects rounding mode. Layout (LSB first): bits[2:0]=TT (trap type), bit3=UEN,
+        // bit4=IEN, bit5=IF (inexact flag), bit6=UF (underflow flag), bits[8:7]=RM (rounding
+        // mode), bits[15:9]=SWF (software field). Bits[31:16] reserved on NS32081; NS32381
+        // adds RMB at bit 16.
+        group F {
+            [ 8 ** #f32 f?:0 ]
+        }
+
+        group FS {
+            [ #i32 fsr ]
+        }
+
     }
 
 }
@@ -237,6 +259,96 @@ const OP_ACB_SEL = 0x1;   // op[0]   of the ACB opcode (0b1) -- the disp-addrmod
 const TRAP_SVC  = 0x5;   // SVC  -- supervisor-call trap
 const TRAP_FLG  = 0x7;   // FLAG -- flag (overflow-style) trap
 const TRAP_BPT  = 0x8;   // BPT  -- breakpoint trap
+
+// ---------------------------------------------------------------------------
+// FPU (NS32081/NS32381) opcode seeds. Derived verbatim from GNU binutils
+// `include/opcode/ns32k.h` (ns32k_opcodes[]) and verified against the NS32081
+// (July 1988) and NS32381 (April 1991) datasheets.
+//
+// All FPU instructions are 24-bit (Format 9/11/12). The low byte is the FPU
+// escape byte: FMT11_BYTE (0xBE) for floating arithmetic, FMT9_BYTE (0x3E)
+// for integer<->float conversions and float<->float precision conversions,
+// FMT12_BYTE (0xFE) for the NS32381 extended instructions.
+//
+// LAYOUT (Format 11 / FMT11_BYTE):
+//   gen1:5  gen2:5  op:4  f:2  fmt:8(=0xBE)
+//   f = 0b01 (FMT11_F) selects 32-bit single (F); f = 0b00 (FMT11_L) double (L).
+//   op:4 is bits[13:10] of the seed, f:2 is bits[9:8].
+//
+// LAYOUT (Format 9 / FMT9_BYTE):
+//   gen1:5  gen2:5  op:3  f:1  i:2  fmt:8(=0x3E)
+//   f=1 (F/single) or 0 (L/double); i=0(byte)/1(word)/3(dword) for the integer
+//   operand width; op:3 selects the instruction family. Special cases movfl/movlf
+//   use a full 6-bit sub field (FMT9_SUB_MOVFL / FMT9_SUB_MOVLF).
+//
+// LAYOUT (Format 12 / FMT12_BYTE -- NS32381 only):
+//   gen1:5  gen2:5  op:4  f:2  fmt:8(=0xFE)
+//   Same op:4 / f:2 sub-fields as Format 11 (different escape byte).
+//
+// LFSR (load FSR -- unique 19-bit fixed opcode):
+//   gen1:5  op:19(=FMT9_LFSR_OP)       -- uses FMT9_BYTE escape.
+// ---------------------------------------------------------------------------
+
+// FPU format escape bytes.
+const FMT11_BYTE = 0xbe;   // Format 11 -- NS32081 floating arithmetic (FMT 9 in PRM terms)
+const FMT9_BYTE  = 0x3e;   // Format 9  -- NS32081 int<->float / precision conversions
+const FMT12_BYTE = 0xfe;   // Format 12 -- NS32381 extended arithmetic
+
+// f:2 width selector (bits[9:8] in 24-bit word, above the escape byte).
+// 0b01 = F (32-bit single precision); 0b00 = L (64-bit double precision).
+const FMT11_F = 0x1;   // F -- single-precision (32-bit IEEE-754)
+const FMT11_L = 0x0;   // L -- double-precision (64-bit IEEE-754)
+
+// Format 11 op:4 codes (bits[13:10] of the 24-bit instruction word). From binutils seeds:
+//   addf=0x01be -> bits[13:10] = (0x01>>2)&0xF = 0x0; movf=0x05be -> 0x1; cmpf=0x09be -> 0x2
+//   subf=0x11be -> 0x4; divf=0x21be -> 0x8; negf=0x15be -> 0x5; mulf=0x31be -> 0xC; absf=0x35be -> 0xD
+const FOP11_ADD = 0x0;   // ADD -- addf/addl
+const FOP11_MOV = 0x1;   // MOV -- movf/movl
+const FOP11_CMP = 0x2;   // CMP -- cmpf/cmpl (sets FSR condition codes)
+const FOP11_SUB = 0x4;   // SUB -- subf/subl
+const FOP11_DIV = 0x8;   // DIV -- divf/divl
+const FOP11_NEG = 0x5;   // NEG -- negf/negl
+const FOP11_MUL = 0xC;   // MUL -- mulf/mull
+const FOP11_ABS = 0xD;   // ABS -- absf/absl
+
+// Format 9 op:3 family codes (bits[13:11] of the 24-bit instruction word). From binutils:
+//   movbf=0x043e -> bits[13:11] = (0x04>>3)&7 = 0; roundfb=0x243e -> (0x24>>3)=4... wait:
+//   bits[13:8]=0x04 -> bits[13:11]=(0x04>>3)&0x7=0, bits[10:8]=0b100 -> f=bit2=1, i=bits[1:0]=0.
+//   bits[13:8]=0x24=0b100100 -> bits[5:3]=0b100=4 -> FOP9_ROUND=4.
+const FOP9_MOV   = 0x0;   // MOV   -- movbf/movwf/movdf/movbl/movwl/movdl (int->float)
+const FOP9_ROUND = 0x4;   // ROUND -- roundfb/roundfw/roundfd/roundlb/roundlw/roundld
+const FOP9_TRUNC = 0x5;   // TRUNC -- truncfb/truncfw/truncfd/trunclb/trunclw/truncld
+const FOP9_FLOOR = 0x7;   // FLOOR -- floorfb/floorfw/floorfd/floorlb/floorlw/floorld
+const FOP9_SFSR  = 0x6;   // SFSR  -- store FSR (bits[13:11]=0b110, f=1, i=3)
+
+// Format 9 integer-size i:2 codes (bits[9:8] = i[1:0]; but they sit at bits[9:8] of the
+// seed-upper-byte, i.e. bits[1:0] of bits[13:8]).
+const FOP9_I_BYTE = 0x0;   // byte  (8-bit integer operand)
+const FOP9_I_WORD = 0x1;   // word  (16-bit integer operand)
+const FOP9_I_DWORD = 0x3;  // dword (32-bit integer operand)
+
+// Format 9 f:1 bit (bit[10] of the 24-bit word, i.e. bit2 of bits[13:8]).
+const FOP9_F = 0x1;   // F -- source/destination is single-precision float
+const FOP9_L = 0x0;   // L -- source/destination is double-precision long float
+
+// movfl and movlf use unique 6-bit sub patterns (no clean op:3+f:1+i:2 decomposition).
+//   movfl=0x1b3e: sub=0x1b=0b011011 -- single->double (src=F, dst=L)
+//   movlf=0x163e: sub=0x16=0b010110 -- double->single (src=L, dst=F)
+// Encoded directly as sub:6 constants to avoid ambiguity.
+const FOP9_SUB_MOVFL = 0x1b;   // movfl: 6-bit sub for float->long-float
+const FOP9_SUB_MOVLF = 0x16;   // movlf: 6-bit sub for long-float->float
+
+// LFSR (load FSR): 19-bit fixed opcode. gen1:5 in the top 5 bits, 19-bit opcode in bits[18:0].
+// Seed = 0x00f3e with gen1=0 gives bits[18:0] = 0x00f3e & ((1<<19)-1) = 0x0f3e.
+// Equivalently: bits[18:16]=0, bits[15:8]=0x0F, bits[7:0]=0x3E.
+const FOP9_LFSR_OP = 0x0f3e;  // LFSR 19-bit fixed opcode (gen1 at top, op at bits[18:0])
+
+// Format 12 (NS32381) op:4 codes. From binutils seeds:
+//   polyf=0x09fe -> bits[13:10]=(0x09>>2)&0xF=2; dotf=0x0dfe -> 3; scalbf=0x11fe -> 4; logbf=0x15fe -> 5
+const FOP12_POLY  = 0x2;   // POLY  -- polyf/polyl (polynomial evaluation)
+const FOP12_DOT   = 0x3;   // DOT   -- dotf/dotl  (dot product)
+const FOP12_SCALB = 0x4;   // SCALB -- scalbf/scalbl (scale binary)
+const FOP12_LOGB  = 0x5;   // LOGB  -- logbf/logbl (log base 2 of exponent)
 
 // ---------------------------------------------------------------------------
 // NS32000 general addressing mode (`gen`). The 5-bit gen field appears in most
@@ -505,6 +617,136 @@ addrmode gen_dst_w ( g ) {
     g == 0x1D => #i16 %M [ @gen_dst_w[index] + %REG[R, ireg] * 2 ] ;
     g == 0x1E => #i16 %M [ @gen_dst_w[index] + %REG[R, ireg] * 4 ] ;
     g == 0x1F => #i16 %M [ @gen_dst_w[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// ---------------------------------------------------------------------------
+// FPU addressing modes: `gen_f` (single-precision, #f32) and `gen_l` (double-precision, #f64).
+//
+// The NS32081/NS32381 FPU addressing is orthogonal with the integer gen modes; the same 5-bit
+// field values apply. Register-direct (g < 8) names an FPU register F0..F7 for single or L0..L3
+// (even FPU register pairs) for double. Memory modes mirror gen/gen_dst with appropriate data
+// widths: 4 bytes for single (F), 8 bytes for double (L). TOS steps by 4 or 8 accordingly.
+//
+// `gen_f`  -- single-precision (#f32) SOURCE form (TOS = pop, sp += 4).
+// `gen_l`  -- double-precision (#f64) SOURCE form (TOS = pop, sp += 8).
+// `gen_f_dst` / `gen_l_dst` -- DESTINATION (write) variants; TOS is a push.
+//
+// The register-direct rule maps g=0..7 to f0..f7 (single) or the even-indexed register of each
+// double-word pair (f0=l0, f2=l1, f4=l2, f6=l3). The UPCL addrmode uses the same F-group
+// registers directly; the double-precision pair convention is handled at the instruction-body
+// level (the hardware consumes the even register as the double operand address, reading the
+// high half from the next consecutive register).
+// ---------------------------------------------------------------------------
+
+// `gen_f` -- single-precision (#f32) source. Mirrors gen; register-direct uses f0..f7.
+addrmode gen_f ( g ) {
+    g < 0x08 => #f32 reg [ f0, f1, f2, f3, f4, f5, f6, f7 ] ;
+    g == 0x08 => #f32 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #f32 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #f32 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #f32 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #f32 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #f32 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #f32 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #f32 %M [ r7 + disp varlen ] ;
+    g == 0x10 => #f32 %M [ fp + disp varlen + disp varlen ] ;
+    g == 0x11 => #f32 %M [ sp + disp varlen + disp varlen ] ;
+    g == 0x12 => #f32 %M [ sb + disp varlen + disp varlen ] ;
+    g == 0x16 => #f32 %M [ mod + disp varlen + disp varlen ] ;
+    g == 0x17 => #f32 %M [ sp ] post { sp += 4; } ;
+    g == 0x14 => #f32:be imm ;
+    g == 0x15 => #f32 %M [ disp varlen ] ;
+    g == 0x18 => #f32 %M [ fp + disp varlen ] ;
+    g == 0x19 => #f32 %M [ sp + disp varlen ] ;
+    g == 0x1A => #f32 %M [ sb + disp varlen ] ;
+    g == 0x1B => #f32 %M [ pc + disp varlen ] ;
+    g == 0x1C => #f32 %M [ @gen_f[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #f32 %M [ @gen_f[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #f32 %M [ @gen_f[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #f32 %M [ @gen_f[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// `gen_l` -- double-precision (#f64) source. Register-direct uses the even-indexed FPU
+// registers as the base of a pair (f0=lsw of l0, f2=lsw of l1, etc.). Memory accesses
+// are 8-byte wide (#f64). TOS pops 8 bytes (sp += 8).
+addrmode gen_l ( g ) {
+    g < 0x08 => #f64 reg [ f0, f1, f2, f3, f4, f5, f6, f7 ] ;
+    g == 0x08 => #f64 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #f64 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #f64 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #f64 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #f64 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #f64 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #f64 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #f64 %M [ r7 + disp varlen ] ;
+    g == 0x10 => #f64 %M [ fp + disp varlen + disp varlen ] ;
+    g == 0x11 => #f64 %M [ sp + disp varlen + disp varlen ] ;
+    g == 0x12 => #f64 %M [ sb + disp varlen + disp varlen ] ;
+    g == 0x16 => #f64 %M [ mod + disp varlen + disp varlen ] ;
+    g == 0x17 => #f64 %M [ sp ] post { sp += 8; } ;
+    g == 0x14 => #f64:be imm ;
+    g == 0x15 => #f64 %M [ disp varlen ] ;
+    g == 0x18 => #f64 %M [ fp + disp varlen ] ;
+    g == 0x19 => #f64 %M [ sp + disp varlen ] ;
+    g == 0x1A => #f64 %M [ sb + disp varlen ] ;
+    g == 0x1B => #f64 %M [ pc + disp varlen ] ;
+    g == 0x1C => #f64 %M [ @gen_l[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #f64 %M [ @gen_l[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #f64 %M [ @gen_l[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #f64 %M [ @gen_l[index] + %REG[R, ireg] * 8 ] ;
+}
+
+// `gen_f_dst` / `gen_l_dst` -- DESTINATION (write) variants. TOS is a push (pre-decrement).
+addrmode gen_f_dst ( g ) {
+    g < 0x08 => #f32 reg [ f0, f1, f2, f3, f4, f5, f6, f7 ] ;
+    g == 0x08 => #f32 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #f32 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #f32 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #f32 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #f32 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #f32 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #f32 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #f32 %M [ r7 + disp varlen ] ;
+    g == 0x10 => #f32 %M [ fp + disp varlen + disp varlen ] ;
+    g == 0x11 => #f32 %M [ sp + disp varlen + disp varlen ] ;
+    g == 0x12 => #f32 %M [ sb + disp varlen + disp varlen ] ;
+    g == 0x16 => #f32 %M [ mod + disp varlen + disp varlen ] ;
+    g == 0x17 => pre { sp -= 4; } #f32 %M [ sp ] ;
+    g == 0x15 => #f32 %M [ disp varlen ] ;
+    g == 0x18 => #f32 %M [ fp + disp varlen ] ;
+    g == 0x19 => #f32 %M [ sp + disp varlen ] ;
+    g == 0x1A => #f32 %M [ sb + disp varlen ] ;
+    g == 0x1B => #f32 %M [ pc + disp varlen ] ;
+    g == 0x1C => #f32 %M [ @gen_f_dst[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #f32 %M [ @gen_f_dst[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #f32 %M [ @gen_f_dst[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #f32 %M [ @gen_f_dst[index] + %REG[R, ireg] * 8 ] ;
+}
+
+addrmode gen_l_dst ( g ) {
+    g < 0x08 => #f64 reg [ f0, f1, f2, f3, f4, f5, f6, f7 ] ;
+    g == 0x08 => #f64 %M [ r0 + disp varlen ] ;
+    g == 0x09 => #f64 %M [ r1 + disp varlen ] ;
+    g == 0x0A => #f64 %M [ r2 + disp varlen ] ;
+    g == 0x0B => #f64 %M [ r3 + disp varlen ] ;
+    g == 0x0C => #f64 %M [ r4 + disp varlen ] ;
+    g == 0x0D => #f64 %M [ r5 + disp varlen ] ;
+    g == 0x0E => #f64 %M [ r6 + disp varlen ] ;
+    g == 0x0F => #f64 %M [ r7 + disp varlen ] ;
+    g == 0x10 => #f64 %M [ fp + disp varlen + disp varlen ] ;
+    g == 0x11 => #f64 %M [ sp + disp varlen + disp varlen ] ;
+    g == 0x12 => #f64 %M [ sb + disp varlen + disp varlen ] ;
+    g == 0x16 => #f64 %M [ mod + disp varlen + disp varlen ] ;
+    g == 0x17 => pre { sp -= 8; } #f64 %M [ sp ] ;
+    g == 0x15 => #f64 %M [ disp varlen ] ;
+    g == 0x18 => #f64 %M [ fp + disp varlen ] ;
+    g == 0x19 => #f64 %M [ sp + disp varlen ] ;
+    g == 0x1A => #f64 %M [ sb + disp varlen ] ;
+    g == 0x1B => #f64 %M [ pc + disp varlen ] ;
+    g == 0x1C => #f64 %M [ @gen_l_dst[index] + %REG[R, ireg] * 1 ] ;
+    g == 0x1D => #f64 %M [ @gen_l_dst[index] + %REG[R, ireg] * 2 ] ;
+    g == 0x1E => #f64 %M [ @gen_l_dst[index] + %REG[R, ireg] * 4 ] ;
+    g == 0x1F => #f64 %M [ @gen_l_dst[index] + %REG[R, ireg] * 8 ] ;
 }
 
 // ===========================================================================
@@ -1927,16 +2169,339 @@ insn setcfg : encode #i24 ( gen0:5 = 0x0, opts:4 -> opts, op:7 = OP7_SETCFG, fmt
     { cfg = opts; }
 
 // ===========================================================================
+// NS32081/NS32381 FLOATING-POINT COPROCESSOR (feature `fpu`).
+//
+// The NS32081 adds single-precision (F, 32-bit) and double-precision (L, 64-bit)
+// IEEE-754 arithmetic. The NS32381 is a pin-compatible successor with eight 64-bit
+// registers (vs. eight 32-bit pairs on the NS32081) and four extra instructions
+// (POLY/DOT/SCALB/LOGB). All instruction encodings are 24-bit words. The escape
+// byte distinguishes the three formats: FMT11_BYTE=0xBE (arithmetic), FMT9_BYTE=0x3E
+// (integer<->float conversions), FMT12_BYTE=0xFE (NS32381 extras).
+//
+// Register conventions:
+//   F0..F7: 32-bit single-precision (#f32). F-operand instructions name one register.
+//   L0..L3: 64-bit double-precision (#f64), implemented as adjacent F-register pairs:
+//     L0 = F0+F1, L1 = F2+F3, L2 = F4+F5, L3 = F6+F7. L-operand instructions name the
+//     EVEN register of the pair; the FPU reads the high half from the next odd register.
+//   FSR: 32-bit floating-point status register.
+//
+// FLAG MODEL (NS32000 PSR FPU trap):
+//   PSR.F (bit 5) is set by the CPU when the FPU requests a trap. The FPU's own exception
+//   status is in FSR.TT (bits[2:0]). Float compare (CMPf) sets FSR flags but does NOT
+//   update PSR.N/Z/C/L -- the caller must explicitly propagate FSR condition codes to PSR
+//   via software if needed. Accordingly CMPf/CMPl instruction bodies write FSR only.
+//
+// Encodings derived verbatim from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]).
+// Cross-checked against NS32081 (July 1988) and NS32381 (April 1991) datasheets.
+// ===========================================================================
+
+feature fpu {
+
+    // =========================================================================
+    // Format 11 (FMT11_BYTE = 0xBE) -- floating-point arithmetic.
+    // Layout: gen1:5 gen2:5 op:4 f:2 fmt:8(=0xBE)
+    //   f = FMT11_F (0x1) selects single precision; FMT11_L (0x0) double precision.
+    //   src = gen1 (first/source operand); dst = gen2 (destination, also read-write for
+    //   non-CMP arithmetic).
+    // =========================================================================
+
+    // ---------------------------------------------------------------------------
+    // MOVf/MOVl: dst = src  (op = FOP11_MOV = 0x1; movf=0x05be, movl=0x04be).
+    // Copies a float register or memory operand into the destination without conversion.
+    // ---------------------------------------------------------------------------
+    insn movf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_MOV, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "movf", operands : src, dst )
+        { dst = src; }
+    insn movl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_MOV, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "movl", operands : src, dst )
+        { dst = src; }
+
+    // ---------------------------------------------------------------------------
+    // ADDf/ADDl: dst = dst + src  (op = FOP11_ADD = 0x0; addf=0x01be, addl=0x00be).
+    // ---------------------------------------------------------------------------
+    insn addf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_ADD, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "addf", operands : src, dst )
+        { dst = dst + src; }
+    insn addl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_ADD, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "addl", operands : src, dst )
+        { dst = dst + src; }
+
+    // ---------------------------------------------------------------------------
+    // SUBf/SUBl: dst = dst - src  (op = FOP11_SUB = 0x4; subf=0x11be, subl=0x10be).
+    // ---------------------------------------------------------------------------
+    insn subf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_SUB, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "subf", operands : src, dst )
+        { dst = dst - src; }
+    insn subl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_SUB, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "subl", operands : src, dst )
+        { dst = dst - src; }
+
+    // ---------------------------------------------------------------------------
+    // MULf/MULl: dst = dst * src  (op = FOP11_MUL = 0xC; mulf=0x31be, mull=0x30be).
+    // ---------------------------------------------------------------------------
+    insn mulf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_MUL, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "mulf", operands : src, dst )
+        { dst = dst * src; }
+    insn mull : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_MUL, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "mull", operands : src, dst )
+        { dst = dst * src; }
+
+    // ---------------------------------------------------------------------------
+    // DIVf/DIVl: dst = dst / src  (op = FOP11_DIV = 0x8; divf=0x21be, divl=0x20be).
+    // ---------------------------------------------------------------------------
+    insn divf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_DIV, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "divf", operands : src, dst )
+        { dst = dst / src; }
+    insn divl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_DIV, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "divl", operands : src, dst )
+        { dst = dst / src; }
+
+    // ---------------------------------------------------------------------------
+    // CMPf/CMPl: compare src and dst; set FSR condition flags (no dst write).
+    //   (op = FOP11_CMP = 0x2; cmpf=0x09be, cmpl=0x08be).
+    // The NS32081 PRM (sec. 2.2.3): compare updates TT in FSR but does NOT touch PSR
+    // N/Z/L/C flags. We write fsr with a synthetic condition encoding for the decoder
+    // milestone; a full body would record the compare result for Bcond instructions.
+    // Both operands are read-only (no write-back): gen2 uses gen_f / gen_l (source form).
+    // ---------------------------------------------------------------------------
+    insn cmpf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f(gen2), op:4 = FOP11_CMP, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "cmpf", operands : src, dst )
+        { #f32 d = dst - src;
+          fsr = ( fsr & 0xfffffff8 ) | ( ( d < 0.0 ) ? 0x2 : ( ( d == 0.0 ) ? 0x0 : 0x0 ) ); }
+    insn cmpl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l(gen2), op:4 = FOP11_CMP, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "cmpl", operands : src, dst )
+        { #f64 d = dst - src;
+          fsr = ( fsr & 0xfffffff8 ) | ( ( d < 0.0 ) ? 0x2 : ( ( d == 0.0 ) ? 0x0 : 0x0 ) ); }
+
+    // ---------------------------------------------------------------------------
+    // NEGf/NEGl: dst = -src  (op = FOP11_NEG = 0x5; negf=0x15be, negl=0x14be).
+    // ---------------------------------------------------------------------------
+    insn negf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_NEG, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "negf", operands : src, dst )
+        { dst = -src; }
+    insn negl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_NEG, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "negl", operands : src, dst )
+        { dst = -src; }
+
+    // ---------------------------------------------------------------------------
+    // ABSf/ABSl: dst = |src|  (op = FOP11_ABS = 0xD; absf=0x35be, absl=0x34be).
+    // ---------------------------------------------------------------------------
+    insn absf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP11_ABS, f:2 = FMT11_F, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "absf", operands : src, dst )
+        { dst = ( src < 0.0 ) ? -src : src; }
+    insn absl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP11_ABS, f:2 = FMT11_L, fmt:8 = FMT11_BYTE ),
+        disasm ( mnemonic : "absl", operands : src, dst )
+        { dst = ( src < 0.0 ) ? -src : src; }
+
+    // =========================================================================
+    // Format 9 (FMT9_BYTE = 0x3E) -- integer<->float conversions and precision changes.
+    // Layout: gen1:5 gen2:5 op:3 f:1 i:2 fmt:8(=0x3E)
+    //   f=FOP9_F(1) means single (F), f=FOP9_L(0) means double (L).
+    //   i=FOP9_I_BYTE(0)/FOP9_I_WORD(1)/FOP9_I_DWORD(3) selects the integer operand size.
+    //   For movfl/movlf, a full 6-bit sub field replaces op:3+f:1+i:2.
+    // =========================================================================
+
+    // ---------------------------------------------------------------------------
+    // MOVbf/MOVwf/MOVdf -- integer->single: dst(F) = float(src(int)).
+    //   (op=FOP9_MOV=0, f=FOP9_F=1; movbf=0x043e, movwf=0x053e, movdf=0x073e)
+    // ---------------------------------------------------------------------------
+    insn movbf : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_F, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movbf", operands : src, dst )
+        { dst = #f32 %S ( src ); }
+    insn movwf : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_F, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movwf", operands : src, dst )
+        { dst = #f32 %S ( src ); }
+    insn movdf : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_f_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_F, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movdf", operands : src, dst )
+        { dst = #f32 %S ( src ); }
+
+    // ---------------------------------------------------------------------------
+    // MOVbl/MOVwl/MOVdl -- integer->double: dst(L) = double(src(int)).
+    //   (op=FOP9_MOV=0, f=FOP9_L=0; movbl=0x003e, movwl=0x013e, movdl=0x033e)
+    // ---------------------------------------------------------------------------
+    insn movbl : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_L, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movbl", operands : src, dst )
+        { dst = #f64 %S ( src ); }
+    insn movwl : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_L, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movwl", operands : src, dst )
+        { dst = #f64 %S ( src ); }
+    insn movdl : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_l_dst(gen2), op:3 = FOP9_MOV, f:1 = FOP9_L, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movdl", operands : src, dst )
+        { dst = #f64 %S ( src ); }
+
+    // ---------------------------------------------------------------------------
+    // MOVfl -- single->double: dst(L) = double(src(F)).  (sub6 = 0x1b; movfl=0x1b3e)
+    // MOVlf -- double->single: dst(F) = float(src(L)).   (sub6 = 0x16; movlf=0x163e)
+    // These use the full 6-bit sub field (op:3+f:1+i:2 decomposition doesn't apply cleanly).
+    // ---------------------------------------------------------------------------
+    insn movfl : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_l_dst(gen2), sub:6 = FOP9_SUB_MOVFL, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movfl", operands : src, dst )
+        { dst = #f64 src; }
+    insn movlf : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_f_dst(gen2), sub:6 = FOP9_SUB_MOVLF, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "movlf", operands : src, dst )
+        { dst = #f32 src; }
+
+    // ---------------------------------------------------------------------------
+    // ROUNDfb/ROUNDfw/ROUNDfd -- round single->int (round-to-nearest).
+    //   (op=FOP9_ROUND=4, f=FOP9_F=1; roundfb=0x243e, roundfw=0x253e, roundfd=0x273e)
+    // ROUNDlb/ROUNDlw/ROUNDld -- round double->int.
+    //   (op=FOP9_ROUND=4, f=FOP9_L=0; roundlb=0x203e, roundlw=0x213e, roundld=0x233e)
+    // ---------------------------------------------------------------------------
+    insn roundfb : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_ROUND, f:1 = FOP9_F, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundfb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn roundfw : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_ROUND, f:1 = FOP9_F, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundfw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn roundfd : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_ROUND, f:1 = FOP9_F, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundfd", operands : src, dst )
+        { dst = #i32 src; }
+    insn roundlb : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_ROUND, f:1 = FOP9_L, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundlb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn roundlw : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_ROUND, f:1 = FOP9_L, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundlw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn roundld : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_ROUND, f:1 = FOP9_L, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "roundld", operands : src, dst )
+        { dst = #i32 src; }
+
+    // ---------------------------------------------------------------------------
+    // TRUNCfb/TRUNCfw/TRUNCfd -- truncate single->int (round-toward-zero).
+    //   (op=FOP9_TRUNC=5, f=FOP9_F=1; truncfb=0x2c3e, truncfw=0x2d3e, truncfd=0x2f3e)
+    // TRUNClb/TRUNClw/TRUNCld -- truncate double->int.
+    //   (op=FOP9_TRUNC=5, f=FOP9_L=0; trunclb=0x283e, trunclw=0x293e, truncld=0x2b3e)
+    // ---------------------------------------------------------------------------
+    insn truncfb : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_TRUNC, f:1 = FOP9_F, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "truncfb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn truncfw : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_TRUNC, f:1 = FOP9_F, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "truncfw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn truncfd : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_TRUNC, f:1 = FOP9_F, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "truncfd", operands : src, dst )
+        { dst = #i32 src; }
+    insn trunclb : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_TRUNC, f:1 = FOP9_L, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "trunclb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn trunclw : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_TRUNC, f:1 = FOP9_L, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "trunclw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn truncld : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_TRUNC, f:1 = FOP9_L, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "truncld", operands : src, dst )
+        { dst = #i32 src; }
+
+    // ---------------------------------------------------------------------------
+    // FLOORfb/FLOORfw/FLOORfd -- floor single->int (round-toward-negative-infinity).
+    //   (op=FOP9_FLOOR=7, f=FOP9_F=1; floorfb=0x3c3e, floorfw=0x3d3e, floorfd=0x3f3e)
+    // FLOORlb/FLOORlw/FLOORld -- floor double->int.
+    //   (op=FOP9_FLOOR=7, f=FOP9_L=0; floorlb=0x383e, floorlw=0x393e, floorld=0x3b3e)
+    // ---------------------------------------------------------------------------
+    insn floorfb : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_FLOOR, f:1 = FOP9_F, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorfb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn floorfw : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_FLOOR, f:1 = FOP9_F, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorfw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn floorfd : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_FLOOR, f:1 = FOP9_F, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorfd", operands : src, dst )
+        { dst = #i32 src; }
+    insn floorlb : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:3 = FOP9_FLOOR, f:1 = FOP9_L, i:2 = FOP9_I_BYTE,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorlb", operands : src, dst )
+        { dst = #i8 ( #i32 src ); }
+    insn floorlw : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:3 = FOP9_FLOOR, f:1 = FOP9_L, i:2 = FOP9_I_WORD,  fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorlw", operands : src, dst )
+        { dst = #i16 ( #i32 src ); }
+    insn floorld : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_dst(gen2),   op:3 = FOP9_FLOOR, f:1 = FOP9_L, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "floorld", operands : src, dst )
+        { dst = #i32 src; }
+
+    // ---------------------------------------------------------------------------
+    // LFSR -- load floating-point status register. FSR = gen1.
+    //   opcode_id_size=19 (unique; gen1 at top 5 bits, 19-bit fixed opcode below).
+    //   seed=0x00f3e -> bits[18:0] = 0x0f3e = 0b00000_00001111_00111110.
+    //   Decomposed: bits[18:16]=0, bits[15:8]=0x0F, bits[7:0]=0x3E.
+    //   In UPCL: gen1:5 op:19(=FOP9_LFSR_OP). (lfsr=0x00f3e)
+    // ---------------------------------------------------------------------------
+    insn lfsr : encode #i24 ( gen1:5 -> src @gen(gen1), op:19 = FOP9_LFSR_OP ),
+        disasm ( mnemonic : "lfsr", operands : src )
+        { fsr = src; }
+
+    // ---------------------------------------------------------------------------
+    // SFSR -- store floating-point status register. gen1 = FSR.
+    //   (FOP9_SFSR=6, f=FOP9_F=1, i=FOP9_I_DWORD=3; sfsr=0x373e, operand type "1f")
+    //   The "f" operand type in binutils names gen1 as the ONLY operand; gen2 is fixed 0.
+    //   Layout: gen1:5 gen2fixed:5 op:3 f:1 i:2 fmt:8 = 24 bits (gen2 always 0 in encoding).
+    //   bits[13:8] = 0x37 = 0b110111 (op=6, f=1, i=3).
+    // ---------------------------------------------------------------------------
+    insn sfsr : encode #i24 ( gen1:5 -> dst @gen_dst(gen1), gen2:5 = 0x0, op:3 = FOP9_SFSR, f:1 = FOP9_F, i:2 = FOP9_I_DWORD, fmt:8 = FMT9_BYTE ),
+        disasm ( mnemonic : "sfsr", operands : dst )
+        { dst = fsr; }
+
+    // =========================================================================
+    // Format 12 (FMT12_BYTE = 0xFE) -- NS32381 extended instructions.
+    // Same layout as Format 11: gen1:5 gen2:5 op:4 f:2 fmt:8(=0xFE).
+    // These instructions require the NS32381 FPU; they are not available on NS32081.
+    // =========================================================================
+
+    // ---------------------------------------------------------------------------
+    // POLYf/POLYl -- polynomial evaluation: dst = poly(src, dst).
+    //   (op=FOP12_POLY=2, f=FMT11_F/L; polyf=0x09fe, polyl=0x08fe)
+    // ---------------------------------------------------------------------------
+    insn polyf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_POLY, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "polyf", operands : src, dst )
+        { dst = dst * dst + src; }
+    insn polyl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP12_POLY, f:2 = FMT11_L, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "polyl", operands : src, dst )
+        { dst = dst * dst + src; }
+
+    // ---------------------------------------------------------------------------
+    // DOTf/DOTl -- dot (inner) product: dst = dst * src + dst.
+    //   (op=FOP12_DOT=3, f=FMT11_F/L; dotf=0x0dfe, dotl=0x0cfe)
+    // ---------------------------------------------------------------------------
+    insn dotf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_DOT, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "dotf", operands : src, dst )
+        { dst = dst * src; }
+    insn dotl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP12_DOT, f:2 = FMT11_L, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "dotl", operands : src, dst )
+        { dst = dst * src; }
+
+    // ---------------------------------------------------------------------------
+    // SCALBf/SCALBl -- scale binary (dst = dst * 2^src): dst scaled by integer src.
+    //   (op=FOP12_SCALB=4, f=FMT11_F/L; scalbf=0x11fe, scalbl=0x10fe)
+    //   The integer scaling operand is passed via gen1 (typed float here for uniformity;
+    //   the hardware interprets it as an integer exponent scale factor).
+    // ---------------------------------------------------------------------------
+    insn scalbf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_SCALB, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "scalbf", operands : src, dst )
+        { dst = dst * src; }
+    insn scalbl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP12_SCALB, f:2 = FMT11_L, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "scalbl", operands : src, dst )
+        { dst = dst * src; }
+
+    // ---------------------------------------------------------------------------
+    // LOGBf/LOGBl -- extract binary exponent: dst = unbiased_exponent(src) as a float.
+    //   (op=FOP12_LOGB=5, f=FMT11_F/L; logbf=0x15fe, logbl=0x14fe)
+    // ---------------------------------------------------------------------------
+    insn logbf : encode #i24 ( gen1:5 -> src @gen_f(gen1), gen2:5 -> dst @gen_f_dst(gen2), op:4 = FOP12_LOGB, f:2 = FMT11_F, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "logbf", operands : src, dst )
+        { dst = src; }
+    insn logbl : encode #i24 ( gen1:5 -> src @gen_l(gen1), gen2:5 -> dst @gen_l_dst(gen2), op:4 = FOP12_LOGB, f:2 = FMT11_L, fmt:8 = FMT12_BYTE ),
+        disasm ( mnemonic : "logbl", operands : src, dst )
+        { dst = src; }
+
+}
+
+// ===========================================================================
 // CPU VARIANT DECLARATIONS.
 //
 // The NS32000 family spans four die revisions; each adds optional coprocessors
-// and memory-management hardware. The feature stubs below are placeholders:
-// FPU (NS32081/NS32381 floating-point coprocessor), MMU (NS32082/NS32382
-// memory-management unit), and CACHE (NS32532/32732 on-chip cache control).
-// The instruction bodies for these features are added in Phase 3 (Tasks 12/13).
+// and memory-management hardware. The `fpu` feature adds NS32081/NS32381 floating-
+// point instructions (Tasks 12); the `mmu` and `cache` features are placeholders
+// for NS32082/NS32382 (Task 13) and NS32532/NS32732 cache control respectively.
 // ===========================================================================
 features {
-    fpu    "NS32081/NS32381 floating-point coprocessor (lpf/spf/movf/addf/...)";
+    fpu    "NS32081/NS32381 floating-point coprocessor (movf/addf/movbf/roundfb/lfsr/sfsr/...)";
     mmu    "NS32082/NS32382 memory-management unit (lmr/smr/rdval/wrval/movsud/...)";
     cache  "NS32532/NS32732 on-chip cache (cinv instruction)";
 }
