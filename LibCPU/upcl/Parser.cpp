@@ -100,13 +100,22 @@ Parser::ParseType ()
         size_t I = 2;
         UINT32 A = 0;
         while (I < S.size () && S[I] >= '0' && S[I] <= '9') { A = A * 10 + (UINT32) (S[I] - '0'); I++; }
-        if (T->Kind == TypeVector && I < S.size () && S[I] == ':') {
+        if (T->Kind == TypeVector && I < S.size () && S[I] == ':' && I + 1 < S.size () && S[I + 1] >= '0' && S[I + 1] <= '9') {
             T->Lanes = A; I++;
             UINT32 B = 0;
             while (I < S.size () && S[I] >= '0' && S[I] <= '9') { B = B * 10 + (UINT32) (S[I] - '0'); I++; }
             T->Width = B;
         } else {
             T->Width = A;
+        }
+        // Optional endianness suffix `:be` / `:le` / `:me` (or `:big` / `:little` / `:mid`) -- the byte
+        // order this type is read/written in, overriding the arch default. Accepted on any type literal.
+        if (I < S.size () && S[I] == ':') {
+            std::string E = S.substr (I + 1);
+            if      (E == "be" || E == "big")    { T->Endian = EndianBig; }
+            else if (E == "le" || E == "little") { T->Endian = EndianLittle; }
+            else if (E == "me" || E == "mid")    { T->Endian = EndianMiddle; }
+            else { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "unknown endianness suffix on a type (expected be/le/me or big/little/mid)"); }
         }
     }
     Advance ();
@@ -1246,6 +1255,19 @@ Parser::ParseEncField (EncField *pField)
         // -> op @<addrmode> : the field selects through an addressing mode.
         if (m_Cur.Kind == TokMacroIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
         else if (Accept (TokAt) && m_Cur.Kind == TokIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
+        // -> op @<addrmode>( <field>, ... ) : POSITIONAL arguments (E4). The arguments are decoder
+        // field names bound, in order, to the addrmode's declared formal parameters -- so the same
+        // addrmode serves two operand slots reading different fields (`@gen(gen1)` / `@gen(gen2)`).
+        // A reference with no argument list keeps the legacy by-name binding (AddrModeArgs empty).
+        if (!pField->AddrMode.empty () && Accept (TokLParen)) {
+            if (m_Cur.Kind != TokRParen) {
+                do {
+                    if (m_Cur.Kind == TokIdent) { pField->AddrModeArgs.push_back (m_Cur.Text); Advance (); }
+                    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a decoder field name as an addrmode argument"); break; }
+                } while (Accept (TokComma));
+            }
+            Expect (TokRParen, "to close the addrmode argument list");
+        }
     }
     return true;
 }
@@ -1290,8 +1312,15 @@ Parser::ParseAddrRule ()
     // `pre { ... }` -- statements run before the effective address is taken (autodecrement -(Rn)).
     if (AtKeyword ("pre")) { Advance (); ParseBlock (&R->Pre); }
     // An optional leading type fixes this rule's operand width (`=> #i8 reg[..]` / `=> #i8 %M[..]`),
-    // overriding the addrmode default -- byte vs word operands, the PDP-11 .B forms.
-    if (m_Cur.Kind == TokType) { Type *T = ParseType (); R->DataBits = (T != nullptr) ? T->Width : 0; }
+    // overriding the addrmode default -- byte vs word operands, the PDP-11 .B forms. A `:be`/`:le`
+    // endianness suffix on the type (`#i32:be imm`) pins the operand's byte order (used by `imm`).
+    TYPE_ENDIAN RuleEndian = EndianDefault;
+    if (m_Cur.Kind == TokType) {
+        Type *T = ParseType ();
+        R->DataBits = (T != nullptr) ? T->Width : 0;
+        RuleEndian  = (T != nullptr) ? T->Endian : EndianDefault;
+        delete T;
+    }
     if (AtKeyword ("reg")) {
         Advance ();
         R->IsReg = true;
@@ -1300,6 +1329,17 @@ Parser::ParseAddrRule ()
             do { if (m_Cur.Kind == TokIdent) { R->RegMap.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
         }
         Expect (TokRBracket, "to close the register list");
+    } else if (AtKeyword ("imm")) {
+        // The operand is an IMMEDIATE value embedded in the instruction stream (E5): `=> #i32:be imm`.
+        // It consumes (operand-width / 8) bytes from the tail and yields a literal of the rule's pinned
+        // width -- a true immediate, not a memory EA and not a self-describing varlen displacement. The
+        // byte order is the type's `:be`/`:le` suffix (NS32000 stores immediates big-endian); a trailing
+        // `imm be` / `imm le` keyword is also accepted. Default = the arch endianness.
+        Advance ();
+        R->IsImm = true;
+        if (RuleEndian == EndianBig) { R->ImmBigEndian = true; }
+        if (AtKeyword ("be")) { R->ImmBigEndian = true; Advance (); }
+        else if (AtKeyword ("le")) { R->ImmBigEndian = false; Advance (); }
     } else if (AtKeyword ("mem") || (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM"))) {
         // The operand is a MEMORY cell at the address that follows. Spelled `%M[..]` (consistent with
         // memory access elsewhere) or the legacy `mem[..]`; either way it declares the operand's

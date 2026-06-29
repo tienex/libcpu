@@ -1,0 +1,40 @@
+// Synthetic test for engine extension E5 -- FIXED-WIDTH BIG-ENDIAN IMMEDIATE addrmode term.
+//
+// One addrmode `g ( x )` whose rule for selector value 1 yields a 4-byte BIG-ENDIAN immediate
+// (`x == 1 => #i32 imm be ;`). The immediate is a fixed-width operand-length value embedded in
+// the instruction stream -- NOT a self-describing varlen displacement, and NOT a memory EA.
+//
+// Encoding (8-bit): op(4)=0, x(4) selects the addrmode. Byte 0x01 selects x=1 (the immediate
+// rule); the following FOUR bytes are the big-endian immediate. Stream:
+//   01 12 34 56 78  =>  src = 0x12345678 (immediate), instruction length = 5 bytes
+//                       (1 opcode + exactly 4 immediate bytes -- fixed width, not varlen).
+
+arch "targ" {
+
+    name "E5 immediate test";
+
+    endian little;
+    byte_size 8;
+    word_size 32;
+    address_size 32;
+
+    register_file {
+        group R {
+            [ 8 ** #i32 r?:0 ]
+        }
+    }
+
+}
+
+addrmode g ( x ) {
+    // The immediate rule comes first: rules are tried in order and the first matching one wins,
+    // so x == 1 selects the immediate before the (overlapping) register-direct rule below.
+    // `#i32:be` pins the immediate's byte order on the type itself (big-endian) -- the general form;
+    // a trailing `imm be` keyword is equivalent.
+    x == 0x01 => #i32:be imm ;
+    x < 0x08  => #i32 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+}
+
+insn ld : encode #i8 ( op:4 = 0x0, x:4 -> src @g(x) ),
+    disasm ( mnemonic : "ld", operands : src )
+    { r0 = r0; }

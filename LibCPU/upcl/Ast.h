@@ -30,13 +30,19 @@ namespace Upcl {
 // (vector). Parsed from a TokType spelling like "#i16" / "#f80" / "#v4:32".
 typedef enum _TYPE_KIND { TypeInt, TypeFloat, TypeVector } TYPE_KIND;
 
+// An optional byte-order on a type literal: `#i32:be` / `:le` / `:me` (or the long spellings
+// `:big` / `:little` / `:mid`). Default = the arch's declared endianness. `Middle` is the PDP-11
+// 32-bit word order (the two 16-bit halves big-endian-ordered, each half little-endian: 2-3-0-1).
+typedef enum _TYPE_ENDIAN { EndianDefault, EndianLittle, EndianBig, EndianMiddle } TYPE_ENDIAN;
+
 class Type {
 public:
-    TYPE_KIND   Kind  = TypeInt;
-    UINT32      Width = 0;       // element width in bits
-    UINT32      Lanes = 0;       // vector lane count (#v only)
-    std::string Spelling;       // "#i16"
-    SRC_LOC     Loc   = 0;
+    TYPE_KIND   Kind   = TypeInt;
+    UINT32      Width  = 0;       // element width in bits
+    UINT32      Lanes  = 0;       // vector lane count (#v only)
+    TYPE_ENDIAN Endian = EndianDefault;  // `#i32:be`/:le/:me byte-order override (default = arch)
+    std::string Spelling;        // "#i16" / "#i32:be"
+    SRC_LOC     Loc    = 0;
 };
 
 // ---- expressions ----------------------------------------------------------
@@ -221,6 +227,15 @@ public:
     // of different widths -- the PDP-11 MOVB writes a full 16-bit register (sign-extended) but only a
     // byte to memory, and the register-direct byte modes read the low byte of a 16-bit register.
     UINT32                   DataBits = 0;
+    // The operand is an IMMEDIATE value embedded in the instruction stream (not a register, not a
+    // memory EA): `=> #i32:be imm ;`. It consumes (operand-width / 8) bytes from the tail at the
+    // current cursor and yields a literal of the rule's pinned width. The byte order is the rule
+    // type's `:be`/`:le` endianness suffix (or a trailing `imm be` / `imm le`), big-endian for the
+    // NS32000 immediate (gen 0x14), else the arch endianness. Distinct from `disp varlen` (a self-
+    // describing variable-length displacement): this is fixed-width and a literal, so disasm and
+    // semantics treat it as an immediate.
+    bool                     IsImm = false;
+    bool                     ImmBigEndian = false;  // the immediate is read big-endian
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
     // Side-effect blocks: `pre { ... }` runs BEFORE the effective address is taken (autodecrement
@@ -263,6 +278,13 @@ public:
     std::string              AddrMode;    // `-> op @ <addrmode>`: the field selects through an
                                           //   addressing mode (a register or a memory address,
                                           //   reading a variable-length displacement).
+    std::vector<std::string> AddrModeArgs;// `-> op @<addrmode>( <field>, ... )`: POSITIONAL
+                                          //   arguments binding the addrmode's declared formal
+                                          //   parameters to these ACTUAL decoder field names, so
+                                          //   one `addrmode gen ( g )` can serve two operand slots
+                                          //   reading different fields (gen1 -> src, gen2 -> dst).
+                                          //   Empty => the legacy by-name binding (fields read from
+                                          //   the global decode map, byte-identical to before).
     bool                     HasImplicitImm = false; // an implicit operand carrying no encoding
     UINT64                   ImplicitImm = 0;     //   bits: `name = <const>` binds the operand to
                                           //   a fixed immediate (e.g. a shift-by-1's count), and

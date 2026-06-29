@@ -311,7 +311,12 @@ Lexer::Next ()
             m_Pos++;                                                             // the kind letter
             while (IsDigit (Peek ())) { m_Pos++; }
             if (K == 'v' && Peek () == ':') { m_Pos++; while (IsDigit (Peek ())) { m_Pos++; } }
-            return Make (TokType, Begin);                                        // Text = "#i16"
+            // Optional endianness suffix: #i32:be / :le / :me / :big / :little / :mid (an alphabetic
+            // tag after ':', distinct from the vector-lanes ':digit' form). Folded into the token text;
+            // ParseType decodes it. Lets any type literal pin its byte order (a big-endian immediate in a
+            // little-endian arch, the PDP-11 middle-endian 32-bit word), not just a bolted-on keyword.
+            if (Peek () == ':' && IsWordStart (Peek (1))) { m_Pos++; while (IsWordCont (Peek ())) { m_Pos++; } }
+            return Make (TokType, Begin);                                        // Text = "#i16" / "#i32:be"
         }
         return Make (TokHash, Begin);
     }

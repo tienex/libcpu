@@ -1051,6 +1051,22 @@ add_test(NAME upcl.engine-index COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '@0x10+r3\\*4' && \
    \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '3 byte'")
 
+# E4 -- addrmode POSITIONAL ARGUMENT BINDING: one `addrmode m ( x )` serves two operand slots via
+# two DIFFERENT encode fields (`a:3 -> op1 @m(a), b:3 -> op2 @m(b)`). Byte 0x15 (op=0, a=2, b=5)
+# must resolve op1 and op2 to DIFFERENT registers (r2 and r5) -- proving the formal `x` binds per
+# slot to its actual field, not to one shared field name.
+add_test(NAME upcl.engine-addrarg COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_addrarg.upcl' 0x15 | grep -q 'op1=r2 op2=r5'")
+
+# E5 -- FIXED-WIDTH BIG-ENDIAN IMMEDIATE addrmode term: `x == 1 => #i32 imm be ;` reads a 4-byte
+# big-endian immediate from the tail. Stream 0x01 0x12 0x34 0x56 0x78 must decode src=0x12345678
+# AND consume EXACTLY 5 bytes (1 opcode + 4 immediate) -- proving a fixed operand-width immediate,
+# distinct from a self-describing varlen displacement.
+add_test(NAME upcl.engine-imm COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_imm.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q 'src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
+
 # NS32000 arch header + register file: the UPCL description must parse cleanly and report the
 # expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated
 # registers (pc/sp0/sp1/sp/fp/sb/intbase/mod/cfg), and the PSR flag splitter binding the

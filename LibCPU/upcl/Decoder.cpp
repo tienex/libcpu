@@ -244,24 +244,61 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
 {
     AddrMode *AM = FindAddrMode (Field.AddrMode);
     if (AM == nullptr) { return false; }
-    UINT64 Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
+
+    // E4 -- POSITIONAL ARGUMENT BINDING. With an argument list (`@gen(gen1)`), the addrmode's
+    // declared formal parameters bind to the ACTUAL decoder fields named in the arguments: formal
+    // AM->Params[i] := value of field Field.AddrModeArgs[i]. The rule conditions and the disp /
+    // %REG[group, field] terms are then evaluated against this LOCAL map (a copy of the global
+    // decode map with the formals shadowed in), so the same addrmode can serve two operand slots
+    // reading different fields. With NO argument list the map is the global one unchanged and the
+    // selector reads Field.Name, exactly as before (byte-identical for every existing ISA).
+    std::map<std::string, UINT64> Local;
+    std::map<std::string, UINT64> CONST *pEff = &Fields;
+    UINT64 Sel;
+    if (!Field.AddrModeArgs.empty ()) {
+        Local = Fields;
+        for (size_t I = 0; I < AM->Params.size () && I < Field.AddrModeArgs.size (); ++I) {
+            std::string CONST &Actual = Field.AddrModeArgs[I];
+            Local[AM->Params[I]] = Fields.count (Actual) ? Fields.at (Actual) : 0;
+        }
+        pEff = &Local;
+        Sel = AM->Params.empty () ? 0 : Local[AM->Params[0]];
+    } else {
+        Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
+    }
+    std::map<std::string, UINT64> CONST &Eff = *pEff;
     UINT32 DataBits = AddrModeBits (AM);
 
     for (AddrRule *R : AM->Rules) {
-        if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Fields) == 0) { continue; }
+        if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Eff) == 0) { continue; }
         // A rule may pin its own operand width (the .B byte forms); otherwise the addrmode default.
         UINT32 RuleBits = R->DataBits ? R->DataBits : DataBits;
         // Expose the addrmode's selector fields (e.g. dm, dr) so a pre/post block can name the very
         // register the mode picked, via %REG[group, field] -- one field-indexed rule for all registers.
         for (std::string CONST &P : AM->Params) {
-            auto F = Fields.find (P);
-            if (F != Fields.end ()) { pOut->Fields[P] = F->second; }
+            auto F = Eff.find (P);
+            if (F != Eff.end ()) { pOut->Fields[P] = F->second; }
         }
         if (R->IsReg) {
             std::vector<std::string> Regs;
             ExpandRegMap (R->RegMap, &Regs);
             if (Sel >= Regs.size ()) { return false; }
             return ResolveRegName (Regs[(size_t) Sel], RuleBits, pOut);
+        }
+        if (R->IsImm) {
+            // E5 -- FIXED-WIDTH IMMEDIATE: read (RuleBits / 8) bytes from the tail and yield a literal
+            // operand (not a memory EA, not a self-describing varlen displacement). Big-endian when the
+            // rule's type/keyword pinned it so (NS32000 immediates), else the arch endianness. The bytes
+            // are consumed at the tail cursor (the rule's start, since an immediate rule has no preceding
+            // terms) and reported via *pExtraBytes so a following operand reads from the right offset.
+            UINT32 ImmBytes = RuleBits / 8;
+            if ((UINT64) ImmBytes > TailAvail) { return false; }
+            bool ImmLittle = R->ImmBigEndian ? false : m_pArch->Little;
+            pOut->Kind     = Operand::Imm;
+            pOut->Bits     = RuleBits;
+            pOut->ImmValue = ExtractField (pTail, 0, RuleBits, ImmLittle);
+            *pExtraBytes  += ImmBytes;
+            return true;
         }
         // memory: base registers + an optional displacement
         pOut->Kind = Operand::Mem;
@@ -363,7 +400,7 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
                     Text += B;
                 } else {
                     UINT32 DispBits = T.DispBits ? T.DispBits
-                                    : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Fields) : 0);
+                                    : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Eff) : 0);
                     if (DispBits > 0) {
                         UINT32 DispBytes = DispBits / 8;
                         if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
@@ -381,7 +418,7 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
                 // %REG[group, field]: the base is group <group>'s element selected by field <field>.
                 // Resolve via the group's positional alias (<group><N>), then fall back to a direct
                 // physical name -- yielding the base register's physical index.
-                UINT64 Idx = Fields.count (T.RegField) ? Fields.at (T.RegField) : 0;
+                UINT64 Idx = Eff.count (T.RegField) ? Eff.at (T.RegField) : 0;
                 std::string Name = T.RegGroup + std::to_string ((unsigned long long) Idx);
                 UINT32 Phys = ~(UINT32) 0;
                 auto P = m_pLayout->PhysIndex.find (Name);
