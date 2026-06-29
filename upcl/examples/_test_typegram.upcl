@@ -2,16 +2,28 @@
 //     #<kind><width> ( x<lanes> )? ( :lsb | :msb )? ( :le | :me | :be )?
 //
 // Exercises the ADDITIVE forms while leaving every legacy spelling intact:
-//   * `#i32x4`        -- the general `xN` vector form: 4 lanes of i32. Equivalent to the legacy
-//                        `#v4:32` (lanes=4, element width=32); used in a packed lane-by-lane add.
-//   * `#i16:msb:be`   -- bit-order (`:msb`) followed by byte-order (`:be`) on one literal. The
-//                        `:msb` is parsed + stored (bit-slice numbering still defaults to lsb -- see
-//                        Ast.h TODO); the `:be` pins the immediate's byte order big-endian.
+//   * `#i32x4`     -- the general `xN` vector form: 4 lanes of i32. Equivalent to the legacy
+//                     `#v4:32` (lanes=4, element width=32); used in a packed lane-by-lane add.
+//   * `#i16:be`    -- byte-order suffix `:be` on an ADDRMODE-RULE type (the WIRED path):
+//                     `imm_be ( x ) { x == 0 => #i16:be imm ; }` -- it is the TYPE-LITERAL
+//                     `:be` that pins big-endian here (EndianBig -> ImmBigEndian=true),
+//                     NOT a trailing `be` keyword in the encode clause.
+//
+// RED->GREEN for the addrmode-path type-literal `:be`:
+//   Without the `:be` suffix, rule `x == 0 => #i16 imm ;` decodes the 2-byte immediate with
+//   the arch endianness (little-endian): stream 0x12 0x34 -> src=0x3412 (LE).
+//   With `:be` wired through RuleEndian -> ImmBigEndian, the same bytes decode big-endian:
+//   src=0x1234.  The assertion `grep -q 'src=0x1234'` is RED on the un-suffixed form and
+//   GREEN only when the type-literal `:be` drives the decode.
 //
 // Encoding (8-bit opcode):
-//   0xB0  -- the packed-vector op: r0 = [ #i32x4 r1 ] + [ #i32x4 r2 ] (lane-by-lane).
-//   0xC0  -- the immediate op: a 16-bit immediate read with bit-order msb + byte-order big-endian.
-//            The arch is little-endian, so `be` forces big-endian: bytes 0xC0 0x12 0x34 => imm=0x1234.
+//   0xB0  -- the packed-vector op (op:8=0xB0): r0 = [ #i32x4 r1 ] + [ #i32x4 r2 ].
+//   0xC0  -- the immediate op: op:7=0x60, x:1=0, selector x=0 picks `#i16:be imm`.
+//            Arch is little-endian. Only the type-literal `:be` produces big-endian decode.
+//            Stream 0xC0 0x12 0x34 => src=0x1234, length=3 bytes.
+//
+// NOTE: a type-literal endian suffix used as a CAST in a semantic body (e.g. the `[ #i16:msb src ]`
+//   below) is STORED but NOT consulted by the decoder.  See Ast.h Type::Endian and Type::BitOrder.
 
 arch "_test_typegram" {
 
@@ -30,12 +42,27 @@ arch "_test_typegram" {
 
 }
 
+// The addrmode for the ldi immediate.  Selector x=0 yields a 16-bit BIG-ENDIAN immediate via
+// the TYPE-LITERAL `:be` suffix on the rule type -- NOT via a trailing `imm be` keyword.
+// That is the critical distinction: only `#i16:be` (EndianBig propagated to ImmBigEndian)
+// drives big-endian decode here.  Selector x=1 provides a register form.
+addrmode imm_be ( x ) {
+    x == 0x00 => #i16:be imm ;
+    x == 0x01 => #i16 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+}
+
 // The packed-vector form: `#i32x4` (general xN) must parse and decode the same as `#v4:32`.
 insn padd : encode #i8 ( op:8 = 0xB0 ),
     disasm ( mnemonic : "padd", operands : )
     { r0 = [ #i32x4 r1 ] + [ #i32x4 r2 ]; }
 
-// The full suffix chain on one literal: a 16-bit immediate, bit-order msb, byte-order big-endian.
-insn ldi : encode #i8 ( op:8 = 0xC0, imm:16 -> imm be ),
-    disasm ( mnemonic : "ldi", operands : imm )
-    { r0 = [ #i16:msb:be imm ]; }
+// The type-literal `:be` byte-order via addrmode rule (WIRED path).
+// op:7=0x60, x:1 -> src @imm_be(x): opcode byte 0xC0 (0b11000000) has op:7=0x60, x:1=0.
+// Selector x=0 picks `=> #i16:be imm ;` -- big-endian immediate.  No `be` keyword in the
+// encode clause: only the TYPE-LITERAL drives the big-endian decode.
+//
+// The semantic cast `[ #i16:msb src ]` carries a bit-order suffix; that is STORED-ONLY --
+// it does not affect the decoded value.  See Ast.h Type::BitOrder TODO.
+insn ldi : encode #i8 ( op:7 = 0x60, x:1 -> src @imm_be(x) ),
+    disasm ( mnemonic : "ldi", operands : src )
+    { r0 = [ #i16:msb src ]; }

@@ -27,7 +27,9 @@ namespace Upcl {
 // ---- types ----------------------------------------------------------------
 
 // A UPCL type literal: #i<width> (integer), #f<width> (float), #v<lanes>:<width>
-// (vector). Parsed from a TokType spelling like "#i16" / "#f80" / "#v4:32".
+// (vector), or #<kind><width>x<lanes> (the general vector form -- #i32x4 == #v4:32).
+// Optional suffixes: a bit-order (:lsb/:msb) then a byte-order (:be/:le/:me).
+// Parsed from a TokType spelling like "#i16" / "#f80" / "#v4:32" / "#i32x4:msb:be".
 typedef enum _TYPE_KIND { TypeInt, TypeFloat, TypeVector } TYPE_KIND;
 
 // An optional byte-order on a type literal: `#i32:be` / `:le` / `:me` (or the long spellings
@@ -46,6 +48,13 @@ public:
     UINT32        Width   = 0;       // element width in bits
     UINT32        Lanes   = 0;       // vector lane count (#v4:32 / #i32x4)
     TYPE_ENDIAN   Endian  = EndianDefault;  // `#i32:be`/:le/:me byte-order override (default = arch)
+                                            // WIRED when the type appears as an addrmode-rule type
+                                            //   (`=> #i32:be imm ;`) -- EndianBig drives ImmBigEndian.
+                                            // TODO: endian suffix used as a CAST in a semantic body
+                                            //   (`[ #i32:be expr ]`) is parsed and stored here but NOT
+                                            //   consulted by the decoder; the cast type's Endian is not
+                                            //   threaded into Semantics / value-lowering (analogous to
+                                            //   the :msb bit-order TODO below).
     TYPE_BITORDER BitOrder = BitDefault;    // `#i16:lsb`/:msb bit-numbering (default = lsb)
                                             // TODO: msb bit-order honored where applicable -- parsed
                                             //   and stored, but the bit-slice operator [a:b] still

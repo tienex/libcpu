@@ -116,7 +116,7 @@ Parser::ParseType ()
             T->Width = A; I++;
             UINT32 L = 0;
             while (I < S.size () && S[I] >= '0' && S[I] <= '9') { L = L * 10 + (UINT32) (S[I] - '0'); I++; }
-            if (L == 0) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a vector type's lane count `xN` must be a positive integer"); }
+            if (L == 0) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a vector type's lane count `xN` must be a positive integer"); L = 1; }
             T->Lanes = L;
         } else {
             T->Width = A;

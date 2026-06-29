@@ -1078,17 +1078,18 @@ add_test(NAME upcl.engine-me COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
 
 # Full type-literal grammar  #<kind><width>(xN)?(:lsb|:msb)?(:le|:me|:be)?.  Two ADDITIVE forms:
-#   * `#i32x4`       -- the general xN vector spelling (4 lanes of i32). The 0xB0 opcode's padd lowers
-#                       lane-by-lane; the i128 lane-combine IR (shl/or over a 128-bit value) proves it
-#                       is a vector, identical to the legacy `#v4:32`.
-#   * `#i16:msb:be`  -- a bit-order suffix (:msb) followed by a byte-order suffix (:be) on one literal.
-#                       The arch is little-endian, so `:be` forces big-endian: bytes 0xC0 0x12 0x34
-#                       decode imm=0x1234 (not the LE 0x3412), proving the whole suffix chain lexed and
-#                       the byte-order took effect.
+#   * `#i32x4`    -- the general xN vector spelling (4 lanes of i32).  The 0xB0 opcode's padd lowers
+#                    lane-by-lane; the i128 lane-combine IR (shl/or over a 128-bit value) proves it
+#                    is a vector, identical to the legacy `#v4:32`.
+#   * `#i16:be`   -- byte-order suffix `:be` on an ADDRMODE-RULE type literal (the WIRED path):
+#                    `imm_be { x==0 => #i16:be imm ; }` -- the type-literal `:be` drives big-endian
+#                    decode (EndianBig -> ImmBigEndian), NOT a trailing `be` keyword in the encode.
+#                    RED: without `:be`, stream 0x12 0x34 decodes little-endian -> src=0x3412.
+#                    GREEN: with `:be`, same bytes decode big-endian -> src=0x1234.
 add_test(NAME upcl.engine-typegram COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_typegram.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl decode \"$M\" 0xB0 | grep -q 'const.i128' && \
-   \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q 'imm=0x1234' && \
+   \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q 'src=0x1234' && \
    \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q '3 byte'")
 set_tests_properties(upcl.engine-typegram PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
 
