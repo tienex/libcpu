@@ -1051,6 +1051,20 @@ add_test(NAME upcl.engine-index COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '@0x10+r3\\*4' && \
    \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '3 byte'")
 
+# NS32000 arch header + register file: the UPCL description must parse cleanly and report the
+# expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated
+# registers (pc/sp0/sp1/sp/fp/sb/intbase/mod/cfg), and the PSR flag splitter binding the
+# carry (%C), zero (%Z), and negative (%N) meta-flags.
+add_test(NAME upcl.check-ns32k COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl' > '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'arch \"ns32k\"'  '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag C'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag Z'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag N'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'r0 '             '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'pc '             '${CMAKE_BINARY_DIR}/ns32k.out'")
+set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

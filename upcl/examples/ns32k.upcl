@@ -1,0 +1,60 @@
+// National Semiconductor NS32000 (Series 32000) -- a clean, orthogonal 32-bit minicomputer
+// architecture designed to scale from embedded controllers to multiprocessor systems. Eight
+// general-purpose 32-bit registers R0..R7, byte/word/doubleword/quadword data widths, a
+// uniform effective-address model with eight base addressing modes and a scaled-index
+// extension byte (the "index byte") that can nest one level deep, variable-length big-endian
+// encoded displacements (7/14/30-bit self-describing), and little-endian data storage.
+//
+// REGISTERS: R0..R7 (general purpose, 32-bit); dedicated registers PC (program counter),
+// SP0/SP1 (supervisor/user stack pointers), SP (current stack pointer), FP (frame pointer),
+// SB (static base), INTBASE (interrupt base), MOD (module register, 16-bit), CFG (config,
+// 32-bit), and PSR (processor status register, 16-bit). Optional FPU (NS32081/NS32381) adds
+// eight 64-bit floating-point registers F0..F7.
+//
+// PSR BIT LAYOUT (LSB to MSB, bit 0 first):
+//   C(0)  carry                   T(1)  trace
+//   L(2)  less-than (before SETCFG) / link  ·(3) reserved  ·(4) reserved
+//   F(5)  floating-point trap     Z(6)  zero
+//   N(7)  negative (sign)         U(8)  user mode
+//   S(9)  stack-switched by trap  P(10) parity error
+//   I(11) interrupt enable        bits 12-15 reserved
+//
+// This file is the UPCL `ns32k` architecture description. Phase 1 adds the arch header and
+// register file (R0..R7, dedicated registers, PSR flag splitter binding %C/%Z/%N/%PC/%PSR).
+// Later phases add addressing modes and instructions.
+
+arch "ns32k" {
+
+    name "National Semiconductor NS32000";
+
+    endian little;
+    byte_size 8;
+    word_size 32;
+    address_size 32;
+    float_size 64;
+
+    register_file {
+
+        // R0..R7: eight general-purpose 32-bit registers. The `?` suffix plus the `8 **`
+        // repeat generates r0..r7 and their positional group aliases R0..R7.
+        group R {
+            [ 8 ** #i32 r?:0 ]
+        }
+
+        // Dedicated (special-purpose) registers. SP0/SP1 are the supervisor/user stack
+        // pointers; SP mirrors the active one; FP/SB/INTBASE/MOD/CFG are the NS32000
+        // module and system registers. PC carries the %PC meta-role; PSR carries %PSR
+        // and the flag splitter (MSB-first: reserved[15:12] I P S U N Z F reserved[4:3] L T C).
+        group S {
+            [ #i32 pc      -> %PC ],
+            [ #i32 sp0 ], [ #i32 sp1 ], [ #i32 sp ],
+            [ #i32 fp  ], [ #i32 sb  ], [ #i32 intbase ],
+            [ #i16 mod ], [ #i32 cfg ],
+            [ #i16 psr -> %PSR #i16 explicit
+                ( #i4 0 : #i1 I : #i1 P : #i1 S : #i1 U
+                : #i1 N -> %N : #i1 Z -> %Z : #i1 F : #i2 0 : #i1 L : #i1 T : #i1 C -> %C ) ]
+        }
+
+    }
+
+}
