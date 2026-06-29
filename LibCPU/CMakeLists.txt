@@ -1169,6 +1169,15 @@ set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "er
 #   lshd  r0,r1: Format 6 (fmt=0x4e) op4=0x5,i=3 -> upper16=0x0057, +0x4E -> 0x00,0x57,0x4E
 #   extd  r1,r0,r2: Format 8 gen2=r0(0),gen1=r1(1),reg=r2(2),i=3,base=0x2e
 #     bits: 00000_00001_010_11_000101110 -> 0b0000_0000_0101_0110_0010_1110 -> 0x00,0x56,0x2E
+# Task 8 review fixes -- new decode assertions:
+#   cvtp r2,r0,r1: corrected opcode (i=1,base=0x16e); gen2=r0(0),gen1=r1(1),reg=r2(2)
+#     24-bit: 00000_00001_010_01_101101110 = 0b0000_0000_0101_0011_0110_1110 -> 0x00,0x53,0x6E
+#     (old wrong encoding was 0x00,0x52,0x6E with base=0x6e; bit 8 of base was dropped)
+#   extsd r1,r0,{G=8,g=2}: Format 7 (fmt=0xce) op4=0x3,i=3; gen1=r1(1),gen2=r0(0)
+#     24-bit: 00001_00000_0011_11_11001110 = 0b0000_1000_0000_1111_1100_1110 -> 0x08,0x0F,0xCE
+#     trailing byte: offs_len = (G-1)<<3 | g = 7<<3 | 2 = 0x3A; total length = 4 bytes
+#   ffsd r0,r1: Format 6 (fmt=0x6e) op4=0x1,i=3; gen1=r0(0),gen2=r1(1)
+#     24-bit: 00000_00001_0001_11_01101110 = 0b0000_0000_0100_0111_0110_1110 -> 0x00,0x47,0x6E
 add_test(NAME upcl.decode-ns32k COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl decode \"$M\" 0x00 0x57 | grep -q 'movd   dst=r1 src=r0' && \
@@ -1184,7 +1193,11 @@ add_test(NAME upcl.decode-ns32k COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x6B | grep -q 'andd   dst=r1 src=r0' && \
    \"$E\" upcl decode \"$M\" 0x00 0x57 0x4E | grep -q 'lshd   dst=r1 src=r0' && \
    \"$E\" upcl decode \"$M\" 0x00 0x77 | grep -q 'tbitd  dst=r1 src=r0' && \
-   \"$E\" upcl decode \"$M\" 0x00 0x56 0x2E | grep -q 'extd   dst=r0 rn=0x2 src=r1'")
+   \"$E\" upcl decode \"$M\" 0x00 0x56 0x2E | grep -q 'extd   dst=r0 rn=0x2 src=r1' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x53 0x6E | grep -q 'cvtp' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x0F 0xCE 0x3A | grep -q 'extsd' && \
+   \"$E\" upcl decode \"$M\" 0x08 0x0F 0xCE 0x3A | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x47 0x6E | grep -q 'ffsd'")
 set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing

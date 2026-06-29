@@ -687,21 +687,22 @@ insn tbitd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),
 // ===========================================================================
 
 // ROTi: dst = rotate(dst, src) (op4 = 0x0). src is a signed byte shift count.
+// The NS32000 PRM specifies positive = left-rotate, negative = right-rotate.
+// Masking with (width-1) normalises the signed count to 0..(width-1), which is
+// always non-negative, so a single left-rotate suffices (rot right by k equals
+// rot left by width-k, which the mask already expresses).
 insn rotb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x0, i:2 = 0x0, fmt:8 = 0x4e ),
     disasm ( mnemonic : "rotb", operands : src, dst )
     { #i8 cnt = %S ( src ) & 7;
-      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 8 - cnt ) ) )
-                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 8 + cnt ) ) ) ); }
+      dst = %CC ( ( dst << cnt ) | ( dst >> ( 8 - cnt ) ) ); }
 insn rotw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x0, i:2 = 0x1, fmt:8 = 0x4e ),
     disasm ( mnemonic : "rotw", operands : src, dst )
     { #i8 cnt = %S ( src ) & 15;
-      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 16 - cnt ) ) )
-                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 16 + cnt ) ) ) ); }
+      dst = %CC ( ( dst << cnt ) | ( dst >> ( 16 - cnt ) ) ); }
 insn rotd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x0, i:2 = 0x3, fmt:8 = 0x4e ),
     disasm ( mnemonic : "rotd", operands : src, dst )
     { #i8 cnt = %S ( src ) & 31;
-      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 32 - cnt ) ) )
-                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 32 + cnt ) ) ) ); }
+      dst = %CC ( ( dst << cnt ) | ( dst >> ( 32 - cnt ) ) ); }
 
 // ASHi: arithmetic shift dst by src (signed byte count; op4 = 0x1).
 // Positive count = shift left; negative count = arithmetic right shift.
@@ -911,80 +912,79 @@ insn ffsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(g
     { #i8 v = src & 0xff;
       %Z = ( v == 0 ) ? 1 : 0;
       dst = 8;
-      dst = ( ( v & 0x7f ) != 0 ) ? 7 : dst;
-      dst = ( ( v & 0x3f ) != 0 ) ? 6 : dst;
-      dst = ( ( v & 0x1f ) != 0 ) ? 5 : dst;
-      dst = ( ( v & 0x0f ) != 0 ) ? 4 : dst;
-      dst = ( ( v & 0x07 ) != 0 ) ? 3 : dst;
-      dst = ( ( v & 0x03 ) != 0 ) ? 2 : dst;
-      dst = ( ( v & 0x01 ) != 0 ) ? 1 : dst;
+      dst = ( ( v & 0x80 ) != 0 ) ? 7 : dst;
+      dst = ( ( v & 0x40 ) != 0 ) ? 6 : dst;
+      dst = ( ( v & 0x20 ) != 0 ) ? 5 : dst;
+      dst = ( ( v & 0x10 ) != 0 ) ? 4 : dst;
+      dst = ( ( v & 0x08 ) != 0 ) ? 3 : dst;
+      dst = ( ( v & 0x04 ) != 0 ) ? 2 : dst;
+      dst = ( ( v & 0x02 ) != 0 ) ? 1 : dst;
       dst = ( ( v & 0x01 ) != 0 ) ? 0 : dst; }
 insn ffsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = 0x6e ),
     disasm ( mnemonic : "ffsw", operands : src, dst )
     { #i16 v = src & 0xffff;
       %Z = ( v == 0 ) ? 1 : 0;
       dst = 16;
-      dst = ( ( v & 0x7fff ) != 0 ) ? 15 : dst;
-      dst = ( ( v & 0x3fff ) != 0 ) ? 14 : dst;
-      dst = ( ( v & 0x1fff ) != 0 ) ? 13 : dst;
-      dst = ( ( v & 0x0fff ) != 0 ) ? 12 : dst;
-      dst = ( ( v & 0x07ff ) != 0 ) ? 11 : dst;
-      dst = ( ( v & 0x03ff ) != 0 ) ? 10 : dst;
-      dst = ( ( v & 0x01ff ) != 0 ) ?  9 : dst;
-      dst = ( ( v & 0x00ff ) != 0 ) ?  8 : dst;
-      dst = ( ( v & 0x007f ) != 0 ) ?  7 : dst;
-      dst = ( ( v & 0x003f ) != 0 ) ?  6 : dst;
-      dst = ( ( v & 0x001f ) != 0 ) ?  5 : dst;
-      dst = ( ( v & 0x000f ) != 0 ) ?  4 : dst;
-      dst = ( ( v & 0x0007 ) != 0 ) ?  3 : dst;
-      dst = ( ( v & 0x0003 ) != 0 ) ?  2 : dst;
-      dst = ( ( v & 0x0001 ) != 0 ) ?  1 : dst;
+      dst = ( ( v & 0x8000 ) != 0 ) ? 15 : dst;
+      dst = ( ( v & 0x4000 ) != 0 ) ? 14 : dst;
+      dst = ( ( v & 0x2000 ) != 0 ) ? 13 : dst;
+      dst = ( ( v & 0x1000 ) != 0 ) ? 12 : dst;
+      dst = ( ( v & 0x0800 ) != 0 ) ? 11 : dst;
+      dst = ( ( v & 0x0400 ) != 0 ) ? 10 : dst;
+      dst = ( ( v & 0x0200 ) != 0 ) ?  9 : dst;
+      dst = ( ( v & 0x0100 ) != 0 ) ?  8 : dst;
+      dst = ( ( v & 0x0080 ) != 0 ) ?  7 : dst;
+      dst = ( ( v & 0x0040 ) != 0 ) ?  6 : dst;
+      dst = ( ( v & 0x0020 ) != 0 ) ?  5 : dst;
+      dst = ( ( v & 0x0010 ) != 0 ) ?  4 : dst;
+      dst = ( ( v & 0x0008 ) != 0 ) ?  3 : dst;
+      dst = ( ( v & 0x0004 ) != 0 ) ?  2 : dst;
+      dst = ( ( v & 0x0002 ) != 0 ) ?  1 : dst;
       dst = ( ( v & 0x0001 ) != 0 ) ?  0 : dst; }
 insn ffsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = 0x6e ),
     disasm ( mnemonic : "ffsd", operands : src, dst )
     { #i32 v = src;
       %Z = ( v == 0 ) ? 1 : 0;
       dst = 32;
-      dst = ( ( v & 0x7fffffff ) != 0 ) ? 31 : dst;
-      dst = ( ( v & 0x3fffffff ) != 0 ) ? 30 : dst;
-      dst = ( ( v & 0x1fffffff ) != 0 ) ? 29 : dst;
-      dst = ( ( v & 0x0fffffff ) != 0 ) ? 28 : dst;
-      dst = ( ( v & 0x07ffffff ) != 0 ) ? 27 : dst;
-      dst = ( ( v & 0x03ffffff ) != 0 ) ? 26 : dst;
-      dst = ( ( v & 0x01ffffff ) != 0 ) ? 25 : dst;
-      dst = ( ( v & 0x00ffffff ) != 0 ) ? 24 : dst;
-      dst = ( ( v & 0x007fffff ) != 0 ) ? 23 : dst;
-      dst = ( ( v & 0x003fffff ) != 0 ) ? 22 : dst;
-      dst = ( ( v & 0x001fffff ) != 0 ) ? 21 : dst;
-      dst = ( ( v & 0x000fffff ) != 0 ) ? 20 : dst;
-      dst = ( ( v & 0x0007ffff ) != 0 ) ? 19 : dst;
-      dst = ( ( v & 0x0003ffff ) != 0 ) ? 18 : dst;
-      dst = ( ( v & 0x0001ffff ) != 0 ) ? 17 : dst;
-      dst = ( ( v & 0x0000ffff ) != 0 ) ? 16 : dst;
-      dst = ( ( v & 0x00007fff ) != 0 ) ? 15 : dst;
-      dst = ( ( v & 0x00003fff ) != 0 ) ? 14 : dst;
-      dst = ( ( v & 0x00001fff ) != 0 ) ? 13 : dst;
-      dst = ( ( v & 0x00000fff ) != 0 ) ? 12 : dst;
-      dst = ( ( v & 0x000007ff ) != 0 ) ? 11 : dst;
-      dst = ( ( v & 0x000003ff ) != 0 ) ? 10 : dst;
-      dst = ( ( v & 0x000001ff ) != 0 ) ?  9 : dst;
-      dst = ( ( v & 0x000000ff ) != 0 ) ?  8 : dst;
-      dst = ( ( v & 0x0000007f ) != 0 ) ?  7 : dst;
-      dst = ( ( v & 0x0000003f ) != 0 ) ?  6 : dst;
-      dst = ( ( v & 0x0000001f ) != 0 ) ?  5 : dst;
-      dst = ( ( v & 0x0000000f ) != 0 ) ?  4 : dst;
-      dst = ( ( v & 0x00000007 ) != 0 ) ?  3 : dst;
-      dst = ( ( v & 0x00000003 ) != 0 ) ?  2 : dst;
-      dst = ( ( v & 0x00000001 ) != 0 ) ?  1 : dst;
+      dst = ( ( v & 0x80000000 ) != 0 ) ? 31 : dst;
+      dst = ( ( v & 0x40000000 ) != 0 ) ? 30 : dst;
+      dst = ( ( v & 0x20000000 ) != 0 ) ? 29 : dst;
+      dst = ( ( v & 0x10000000 ) != 0 ) ? 28 : dst;
+      dst = ( ( v & 0x08000000 ) != 0 ) ? 27 : dst;
+      dst = ( ( v & 0x04000000 ) != 0 ) ? 26 : dst;
+      dst = ( ( v & 0x02000000 ) != 0 ) ? 25 : dst;
+      dst = ( ( v & 0x01000000 ) != 0 ) ? 24 : dst;
+      dst = ( ( v & 0x00800000 ) != 0 ) ? 23 : dst;
+      dst = ( ( v & 0x00400000 ) != 0 ) ? 22 : dst;
+      dst = ( ( v & 0x00200000 ) != 0 ) ? 21 : dst;
+      dst = ( ( v & 0x00100000 ) != 0 ) ? 20 : dst;
+      dst = ( ( v & 0x00080000 ) != 0 ) ? 19 : dst;
+      dst = ( ( v & 0x00040000 ) != 0 ) ? 18 : dst;
+      dst = ( ( v & 0x00020000 ) != 0 ) ? 17 : dst;
+      dst = ( ( v & 0x00010000 ) != 0 ) ? 16 : dst;
+      dst = ( ( v & 0x00008000 ) != 0 ) ? 15 : dst;
+      dst = ( ( v & 0x00004000 ) != 0 ) ? 14 : dst;
+      dst = ( ( v & 0x00002000 ) != 0 ) ? 13 : dst;
+      dst = ( ( v & 0x00001000 ) != 0 ) ? 12 : dst;
+      dst = ( ( v & 0x00000800 ) != 0 ) ? 11 : dst;
+      dst = ( ( v & 0x00000400 ) != 0 ) ? 10 : dst;
+      dst = ( ( v & 0x00000200 ) != 0 ) ?  9 : dst;
+      dst = ( ( v & 0x00000100 ) != 0 ) ?  8 : dst;
+      dst = ( ( v & 0x00000080 ) != 0 ) ?  7 : dst;
+      dst = ( ( v & 0x00000040 ) != 0 ) ?  6 : dst;
+      dst = ( ( v & 0x00000020 ) != 0 ) ?  5 : dst;
+      dst = ( ( v & 0x00000010 ) != 0 ) ?  4 : dst;
+      dst = ( ( v & 0x00000008 ) != 0 ) ?  3 : dst;
+      dst = ( ( v & 0x00000004 ) != 0 ) ?  2 : dst;
+      dst = ( ( v & 0x00000002 ) != 0 ) ?  1 : dst;
       dst = ( ( v & 0x00000001 ) != 0 ) ?  0 : dst; }
 
 // CVTP: convert to bit pointer (11-bit opcode 0x36e embedded as fixed 11-bit field).
 // Layout (24-bit, MSB-first): gen2:5(dst addr) gen1:5(src offset) reg:3 opcode11:11
 // where opcode11 = 0b011_0110_1110 = 0x36e (includes i=01 at bits[10:9]).
+// Decomposed as i:2 base:9 with i=0x1 (bits[10:9]) and base=0x16e (bits[8:0] = 0b1_0110_1110).
 // Semantic: dst = base_addr + (offset / 8); reg = offset % 8 (bit index within byte).
-// Encoded as: gen2:5 gen1:5 reg:3 fixed11:11 = ... decomposed as reg:3 i:2 base9:9
-// with i=0x1 and base9 = 0x6e (0b_0110_1110).
-insn cvtp : encode #i24 ( gen2:5 -> dst @gen_dst(gen2), gen1:5 -> src @gen(gen1), reg:3 -> rn, i:2 = 0x1, base:9 = 0x6e ),
+insn cvtp : encode #i24 ( gen2:5 -> dst @gen_dst(gen2), gen1:5 -> src @gen(gen1), reg:3 -> rn, i:2 = 0x1, base:9 = 0x16e ),
     disasm ( mnemonic : "cvtp", operands : rn, dst, src )
     { dst = dst + ( %S ( src ) / 8 ); %REG[ R, rn ] = %S ( src ) % 8; }
 
@@ -1040,26 +1040,40 @@ insn insd : encode #i24 ( gen2:5 -> src @gen(gen2),   gen1:5 -> dst @gen_dst(gen
     disasm ( mnemonic : "insd", operands : rn, src, dst )
     { #i8 off = %REG[ R, rn ] & 31; dst = ( dst &~ ( 0xffffffff << off ) ) | ( ( src & 0xffffffff ) << off ); }
 
-// EXTSi: extract short bit-field (op4=0x3, fmt=0xce). The offset (3-bit 'g') and
-// length+1 (5-bit 'G') are packed into a trailing byte after gen extensions: G:5 g:3.
-// Modelled with a single trailing #i8 field combining both (G in bits[7:3], g in bits[2:0]).
-insn extsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0xce ),
-    disasm ( mnemonic : "extsb", operands : src, dst )
-    { dst = ( src >> 0 ) & 0xff; }
-insn extsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0xce ),
-    disasm ( mnemonic : "extsw", operands : src, dst )
-    { dst = ( src >> 0 ) & 0xffff; }
-insn extsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0xce ),
-    disasm ( mnemonic : "extsd", operands : src, dst )
-    { dst = src >> 0; }
+// EXTSi: extract short bit-field (op4=0x3, fmt=0xce). A trailing byte follows all gen
+// operand extensions and packs the field parameters: G:5 g:3 (MSB-first within the byte),
+// where G = length+1 (5-bit, values 1..32 encoded as 0..31) and g = bit-offset (3-bit, 0..7).
+// The offs_len field starts at bit offset 24 (past the 24-bit fixed word), so the UPCL decoder
+// automatically classifies it as a tail field -- it is consumed AFTER all gen extensions and
+// adds one byte to the decoded instruction length. The offset is (offs_len & 7) and the
+// length is ((offs_len >> 3) & 0x1f) + 1.
+insn extsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "extsb", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
+insn extsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "extsw", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
+insn extsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "extsd", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      dst = ( src >> off ) & ( ( 1 << len ) - 1 ); }
 
-// INSSi: insert short bit-field (op4=0x2, fmt=0xce). Trailing g/G byte as in EXTSi.
-insn inssb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0xce ),
-    disasm ( mnemonic : "inssb", operands : src, dst )
-    { dst = ( dst &~ 0xff ) | ( src & 0xff ); }
-insn inssw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0xce ),
-    disasm ( mnemonic : "inssw", operands : src, dst )
-    { dst = ( dst &~ 0xffff ) | ( src & 0xffff ); }
-insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0xce ),
-    disasm ( mnemonic : "inssd", operands : src, dst )
-    { dst = src; }
+// INSSi: insert short bit-field (op4=0x2, fmt=0xce). Same trailing G:5 g:3 byte as EXTSi.
+// The bit-offset is (offs_len & 7) and the length is ((offs_len >> 3) & 0x1f) + 1.
+insn inssb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "inssb", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      #i8 mask = ( 1 << len ) - 1;
+      dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
+insn inssw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "inssw", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      #i16 mask = ( 1 << len ) - 1;
+      dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
+insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0xce, offs_len:8 -> offs_len ),
+    disasm ( mnemonic : "inssd", operands : src, dst, offs_len )
+    { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
+      #i32 mask = ( 1 << len ) - 1;
+      dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
