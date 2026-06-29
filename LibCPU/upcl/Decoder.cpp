@@ -549,18 +549,27 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
     UINT8 CONST *p = pBytes + Pos;
     UINT64 Avail = Len - Pos;
 
-    // Among all encodings that match, prefer the MOST SPECIFIC -- the one constraining the
-    // most bits to constants -- so a full-opcode instruction (8080 HLT = 0x76) wins over a
-    // general pattern that also matches (MOV r,r covers 0x40..0x7F). Declaration order does
-    // not matter.
+    // Among all encodings that match, pick the winner by, FIRST, the higher decode PRIORITY
+    // (`encode ... priority N`; default 0), THEN -- for an equal priority -- the MOST SPECIFIC, the
+    // one constraining the most bits to constants, so a full-opcode instruction (8080 HLT = 0x76)
+    // wins over a general pattern that also matches (MOV r,r covers 0x40..0x7F). The priority tier is
+    // a no-op while every candidate stays at the default 0 (every existing ISA), and exists only to
+    // override the bit count where it picks wrongly: the NS32000 Format-0 Bcond byte (4 constant bits)
+    // must win over a coincidentally-matching Format-4 ALU word (6 constant bits) because a leading
+    // byte whose low nibble is 0xA is ALWAYS Format 0 on real hardware. Declaration order does not
+    // matter. A candidate replaces the best when Prio > BestPrio, or (Prio == BestPrio and Spec > Best).
     DecodedInsn Try;
+    INT32       BestPrio = INT32_MIN;
     INT32       BestSpec = -1;
     for (Insn *I : m_pArch->Insns) {
         if (!IsEnabled (I->Feature)) { continue; }
         for (EncAlt *A : I->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Prio = A->Priority;
                 INT32 Spec = (INT32) ConstBits (A);
-                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr; }
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr;
+                }
             }
         }
     }
@@ -568,8 +577,11 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
         if (!IsEnabled (J->Feature)) { continue; }
         for (EncAlt *A : J->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Prio = A->Priority;
                 INT32 Spec = (INT32) ConstBits (A);
-                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J; }
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J;
+                }
             }
         }
     }

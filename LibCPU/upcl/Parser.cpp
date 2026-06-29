@@ -1285,6 +1285,17 @@ Parser::ParseEncAlt ()
     }
     Expect (TokRParen, "to close the encoding field list");
 
+    // Optional `priority N` -- a decode tie-break weight. When several encodings match the same
+    // bytes the highest priority wins outright; equal priorities fall back to the most-constant-bits
+    // rule (so omitting it, the default 0, is exactly the historical behaviour). It is the minimal
+    // declarative hook for a structural overlap the bit count alone cannot resolve (the NS32000
+    // Format-0 Bcond byte vs. a wider Format-4 ALU word that matches the same leading byte).
+    if (AtKeyword ("priority")) {
+        Advance ();
+        if (m_Cur.Kind == TokInt) { A->Priority = (INT32) m_Cur.Int; Advance (); }
+        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an integer after 'priority'"); }
+    }
+
     // Decide which fields live in the fixed opcode word and which are in the byte tail (read after
     // any addressing-mode extension words). When the word width is known (`encode #iN`), a field is
     // a tail field exactly when it starts BEYOND the word -- so all the selector sub-fields inside

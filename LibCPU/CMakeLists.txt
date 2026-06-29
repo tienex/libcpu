@@ -1280,6 +1280,36 @@ add_test(NAME upcl.decode-ns32k-ctl COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x02 0xCF 0x10 | grep -q '3 byte'")
 set_tests_properties(upcl.decode-ns32k-ctl PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
+# NS32000 LONG-FORM Bcond (E8 decode-priority tie-break). A first byte whose low nibble is 0xA is
+# ALWAYS a Format-0 branch on real hardware, never a Format-4 ALU word -- but a long (multi-byte)
+# branch displacement makes the leading bytes ALSO match a wider Format-4 word that fixes MORE
+# constant bits (op:4 + i:2 = 6 vs the Bcond's op:4 = 4), so the most-constant-bits matcher used to
+# mis-decode `beq` (0x0A) with a 14-bit disp as `addb`. With `priority 1` on the Format-0/Format-2
+# encodings the branch now wins regardless of the bit count. RED before E8 (decoded addb), GREEN now.
+#   beq 14-bit disp: 0x0A 0x80 0x40 -- top disp bits 10 => 2-byte disp form => 3-byte insn, pc+0x40.
+#   beq 30-bit disp: 0x0A 0xC0 0x00 0x00 0x40 -- top bits 11 => 4-byte disp form => 5-byte insn.
+#   bgt long: 0x6A 0x80 0x40 -- the single-flag (N) condition, long disp; 3-byte, pc+0x40.
+# The short-disp forms (already covered by decode-ns32k-ctl) stay `beq`/`bgt`; the genuine Format-4
+# ALU words (addb/addd/movd/cmpd, low nibble != 0xA) are re-asserted here to prove they are unchanged.
+add_test(NAME upcl.ns32k-branch-long COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q 'bgt' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x57 | grep -q 'movd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x10 0xC3 | grep -q 'addd   dst=r3 src=r2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x47 | grep -q 'cmpd   dst=r1 src=r0'")
+set_tests_properties(upcl.ns32k-branch-long PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

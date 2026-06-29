@@ -331,6 +331,13 @@ public:
     SRC_LOC                Loc = 0;
     UINT32                 WordBits = 0;   // total instruction width (from the `#iN` word type)
     std::vector<EncField>  Fields;         // MSB-first; widths sum to WordBits
+    // Optional decode priority (`encode #iN ( ... ) priority N`). When SEVERAL encodings match the
+    // same bytes, the highest-priority alternative wins outright; equal priorities fall back to the
+    // existing most-constant-bits rule. The default 0 leaves every existing ISA's decode unchanged --
+    // it only takes effect when an encoding is given an explicit non-zero priority to break a
+    // structural overlap that the constant-bit count resolves wrongly (e.g. an NS32000 Format-0 Bcond
+    // byte vs. a wider Format-4 ALU word that coincidentally matches the same leading byte).
+    INT32                  Priority = 0;
 
     UINT32 TotalBits () CONST {
         UINT32 N = 0;

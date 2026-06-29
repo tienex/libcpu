@@ -78,10 +78,10 @@ const COND_EQ = 0x0;   // beq -- Z == 1                         (equal)
 const COND_NE = 0x1;   // bne -- Z == 0                         (not equal)
 const COND_CS = 0x2;   // bcs -- C == 1                         (carry set / lower, unsigned <)
 const COND_CC = 0x3;   // bcc -- C == 0                         (carry clear / hi-or-same, unsigned >=)
-const COND_HI = 0x4;   // bhi -- (L == 1) && (Z == 0)           (unsigned >)
-const COND_LS = 0x5;   // bls -- (L == 0) || (Z == 1)           (unsigned <=)
-const COND_GT = 0x6;   // bgt -- (N == 1) && (Z == 0)           (signed >)
-const COND_LE = 0x7;   // ble -- (N == 0) || (Z == 1)           (signed <=)
+const COND_HI = 0x4;   // bhi -- L == 1                         (unsigned >; single-flag test)
+const COND_LS = 0x5;   // bls -- L == 0                         (unsigned <=; single-flag test)
+const COND_GT = 0x6;   // bgt -- N == 1                         (signed >; single-flag test)
+const COND_LE = 0x7;   // ble -- N == 0                         (signed <=; single-flag test)
 const COND_FS = 0x8;   // bfs -- F == 1                         (flag set)
 const COND_FC = 0x9;   // bfc -- F == 0                         (flag clear)
 const COND_LO = 0xA;   // blo -- (L == 0) && (Z == 0)           (unsigned <, "lower")
@@ -1469,51 +1469,51 @@ addrmode bd_br ( c ) { c == COND_BR => #i8 %M [ pc + disp varlen ] ; }
 // bit 5) is read with mask 0x20. Z and N use their meta-roles %Z / %N.
 //
 // Bcond cc: pc = cond ? @lea(target) : pc. Each `disp` operand is the PC-relative target.
-jump insn beq : type branch, encode #i8 ( cond:4 -> disp @bd_eq(cond), op:4 = FMT0_SEL ),
+jump insn beq : type branch, encode #i8 ( cond:4 -> disp @bd_eq(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "beq", operands : disp )
     { pc = ( %Z != 0 ) ? @lea ( disp ) : pc; }
-jump insn bne : type branch, encode #i8 ( cond:4 -> disp @bd_ne(cond), op:4 = FMT0_SEL ),
+jump insn bne : type branch, encode #i8 ( cond:4 -> disp @bd_ne(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bne", operands : disp )
     { pc = ( %Z == 0 ) ? @lea ( disp ) : pc; }
-jump insn bcs : type branch, encode #i8 ( cond:4 -> disp @bd_cs(cond), op:4 = FMT0_SEL ),
+jump insn bcs : type branch, encode #i8 ( cond:4 -> disp @bd_cs(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bcs", operands : disp )
     { pc = ( %C != 0 ) ? @lea ( disp ) : pc; }
-jump insn bcc : type branch, encode #i8 ( cond:4 -> disp @bd_cc(cond), op:4 = FMT0_SEL ),
+jump insn bcc : type branch, encode #i8 ( cond:4 -> disp @bd_cc(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bcc", operands : disp )
     { pc = ( %C == 0 ) ? @lea ( disp ) : pc; }
-jump insn bhi : type branch, encode #i8 ( cond:4 -> disp @bd_hi(cond), op:4 = FMT0_SEL ),
+jump insn bhi : type branch, encode #i8 ( cond:4 -> disp @bd_hi(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bhi", operands : disp )
-    { pc = ( ( ( psr & 0x4 ) != 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
-jump insn bls : type branch, encode #i8 ( cond:4 -> disp @bd_ls(cond), op:4 = FMT0_SEL ),
+    { pc = ( ( psr & 0x4 ) != 0 ) ? @lea ( disp ) : pc; }
+jump insn bls : type branch, encode #i8 ( cond:4 -> disp @bd_ls(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bls", operands : disp )
-    { pc = ( ( ( psr & 0x4 ) == 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
-jump insn bgt : type branch, encode #i8 ( cond:4 -> disp @bd_gt(cond), op:4 = FMT0_SEL ),
+    { pc = ( ( psr & 0x4 ) == 0 ) ? @lea ( disp ) : pc; }
+jump insn bgt : type branch, encode #i8 ( cond:4 -> disp @bd_gt(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bgt", operands : disp )
-    { pc = ( ( %N != 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
-jump insn ble : type branch, encode #i8 ( cond:4 -> disp @bd_le(cond), op:4 = FMT0_SEL ),
+    { pc = ( %N != 0 ) ? @lea ( disp ) : pc; }
+jump insn ble : type branch, encode #i8 ( cond:4 -> disp @bd_le(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "ble", operands : disp )
-    { pc = ( ( %N == 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
-jump insn bfs : type branch, encode #i8 ( cond:4 -> disp @bd_fs(cond), op:4 = FMT0_SEL ),
+    { pc = ( %N == 0 ) ? @lea ( disp ) : pc; }
+jump insn bfs : type branch, encode #i8 ( cond:4 -> disp @bd_fs(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bfs", operands : disp )
     { pc = ( ( psr & 0x20 ) != 0 ) ? @lea ( disp ) : pc; }
-jump insn bfc : type branch, encode #i8 ( cond:4 -> disp @bd_fc(cond), op:4 = FMT0_SEL ),
+jump insn bfc : type branch, encode #i8 ( cond:4 -> disp @bd_fc(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bfc", operands : disp )
     { pc = ( ( psr & 0x20 ) == 0 ) ? @lea ( disp ) : pc; }
-jump insn blo : type branch, encode #i8 ( cond:4 -> disp @bd_lo(cond), op:4 = FMT0_SEL ),
+jump insn blo : type branch, encode #i8 ( cond:4 -> disp @bd_lo(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "blo", operands : disp )
     { pc = ( ( ( psr & 0x4 ) == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
-jump insn bhs : type branch, encode #i8 ( cond:4 -> disp @bd_hs(cond), op:4 = FMT0_SEL ),
+jump insn bhs : type branch, encode #i8 ( cond:4 -> disp @bd_hs(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bhs", operands : disp )
     { pc = ( ( ( psr & 0x4 ) != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
-jump insn blt : type branch, encode #i8 ( cond:4 -> disp @bd_lt(cond), op:4 = FMT0_SEL ),
+jump insn blt : type branch, encode #i8 ( cond:4 -> disp @bd_lt(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "blt", operands : disp )
     { pc = ( ( %N == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
-jump insn bge : type branch, encode #i8 ( cond:4 -> disp @bd_ge(cond), op:4 = FMT0_SEL ),
+jump insn bge : type branch, encode #i8 ( cond:4 -> disp @bd_ge(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "bge", operands : disp )
     { pc = ( ( %N != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
 
 // BR: unconditional branch (cond 0xE). pc = target.
-jump insn br : type branch, encode #i8 ( cond:4 -> disp @bd_br(cond), op:4 = FMT0_SEL ),
+jump insn br : type branch, encode #i8 ( cond:4 -> disp @bd_br(cond), op:4 = FMT0_SEL ) priority 1,
     disasm ( mnemonic : "br", operands : disp )
     { pc = @lea ( disp ); }
 
@@ -1678,6 +1678,8 @@ jump insn cxpd : type call, encode #i16 ( gen1:5 -> dst @gen(gen1), opc:11 = OPC
 // CASEi -- multiway branch through a table. The gen operand addresses a table slot holding
 // a signed i-wide displacement; pc = pc + sign_extend(Mem<i>[EA(gen)]) (PRM sec. 4, CASE).
 // The added displacement is relative to the CASE instruction's own address.
+// NOTE: the table operand uses %M[@lea(gen)] -- correct for the memory gen modes; the
+// register-direct gen case (the operand IS a register, not a memory table) is NOT modeled.
 jump insn caseb : type branch, encode #i16 ( gen1:5 -> tbl @gen_b(gen1), opc:11 = OPC_CASEB ),
     disasm ( mnemonic : "caseb", operands : tbl )
     { #i8 d = %M [ @lea ( tbl ) ]; pc = pc + %S ( d ); }
@@ -1701,12 +1703,12 @@ jump insn cased : type branch, encode #i16 ( gen1:5 -> tbl @gen(gen1), opc:11 = 
 // yields `pc + disp`. op[4:1] stays the constant OP_ACB_HI.
 // ---------------------------------------------------------------------------
 addrmode bd_acb ( c ) { c == OP_ACB_SEL => #i8 %M [ pc + disp varlen ] ; }
-jump insn acbb : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x0 ),
+jump insn acbb : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x0 ) priority 1,
     disasm ( mnemonic : "acbb", operands : quick, dst, disp )
     { dst = dst + #i8 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
-jump insn acbw : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x1 ),
+jump insn acbw : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x1 ) priority 1,
     disasm ( mnemonic : "acbw", operands : quick, dst, disp )
     { dst = dst + #i16 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
-jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x3 ),
+jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x3 ) priority 1,
     disasm ( mnemonic : "acbd", operands : quick, dst, disp )
     { dst = dst + #i32 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
