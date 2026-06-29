@@ -128,6 +128,45 @@ const OP5_MOVQ = 0x17;   // MOVQ -- movqb/movqw/movqd
 const OP4_FFS  = 0x1;    // FFS  -- ffsb/ffsw/ffsd (Format 6, 0x6e)
 
 // ---------------------------------------------------------------------------
+// Symbolic constants for processor-control instructions (Task 11). Encodings
+// derived verbatim from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[])
+// and `gas/config/tc-ns32k.c` (cpureg_032 / cpureg_532 tables).
+//
+// LPR/SPR (Format 2-style, 16-bit): gen:5 : reg4:4 : op5:5 : i:2
+//   The size field `i` (bits[1:0]) is split from the 7-bit opcode to match UPCL's
+//   per-field constant model: op5 = bits[6:2] of the 7-bit seed, i = bits[1:0].
+//   lprb=0x6c lprw=0x6d lprd=0x6f -> op5 = 0x6c>>2 = 0x1b, i = {0,1,3}
+//   sprb=0x2c sprw=0x2d sprd=0x2f -> op5 = 0x2c>>2 = 0x0b, i = {0,1,3}
+const OP5_LPR = 0x1b;   // LPR 5-bit base opcode (bits[6:2] of the 7-bit seed)
+const OP5_SPR = 0x0b;   // SPR 5-bit base opcode (bits[6:2] of the 7-bit seed)
+
+// ADJSP (16-bit): gen:5 : op9:9 : i:2
+//   adjspb=0x057c adjspw=0x057d adjspd=0x057f -> op9 = 0x57c>>2 = 0x15f, i = {0,1,3}
+const OP9_ADJSP   = 0x15f;  // ADJSP 9-bit base opcode (bits[10:2] of the 11-bit seed)
+
+// BISPSR / BICPSR (16-bit): gen:5 : op9:9 : i:2
+//   bispsrb=0x37c bispsrw=0x37d -> op9 = 0x37c>>2 = 0xdf, i = {0,1}
+//   bicpsrb=0x17c bicpsrw=0x17d -> op9 = 0x17c>>2 = 0x5f, i = {0,1}
+const OP9_BISPSR  = 0xdf;   // BISPSR 9-bit base opcode (bits[10:2] of the 11-bit seed)
+const OP9_BICPSR  = 0x5f;   // BICPSR 9-bit base opcode (bits[10:2] of the 11-bit seed)
+
+// SETCFG (24-bit): gen(0):5 : opts:4 : op7:7 : fmt:8(=FMT5_BYTE)
+//   setcfg=0x0b0e (seed with gen=0 and opts=0)
+//   op7 occupies bits[14:8] of the 24-bit word (after removing fmt byte 0x0e).
+const OP7_SETCFG  = 0x0b;   // SETCFG 7-bit opcode portion (bits[14:8] of the 24-bit word)
+
+// LPR/SPR dedicated-register 4-bit selector values (from gas/config/tc-ns32k.c cpureg_032).
+// cpureg_532 (NS32532/332/732) adds DCR/BPC/DSR/CAR(0-4), USP(0xb), CFG(0xc).
+// The shared subset used for the decode-milestone:
+const PREG_UPSR    = 0x0;   // 0x0 -- UPSR (user PSR, NS32032)
+const PREG_FP      = 0x8;   // 0x8 -- FP  (frame pointer)
+const PREG_SP      = 0x9;   // 0x9 -- SP  (stack pointer mirror)
+const PREG_SB      = 0xa;   // 0xa -- SB  (static base)
+const PREG_PSR     = 0xd;   // 0xd -- PSR (processor status register)
+const PREG_INTBASE = 0xe;   // 0xe -- INTBASE (interrupt base address)
+const PREG_MOD     = 0xf;   // 0xf -- MOD (module register)
+
+// ---------------------------------------------------------------------------
 // Symbolic constants for the control-transfer section (Task 10). Every magic number the
 // Bcond table, the Format-1/2/3 opcode seeds, and the trap vectors would otherwise carry
 // is named here, so the encodings read against their architectural meaning rather than
@@ -465,16 +504,6 @@ addrmode gen_dst_w ( g ) {
     g == 0x1E => #i16 %M [ @gen_dst_w[index] + %REG[R, ireg] * 4 ] ;
     g == 0x1F => #i16 %M [ @gen_dst_w[index] + %REG[R, ireg] * 8 ] ;
 }
-
-// ---------------------------------------------------------------------------
-// Probe instruction (temporary; Task 11 removes it). Exercises `gen` decode with E4
-// positional binding: op(3)=0, g(5) -> src @gen(g). Byte layout: op at bits 7:5,
-// gen-mode at bits 4:0. Example: 0x00 = r0 (reg-direct), 0x15 0x10 = @0x10 (absolute),
-// 0x14 0x00 0x00 0x00 0x42 = immediate 0x42 (5 bytes total, proving E5 fixed-width).
-// ---------------------------------------------------------------------------
-insn _probe : encode #i8 ( op:3 = 0x0, g:5 -> src @gen(g) ),
-    disasm ( mnemonic : "_probe", operands : src )
-    { r0 = r0; }
 
 // ===========================================================================
 // INTEGER DATA-MOVEMENT + ALU instructions (NS32000 Formats 2, 4, 6, 7).
@@ -1780,3 +1809,137 @@ jump insn acbw : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quic
 jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x3 ) priority 1,
     disasm ( mnemonic : "acbd", operands : quick, dst, disp )
     { dst = dst + #i32 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
+
+// ===========================================================================
+// PROCESSOR-CONTROL instructions (NS32000, Task 11).
+//
+// Encodings from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]) and
+// `gas/config/tc-ns32k.c` (cpureg_032 / cpureg_532 tables). Verified by hand
+// against the 16/24-bit instruction word layouts used in the existing file.
+//
+// LPR/SPR (Format 2-style, 16-bit): gen:5 : reg4:4 : op7:7
+//   The `reg4` 4-bit field carries a dedicated-register selector (see PREG_* consts).
+//   LPR loads the dedicated register named by `reg` into the gen operand.
+//   SPR stores the gen operand into the dedicated register named by `reg`.
+//   At the decode/disasm milestone the `reg` value is shown as an immediate selector
+//   in the operand list (full register-name mapping is a Phase-3 semantic body item).
+//
+// ADJSP (Format 3-style, 16-bit, 11-bit opcode): gen:5 : op11:11
+//   sp = sp - operand  (signed; per NS32000 PRM sp is decremented by the gen value).
+//
+// BISPSR / BICPSR (16-bit, 11-bit opcode): gen:5 : op11:11
+//   BISPSR: PSR |= gen  (byte only writes low 8 bits; word form is the full 16-bit PSR).
+//   BICPSR: PSR &= ~gen  (same width rules).
+//   The NS32000 PRM only defines byte and word forms; there is no doubleword form.
+//
+// SETCFG (24-bit, 15-bit opcode): gen(0):5 : opts:4 : op7:7 : fmt:8(=FMT5_BYTE)
+//   Loads the CFG register from the 4-bit option bitmap: I(bit0) F(bit1) M(bit2) C(bit3).
+//   The gen field is unused (always 0) and carries no operand; only the option bitmap
+//   matters at decode time.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// LPRi -- load processor register. Transfers the dedicated register chosen by the
+// 4-bit `reg` selector into the gen operand.
+// Layout: gen:5 : reg4:4 : op5:5 : i:2  (OP5_LPR = bits[6:2] of the seed, i = bits[1:0]).
+// At the decode/disasm milestone the selector is displayed as a raw immediate; the
+// architectural mapping (reg=0xd -> PSR, reg=0xe -> INTBASE, etc.) is a Phase-3 body item.
+// Binutils seeds: lprb=0x6c lprw=0x6d lprd=0x6f.
+// ---------------------------------------------------------------------------
+insn lprb : encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), reg4:4 -> reg, op:5 = OP5_LPR, i:2 = 0x0 ),
+    disasm ( mnemonic : "lprb", operands : reg, dst )
+    { dst = psr & 0xff; }
+insn lprw : encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), reg4:4 -> reg, op:5 = OP5_LPR, i:2 = 0x1 ),
+    disasm ( mnemonic : "lprw", operands : reg, dst )
+    { dst = psr; }
+insn lprd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2), reg4:4 -> reg, op:5 = OP5_LPR, i:2 = 0x3 ),
+    disasm ( mnemonic : "lprd", operands : reg, dst )
+    { dst = psr; }
+
+// ---------------------------------------------------------------------------
+// SPRi -- store to processor register. Transfers the gen operand into the dedicated
+// register chosen by the 4-bit `reg` selector.
+// Layout: gen:5 : reg4:4 : op5:5 : i:2  (OP5_SPR = bits[6:2] of the seed, i = bits[1:0]).
+// Binutils seeds: sprb=0x2c sprw=0x2d sprd=0x2f.
+// ---------------------------------------------------------------------------
+insn sprb : encode #i16 ( gen2:5 -> src @gen_b(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x0 ),
+    disasm ( mnemonic : "sprb", operands : src, reg )
+    { psr = ( psr &~ 0xff ) | ( src & 0xff ); }
+insn sprw : encode #i16 ( gen2:5 -> src @gen_w(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x1 ),
+    disasm ( mnemonic : "sprw", operands : src, reg )
+    { psr = src; }
+insn sprd : encode #i16 ( gen2:5 -> src @gen(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x3 ),
+    disasm ( mnemonic : "sprd", operands : src, reg )
+    { psr = src & 0xffff; }
+
+// ---------------------------------------------------------------------------
+// ADJSPi -- adjust stack pointer. sp = sp - operand (signed subtraction; adjusting
+// the stack frame by the operand amount).
+// Layout: gen:5 : op9:9 : i:2  (OP9_ADJSP = bits[10:2] of the 11-bit seed, i = bits[1:0]).
+// Binutils seeds: adjspb=0x057c adjspw=0x057d adjspd=0x057f.
+// ---------------------------------------------------------------------------
+insn adjspb : encode #i16 ( gen1:5 -> src @gen_b(gen1), op:9 = OP9_ADJSP, i:2 = 0x0 ),
+    disasm ( mnemonic : "adjspb", operands : src )
+    { sp = sp - #i32 %S ( src ); }
+insn adjspw : encode #i16 ( gen1:5 -> src @gen_w(gen1), op:9 = OP9_ADJSP, i:2 = 0x1 ),
+    disasm ( mnemonic : "adjspw", operands : src )
+    { sp = sp - #i32 %S ( src ); }
+insn adjspd : encode #i16 ( gen1:5 -> src @gen(gen1), op:9 = OP9_ADJSP, i:2 = 0x3 ),
+    disasm ( mnemonic : "adjspd", operands : src )
+    { sp = sp - src; }
+
+// ---------------------------------------------------------------------------
+// BISPSRi -- bit-set PSR (OR operand into PSR). Only byte and word forms exist on
+// the NS32000 (no doubleword form in the PRM or binutils table).
+// Layout: gen:5 : op9:9 : i:2  (OP9_BISPSR = bits[10:2] of the 11-bit seed).
+// Binutils seeds: bispsrb=0x37c bispsrw=0x37d.
+// ---------------------------------------------------------------------------
+insn bispsrb : encode #i16 ( gen1:5 -> src @gen_b(gen1), op:9 = OP9_BISPSR, i:2 = 0x0 ),
+    disasm ( mnemonic : "bispsrb", operands : src )
+    { psr = psr | ( src & 0xff ); }
+insn bispsrw : encode #i16 ( gen1:5 -> src @gen_w(gen1), op:9 = OP9_BISPSR, i:2 = 0x1 ),
+    disasm ( mnemonic : "bispsrw", operands : src )
+    { psr = psr | ( src & 0xffff ); }
+
+// ---------------------------------------------------------------------------
+// BICPSRi -- bit-clear PSR (AND ~operand into PSR). Only byte and word forms exist.
+// Layout: gen:5 : op9:9 : i:2  (OP9_BICPSR = bits[10:2] of the 11-bit seed).
+// Binutils seeds: bicpsrb=0x17c bicpsrw=0x17d.
+// ---------------------------------------------------------------------------
+insn bicpsrb : encode #i16 ( gen1:5 -> src @gen_b(gen1), op:9 = OP9_BICPSR, i:2 = 0x0 ),
+    disasm ( mnemonic : "bicpsrb", operands : src )
+    { psr = psr &~ ( src & 0xff ); }
+insn bicpsrw : encode #i16 ( gen1:5 -> src @gen_w(gen1), op:9 = OP9_BICPSR, i:2 = 0x1 ),
+    disasm ( mnemonic : "bicpsrw", operands : src )
+    { psr = psr &~ ( src & 0xffff ); }
+
+// ---------------------------------------------------------------------------
+// SETCFG -- set configuration register. Loads the CFG register from a 4-bit option
+// bitmap: I=bit0 (interrupt), F=bit1 (FPU), M=bit2 (MMU), C=bit3 (cache/custom).
+// Encoding (24-bit): gen(0):5 : opts:4 : op7:7 : fmt:8(=FMT5_BYTE).
+// The gen field is structurally present (top 5 bits) but always zero; only opts matters.
+// Binutils seed: setcfg=0x0b0e (gen=0, opts=0).
+// ---------------------------------------------------------------------------
+insn setcfg : encode #i24 ( gen0:5 = 0x0, opts:4 -> opts, op:7 = OP7_SETCFG, fmt:8 = FMT5_BYTE ),
+    disasm ( mnemonic : "setcfg", operands : opts )
+    { cfg = opts; }
+
+// ===========================================================================
+// CPU VARIANT DECLARATIONS.
+//
+// The NS32000 family spans four die revisions; each adds optional coprocessors
+// and memory-management hardware. The feature stubs below are placeholders:
+// FPU (NS32081/NS32381 floating-point coprocessor), MMU (NS32082/NS32382
+// memory-management unit), and CACHE (NS32532/32732 on-chip cache control).
+// The instruction bodies for these features are added in Phase 3 (Tasks 12/13).
+// ===========================================================================
+features {
+    fpu    "NS32081/NS32381 floating-point coprocessor (lpf/spf/movf/addf/...)";
+    mmu    "NS32082/NS32382 memory-management unit (lmr/smr/rdval/wrval/movsud/...)";
+    cache  "NS32532/NS32732 on-chip cache (cinv instruction)";
+}
+
+cpu "ns32032" { fpu; mmu; }
+cpu "ns32332" { fpu; mmu; }
+cpu "ns32532" { fpu; mmu; cache; }
+cpu "ns32732" { fpu; mmu; cache; }
