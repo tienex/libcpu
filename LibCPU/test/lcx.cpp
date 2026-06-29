@@ -1105,6 +1105,11 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                 Upcl::Operand CONST &Op = Kv.second;
                 if (Op.Kind == Upcl::Operand::Reg) {
                     std::printf (" %s=%s", Kv.first.c_str (), Layout.Phys[Op.RegIndex].Name.c_str ());
+                } else if (Op.Kind == Upcl::Operand::Mem) {
+                    // A computed memory address: render its base+displacement text (e.g. "r0+0x2000")
+                    // and the signed displacement value so a variable-length disp is visible at decode.
+                    std::printf (" %s=[%s] disp=0x%llx", Kv.first.c_str (), Op.MemText.c_str (),
+                                 (unsigned long long) Op.Disp);
                 } else {
                     std::printf (" %s=0x%llx", Kv.first.c_str (), (unsigned long long) Op.ImmValue);
                 }

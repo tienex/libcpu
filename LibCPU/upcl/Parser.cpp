@@ -1323,7 +1323,13 @@ Parser::ParseAddrRule ()
                 else if (Id == "disp8")  { T.Disp = true; T.DispBits = 8; }
                 else if (Id == "disp16") { T.Disp = true; T.DispBits = 16; }
                 else                     { T.Reg = Id; }
-                // disp be : read this displacement big-endian, overriding the arch endianness.
+                // disp varlen : a SELF-DESCRIBING variable-length displacement -- the first tail byte's
+                // top bits select the encoded width at decode time (the NS32000 scheme; its bytes are
+                // intrinsically big-endian, so DispBits is unused). Several disp terms may appear in one
+                // rule (e.g. NS32000 memory-relative), consumed left-to-right against the advancing tail.
+                if (T.Disp && AtKeyword ("varlen")) { T.DispKind = AddrTerm::DispEncoding::VarLen; Advance (); }
+                // disp be : read this displacement big-endian, overriding the arch endianness. (Redundant
+                // with varlen, which is already big-endian, but accepted so `disp varlen be` parses.)
                 if (T.Disp && AtKeyword ("be")) { T.DispBigEndian = true; Advance (); }
                 R->Mem.push_back (T);
             }

@@ -269,19 +269,53 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
         pOut->Base1 = ~(UINT32) 0; pOut->Base2 = ~(UINT32) 0; pOut->Disp = 0;
         std::string Text;
         UINT32 NBases = 0;
+        // A rule may carry several displacement terms; each is consumed left-to-right from the byte
+        // tail. TailUsed is the running cursor into pTail so a second disp reads AFTER the first (a
+        // single-disp rule keeps TailUsed == 0 throughout, so its extraction is byte-identical).
+        UINT64 TailUsed = 0;
         for (AddrTerm CONST &T : R->Mem) {
             if (T.Disp) {
-                UINT32 DispBits = T.DispBits ? T.DispBits
-                                : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Fields) : 0);
-                if (DispBits > 0) {
-                    UINT32 DispBytes = DispBits / 8;
-                    if (DispBytes > TailAvail) { return false; }
-                    bool DispLittle = T.DispBigEndian ? false : m_pArch->Little;
-                    pOut->Disp = SignExtend (ExtractField (pTail, 0, DispBits, DispLittle), DispBits);
+                INT64 Disp = 0;
+                if (T.DispKind == AddrTerm::DispEncoding::VarLen) {
+                    //
+                    // NS32000-style self-describing displacement: the top bits of the first byte select
+                    // the encoded width. Bytes are big-endian; the value is sign-extended from the
+                    // encoded bit width. (`be` is implicit here, so DispBigEndian is irrelevant.)
+                    //
+                    if (TailUsed >= TailAvail) { return false; }
+                    UINT8 CONST B0 = pTail[TailUsed];
+                    UINT32 DispBytes;
+                    UINT32 DispBits;
+                    if ((B0 & 0x80) == 0)         { DispBytes = 1; DispBits = 7; }
+                    else if ((B0 & 0xC0) == 0x80) { DispBytes = 2; DispBits = 14; }
+                    else                          { DispBytes = 4; DispBits = 30; }
+                    if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
+                    UINT64 Raw = 0;
+                    for (UINT32 i = 0; i < DispBytes; ++i) { Raw = (Raw << 8) | pTail[TailUsed + i]; }  // big-endian
+                    Raw &= (DispBytes == 4) ? UINT64_C (0x3FFFFFFF)
+                         : (DispBytes == 2) ? UINT64_C (0x3FFF) : UINT64_C (0x7F);
+                    Disp = SignExtend (Raw, DispBits);
+                    TailUsed += DispBytes;
                     *pExtraBytes += DispBytes;
+                    pOut->Disp += Disp;
                     if (!Text.empty ()) { Text += "+"; }
-                    char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) pOut->Disp);
+                    char B[24]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) Disp);
                     Text += B;
+                } else {
+                    UINT32 DispBits = T.DispBits ? T.DispBits
+                                    : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Fields) : 0);
+                    if (DispBits > 0) {
+                        UINT32 DispBytes = DispBits / 8;
+                        if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
+                        bool DispLittle = T.DispBigEndian ? false : m_pArch->Little;
+                        Disp = SignExtend (ExtractField (pTail + TailUsed, 0, DispBits, DispLittle), DispBits);
+                        TailUsed += DispBytes;
+                        *pExtraBytes += DispBytes;
+                        pOut->Disp += Disp;
+                        if (!Text.empty ()) { Text += "+"; }
+                        char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) Disp);
+                        Text += B;
+                    }
                 }
             } else if (!T.RegGroup.empty ()) {
                 // %REG[group, field]: the base is group <group>'s element selected by field <field>.

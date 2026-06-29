@@ -188,6 +188,13 @@ public:
     UINT32      DispBits = 0;    // 0 = the addrmode's default disp clause; else fixed (8/16)
     bool        DispBigEndian = false; // `disp be` / `disp8 be` / `disp16 be`: read this
                                       //   displacement big-endian, overriding the arch endianness.
+    // A displacement may be FIXED-width (DispBits / the addrmode default, the classic CISC form) or
+    // SELF-DESCRIBING variable-length (`disp varlen`): the top bits of its first byte select the width
+    // at decode time (NS32000: 1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit, big-endian, sign-
+    // extended). A rule's `Mem` list may carry several `disp` terms, each consumed left-to-right
+    // against the advancing tail cursor (NS32000 memory-relative modes carry two displacements).
+    enum class DispEncoding { Fixed, VarLen };
+    DispEncoding DispKind = DispEncoding::Fixed;
     // A FIELD-INDEXED base register: `%REG[ <group>, <field> ]` -- the base is group <group>'s element
     // selected at decode by the value of decoder field <field>. Collapses one rule per register into
     // one (the PDP-11's `%M[ %REG[R, dr] + disp ]` covers all eight registers).

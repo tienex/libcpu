@@ -1017,6 +1017,26 @@ set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding 
 add_test(NAME upcl.engine-be COMMAND sh -c
   "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_be.upcl' 0xAA 0x12 0x34 | grep '0x1234'")
 
+# Self-describing variable-length displacement (`disp varlen`): the first tail byte's top bits
+# select the encoded width (1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit; big-endian,
+# sign-extended). The opcode byte 0x00 (op=0,m=0) selects the %M[ r0 + disp varlen ] rule; the
+# remaining bytes are the displacement. Asserts all three width boundaries AND sign extension:
+#   0x05            -> 1 byte, +5
+#   0x7F            -> 1 byte, 7-bit -1  (0xff...ff)
+#   0x90 0x00       -> 2 bytes, +0x1000
+#   0xA0 0x00       -> 2 bytes, 14-bit value 0x2000 sign-extends NEGATIVE (0xff...e000)
+#   0xC0 0x00 0x40 0x00 -> 4 bytes, +0x4000
+add_test(NAME upcl.engine-varlen COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_varlen.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x00 0x05 | grep -q 'disp=0x5 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x05 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x7F | grep -q 'disp=0xffffffffffffffff' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x90 0x00 | grep -q 'disp=0x1000 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x90 0x00 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xA0 0x00 | grep -q 'disp=0xffffffffffffe000' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q 'disp=0x4000 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q '5 byte'")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,
