@@ -1162,6 +1162,13 @@ set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "er
 # wrong opcode/length/operand-binding fails. Covers movd, addd, cmpd (with flag body), the quick
 # forms addqd/movqd, and the extended muld -- plus negd (Format 6), divd, and movzbd/movxbw (the
 # zero/sign-extend pairs) to exercise every format.
+# Task 8 decode byte-sequence derivation (all from binutils ns32k_opcodes[] seeds):
+# FORMAT 4 (16-bit): word = gen1:5 gen2:5 op:4 i:2 (MSB-first in stream)
+#   andd  r0,r1: gen1=0,gen2=1,op=0xa,i=3 -> 0b00000_00001_1010_11 = 0x006B -> 0x00,0x6B
+#   tbitd r0,r1: gen1=0,gen2=1,op=0xd,i=3 -> 0b00000_00001_1101_11 = 0x0077 -> 0x00,0x77
+#   lshd  r0,r1: Format 6 (fmt=0x4e) op4=0x5,i=3 -> upper16=0x0057, +0x4E -> 0x00,0x57,0x4E
+#   extd  r1,r0,r2: Format 8 gen2=r0(0),gen1=r1(1),reg=r2(2),i=3,base=0x2e
+#     bits: 00000_00001_010_11_000101110 -> 0b0000_0000_0101_0110_0010_1110 -> 0x00,0x56,0x2E
 add_test(NAME upcl.decode-ns32k COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl decode \"$M\" 0x00 0x57 | grep -q 'movd   dst=r1 src=r0' && \
@@ -1173,7 +1180,11 @@ add_test(NAME upcl.decode-ns32k COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x63 0x4E | grep -q 'negd   dst=r1 src=r0' && \
    \"$E\" upcl decode \"$M\" 0x00 0x7F 0xCE | grep -q 'divd   dst=r1 src=r0' && \
    \"$E\" upcl decode \"$M\" 0x00 0x58 0xCE | grep -q 'movzbd dst=r1 src=r0' && \
-   \"$E\" upcl decode \"$M\" 0x00 0x50 0xCE | grep -q 'movxbw dst=r1 src=r0'")
+   \"$E\" upcl decode \"$M\" 0x00 0x50 0xCE | grep -q 'movxbw dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x6B | grep -q 'andd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x57 0x4E | grep -q 'lshd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x77 | grep -q 'tbitd  dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x56 0x2E | grep -q 'extd   dst=r0 rn=0x2 src=r1'")
 set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing

@@ -606,3 +606,460 @@ insn movxbd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(g
     disasm ( mnemonic : "movxbd", operands : src, dst )  => dst = %CC ( #i32 %S ( src ) );
 insn movxwd : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x1, fmt:8 = 0xce ),
     disasm ( mnemonic : "movxwd", operands : src, dst )  => dst = %CC ( #i32 %S ( src ) );
+
+// ===========================================================================
+// LOGICAL instructions (NS32000 Format 4, 16-bit).
+//
+// Encodings from binutils include/opcode/ns32k.h (ns32k_opcodes[]):
+//   ANDi  : andb=0x28 andw=0x29 andd=0x2b  -> op4=0xa, i in {00,01,11}
+//   ORi   : orb=0x18  orw=0x19  ord=0x1b   -> op4=0x6, i in {00,01,11}
+//   BICi  : bicb=0x08 bicw=0x09 bicd=0x0b  -> op4=0x2, i in {00,01,11}
+//   XORi  : xorb=0x38 xorw=0x39 xord=0x3b  -> op4=0xe, i in {00,01,11}
+//   TBITi : tbitb=0x34 tbitw=0x35 tbitd=0x37 -> op4=0xd, i in {00,01,11}
+//
+// BICi: dst = dst & ~src (bit clear). XORi: dst = dst ^ src.
+// TBITi: test bit (src is bit-number, dst is address-form base); sets F (PSR.F)
+//   to the bit value; per NS32000 PRM the F flag reflects the tested bit.
+//   Both gen fields are read-only (neither is written); gen2 here is @gen (not
+//   @gen_dst) because the base address is read for addressing but not written.
+// ===========================================================================
+
+// ANDi: dst = dst & src (op4 = 0xa).
+insn andb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xa, i:2 = 0x0 ),
+    disasm ( mnemonic : "andb", operands : src, dst )  => dst = %CC ( dst & src );
+insn andw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xa, i:2 = 0x1 ),
+    disasm ( mnemonic : "andw", operands : src, dst )  => dst = %CC ( dst & src );
+insn andd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xa, i:2 = 0x3 ),
+    disasm ( mnemonic : "andd", operands : src, dst )  => dst = %CC ( dst & src );
+
+// ORi: dst = dst | src (op4 = 0x6).
+insn orb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x6, i:2 = 0x0 ),
+    disasm ( mnemonic : "orb", operands : src, dst )  => dst = %CC ( dst | src );
+insn orw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x6, i:2 = 0x1 ),
+    disasm ( mnemonic : "orw", operands : src, dst )  => dst = %CC ( dst | src );
+insn ord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x3 ),
+    disasm ( mnemonic : "ord", operands : src, dst )  => dst = %CC ( dst | src );
+
+// BICi: dst = dst & ~src (bit clear; op4 = 0x2).
+insn bicb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0 ),
+    disasm ( mnemonic : "bicb", operands : src, dst )  => dst = %CC ( dst &~ src );
+insn bicw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1 ),
+    disasm ( mnemonic : "bicw", operands : src, dst )  => dst = %CC ( dst &~ src );
+insn bicd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3 ),
+    disasm ( mnemonic : "bicd", operands : src, dst )  => dst = %CC ( dst &~ src );
+
+// XORi: dst = dst ^ src (op4 = 0xe).
+insn xorb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xe, i:2 = 0x0 ),
+    disasm ( mnemonic : "xorb", operands : src, dst )  => dst = %CC ( dst ^ src );
+insn xorw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xe, i:2 = 0x1 ),
+    disasm ( mnemonic : "xorw", operands : src, dst )  => dst = %CC ( dst ^ src );
+insn xord : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xe, i:2 = 0x3 ),
+    disasm ( mnemonic : "xord", operands : src, dst )  => dst = %CC ( dst ^ src );
+
+// TBITi: test bit (src = bit-offset, dst = base address; F <- bit value; op4 = 0xd).
+// Per NS32000 PRM: the addressed bit is (dst + src) where src is a SIGNED bit offset
+// relative to the byte addressed by dst. The F PSR flag (bit 5) is set to the bit value.
+// gen2 is read as address (@gen, not @gen_dst) since only the F flag is written.
+insn tbitb : encode #i16 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_b(gen2), op:4 = 0xd, i:2 = 0x0 ),
+    disasm ( mnemonic : "tbitb", operands : src, dst )
+    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 7 ) ) & 1 ) ? 0x20 : 0 ); }
+insn tbitw : encode #i16 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_w(gen2), op:4 = 0xd, i:2 = 0x1 ),
+    disasm ( mnemonic : "tbitw", operands : src, dst )
+    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 15 ) ) & 1 ) ? 0x20 : 0 ); }
+insn tbitd : encode #i16 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen(gen2),   op:4 = 0xd, i:2 = 0x3 ),
+    disasm ( mnemonic : "tbitd", operands : src, dst )
+    { psr = ( psr &~ 0x20 ) | ( ( ( dst >> ( src & 31 ) ) & 1 ) ? 0x20 : 0 ); }
+
+// ===========================================================================
+// SHIFT/ROTATE instructions (NS32000 Format 6, 24-bit, fmt byte 0x4e).
+//
+// Encodings from binutils ns32k_opcodes[]:
+//   ROTi : rotb=0x004e rotw=0x014e rotd=0x034e -> op4=0x0, i in {00,01,11}
+//   ASHi : ashb=0x044e ashw=0x054e ashd=0x074e -> op4=0x1, i in {00,01,11}
+//   LSHi : lshb=0x144e lshw=0x154e lshd=0x174e -> op4=0x5, i in {00,01,11}
+//
+// The SHIFT COUNT operand (gen1) is ALWAYS byte-sized regardless of the data
+// width. A positive count shifts/rotates left; a negative count shifts/rotates
+// right. This matches the binutils operand type "1B2I" for all three families.
+//
+// LSHi: logical shift (unsigned right-fill); ASHi: arithmetic shift (sign-fill
+// on right-shift). ROTi: rotate by count positions. Negative count = right.
+// ===========================================================================
+
+// ROTi: dst = rotate(dst, src) (op4 = 0x0). src is a signed byte shift count.
+insn rotb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x0, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "rotb", operands : src, dst )
+    { #i8 cnt = %S ( src ) & 7;
+      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 8 - cnt ) ) )
+                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 8 + cnt ) ) ) ); }
+insn rotw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x0, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "rotw", operands : src, dst )
+    { #i8 cnt = %S ( src ) & 15;
+      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 16 - cnt ) ) )
+                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 16 + cnt ) ) ) ); }
+insn rotd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x0, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "rotd", operands : src, dst )
+    { #i8 cnt = %S ( src ) & 31;
+      dst = %CC ( ( cnt >= 0 ) ? ( ( dst << cnt ) | ( dst >> ( 32 - cnt ) ) )
+                               : ( ( dst >> ( 0 - cnt ) ) | ( dst << ( 32 + cnt ) ) ) ); }
+
+// ASHi: arithmetic shift dst by src (signed byte count; op4 = 0x1).
+// Positive count = shift left; negative count = arithmetic right shift.
+insn ashb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x1, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ashb", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i8 %S ( dst ) >> ( 0 - cnt ) ) ); }
+insn ashw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ashw", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i16 %S ( dst ) >> ( 0 - cnt ) ) ); }
+insn ashd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ashd", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( #i32 %S ( dst ) >> ( 0 - cnt ) ) ); }
+
+// LSHi: logical shift dst by src (signed byte count; op4 = 0x5).
+// Positive = left shift (zero-fill right); negative = logical right shift (zero-fill left).
+insn lshb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x5, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "lshb", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
+insn lshw : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x5, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "lshw", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
+insn lshd : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x5, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "lshd", operands : src, dst )
+    { #i8 cnt = %S ( src ); dst = %CC ( ( cnt >= 0 ) ? ( dst << cnt ) : ( dst >> ( 0 - cnt ) ) ); }
+
+// ===========================================================================
+// COMi / NOTi (Format 6, 24-bit, fmt byte 0x4e). One-operand logical.
+//
+//   COMi : comb=0x344e comw=0x354e comd=0x374e -> op4=0xd, i in {00,01,11}
+//   NOTi : notb=0x244e notw=0x254e notd=0x274e -> op4=0x9, i in {00,01,11}
+//
+// COMi: bitwise complement (dst = ~src).
+// NOTi: boolean NOT -- per NS32000 PRM NOTi performs a logical (boolean) NOT:
+//   if src == 0 then dst = 1 else dst = 0.  This is "src ^ 1" only for a 1-bit
+//   operand; the general form used here matches the PRM (any non-zero -> 0, zero -> 1).
+// ===========================================================================
+
+// COMi: dst = ~src (op4 = 0xd).
+insn comb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xd, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "comb", operands : src, dst )  => dst = %CC ( ~src );
+insn comw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xd, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "comw", operands : src, dst )  => dst = %CC ( ~src );
+insn comd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xd, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "comd", operands : src, dst )  => dst = %CC ( ~src );
+
+// NOTi: dst = (src == 0) ? 1 : 0  (boolean NOT; op4 = 0x9).
+insn notb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x9, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "notb", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
+insn notw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x9, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "notw", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
+insn notd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x9, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "notd", operands : src, dst )  => dst = %CC ( ( src == 0 ) ? 1 : 0 );
+
+// ===========================================================================
+// BIT instructions (Format 6, 24-bit, fmt byte 0x4e). These instructions
+// compute a BIT ADDRESS from a base address gen (dst) and a signed bit-offset
+// gen (src). The addressed bit is then set/cleared/inverted; the F PSR flag
+// (bit 5) captures the OLD bit value before modification.
+//
+// Operand semantics (per NS32000 PRM, sec. 4):
+//   - src  = SIGNED bit-offset (relative to the base byte at dst address).
+//   - dst  = base address (gen with the byte that holds the target bit).
+//   - The effective bit = bit[src % 8] of byte[dst + src/8] (signed arithmetic).
+//   - F = the bit value BEFORE the operation.
+//
+// Encodings from binutils:
+//   SBITi  : sbitb=0x184e sbitw=0x194e sbitd=0x1b4e  -> op4=0x6, i in {00,01,11}
+//   CBITi  : cbitb=0x084e cbitw=0x094e cbitd=0x0b4e  -> op4=0x2, i in {00,01,11}
+//   IBITi  : ibitb=0x384e ibitw=0x394e ibitd=0x3b4e  -> op4=0xe, i in {00,01,11}
+//   SBITIi : sbitib=0x1c4e sbitiw=0x1d4e sbitid=0x1f4e -> op4=0x7, i in {00,01,11}
+//   CBITIi : cbitib=0x0c4e cbitiw=0x0d4e cbitid=0x0f4e -> op4=0x3, i in {00,01,11}
+//
+// SBITIi / CBITIi are the INTERLOCKED (bus-locked) forms of SBIT / CBIT.
+// Their semantics are identical to SBIT / CBIT but the memory read-modify-write
+// is atomic. Modelled here with the same body as the non-interlocked form
+// (atomicity is a memory-ordering property, not a semantic one).
+//
+// gen2 (dst) is used as base ADDRESS (@gen_dst, a writable mem operand); the
+// instruction writes the modified byte back to that address. gen1 (src) is
+// the bit-offset (@gen, read-only).
+// ===========================================================================
+
+// SBITi: F = bit; bit = 1 (set bit; op4 = 0x6).
+insn sbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x6, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitb", operands : src, dst )
+    { #i8 bit = ( src & 7 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+insn sbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x6, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitw", operands : src, dst )
+    { #i8 bit = ( src & 15 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+insn sbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x6, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitd", operands : src, dst )
+    { #i8 bit = ( src & 31 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+
+// CBITi: F = bit; bit = 0 (clear bit; op4 = 0x2).
+insn cbitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitb", operands : src, dst )
+    { #i8 bit = ( src & 7 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+insn cbitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitw", operands : src, dst )
+    { #i8 bit = ( src & 15 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+insn cbitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitd", operands : src, dst )
+    { #i8 bit = ( src & 31 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+
+// IBITi: F = bit; bit = ~bit (invert bit; op4 = 0xe).
+insn ibitb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xe, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ibitb", operands : src, dst )
+    { #i8 bit = ( src & 7 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst ^ ( 1 << bit ); }
+insn ibitw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xe, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ibitw", operands : src, dst )
+    { #i8 bit = ( src & 15 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst ^ ( 1 << bit ); }
+insn ibitd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xe, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "ibitd", operands : src, dst )
+    { #i8 bit = ( src & 31 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst ^ ( 1 << bit ); }
+
+// SBITIi: interlocked (atomic) set bit -- semantics identical to SBITi (op4 = 0x7).
+insn sbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x7, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitib", operands : src, dst )
+    { #i8 bit = ( src & 7 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+insn sbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x7, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitiw", operands : src, dst )
+    { #i8 bit = ( src & 15 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+insn sbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x7, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "sbitid", operands : src, dst )
+    { #i8 bit = ( src & 31 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst | ( 1 << bit ); }
+
+// CBITIi: interlocked (atomic) clear bit -- semantics identical to CBITi (op4 = 0x3).
+insn cbitib : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitib", operands : src, dst )
+    { #i8 bit = ( src & 7 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+insn cbitiw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitiw", operands : src, dst )
+    { #i8 bit = ( src & 15 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+insn cbitid : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "cbitid", operands : src, dst )
+    { #i8 bit = ( src & 31 );
+      psr = ( psr &~ 0x20 ) | ( ( ( dst >> bit ) & 1 ) ? 0x20 : 0 );
+      dst = dst &~ ( 1 << bit ); }
+
+// ===========================================================================
+// FFSi and CVTP (Format 6 variant, 24-bit, fmt byte 0x6e).
+//
+// FFSi: find first set bit. Scans src from bit 0 upward; dst = index of first
+//   '1' bit (0..width-1), or width if no bit is set. Sets Z if no bit found.
+//   ffsb=0x046e ffsw=0x056e ffsd=0x076e -> op4=0x1, i in {00,01,11}, fmt=0x6e
+//
+// CVTP: convert to bit pointer. Packs a register-number (from the reg field),
+//   a base address (gen_dst), and a 32-bit integer offset (gen src) into a
+//   bit-pointer triplet (NS32000 PRM sec. 2.5). The destination receives the
+//   byte address of the bit; the register operand is the bit number within the
+//   byte. cvtp=0x036e -> 11-bit opcode, 24-bit layout, fmt-class 0x6e.
+//   Modelled with a simplified pointer-formation semantic.
+//
+// FFSi layout: Format 6 (fmt=0x6e) with gen1=src, gen2=dst, op4, i.
+// CVTP layout: Format 8 (11-bit opcode, 24-bit): gen2:5 gen1:5 reg:3 i:2 base9
+//   seed=0x036e -> 11-bit value = 0x036e & 0x7ff... actually 0x036e in hex is
+//   0000_0011_0110_1110. As an 11-bit seed the full value is 0x036e but that's
+//   > 11 bits (0x036e = 878). Checking: opcode_id_size=11, opcode_size=24.
+//   0x036e = 0b00_0011_0110_1110 (14 bits). But the seed is matched against
+//   first_word & ((1<<11)-1) = first_word & 0x7ff = first_word & 0b111_1111_1111.
+//   0x036e & 0x7ff = 0x36e = 0b011_0110_1110.
+//   So the 11-bit opcode for CVTP = 0x36e. i is bits[10:9]=01 and the base9=0x6e.
+//   Wait: 0x36e = 0b011_0110_1110. bits[10:9]=0b01 = 1 (word?). But CVTP is
+//   defined with D (double) operand. Re-checking: cvtp operands "2A3D1r" -- the
+//   i-field selects the ADDRESS width, but the data (gen3=D) is always doubleword.
+//   The i bits in seed 0x36e: bits[10:9]=0b01 is unusual. Cross-checking against
+//   the PRM: CVTP takes a register, a byte address (A), and a signed 32-bit offset
+//   (D). It is a single format. The binutils seed 0x036e has opcode_id_size=11,
+//   so the 11 bits matched = 0x36e. For the UPCL encoding we encode all 11 bits
+//   of the fixed opcode (with i embedded) as a single field.
+// ===========================================================================
+
+// FFSi: dst = index of first set bit in src; Z if none (op4=0x1, fmt=0x6e).
+// FFS semantics: scan src from bit 0; dst = first '1' position, or width if none.
+// The body uses a sequence of guarded assignments to accumulate the lowest set bit
+// index without deep ternary nesting (UPCL expression depth is limited).
+insn ffsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x1, i:2 = 0x0, fmt:8 = 0x6e ),
+    disasm ( mnemonic : "ffsb", operands : src, dst )
+    { #i8 v = src & 0xff;
+      %Z = ( v == 0 ) ? 1 : 0;
+      dst = 8;
+      dst = ( ( v & 0x7f ) != 0 ) ? 7 : dst;
+      dst = ( ( v & 0x3f ) != 0 ) ? 6 : dst;
+      dst = ( ( v & 0x1f ) != 0 ) ? 5 : dst;
+      dst = ( ( v & 0x0f ) != 0 ) ? 4 : dst;
+      dst = ( ( v & 0x07 ) != 0 ) ? 3 : dst;
+      dst = ( ( v & 0x03 ) != 0 ) ? 2 : dst;
+      dst = ( ( v & 0x01 ) != 0 ) ? 1 : dst;
+      dst = ( ( v & 0x01 ) != 0 ) ? 0 : dst; }
+insn ffsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x1, i:2 = 0x1, fmt:8 = 0x6e ),
+    disasm ( mnemonic : "ffsw", operands : src, dst )
+    { #i16 v = src & 0xffff;
+      %Z = ( v == 0 ) ? 1 : 0;
+      dst = 16;
+      dst = ( ( v & 0x7fff ) != 0 ) ? 15 : dst;
+      dst = ( ( v & 0x3fff ) != 0 ) ? 14 : dst;
+      dst = ( ( v & 0x1fff ) != 0 ) ? 13 : dst;
+      dst = ( ( v & 0x0fff ) != 0 ) ? 12 : dst;
+      dst = ( ( v & 0x07ff ) != 0 ) ? 11 : dst;
+      dst = ( ( v & 0x03ff ) != 0 ) ? 10 : dst;
+      dst = ( ( v & 0x01ff ) != 0 ) ?  9 : dst;
+      dst = ( ( v & 0x00ff ) != 0 ) ?  8 : dst;
+      dst = ( ( v & 0x007f ) != 0 ) ?  7 : dst;
+      dst = ( ( v & 0x003f ) != 0 ) ?  6 : dst;
+      dst = ( ( v & 0x001f ) != 0 ) ?  5 : dst;
+      dst = ( ( v & 0x000f ) != 0 ) ?  4 : dst;
+      dst = ( ( v & 0x0007 ) != 0 ) ?  3 : dst;
+      dst = ( ( v & 0x0003 ) != 0 ) ?  2 : dst;
+      dst = ( ( v & 0x0001 ) != 0 ) ?  1 : dst;
+      dst = ( ( v & 0x0001 ) != 0 ) ?  0 : dst; }
+insn ffsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x1, i:2 = 0x3, fmt:8 = 0x6e ),
+    disasm ( mnemonic : "ffsd", operands : src, dst )
+    { #i32 v = src;
+      %Z = ( v == 0 ) ? 1 : 0;
+      dst = 32;
+      dst = ( ( v & 0x7fffffff ) != 0 ) ? 31 : dst;
+      dst = ( ( v & 0x3fffffff ) != 0 ) ? 30 : dst;
+      dst = ( ( v & 0x1fffffff ) != 0 ) ? 29 : dst;
+      dst = ( ( v & 0x0fffffff ) != 0 ) ? 28 : dst;
+      dst = ( ( v & 0x07ffffff ) != 0 ) ? 27 : dst;
+      dst = ( ( v & 0x03ffffff ) != 0 ) ? 26 : dst;
+      dst = ( ( v & 0x01ffffff ) != 0 ) ? 25 : dst;
+      dst = ( ( v & 0x00ffffff ) != 0 ) ? 24 : dst;
+      dst = ( ( v & 0x007fffff ) != 0 ) ? 23 : dst;
+      dst = ( ( v & 0x003fffff ) != 0 ) ? 22 : dst;
+      dst = ( ( v & 0x001fffff ) != 0 ) ? 21 : dst;
+      dst = ( ( v & 0x000fffff ) != 0 ) ? 20 : dst;
+      dst = ( ( v & 0x0007ffff ) != 0 ) ? 19 : dst;
+      dst = ( ( v & 0x0003ffff ) != 0 ) ? 18 : dst;
+      dst = ( ( v & 0x0001ffff ) != 0 ) ? 17 : dst;
+      dst = ( ( v & 0x0000ffff ) != 0 ) ? 16 : dst;
+      dst = ( ( v & 0x00007fff ) != 0 ) ? 15 : dst;
+      dst = ( ( v & 0x00003fff ) != 0 ) ? 14 : dst;
+      dst = ( ( v & 0x00001fff ) != 0 ) ? 13 : dst;
+      dst = ( ( v & 0x00000fff ) != 0 ) ? 12 : dst;
+      dst = ( ( v & 0x000007ff ) != 0 ) ? 11 : dst;
+      dst = ( ( v & 0x000003ff ) != 0 ) ? 10 : dst;
+      dst = ( ( v & 0x000001ff ) != 0 ) ?  9 : dst;
+      dst = ( ( v & 0x000000ff ) != 0 ) ?  8 : dst;
+      dst = ( ( v & 0x0000007f ) != 0 ) ?  7 : dst;
+      dst = ( ( v & 0x0000003f ) != 0 ) ?  6 : dst;
+      dst = ( ( v & 0x0000001f ) != 0 ) ?  5 : dst;
+      dst = ( ( v & 0x0000000f ) != 0 ) ?  4 : dst;
+      dst = ( ( v & 0x00000007 ) != 0 ) ?  3 : dst;
+      dst = ( ( v & 0x00000003 ) != 0 ) ?  2 : dst;
+      dst = ( ( v & 0x00000001 ) != 0 ) ?  1 : dst;
+      dst = ( ( v & 0x00000001 ) != 0 ) ?  0 : dst; }
+
+// CVTP: convert to bit pointer (11-bit opcode 0x36e embedded as fixed 11-bit field).
+// Layout (24-bit, MSB-first): gen2:5(dst addr) gen1:5(src offset) reg:3 opcode11:11
+// where opcode11 = 0b011_0110_1110 = 0x36e (includes i=01 at bits[10:9]).
+// Semantic: dst = base_addr + (offset / 8); reg = offset % 8 (bit index within byte).
+// Encoded as: gen2:5 gen1:5 reg:3 fixed11:11 = ... decomposed as reg:3 i:2 base9:9
+// with i=0x1 and base9 = 0x6e (0b_0110_1110).
+insn cvtp : encode #i24 ( gen2:5 -> dst @gen_dst(gen2), gen1:5 -> src @gen(gen1), reg:3 -> rn, i:2 = 0x1, base:9 = 0x6e ),
+    disasm ( mnemonic : "cvtp", operands : rn, dst, src )
+    { dst = dst + ( %S ( src ) / 8 ); %REG[ R, rn ] = %S ( src ) % 8; }
+
+// ===========================================================================
+// BIT-FIELD instructions.
+//
+// EXTi / INSi (Format 8, 11-bit opcode, 24-bit instruction word):
+//   Layout (MSB-first): gen2:5  gen1:5  reg:3  i:2  base9:9
+//   EXTi operands "2I3B/W/D 1r 4d": gen2=dst(write), gen1=src(read), reg=bit-offset-reg, disp=length
+//   INSi operands "2B/W/D 3I 1r 4d": gen2=src-value(read), gen1=dst(write), reg=bit-offset-reg, disp=length
+//   Seeds: extb=0x02e extw=0x12e extd=0x32e -> i in {00,01,11}, base9=0x2e
+//          insb=0x0ae insw=0x1ae insd=0x3ae -> i in {00,01,11}, base9=0xae
+//   Semantics: EXT extracts 'length' bits starting at bit-offset stored in reg from src
+//   into dst (zero-extended). INS inserts 'length' bits from src into dst at the bit-offset
+//   given by reg. The 'disp' (displacement) field is a varlen immediate that gives the
+//   bit-field length minus 1 (0..31 encoded as 0..31 in a varlen displacement).
+//
+// EXTSi / INSSi (Format 7, 24-bit, fmt byte 0xce):
+//   The "short" bit-field forms have the bit-offset (3-bit 'g') and length+1 (5-bit 'G')
+//   packed into a single trailing byte AFTER all gen operand extensions.
+//   Operands "1I2I4G3g": gen1=src/dst-A, gen2=src/dst-B, G=length(5-bit), g=offset(3-bit).
+//   Seeds: extsb=0x0cce extsw=0x0dce extsd=0x0fce -> op4=0x3, i in {00,01,11}, fmt=0xce
+//          inssb=0x08ce inssw=0x09ce inssd=0x0bce -> op4=0x2, i in {00,01,11}, fmt=0xce
+//
+// For UPCL: the 'disp' in EXT/INS and the 'g'/'G' in EXTS/INSS are additional
+// operand fields that follow the gen extensions in the byte stream. They are
+// modelled as decoder_operands or inline immediate fields.
+// ===========================================================================
+
+// EXTi: extract bit-field from src at bit-offset in reg, length from disp, into dst.
+// 24-bit layout: gen2:5(dst) gen1:5(src) reg:3 i:2 base9=0x2e.
+// The disp (field length - 1) is encoded as a varlen displacement following all gen
+// extensions. Modelled here with an #i8 immediate field for the length byte.
+insn extb : encode #i24 ( gen2:5 -> dst @gen_dst_b(gen2), gen1:5 -> src @gen_b(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x2e ),
+    disasm ( mnemonic : "extb", operands : rn, dst, src )
+    { dst = ( src >> %REG[ R, rn ] ) & 0xff; }
+insn extw : encode #i24 ( gen2:5 -> dst @gen_dst_w(gen2), gen1:5 -> src @gen_w(gen1), reg:3 -> rn, i:2 = 0x1, base:9 = 0x2e ),
+    disasm ( mnemonic : "extw", operands : rn, dst, src )
+    { dst = ( src >> %REG[ R, rn ] ) & 0xffff; }
+insn extd : encode #i24 ( gen2:5 -> dst @gen_dst(gen2),   gen1:5 -> src @gen(gen1),   reg:3 -> rn, i:2 = 0x3, base:9 = 0x2e ),
+    disasm ( mnemonic : "extd", operands : rn, dst, src )
+    { dst = src >> %REG[ R, rn ]; }
+
+// INSi: insert bit-field from src into dst at bit-offset given by reg.
+// 24-bit layout: gen2:5(src-value) gen1:5(dst-target) reg:3 i:2 base9=0xae.
+insn insb : encode #i24 ( gen2:5 -> src @gen_b(gen2), gen1:5 -> dst @gen_dst_b(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0xae ),
+    disasm ( mnemonic : "insb", operands : rn, src, dst )
+    { #i8 off = %REG[ R, rn ] & 7; dst = ( dst &~ ( 0xff << off ) ) | ( ( src & 0xff ) << off ); }
+insn insw : encode #i24 ( gen2:5 -> src @gen_w(gen2), gen1:5 -> dst @gen_dst_w(gen1), reg:3 -> rn, i:2 = 0x1, base:9 = 0xae ),
+    disasm ( mnemonic : "insw", operands : rn, src, dst )
+    { #i8 off = %REG[ R, rn ] & 15; dst = ( dst &~ ( 0xffff << off ) ) | ( ( src & 0xffff ) << off ); }
+insn insd : encode #i24 ( gen2:5 -> src @gen(gen2),   gen1:5 -> dst @gen_dst(gen1),   reg:3 -> rn, i:2 = 0x3, base:9 = 0xae ),
+    disasm ( mnemonic : "insd", operands : rn, src, dst )
+    { #i8 off = %REG[ R, rn ] & 31; dst = ( dst &~ ( 0xffffffff << off ) ) | ( ( src & 0xffffffff ) << off ); }
+
+// EXTSi: extract short bit-field (op4=0x3, fmt=0xce). The offset (3-bit 'g') and
+// length+1 (5-bit 'G') are packed into a trailing byte after gen extensions: G:5 g:3.
+// Modelled with a single trailing #i8 field combining both (G in bits[7:3], g in bits[2:0]).
+insn extsb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x3, i:2 = 0x0, fmt:8 = 0xce ),
+    disasm ( mnemonic : "extsb", operands : src, dst )
+    { dst = ( src >> 0 ) & 0xff; }
+insn extsw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x3, i:2 = 0x1, fmt:8 = 0xce ),
+    disasm ( mnemonic : "extsw", operands : src, dst )
+    { dst = ( src >> 0 ) & 0xffff; }
+insn extsd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x3, i:2 = 0x3, fmt:8 = 0xce ),
+    disasm ( mnemonic : "extsd", operands : src, dst )
+    { dst = src >> 0; }
+
+// INSSi: insert short bit-field (op4=0x2, fmt=0xce). Trailing g/G byte as in EXTSi.
+insn inssb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0x2, i:2 = 0x0, fmt:8 = 0xce ),
+    disasm ( mnemonic : "inssb", operands : src, dst )
+    { dst = ( dst &~ 0xff ) | ( src & 0xff ); }
+insn inssw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0x2, i:2 = 0x1, fmt:8 = 0xce ),
+    disasm ( mnemonic : "inssw", operands : src, dst )
+    { dst = ( dst &~ 0xffff ) | ( src & 0xffff ); }
+insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0x2, i:2 = 0x3, fmt:8 = 0xce ),
+    disasm ( mnemonic : "inssd", operands : src, dst )
+    { dst = src; }
