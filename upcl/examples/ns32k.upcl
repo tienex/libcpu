@@ -1121,12 +1121,12 @@ insn movsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ];
-          if ( ( opts & 0x2 ) != 0 ) {
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
-          } else if ( ( opts & 0x4 ) != 0 ) {
+          if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
               if ( s != d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
 insn movsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x1, base:8 = 0x0e ),
     disasm ( mnemonic : "movsw", operands : opts )
@@ -1134,12 +1134,12 @@ insn movsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ];
-          if ( ( opts & 0x2 ) != 0 ) {
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
-          } else if ( ( opts & 0x4 ) != 0 ) {
+          if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
               if ( s != d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
 insn movsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x3, base:8 = 0x0e ),
     disasm ( mnemonic : "movsd", operands : opts )
@@ -1147,12 +1147,12 @@ insn movsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ];
-          if ( ( opts & 0x2 ) != 0 ) {
-              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
-          } else if ( ( opts & 0x4 ) != 0 ) {
+          if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
               if ( s != d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
+              %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1;
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
           } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
 
 // MOVSi (translate): same as MOVSi but source element is used as index into translate table
@@ -1163,12 +1163,12 @@ insn movst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x0, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
-          if ( ( opts & 0x2 ) != 0 ) {
-              if ( t == d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; }
-          } else if ( ( opts & 0x4 ) != 0 ) {
+          if ( ( opts & 0x4 ) != 0 ) {             // U: until-match (opts=0x6) -- copy then stop if mismatch
+              %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1;
               if ( t != d ) { psr = psr | 0x20; r0 = 0; }
-              else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x2 ) != 0 ) {      // W: while-match (opts=0x2) -- copy then stop if match
+              %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1;
+              if ( t == d ) { psr = psr | 0x20; r0 = 0; }
           } else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; } } }
 
 // CMPSi: compare string -- compare R0 elements at [R1] vs [R2]; element width = byte/word/double.
@@ -1180,24 +1180,24 @@ insn cmpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
 insn cmpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x1, base:8 = 0x0e ),
     disasm ( mnemonic : "cmpsw", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
 insn cmpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x3, base:8 = 0x0e ),
     disasm ( mnemonic : "cmpsd", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } } } }
 
 // CMPSi (translate): compare with R3-based translation. T=1, sub=1, i=0 (byte index).
 insn cmpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = 0x0e ),
@@ -1207,8 +1207,8 @@ insn cmpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x1, 
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
           r1 += step; r2 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( t == d ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( t != d ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( t != d ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( t == d ) { psr = psr | 0x20; r0 = 0; } } } }
 
 // SKPSi: skip string -- advance R1 (and R2) while/until elements match condition.
 // (sub=3, T=0, i=0/1/3, base=0x0e). PSR.F=1 on early termination (W/U match).
@@ -1218,24 +1218,24 @@ insn skpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
 insn skpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x1, base:8 = 0x0e ),
     disasm ( mnemonic : "skpsw", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i16 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
 insn skpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x3, base:8 = 0x0e ),
     disasm ( mnemonic : "skpsd", operands : opts )
     { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i32 s = %M [ r1 ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
 
 // SKPSi (translate): skip with translation through R3 table. T=1, sub=3, i=0 (byte index).
 insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = 0x0e ),
@@ -1244,8 +1244,8 @@ insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, 
       psr = psr &~ 0x20;
       while ( r0 != 0 ) {
           #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; r1 += step; r0 -= 1;
-          if ( ( opts & 0x2 ) != 0 ) { if ( t == 0 ) { psr = psr | 0x20; r0 = 0; } }
-          else if ( ( opts & 0x4 ) != 0 ) { if ( t != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+          if ( ( opts & 0x4 ) != 0 ) { if ( t != 0 ) { psr = psr | 0x20; r0 = 0; } }  // U: until-match
+          else if ( ( opts & 0x2 ) != 0 ) { if ( t == 0 ) { psr = psr | 0x20; r0 = 0; } } } }
 
 // ===========================================================================
 // BCD instructions (NS32000 Format 6, 24-bit, fmt byte 0x4e).
@@ -1321,15 +1321,15 @@ insn subpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(ge
 insn checkb : encode #i24 ( gen2:5 -> lo @gen_b(gen2), gen1:5 -> hi @gen_b(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x0ee ),
     disasm ( mnemonic : "checkb", operands : rn, lo, hi )
     { #i8 idx = %REG[ R, rn ] & 0xff;
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xff ) ) || ( idx > ( hi & 0xff ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xff ) ) || ( %S ( idx ) > %S ( hi & 0xff ) ) ) ? 0x20 : 0 ); }
 insn checkw : encode #i24 ( gen2:5 -> lo @gen_w(gen2), gen1:5 -> hi @gen_w(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x1ee ),
     disasm ( mnemonic : "checkw", operands : rn, lo, hi )
     { #i16 idx = %REG[ R, rn ] & 0xffff;
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xffff ) ) || ( idx > ( hi & 0xffff ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xffff ) ) || ( %S ( idx ) > %S ( hi & 0xffff ) ) ) ? 0x20 : 0 ); }
 insn checkd : encode #i24 ( gen2:5 -> lo @gen(gen2),   gen1:5 -> hi @gen(gen1),   reg:3 -> rn, i:2 = 0x1, base:9 = 0x1ee ),
     disasm ( mnemonic : "checkd", operands : rn, lo, hi )
     { #i32 idx = %REG[ R, rn ];
-      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo ) ) || ( %U ( idx ) > %U ( hi ) ) ) ? 0x20 : 0 ); }
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo ) ) || ( %S ( idx ) > %S ( hi ) ) ) ? 0x20 : 0 ); }
 
 // INDEXi: R[reg] = R[reg] * (gen1 + 1) + gen2 (array subscript accumulation).
 // Encodings: indexb i_upcl=2 base9=0x02e; indexw i_upcl=2 base9=0x12e; indexd i_upcl=3 base9=0x12e.
