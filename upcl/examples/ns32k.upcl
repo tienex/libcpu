@@ -162,6 +162,8 @@ const PREG_UPSR    = 0x0;   // 0x0 -- UPSR (user PSR, NS32032)
 const PREG_FP      = 0x8;   // 0x8 -- FP  (frame pointer)
 const PREG_SP      = 0x9;   // 0x9 -- SP  (stack pointer mirror)
 const PREG_SB      = 0xa;   // 0xa -- SB  (static base)
+const PREG_USP     = 0xb;   // 0xb -- USP (user stack pointer, NS32532/332/732)
+const PREG_CFG     = 0xc;   // 0xc -- CFG (configuration register; written by SETCFG)
 const PREG_PSR     = 0xd;   // 0xd -- PSR (processor status register)
 const PREG_INTBASE = 0xe;   // 0xe -- INTBASE (interrupt base address)
 const PREG_MOD     = 0xf;   // 0xf -- MOD (module register)
@@ -1817,7 +1819,7 @@ jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:
 // `gas/config/tc-ns32k.c` (cpureg_032 / cpureg_532 tables). Verified by hand
 // against the 16/24-bit instruction word layouts used in the existing file.
 //
-// LPR/SPR (Format 2-style, 16-bit): gen:5 : reg4:4 : op7:7
+// LPR/SPR (Format 2-style, 16-bit): gen:5 : reg4:4 : op5:5 : i:2
 //   The `reg4` 4-bit field carries a dedicated-register selector (see PREG_* consts).
 //   LPR loads the dedicated register named by `reg` into the gen operand.
 //   SPR stores the gen operand into the dedicated register named by `reg`.
@@ -1832,7 +1834,7 @@ jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:
 //   BICPSR: PSR &= ~gen  (same width rules).
 //   The NS32000 PRM only defines byte and word forms; there is no doubleword form.
 //
-// SETCFG (24-bit, 15-bit opcode): gen(0):5 : opts:4 : op7:7 : fmt:8(=FMT5_BYTE)
+// SETCFG (24-bit, 7-bit fixed opcode): gen(0):5 : opts:4 : op7:7 : fmt:8(=FMT5_BYTE)
 //   Loads the CFG register from the 4-bit option bitmap: I(bit0) F(bit1) M(bit2) C(bit3).
 //   The gen field is unused (always 0) and carries no operand; only the option bitmap
 //   matters at decode time.
@@ -1862,13 +1864,13 @@ insn lprd : encode #i16 ( gen2:5 -> dst @gen_dst(gen2), reg4:4 -> reg, op:5 = OP
 // Layout: gen:5 : reg4:4 : op5:5 : i:2  (OP5_SPR = bits[6:2] of the seed, i = bits[1:0]).
 // Binutils seeds: sprb=0x2c sprw=0x2d sprd=0x2f.
 // ---------------------------------------------------------------------------
-insn sprb : encode #i16 ( gen2:5 -> src @gen_b(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x0 ),
+insn sprb : encode #i16 ( gen1:5 -> src @gen_b(gen1), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x0 ),
     disasm ( mnemonic : "sprb", operands : src, reg )
     { psr = ( psr &~ 0xff ) | ( src & 0xff ); }
-insn sprw : encode #i16 ( gen2:5 -> src @gen_w(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x1 ),
+insn sprw : encode #i16 ( gen1:5 -> src @gen_w(gen1), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x1 ),
     disasm ( mnemonic : "sprw", operands : src, reg )
     { psr = src; }
-insn sprd : encode #i16 ( gen2:5 -> src @gen(gen2), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x3 ),
+insn sprd : encode #i16 ( gen1:5 -> src @gen(gen1), reg4:4 -> reg, op:5 = OP5_SPR, i:2 = 0x3 ),
     disasm ( mnemonic : "sprd", operands : src, reg )
     { psr = src & 0xffff; }
 
