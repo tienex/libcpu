@@ -87,6 +87,7 @@ private:
     DisasmFmt  *ParseDisasmAtom ();               // literal / $param:directive / @macro(args)
     JumpInsn  *ParseJumpInsn ();                  // `jump insn <id> : type <t> ... { action }`
     void       ParseDecoderOperands (Arch *pArch);// `decoder_operands [ ... ];`
+    void       ParseConstDecl ();                  // `const <name> = <const-expr> ;`
     void       ParseRegSet (Arch *pArch);         // `regset <name> [ <reg>, ... ];`
     void       ParseAddrMode (Arch *pArch);       // `addrmode <name> ( p ) disp(e) { rules }`
     void       ParseAddressDisplay (Arch *pArch); // `address_display segmented shift N offset M;`
@@ -114,11 +115,19 @@ private:
 
     bool   ExpectInt (UINT64 *pOut, CHAR8 CONST *pContext);
 
+    // Named-constant symbol table. A `const NAME = <const-expr>;` declaration binds NAME to a
+    // folded integer; the name then resolves to that literal anywhere a constant is allowed --
+    // expression primaries (ParsePrimary) and integer-position parses (ExpectInt). The table is
+    // populated as declarations are parsed, so a const must be DECLARED BEFORE USE.
+    bool   LookupConst (std::string CONST &Name, UINT64 *pOut) CONST;     // is Name a known const?
+    bool   FoldConstExpr (Expr *pExpr, UINT64 *pOut);                     // fold a const initializer
+
     SourceManager    *m_pSm;
     DiagnosticEngine *m_pDiag;
     Lexer             m_Lexer;
     Token        m_Cur;
     std::string       m_CurFilePath;             // the file being lexed (for relative includes)
+    std::map<std::string, UINT64> m_Consts;      // named constants (name -> folded value)
 };
 
 } // namespace Upcl

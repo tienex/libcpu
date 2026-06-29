@@ -66,10 +66,90 @@ bool
 Parser::ExpectInt (UINT64 *pOut, CHAR8 CONST *pContext)
 {
     if (m_Cur.Kind == TokInt) { *pOut = m_Cur.Int; Advance (); return true; }
+    // A named constant stands in for an integer literal anywhere one is expected (an encode
+    // match value, a field width, a word size, ...). It must be declared before this use.
+    if (m_Cur.Kind == TokIdent && LookupConst (m_Cur.Text, pOut)) { Advance (); return true; }
     std::string Msg = std::string ("expected an integer ") + pContext
                       + ", found " + TokenName (m_Cur.Kind);
     m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
     return false;
+}
+
+// True when Name names a declared `const`; writes its folded value to *pOut.
+bool
+Parser::LookupConst (std::string CONST &Name, UINT64 *pOut) CONST
+{
+    auto It = m_Consts.find (Name);
+    if (It == m_Consts.end ()) { return false; }
+    *pOut = It->second;
+    return true;
+}
+
+// Fold a `const` initializer to an integer at parse time, reusing the expression AST. Only the
+// compile-time-evaluable forms are accepted: integer literals, references to ALREADY-DECLARED
+// consts, and the usual unary / binary / select / parenthesised operators over them. A reference
+// to a register, decode field, meta value or any runtime construct is NOT constant and is rejected
+// by the caller (the fold simply fails). Returns false on a non-constant initializer.
+bool
+Parser::FoldConstExpr (Expr *pExpr, UINT64 *pOut)
+{
+    if (pExpr == nullptr) { return false; }
+    switch (pExpr->Kind) {
+    case ExprInt:
+        *pOut = pExpr->Int;
+        return true;
+
+    case ExprName:
+        return LookupConst (pExpr->Name, pOut);
+
+    case ExprUnary: {
+        UINT64 A;
+        if (!FoldConstExpr (pExpr->Args[0], &A)) { return false; }
+        if (pExpr->Op == TokNot)   { *pOut = (A != 0) ? 0 : 1; return true; }
+        if (pExpr->Op == TokTilde) { *pOut = ~A;               return true; }
+        if (pExpr->Op == TokMinus) { *pOut = (UINT64) (-(INT64) A); return true; }
+        return false;
+    }
+
+    case ExprSelect: {
+        UINT64 C;
+        if (!FoldConstExpr (pExpr->Args[0], &C)) { return false; }
+        return FoldConstExpr ((C != 0) ? pExpr->Args[1] : pExpr->Args[2], pOut);
+    }
+
+    case ExprBinary: {
+        UINT64 A, B;
+        if (!FoldConstExpr (pExpr->Args[0], &A)) { return false; }
+        if (!FoldConstExpr (pExpr->Args[1], &B)) { return false; }
+        switch (pExpr->Op) {
+        case TokPlus:   *pOut = A + B; return true;
+        case TokMinus:  *pOut = A - B; return true;
+        case TokStar:   *pOut = A * B; return true;
+        case TokSlash:  if (B == 0) { return false; } *pOut = A / B; return true;
+        case TokPercent: if (B == 0) { return false; } *pOut = A % B; return true;
+        case TokAmp:    *pOut = A & B; return true;
+        case TokPipe:   *pOut = A | B; return true;
+        case TokCaret:  *pOut = A ^ B; return true;
+        case TokShl:    *pOut = A << (B & 63); return true;
+        case TokShr:    *pOut = A >> (B & 63); return true;
+        case TokAndCom: *pOut = A & ~B; return true;
+        case TokOrCom:  *pOut = A | ~B; return true;
+        case TokXorCom: *pOut = A ^ ~B; return true;
+        case TokEqEq:   *pOut = (A == B) ? 1 : 0; return true;
+        case TokNotEq:  *pOut = (A != B) ? 1 : 0; return true;
+        case TokLt:     *pOut = (A <  B) ? 1 : 0; return true;
+        case TokLtEq:   *pOut = (A <= B) ? 1 : 0; return true;
+        case TokGt:     *pOut = (A >  B) ? 1 : 0; return true;
+        case TokGtEq:   *pOut = (A >= B) ? 1 : 0; return true;
+        case TokAndAnd: *pOut = (A != 0 && B != 0) ? 1 : 0; return true;
+        case TokOrOr:   *pOut = (A != 0 || B != 0) ? 1 : 0; return true;
+        default: return false;
+        }
+    }
+
+    default:
+        return false;
+    }
 }
 
 // Error recovery: consume up to and including the next Kind (or end of file), so a
@@ -361,6 +441,17 @@ Parser::ParsePrimary ()
         if (m_Cur.Kind == TokLParen) {
             Expr *E = new Expr (ExprCall); E->Loc = Loc; E->Name = Name;
             ParseCallArgs (E);
+            return E;
+        }
+        // A declared `const` resolves here to its literal value: it substitutes for a number
+        // anywhere an expression is parsed (an addrmode condition, a semantic-body mask, ...),
+        // so it folds identically to having written the literal. A call name (handled above)
+        // is never shadowed, and the const table is only consulted for a bare identifier, so
+        // registers / decode fields / addrmode formals -- resolved by name later in Semantics --
+        // are unaffected unless a const deliberately reuses one of their names.
+        UINT64 KVal = 0;
+        if (LookupConst (Name, &KVal)) {
+            Expr *E = new Expr (ExprInt); E->Loc = Loc; E->Int = KVal;
             return E;
         }
         Expr *E = new Expr (ExprName); E->Loc = Loc; E->Name = Name;
@@ -1069,6 +1160,8 @@ Parser::ParseArchItem (Arch *pArch)
         ParseCpu (pArch);
     } else if (AtKeyword ("formats")) {
         ParseFormats (pArch);
+    } else if (AtKeyword ("const")) {
+        ParseConstDecl ();                                          // a named constant, in-arch
     } else if (AtKeyword ("insn") || m_Cur.Kind == TokLBracket) {
         pArch->Insns.push_back (ParseInsnDecl ());                  // [attrs]? insn ...
     } else if (m_Cur.Kind == TokIdent) {
@@ -1672,6 +1765,41 @@ Parser::ParseDecoderOperands (Arch *pArch)
     Expect (TokSemi, "after decoder_operands");
 }
 
+// `const <name> = <const-expr> ;` -- a named integer constant. The initializer is the ordinary
+// compile-time-evaluable expression grammar (literals, prior consts, and the usual operators); it
+// is folded immediately and the name bound in the const table, so it stands in for the literal
+// anywhere a constant is allowed thereafter. Diagnostics: a name that is already a const (a
+// duplicate), or an initializer that is not constant (it names a register / field / runtime value).
+void
+Parser::ParseConstDecl ()
+{
+    Advance ();                                     // 'const'
+    SRC_LOC NameLoc = m_Cur.Loc;
+    std::string Name;
+    if (m_Cur.Kind == TokIdent) { Name = m_Cur.Text; Advance (); }
+    else {
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a name after 'const'");
+        SyncTo (TokSemi);
+        return;
+    }
+    if (!Expect (TokAssign, "after the const name")) { SyncTo (TokSemi); return; }
+    Expr  *Init = ParseExpr (0);
+    UINT64 Value = 0;
+    bool   Folded = FoldConstExpr (Init, &Value);
+    delete Init;
+    if (!Folded) {
+        m_pDiag->Report (SevError, NameLoc, m_Cur.Range (),
+                         std::string ("the initializer of const '") + Name
+                         + "' is not a compile-time constant");
+    } else if (m_Consts.find (Name) != m_Consts.end ()) {
+        m_pDiag->Report (SevError, NameLoc, m_Cur.Range (),
+                         std::string ("duplicate const '") + Name + "'");
+    } else {
+        m_Consts[Name] = Value;
+    }
+    Expect (TokSemi, "after a const declaration");
+}
+
 // `address_display flat;` (the default) or `address_display segmented shift <N> offset <M>;` --
 // how a code address is shown. Segmented renders it as seg:off (e.g. x86 real-mode CS:IP): off is
 // the low <M> bits, seg is the rest divided by 2^<N>, so seg*2^N + off recovers the linear address.
@@ -1734,7 +1862,7 @@ Parser::SyncToTopLevel ()
             || AtKeyword ("regset") || AtKeyword ("decoder_operands") || AtKeyword ("group")
             || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")
             || AtKeyword ("include") || AtKeyword ("disasm") || AtKeyword ("addrmode")
-            || AtKeyword ("address_display")) {
+            || AtKeyword ("address_display") || AtKeyword ("const")) {
             return;
         }
         Advance ();
@@ -1986,6 +2114,8 @@ Parser::ParseToplevel (Module *M)
             Advance ();
         } else if (AtKeyword ("include")) {
             ParseInclude (M);
+        } else if (AtKeyword ("const")) {
+            ParseConstDecl ();                           // a named constant (arch-independent)
         } else if (AtKeyword ("arch")) {
             M->Archs.push_back (ParseArch ());
         } else if (!M->Archs.empty () && AtKeyword ("features")) {

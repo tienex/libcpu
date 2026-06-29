@@ -1093,6 +1093,26 @@ add_test(NAME upcl.engine-typegram COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q '3 byte'")
 set_tests_properties(upcl.engine-typegram PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
 
+# E7 -- `const` declarations: named symbolic constants usable ANYWHERE a literal/constant is. Four
+# top-level consts replace the magic numbers of a tiny ISA, each exercised at one of the three target
+# sites, with a LITERAL twin instruction proving the name resolves to the exact same value:
+#   (a) ENCODE MATCH VALUE   `op:4 = OP_LD`     (OP_LD = 0x2)  -- ldc decodes at opcode nibble 0x2
+#   (b) ADDRMODE CONDITION   `x == SEL_IMM`     (SEL_IMM = 0x1) -- the immediate rule fires for x=1
+#   (c) SEMANTIC-BODY MASK    `r0 & MASK_LOW`    (MASK_LOW = (1<<4)-1 = 0xf, folded over a prior const)
+# The const insn `ldc` (0x21 ..) and the literal twin `ldl` (0x31 ..) over the SAME immediate bytes
+# must resolve src=0x12345678 in 5 bytes AND lower the body to the SAME `const.i32 0xf` mask --
+# proving each const folds identically to its literal. (RED before E7: `const` is rejected at parse.)
+add_test(NAME upcl.engine-const COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_const.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" | grep -q '2 instruction' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q 'ldc *src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q 'const.i32 0xf' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q 'ldl *src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q 'const.i32 0xf'")
+set_tests_properties(upcl.engine-const PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
+
 # NS32000 arch header + register file: the UPCL description must parse cleanly and report the
 # expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated
 # registers (pc/sp0/sp1/sp/fp/sb/intbase/mod/cfg), and the PSR flag splitter binding the
