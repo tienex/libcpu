@@ -200,6 +200,16 @@ public:
     // one (the PDP-11's `%M[ %REG[R, dr] + disp ]` covers all eight registers).
     std::string RegGroup;       // "" if not an indexed term
     std::string RegField;       // the decoder field that selects the register within the group
+    // NESTED SCALED-INDEX dispatch (`@<addrmode>[index] + %REG[group, field] * <scale>`): the term
+    // reads ONE extra "index byte" laid out (basegen:NestedSelBits)(ireg:NestedRegBits), recurses into
+    // the named addrmode with `basegen` as its single selector parameter to form the base EA, then adds
+    // R[ireg] * Scale (the NS32000 scaled-index mode [Rn:B/W/D/Q]). The nested base mode may itself read
+    // a `disp varlen`, so the recursion composes with the variable-length displacement path. RegField is
+    // the index-register field name (`ireg`); RegGroup is its register group (`R`).
+    std::string NestedAddrMode;     // "" if not a nested-dispatch term; else the addrmode to recurse into
+    UINT32      NestedSelBits = 0;  // width of the base-gen selector in the index byte (NS32000: 5)
+    UINT32      NestedRegBits = 0;  // width of the index-register field in the index byte (NS32000: 3)
+    UINT32      Scale = 1;          // scale applied to the index register (1/2/4/8)
 };
 class AddrRule {
 public:

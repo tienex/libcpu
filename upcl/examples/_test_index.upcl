@@ -1,0 +1,15 @@
+arch "_test_index" {
+    name "index test";
+    endian little; byte_size 8; word_size 32; address_size 32;
+    register_file { group R { [ 8 ** #i32 r?:0 ], [ #i32 pc -> %PC ] } }
+}
+addrmode base ( g ) {
+    g < 0x08 => reg [ r0,r1,r2,r3,r4,r5,r6,r7 ] ;
+    g == 0x15 => %M [ disp varlen ] ;
+}
+// Scaled index: index byte = (basegen:5)(ireg:3); EA = base + R[ireg]*4.
+addrmode ea ( m ) {
+    m == 0 => %M [ @base[index] + %REG[R, ireg] * 4 ] ;
+}
+insn ld : encode #i8 ( op:5 = 0x00, m:3 -> src @ea ),
+    disasm ( mnemonic : "ld", operands : src ) { pc = pc; }

@@ -1308,7 +1308,34 @@ Parser::ParseAddrRule ()
         Expect (TokLBracket, "to open the address");
         do {
             AddrTerm T;
-            if (m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {        // %REG[ group, field ]
+            if (m_Cur.Kind == TokMacroIdent) {                          // @<addrmode>[index] (+ %REG[..] * N)
+                // NESTED SCALED-INDEX dispatch: read one index byte (basegen:5)(ireg:3), recurse into the
+                // named addrmode with `basegen` to form the base EA, then add R[ireg] * Scale. The index
+                // register and group come from the `%REG[group, field]` term that follows; the scale from
+                // its `* <int>` suffix. NS32000 default index-byte layout: 5-bit base gen + 3-bit ireg.
+                T.NestedAddrMode = m_Cur.Text;
+                T.NestedSelBits  = 5;
+                T.NestedRegBits  = 3;
+                Advance ();
+                Expect (TokLBracket, "after the nested addrmode name");
+                if (m_Cur.Kind == TokIdent) { Advance (); }            // the `[index]` keyword (informational)
+                Expect (TokRBracket, "to close the nested-dispatch index");
+                // `+ %REG[group, field] * <scale>` -- the index register field and its scale, folded onto
+                // this same nested term so it is one self-contained scaled-index operation.
+                if (Accept (TokPlus) && m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {
+                    Advance ();
+                    Expect (TokLBracket, "after %REG");
+                    if (m_Cur.Kind == TokIdent) { T.RegGroup = m_Cur.Text; Advance (); }
+                    Expect (TokComma, "in %REG[group, field]");
+                    if (m_Cur.Kind == TokIdent) { T.RegField = m_Cur.Text; Advance (); }
+                    Expect (TokRBracket, "to close %REG[...]");
+                    if (Accept (TokStar)) {
+                        if (m_Cur.Kind == TokInt) { T.Scale = (UINT32) m_Cur.Int; Advance (); }
+                        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an integer index scale after '*'"); }
+                    }
+                }
+                R->Mem.push_back (T);
+            } else if (m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {  // %REG[ group, field ]
                 Advance ();
                 Expect (TokLBracket, "after %REG");
                 if (m_Cur.Kind == TokIdent) { T.RegGroup = m_Cur.Text; Advance (); }

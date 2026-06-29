@@ -1037,6 +1037,20 @@ add_test(NAME upcl.engine-varlen COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q 'disp=0x4000 ' && \
    \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q '5 byte'")
 
+# Nested scaled-index dispatch (NS32000 [Rn:B/W/D/Q]): one index byte (basegen:5)(ireg:3) recurses
+# into the named base addrmode with `basegen`, then adds R[ireg] * scale. The opcode 0x00 (op=0,m=0)
+# selects the %M[ @base[index] + %REG[R, ireg] * 4 ] rule. Asserts BOTH the register-base case and
+# the absolute-base case where the nested mode consumes its OWN varlen displacement (proving the
+# recursion composes with `disp varlen`):
+#   0x0A      -> base gen 0x01 (r1), ireg 2     => r1 + r2*4         (length 2)
+#   0xAB 0x10 -> base gen 0x15 (absolute), ireg 3, then 1-byte varlen disp 0x10 => @0x10 + r3*4 (len 3)
+add_test(NAME upcl.engine-index COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_index.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x00 0x0A | grep -q 'r1+r2\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x0A | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '@0x10+r3\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '3 byte'")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

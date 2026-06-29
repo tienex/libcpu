@@ -274,7 +274,67 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
         // single-disp rule keeps TailUsed == 0 throughout, so its extraction is byte-identical).
         UINT64 TailUsed = 0;
         for (AddrTerm CONST &T : R->Mem) {
-            if (T.Disp) {
+            if (!T.NestedAddrMode.empty ()) {
+                //
+                // NESTED SCALED-INDEX dispatch (NS32000 [Rn:B/W/D/Q]): read ONE index byte laid out
+                // (basegen:NestedSelBits)(ireg:NestedRegBits), recurse into the named addrmode with
+                // `basegen` as its selector to form the base EA, then add R[ireg] * Scale. The nested
+                // base mode may itself read a `disp varlen`, so the recursion composes with Task 2's
+                // variable-length displacement path; its consumed bytes are accounted via NestedExtra.
+                //
+                if (TailUsed >= TailAvail) { return false; }
+                UINT8 CONST IndexByte = pTail[TailUsed];
+                UINT64 CONST BaseGen = ((UINT64) IndexByte >> T.NestedRegBits) & ((UINT64_C (1) << T.NestedSelBits) - 1);
+                UINT64 CONST IReg    = (UINT64) IndexByte & ((UINT64_C (1) << T.NestedRegBits) - 1);
+
+                AddrMode CONST *Nested = FindAddrMode (T.NestedAddrMode);
+                if (Nested == nullptr || Nested->Params.empty ()) { return false; }
+                EncField NestedField;
+                NestedField.AddrMode = T.NestedAddrMode;
+                NestedField.Name     = Nested->Params[0];
+                std::map<std::string, UINT64> NestedFields;
+                NestedFields[Nested->Params[0]] = BaseGen;
+
+                Operand NestedOp;
+                UINT32 NestedExtra = 0;
+                if (!ResolveAddrMode (NestedField, NestedFields, pTail + TailUsed + 1,
+                                      TailAvail - TailUsed - 1, &NestedExtra, &NestedOp)) { return false; }
+                TailUsed += 1 + NestedExtra;
+                *pExtraBytes += 1 + NestedExtra;        // index byte + nested mode's extension bytes
+
+                // Merge the nested base EA into this operand: a register base becomes Base1; a memory base
+                // contributes its Base1/Base2/Disp. Then add the scaled index register R[ireg] * Scale.
+                if (NestedOp.Kind == Operand::Reg) {
+                    if (NBases == 0) { pOut->Base1 = NestedOp.RegIndex; NBases++; }
+                    else if (NBases == 1) { pOut->Base2 = NestedOp.RegIndex; NBases++; }
+                    if (!Text.empty ()) { Text += "+"; }
+                    Text += NestedOp.RegName;
+                } else if (NestedOp.Kind == Operand::Mem) {
+                    if (NestedOp.Base1 != ~(UINT32) 0) {
+                        if (NBases == 0) { pOut->Base1 = NestedOp.Base1; NBases++; }
+                        else if (NBases == 1) { pOut->Base2 = NestedOp.Base1; NBases++; }
+                    }
+                    if (NestedOp.Base2 != ~(UINT32) 0 && NBases <= 1) { pOut->Base2 = NestedOp.Base2; NBases++; }
+                    pOut->Disp += NestedOp.Disp;
+                    if (!Text.empty ()) { Text += "+"; }
+                    Text += "@" + NestedOp.MemText;
+                }
+
+                // The scaled index register: group <RegGroup>'s element <IReg> via its positional alias.
+                std::string IxName = T.RegGroup + std::to_string ((unsigned long long) IReg);
+                UINT32 IxPhys = ~(UINT32) 0;
+                auto IP = m_pLayout->PhysIndex.find (IxName);
+                if (IP != m_pLayout->PhysIndex.end ()) { IxPhys = IP->second; }
+                else { for (RegSub CONST &S : m_pLayout->Subs) { if (S.Name == IxName) { IxPhys = S.Parent; break; } } }
+                if (IxPhys != ~(UINT32) 0) {
+                    pOut->IndexReg   = IxPhys;
+                    pOut->IndexScale = T.Scale;
+                    if (!Text.empty ()) { Text += "+"; }
+                    // Render the index by its physical register name (r2), not the positional group alias
+                    // (R2) used only to resolve it -- matching how base registers render in MemText.
+                    Text += m_pLayout->Phys[IxPhys].Name + "*" + std::to_string ((unsigned long long) T.Scale);
+                }
+            } else if (T.Disp) {
                 INT64 Disp = 0;
                 if (T.DispKind == AddrTerm::DispEncoding::VarLen) {
                     //
