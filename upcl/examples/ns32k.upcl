@@ -1077,3 +1077,268 @@ insn inssd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(ge
     { #i8 off = offs_len & 7; #i8 len = ( ( offs_len >> 3 ) & 0x1f ) + 1;
       #i32 mask = ( 1 << len ) - 1;
       dst = ( dst &~ ( mask << off ) ) | ( ( src & mask ) << off ); }
+
+// ===========================================================================
+// STRING instructions (NS32000 Format 5, 24-bit, 16-bit opcode id).
+//
+// Format 5 layout (24-bit, MSB-first in UPCL bit-stream):
+//   opts:8  T:1  pad:3=0  sub:2  i:2  base:8=0x0e
+// where:
+//   opts   = 8-bit string options byte (B=0x1 backward, W=0x2 while-match, U=0x6 until-match)
+//   T      = translate flag (1 for MOVST/CMPST/SKPST variants using R3 as translate table)
+//   sub    = sub-operation (0=MOVS, 1=CMPS, 3=SKPS)
+//   i      = element width (0=byte, 1=word, 3=double)
+//   base   = 0x0e (Format 5 marker low byte)
+//
+// String instructions use fixed registers (per NS32000 PRM sec. 4):
+//   R0 = element count (decremented each iteration)
+//   R1 = source pointer (advanced each iteration by element width)
+//   R2 = destination pointer (advanced by element width; not used by CMPS/SKPS)
+//   R3 = translate-table base address (used by T-variants only)
+//
+// Options byte bits: b(bit0)=backward, w(bit1)=while-match, u(bit2+1)=until-match.
+//   Backward (b=1): process from high address to low (R1/R2 decremented instead of incremented).
+//   While-match (W): stop loop when element comparison MATCHES; set PSR.F=1 on match-exit.
+//   Until-match (U, bits 2:1=0b11): stop loop when element comparison DOES NOT match; F=1.
+//   (W and U are mutually exclusive; both bits 2:1 set = U.)
+//
+// Encodings derived from binutils include/opcode/ns32k.h (ns32k_opcodes[]).
+// Seeds: movsb=0x000e movsw=0x010e movsd=0x030e movst=0x800e
+//        cmpsb=0x040e cmpsw=0x050e cmpsd=0x070e cmpst=0x840e
+//        skpsb=0x0c0e skpsw=0x0d0e skpsd=0x0f0e skpst=0x8c0e
+//
+// All six registers (R0..R3 + the implicit R1/R2 advance) are modelled as named register
+// references in the semantic body; the instruction has no gen operands (no gen fields).
+// ===========================================================================
+
+// MOVSi: move string -- copy R0 elements from [R1] to [R2]; element width = byte/word/double.
+// Advance R1, R2 by element width per iteration (backward if opts & 0x1).
+// W/U options stop on match/mismatch of element; PSR.F = 1 if stopped early.
+// (sub=0, T=0, i=0/1/3, base=0x0e)
+insn movsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "movsb", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ];
+          if ( ( opts & 0x2 ) != 0 ) {
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x4 ) != 0 ) {
+              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
+insn movsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x1, base:8 = 0x0e ),
+    disasm ( mnemonic : "movsw", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ];
+          if ( ( opts & 0x2 ) != 0 ) {
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x4 ) != 0 ) {
+              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
+insn movsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x3, base:8 = 0x0e ),
+    disasm ( mnemonic : "movsd", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ];
+          if ( ( opts & 0x2 ) != 0 ) {
+              if ( s == d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x4 ) != 0 ) {
+              if ( s != d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; }
+          } else { %M [ r2 ] = s; r1 += step; r2 += step; r0 -= 1; } } }
+
+// MOVSi (translate): same as MOVSi but source element is used as index into translate table
+// at R3; the translated byte is written to [R2]. T=1, sub=0, i=0 (always byte-indexed).
+insn movst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x0, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "movst", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
+          if ( ( opts & 0x2 ) != 0 ) {
+              if ( t == d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; }
+          } else if ( ( opts & 0x4 ) != 0 ) {
+              if ( t != d ) { psr = psr | 0x20; r0 = 0; }
+              else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; }
+          } else { %M [ r2 ] = t; r1 += step; r2 += step; r0 -= 1; } } }
+
+// CMPSi: compare string -- compare R0 elements at [R1] vs [R2]; element width = byte/word/double.
+// Advance R1, R2 per iteration. PSR.F = 1 if the loop was terminated early by W/U option.
+// (sub=1, T=0, i=0/1/3, base=0x0e)
+insn cmpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "cmpsb", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; #i8 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+insn cmpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x1, base:8 = 0x0e ),
+    disasm ( mnemonic : "cmpsw", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i16 s = %M [ r1 ]; #i16 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+insn cmpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x3, base:8 = 0x0e ),
+    disasm ( mnemonic : "cmpsd", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i32 s = %M [ r1 ]; #i32 d = %M [ r2 ]; r1 += step; r2 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == d ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != d ) { psr = psr | 0x20; r0 = 0; } } } }
+
+// CMPSi (translate): compare with R3-based translation. T=1, sub=1, i=0 (byte index).
+insn cmpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x1, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "cmpst", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; #i8 d = %M [ r2 ];
+          r1 += step; r2 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( t == d ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( t != d ) { psr = psr | 0x20; r0 = 0; } } } }
+
+// SKPSi: skip string -- advance R1 (and R2) while/until elements match condition.
+// (sub=3, T=0, i=0/1/3, base=0x0e). PSR.F=1 on early termination (W/U match).
+insn skpsb : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "skpsb", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; r1 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+insn skpsw : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x1, base:8 = 0x0e ),
+    disasm ( mnemonic : "skpsw", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -2 : 2;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i16 s = %M [ r1 ]; r1 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+insn skpsd : encode #i24 ( opts:8 -> opts, T:1 = 0x0, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x3, base:8 = 0x0e ),
+    disasm ( mnemonic : "skpsd", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -4 : 4;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i32 s = %M [ r1 ]; r1 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( s == 0 ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( s != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+
+// SKPSi (translate): skip with translation through R3 table. T=1, sub=3, i=0 (byte index).
+insn skpst : encode #i24 ( opts:8 -> opts, T:1 = 0x1, pad:3 = 0x0, sub:2 = 0x3, i:2 = 0x0, base:8 = 0x0e ),
+    disasm ( mnemonic : "skpst", operands : opts )
+    { #i8 step = ( ( opts & 0x1 ) != 0 ) ? -1 : 1;
+      psr = psr &~ 0x20;
+      while ( r0 != 0 ) {
+          #i8 s = %M [ r1 ]; #i8 t = %M [ r3 + ( s & 0xff ) ]; r1 += step; r0 -= 1;
+          if ( ( opts & 0x2 ) != 0 ) { if ( t == 0 ) { psr = psr | 0x20; r0 = 0; } }
+          else if ( ( opts & 0x4 ) != 0 ) { if ( t != 0 ) { psr = psr | 0x20; r0 = 0; } } } }
+
+// ===========================================================================
+// BCD instructions (NS32000 Format 6, 24-bit, fmt byte 0x4e).
+//
+// ADDP/SUBP: packed decimal add/subtract with carry. These perform addition (or
+// subtraction) of binary-coded decimal operands. The NS32000 PRM defines the result
+// as a BCD-adjusted sum/difference with carry (PSR.C). The UPCL model uses binary
+// arithmetic as an approximation (full BCD digit-by-digit adjustment would require
+// deeper expression support); the carry flag is set from the binary result's overflow.
+//
+// Operand format (from binutils): '1B2I' for addpb, '1W2I' for addpw, '1D2I' for addpd.
+//   gen1 = source (read), gen2 = destination (read/write). Width-matched.
+//
+// Encodings from binutils ns32k_opcodes[]:
+//   ADDPi: addpb=0x3c4e addpw=0x3d4e addpd=0x3f4e -> op4=0xf, i in {0,1,3}, fmt=0x4e
+//   SUBPi: subpb=0x2c4e subpw=0x2d4e subpd=0x2f4e -> op4=0xb, i in {0,1,3}, fmt=0x4e
+// ===========================================================================
+
+// ADDPi: dst = dst + src (BCD packed; carry from binary add; op4=0xf).
+insn addpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xf, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "addpb", operands : src, dst )
+    { #i8 res = dst + src + %C; %C = ( ( #i16 ( dst & 0xff ) + ( src & 0xff ) + %C ) > 0xff ) ? 1 : 0; dst = res; }
+insn addpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xf, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "addpw", operands : src, dst )
+    { #i16 res = dst + src + %C; %C = ( ( #i32 ( dst & 0xffff ) + ( src & 0xffff ) + %C ) > 0xffff ) ? 1 : 0; dst = res; }
+insn addpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xf, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "addpd", operands : src, dst )
+    { #i32 res = dst + src + %C; %C = ( ( #i64 ( dst & 0xffffffff ) + ( src & 0xffffffff ) + %C ) > 0xffffffff ) ? 1 : 0; dst = res; }
+
+// SUBPi: dst = dst - src (BCD packed; borrow into carry; op4=0xb).
+insn subpb : encode #i24 ( gen1:5 -> src @gen_b(gen1), gen2:5 -> dst @gen_dst_b(gen2), op:4 = 0xb, i:2 = 0x0, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "subpb", operands : src, dst )
+    { #i8 res = dst - src - %C; %C = ( ( #i16 ( dst & 0xff ) < ( src & 0xff ) + %C ) ) ? 1 : 0; dst = res; }
+insn subpw : encode #i24 ( gen1:5 -> src @gen_w(gen1), gen2:5 -> dst @gen_dst_w(gen2), op:4 = 0xb, i:2 = 0x1, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "subpw", operands : src, dst )
+    { #i16 res = dst - src - %C; %C = ( ( #i32 ( dst & 0xffff ) < ( src & 0xffff ) + %C ) ) ? 1 : 0; dst = res; }
+insn subpd : encode #i24 ( gen1:5 -> src @gen(gen1),   gen2:5 -> dst @gen_dst(gen2),   op:4 = 0xb, i:2 = 0x3, fmt:8 = 0x4e ),
+    disasm ( mnemonic : "subpd", operands : src, dst )
+    { #i32 res = dst - src - %C; %C = ( ( #i64 ( dst & 0xffffffff ) < ( src & 0xffffffff ) + %C ) ) ? 1 : 0; dst = res; }
+
+// ===========================================================================
+// ARRAY/BOUNDS instructions (NS32000 Format 8, 11-bit opcode, 24-bit word).
+//
+// Format 8 layout (MSB-first in UPCL bit-stream):
+//   gen2:5  gen1:5  reg:3  i:2  base9:9
+// where i_upcl = seed[10:9] and base9 = seed & 0x1ff (per binutils seed analysis).
+//
+// CHECKi: bounds-check register R[reg] against the range [0 .. gen1-1].
+//   If R[reg] < 0 (signed) OR R[reg] >= gen1 (unsigned), PSR.F is SET (out-of-range).
+//   Otherwise PSR.F is cleared. gen2 is the base-address operand (address of bounds).
+//   The NS32000 PRM defines CHECK as: checks reg against [lower, upper] packed as gen2
+//   (lower) and gen1 (upper). F set if out of [lower..upper].
+//   Operand format '2A3B1r' (checkb), '2A3D1r' (checkd): gen2=lower-limit address,
+//   gen1=upper-limit, reg=index register to test.
+//   Encodings: checkb=0x0ee checkw=0x1ee checkd=0x3ee -> i_upcl in {0,0,1}, base9=0x0ee/0x1ee/0x1ee.
+//
+// INDEXi: array subscript accumulation.
+//   R[reg] = R[reg] * (gen1 + 1) + gen2.
+//   This implements one level of multi-dimensional array subscript computation:
+//   reg holds the running subscript product; gen1 is the extent (size) of this dimension;
+//   gen2 is the subscript for this dimension. The PRM formula is:
+//   R[reg] := R[reg] * (extent + 1) + subscript.
+//   Operand format '2B3B1r' (indexb), '2D3D1r' (indexd): gen2=subscript, gen1=extent, reg=index.
+//   Encodings: indexb=0x42e indexw=0x52e indexd=0x72e -> i_upcl in {2,2,3}, base9=0x02e/0x12e/0x12e.
+//
+// NOTE on CHECKi base9: checkb uses base9=0x0ee (bit8=0), checkw/checkd use base9=0x1ee (bit8=1).
+// NOTE on INDEXi base9: indexb uses base9=0x02e (bit8=0), indexw/indexd use base9=0x12e (bit8=1).
+// The base9 bit 8 encodes the byte/word boundary (same pattern as extb/extw above).
+// ===========================================================================
+
+// CHECKi: PSR.F = 1 if R[reg] < gen2 (lower) or R[reg] > gen1 (upper); else PSR.F = 0.
+// Encodings: checkb i_upcl=0 base9=0x0ee; checkw i_upcl=0 base9=0x1ee; checkd i_upcl=1 base9=0x1ee.
+insn checkb : encode #i24 ( gen2:5 -> lo @gen_b(gen2), gen1:5 -> hi @gen_b(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x0ee ),
+    disasm ( mnemonic : "checkb", operands : rn, lo, hi )
+    { #i8 idx = %REG[ R, rn ] & 0xff;
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xff ) ) || ( idx > ( hi & 0xff ) ) ) ? 0x20 : 0 ); }
+insn checkw : encode #i24 ( gen2:5 -> lo @gen_w(gen2), gen1:5 -> hi @gen_w(gen1), reg:3 -> rn, i:2 = 0x0, base:9 = 0x1ee ),
+    disasm ( mnemonic : "checkw", operands : rn, lo, hi )
+    { #i16 idx = %REG[ R, rn ] & 0xffff;
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo & 0xffff ) ) || ( idx > ( hi & 0xffff ) ) ) ? 0x20 : 0 ); }
+insn checkd : encode #i24 ( gen2:5 -> lo @gen(gen2),   gen1:5 -> hi @gen(gen1),   reg:3 -> rn, i:2 = 0x1, base:9 = 0x1ee ),
+    disasm ( mnemonic : "checkd", operands : rn, lo, hi )
+    { #i32 idx = %REG[ R, rn ];
+      psr = ( psr &~ 0x20 ) | ( ( ( %S ( idx ) < %S ( lo ) ) || ( %U ( idx ) > %U ( hi ) ) ) ? 0x20 : 0 ); }
+
+// INDEXi: R[reg] = R[reg] * (gen1 + 1) + gen2 (array subscript accumulation).
+// Encodings: indexb i_upcl=2 base9=0x02e; indexw i_upcl=2 base9=0x12e; indexd i_upcl=3 base9=0x12e.
+insn indexb : encode #i24 ( gen2:5 -> sub @gen_b(gen2), gen1:5 -> ext @gen_b(gen1), reg:3 -> rn, i:2 = 0x2, base:9 = 0x02e ),
+    disasm ( mnemonic : "indexb", operands : rn, sub, ext )
+    { %REG[ R, rn ] = %REG[ R, rn ] * ( ( ext & 0xff ) + 1 ) + ( sub & 0xff ); }
+insn indexw : encode #i24 ( gen2:5 -> sub @gen_w(gen2), gen1:5 -> ext @gen_w(gen1), reg:3 -> rn, i:2 = 0x2, base:9 = 0x12e ),
+    disasm ( mnemonic : "indexw", operands : rn, sub, ext )
+    { %REG[ R, rn ] = %REG[ R, rn ] * ( ( ext & 0xffff ) + 1 ) + ( sub & 0xffff ); }
+insn indexd : encode #i24 ( gen2:5 -> sub @gen(gen2),   gen1:5 -> ext @gen(gen1),   reg:3 -> rn, i:2 = 0x3, base:9 = 0x12e ),
+    disasm ( mnemonic : "indexd", operands : rn, sub, ext )
+    { %REG[ R, rn ] = %REG[ R, rn ] * ( ext + 1 ) + sub; }

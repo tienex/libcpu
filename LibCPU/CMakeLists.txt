@@ -1197,7 +1197,13 @@ add_test(NAME upcl.decode-ns32k COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x53 0x6E | grep -q 'cvtp' && \
    \"$E\" upcl decode \"$M\" 0x08 0x0F 0xCE 0x3A | grep -q 'extsd' && \
    \"$E\" upcl decode \"$M\" 0x08 0x0F 0xCE 0x3A | grep -q '4 byte' && \
-   \"$E\" upcl decode \"$M\" 0x00 0x47 0x6E | grep -q 'ffsd'")
+   \"$E\" upcl decode \"$M\" 0x00 0x47 0x6E | grep -q 'ffsd' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x03 0x0E | grep -q 'movsd' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x03 0x0E | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x3F 0x4E | grep -q 'addpd' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x2F 0x4E | grep -q 'subpd' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x03 0xEE | grep -q 'checkd' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x07 0x2E | grep -q 'indexd'")
 set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
