@@ -85,8 +85,10 @@ Parser::SyncTo (TOKEN_KIND Kind)
 
 // ---- old .def helpers -----------------------------------------------------
 
-// Parse a #i16 / #f80 / #v4:32 type literal (m_Cur is TokType). The spelling carries
-// everything; decode the kind letter, the element width, and the vector lane count.
+// Parse a type literal `#<kind><width>(xN)?(:lsb|:msb)?(:le|:me|:be)?` (m_Cur is TokType). The
+// spelling carries everything; decode the kind letter, the element width, the vector lane count
+// (`#v4:32` legacy `lanes:width` form OR the general `#i32x4` `xlanes` form -- BOTH yield a vector
+// of lanes=4 element width=32), then up to two trailing suffixes: a bit-order then a byte-order.
 Type *
 Parser::ParseType ()
 {
@@ -101,21 +103,48 @@ Parser::ParseType ()
         UINT32 A = 0;
         while (I < S.size () && S[I] >= '0' && S[I] <= '9') { A = A * 10 + (UINT32) (S[I] - '0'); I++; }
         if (T->Kind == TypeVector && I < S.size () && S[I] == ':' && I + 1 < S.size () && S[I + 1] >= '0' && S[I + 1] <= '9') {
+            // Legacy `#v<lanes>:<width>`: the digits before ':' are the lane count, those after the
+            // element width.
             T->Lanes = A; I++;
             UINT32 B = 0;
             while (I < S.size () && S[I] >= '0' && S[I] <= '9') { B = B * 10 + (UINT32) (S[I] - '0'); I++; }
             T->Width = B;
+        } else if (I < S.size () && S[I] == 'x' && I + 1 < S.size () && S[I + 1] >= '0' && S[I + 1] <= '9') {
+            // General `#<kind><width>x<lanes>`: the leading digits are the element width, those after 'x'
+            // the lane count. `#i32x4` == `#v4:32` (a vector of 4 lanes of i32). Any kind may be vectored.
+            T->Kind = TypeVector;
+            T->Width = A; I++;
+            UINT32 L = 0;
+            while (I < S.size () && S[I] >= '0' && S[I] <= '9') { L = L * 10 + (UINT32) (S[I] - '0'); I++; }
+            if (L == 0) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a vector type's lane count `xN` must be a positive integer"); }
+            T->Lanes = L;
         } else {
             T->Width = A;
         }
-        // Optional endianness suffix `:be` / `:le` / `:me` (or `:big` / `:little` / `:mid`) -- the byte
-        // order this type is read/written in, overriding the arch default. Accepted on any type literal.
-        if (I < S.size () && S[I] == ':') {
-            std::string E = S.substr (I + 1);
-            if      (E == "be" || E == "big")    { T->Endian = EndianBig; }
-            else if (E == "le" || E == "little") { T->Endian = EndianLittle; }
-            else if (E == "me" || E == "mid")    { T->Endian = EndianMiddle; }
-            else { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "unknown endianness suffix on a type (expected be/le/me or big/little/mid)"); }
+        // Up to two trailing `:word` suffixes, in this order (both optional): a bit-order
+        // (`:lsb` / `:msb`) then a byte-order (`:be` / `:le` / `:me` / `:big` / `:little` / `:mid`).
+        // Dispatch each by its spelling; bit-order must precede byte-order, and neither may repeat.
+        bool HaveBit = false;
+        bool HaveByte = false;
+        while (I < S.size () && S[I] == ':') {
+            size_t J = I + 1;
+            while (J < S.size () && S[J] != ':') { J++; }
+            std::string W = S.substr (I + 1, J - (I + 1));
+            if (W == "lsb" || W == "msb") {
+                if (HaveByte) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a bit-order suffix (:lsb/:msb) must precede the byte-order suffix"); }
+                else if (HaveBit) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "duplicate bit-order suffix on a type"); }
+                T->BitOrder = (W == "msb") ? BitMsb : BitLsb;
+                HaveBit = true;
+            } else if (W == "be" || W == "big" || W == "le" || W == "little" || W == "me" || W == "mid") {
+                if (HaveByte) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "duplicate byte-order suffix on a type"); }
+                if      (W == "be" || W == "big")    { T->Endian = EndianBig; }
+                else if (W == "le" || W == "little") { T->Endian = EndianLittle; }
+                else                                 { T->Endian = EndianMiddle; }   // me / mid
+                HaveByte = true;
+            } else {
+                m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "unknown type suffix (expected a bit-order lsb/msb or a byte-order be/le/me)");
+            }
+            I = J;
         }
     }
     Advance ();

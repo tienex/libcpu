@@ -35,14 +35,23 @@ typedef enum _TYPE_KIND { TypeInt, TypeFloat, TypeVector } TYPE_KIND;
 // 32-bit word order (the two 16-bit halves big-endian-ordered, each half little-endian: 2-3-0-1).
 typedef enum _TYPE_ENDIAN { EndianDefault, EndianLittle, EndianBig, EndianMiddle } TYPE_ENDIAN;
 
+// An optional bit-numbering on a type literal: `#i16:lsb` (bit 0 is least-significant -- the
+// default, current behaviour) / `#i16:msb` (bit 0 is most-significant, IBM big-endian bit
+// numbering). Orthogonal to byte-order; written before it (`#i16:msb:be`). `BitDefault` == lsb.
+typedef enum _TYPE_BITORDER { BitDefault, BitLsb, BitMsb } TYPE_BITORDER;
+
 class Type {
 public:
-    TYPE_KIND   Kind   = TypeInt;
-    UINT32      Width  = 0;       // element width in bits
-    UINT32      Lanes  = 0;       // vector lane count (#v only)
-    TYPE_ENDIAN Endian = EndianDefault;  // `#i32:be`/:le/:me byte-order override (default = arch)
-    std::string Spelling;        // "#i16" / "#i32:be"
-    SRC_LOC     Loc    = 0;
+    TYPE_KIND     Kind    = TypeInt;
+    UINT32        Width   = 0;       // element width in bits
+    UINT32        Lanes   = 0;       // vector lane count (#v4:32 / #i32x4)
+    TYPE_ENDIAN   Endian  = EndianDefault;  // `#i32:be`/:le/:me byte-order override (default = arch)
+    TYPE_BITORDER BitOrder = BitDefault;    // `#i16:lsb`/:msb bit-numbering (default = lsb)
+                                            // TODO: msb bit-order honored where applicable -- parsed
+                                            //   and stored, but the bit-slice operator [a:b] still
+                                            //   numbers lsb-first (default); see Semantics ExprBitSlice.
+    std::string   Spelling;          // "#i16" / "#i32x4:msb:be"
+    SRC_LOC       Loc     = 0;
 };
 
 // ---- expressions ----------------------------------------------------------

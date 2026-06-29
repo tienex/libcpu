@@ -1,0 +1,41 @@
+// Synthetic test for the full type-literal grammar:
+//     #<kind><width> ( x<lanes> )? ( :lsb | :msb )? ( :le | :me | :be )?
+//
+// Exercises the ADDITIVE forms while leaving every legacy spelling intact:
+//   * `#i32x4`        -- the general `xN` vector form: 4 lanes of i32. Equivalent to the legacy
+//                        `#v4:32` (lanes=4, element width=32); used in a packed lane-by-lane add.
+//   * `#i16:msb:be`   -- bit-order (`:msb`) followed by byte-order (`:be`) on one literal. The
+//                        `:msb` is parsed + stored (bit-slice numbering still defaults to lsb -- see
+//                        Ast.h TODO); the `:be` pins the immediate's byte order big-endian.
+//
+// Encoding (8-bit opcode):
+//   0xB0  -- the packed-vector op: r0 = [ #i32x4 r1 ] + [ #i32x4 r2 ] (lane-by-lane).
+//   0xC0  -- the immediate op: a 16-bit immediate read with bit-order msb + byte-order big-endian.
+//            The arch is little-endian, so `be` forces big-endian: bytes 0xC0 0x12 0x34 => imm=0x1234.
+
+arch "_test_typegram" {
+
+    name "type-literal grammar test";
+
+    endian little;
+    byte_size 8;
+    word_size 32;
+    address_size 32;
+
+    register_file {
+        group R {
+            [ 8 ** #i32 r?:0 ]
+        }
+    }
+
+}
+
+// The packed-vector form: `#i32x4` (general xN) must parse and decode the same as `#v4:32`.
+insn padd : encode #i8 ( op:8 = 0xB0 ),
+    disasm ( mnemonic : "padd", operands : )
+    { r0 = [ #i32x4 r1 ] + [ #i32x4 r2 ]; }
+
+// The full suffix chain on one literal: a 16-bit immediate, bit-order msb, byte-order big-endian.
+insn ldi : encode #i8 ( op:8 = 0xC0, imm:16 -> imm be ),
+    disasm ( mnemonic : "ldi", operands : imm )
+    { r0 = [ #i16:msb:be imm ]; }
