@@ -1000,8 +1000,39 @@ add_test(NAME upcl.pdp11 COMMAND sh -c
    grep -q 'put r6 <- '         '${CMAKE_BINARY_DIR}/pdp11.dec' && \
    grep -q 'store.i16'          '${CMAKE_BINARY_DIR}/pdp11.dec' && \
    "$E" upcl decode \"$P\" 0x72 0x1c 0x04 0x00 0x06 0x00 > '${CMAKE_BINARY_DIR}/pdp11.two' && \
-   grep -q '(6 byte'            '${CMAKE_BINARY_DIR}/pdp11.two'")
+   grep -q '(6 byte'            '${CMAKE_BINARY_DIR}/pdp11.two' && \
+   "$E" upcl decode \"$P\" 0x42 0x90 > '${CMAKE_BINARY_DIR}/pdp11.movb' && \
+   grep -q '0x0000: movb'       '${CMAKE_BINARY_DIR}/pdp11.movb' && \
+   grep -q 'trunc.i8'           '${CMAKE_BINARY_DIR}/pdp11.movb' && \
+   grep -q 'sext.i16'           '${CMAKE_BINARY_DIR}/pdp11.movb' && \
+   "$E" upcl decode \"$P\" 0x03 0x70 > '${CMAKE_BINARY_DIR}/pdp11.mul' && \
+   grep -q '0x0000: mul'        '${CMAKE_BINARY_DIR}/pdp11.mul' && \
+   "$E" upcl decode \"$P\" 0x01 0xf4 > '${CMAKE_BINARY_DIR}/pdp11.addf' && \
+   grep -q '0x0000: addf'       '${CMAKE_BINARY_DIR}/pdp11.addf' && \
+   grep -q 'fadd '              '${CMAKE_BINARY_DIR}/pdp11.addf'")
 set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
+# PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
+# 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
+# of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,
+# float->int) of 2 + 3 must leave R2 = 5. Proves base, EIS and FP11 all execute, not just decode.
+add_test(NAME upcl.pdp11-run COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}'; \
+   printf '\\100\\140\\102\\176\\000\\000' > \"$B/pdp11-loop.bin\" && \
+   \"$E\" run \"$B/pdp11-loop.bin\" --arch upcl:\"$P\" --reg 0=0 --reg 1=5 > \"$B/pdp11-loop.out\" && \
+   grep -q 'r0 =000f' \"$B/pdp11-loop.out\" && \
+   printf '\\003\\160\\112\\020\\000\\000' > \"$B/pdp11-mul.bin\" && \
+   \"$E\" run \"$B/pdp11-mul.bin\" --arch upcl:\"$P\" --reg 0=7 --reg 3=6 --reg 2=0x40 --dump 0x40 > \"$B/pdp11-mul.out\" && \
+   grep -q 'r1 =002a' \"$B/pdp11-mul.out\" && \
+   grep -q '.0x40. = 0x002a' \"$B/pdp11-mul.out\" && \
+   printf '\\000\\376\\101\\376\\001\\364\\002\\373\\000\\000' > \"$B/pdp11-fp.bin\" && \
+   \"$E\" run \"$B/pdp11-fp.bin\" --arch upcl:\"$P\" --reg 0=2 --reg 1=3 > \"$B/pdp11-fp.out\" && \
+   grep -q 'r2 =0005' \"$B/pdp11-fp.out\" && \
+   printf '\\114\\011\\000\\000\\200\\012\\205\\000' > \"$B/pdp11-jsr.bin\" && \
+   \"$E\" run \"$B/pdp11-jsr.bin\" --arch upcl:\"$P\" --reg 0=10 --reg 4=4 --reg 6=0x100 > \"$B/pdp11-jsr.out\" && \
+   grep -q 'r0 =000b' \"$B/pdp11-jsr.out\" && \
+   grep -q 'sp =0100' \"$B/pdp11-jsr.out\"")
 
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z

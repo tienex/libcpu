@@ -150,20 +150,31 @@ Decoder::ResolveOperand (EncField CONST &Field, UINT64 FieldVal, UINT64 NextPc, 
     return false;                                    // a map naming an unknown register
 }
 
-// Resolve a register name to a register operand (a physical register or a sub-register).
+// Resolve a register name to a register operand (a physical register or a sub-register). When Bits is
+// nonzero and narrower than the register, the operand is the register's low Bits (a sub-view) -- the
+// register-direct byte modes read/write the low byte of a 16-bit register without a named sub-register.
 bool
-Decoder::ResolveRegName (std::string CONST &Name, UINT32 /*Bits*/, Operand *pOut) CONST
+Decoder::ResolveRegName (std::string CONST &Name, UINT32 Bits, Operand *pOut) CONST
 {
     auto P = m_pLayout->PhysIndex.find (Name);
     if (P != m_pLayout->PhysIndex.end ()) {
-        pOut->Kind = Operand::Reg; pOut->RegIndex = P->second;
-        pOut->Bits = m_pLayout->Phys[P->second].Width; pOut->SubWidth = 0; pOut->RegName = Name;
+        UINT32 Width = m_pLayout->Phys[P->second].Width;
+        pOut->Kind = Operand::Reg; pOut->RegIndex = P->second; pOut->RegName = Name;
+        if (Bits != 0 && Bits < Width) {
+            pOut->Bits = Bits; pOut->SubLo = 0; pOut->SubWidth = Bits;
+        } else {
+            pOut->Bits = Width; pOut->SubWidth = 0;
+        }
         return true;
     }
     for (RegSub CONST &Sub : m_pLayout->Subs) {
         if (Sub.Name == Name) {
-            pOut->Kind = Operand::Reg; pOut->RegIndex = Sub.Parent;
-            pOut->Bits = Sub.Width; pOut->SubLo = Sub.Lo; pOut->SubWidth = Sub.Width; pOut->RegName = Name;
+            pOut->Kind = Operand::Reg; pOut->RegIndex = Sub.Parent; pOut->RegName = Name;
+            if (Bits != 0 && Bits < Sub.Width) {
+                pOut->Bits = Bits; pOut->SubLo = Sub.Lo; pOut->SubWidth = Bits;
+            } else {
+                pOut->Bits = Sub.Width; pOut->SubLo = Sub.Lo; pOut->SubWidth = Sub.Width;
+            }
             return true;
         }
     }
@@ -238,15 +249,23 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
 
     for (AddrRule *R : AM->Rules) {
         if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Fields) == 0) { continue; }
+        // A rule may pin its own operand width (the .B byte forms); otherwise the addrmode default.
+        UINT32 RuleBits = R->DataBits ? R->DataBits : DataBits;
+        // Expose the addrmode's selector fields (e.g. dm, dr) so a pre/post block can name the very
+        // register the mode picked, via %REG[group, field] -- one field-indexed rule for all registers.
+        for (std::string CONST &P : AM->Params) {
+            auto F = Fields.find (P);
+            if (F != Fields.end ()) { pOut->Fields[P] = F->second; }
+        }
         if (R->IsReg) {
             std::vector<std::string> Regs;
             ExpandRegMap (R->RegMap, &Regs);
             if (Sel >= Regs.size ()) { return false; }
-            return ResolveRegName (Regs[(size_t) Sel], DataBits, pOut);
+            return ResolveRegName (Regs[(size_t) Sel], RuleBits, pOut);
         }
         // memory: base registers + an optional displacement
         pOut->Kind = Operand::Mem;
-        pOut->Bits = DataBits;
+        pOut->Bits = RuleBits;
         pOut->Base1 = ~(UINT32) 0; pOut->Base2 = ~(UINT32) 0; pOut->Disp = 0;
         std::string Text;
         UINT32 NBases = 0;

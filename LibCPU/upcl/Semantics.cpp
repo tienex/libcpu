@@ -7,6 +7,24 @@
 namespace LibCPU {
 namespace Upcl {
 
+// Mask a value to a bit width (its low Bits bits). Used to keep folded constants in range.
+static UINT64
+MaskW (UINT64 V, UINT32 Bits)
+{
+    if (Bits == 0 || Bits >= 64) { return V; }
+    return V & ((UINT64_C (1) << Bits) - 1);
+}
+
+// Sign-extend the low Bits bits of V to a full 64-bit value (for folding signed compares/shifts).
+static UINT64
+SignExtend (UINT64 V, UINT32 Bits)
+{
+    if (Bits == 0 || Bits >= 64) { return V; }
+    UINT64 M = UINT64_C (1) << (Bits - 1);
+    UINT64 L = MaskW (V, Bits);
+    return (L ^ M) - M;
+}
+
 Translator::Translator (RegisterLayout CONST &Layout, Arch *pArch, ICpuEmitter *pEmitter,
                         UINT32 WordBits)
     : m_Layout (Layout), m_pArch (pArch), m_pE (pEmitter), m_WordBits (WordBits)
@@ -35,6 +53,11 @@ void
 Translator::BindOperand (std::string CONST &Name, Operand CONST &Op)
 {
     m_Operands[Name] = Op;
+    // Expose this operand's addrmode selector fields (dm/dr/...) so its pre/post block can name the
+    // register the mode chose, via %REG[group, field]. They are decode constants; left in scope for
+    // the whole instruction (the body never reads raw fields, and src/dst addrmodes use distinct
+    // selector names) so the DEFERRED post block still sees them when it runs after the body.
+    for (auto CONST &Kv : Op.Fields) { m_Fields[Kv.first] = Kv.second; }
     // Autodecrement -(Rn): the `pre { }` block runs BEFORE the EA is taken (so the operand reads the
     // decremented address). Autoincrement (Rn)+: defer the `post { }` block until AFTER the body uses
     // the operand, so the base register is bumped exactly once regardless of read/write count.
@@ -54,43 +77,181 @@ Translator::Pool (ComPtr<ICpuValue> V, UINT32 Bits)
     return Out;
 }
 
+// A lazy compile-time constant: it carries its value but emits no node until consumed (see Use).
+Value
+Translator::ConstVal (UINT32 Bits, UINT64 K) CONST
+{
+    Value Out;
+    Out.Bits    = Bits ? Bits : m_WordBits;
+    Out.IsConst = true;
+    Out.K       = MaskW (K, Out.Bits);
+    return Out;
+}
+
 Value
 Translator::Const (UINT32 Bits, UINT64 N)
 {
+    // Generate phase: emit the ConstInt eagerly and NON-folding. A generated frontend binds its
+    // decoder operands as immediate "constants" that are really runtime sentinels the source emitter
+    // maps back to C++ expressions -- they must materialise as nodes and must not be folded.
+    if (m_Generate) {
+        ComPtr<ICpuValue> V;
+        m_pE->ConstInt (Bits ? Bits : m_WordBits, N, &V);
+        return Pool (std::move (V), Bits ? Bits : m_WordBits);
+    }
+    return ConstVal (Bits, N);
+}
+
+// Materialise a value for the emitter: an ordinary value yields its node; a lazy constant emits its
+// ConstInt now (so a constant that is never used emits nothing, and folded-away work disappears).
+ICpuValue *
+Translator::Use (Value CONST &V)
+{
+    if (V.V != nullptr) { return V.V; }
+    if (V.IsConst) {
+        ComPtr<ICpuValue> C;
+        m_pE->ConstInt (V.Bits ? V.Bits : m_WordBits, V.K, &C);
+        ICpuValue *R = C.Get ();
+        m_Pool.push_back (std::move (C));
+        return R;
+    }
+    return nullptr;
+}
+
+// Read a physical register, reusing a value already read in this block (so an effective-address base
+// and the same register's autoincrement load it once). The cache is cleared by PutReg, a bank store,
+// and every block boundary, so a memoized value is never used past a write or across control flow.
+Value
+Translator::GetReg (UINT32 Index, UINT32 Width)
+{
+    // Generate phase: a static frontend re-reads each register (its source emitter maps every
+    // GetRegister to its own expression), so do not memoize there.
+    if (!m_Generate) {
+        auto It = m_RegCache.find (Index);
+        if (It != m_RegCache.end ()) { return It->second; }
+    }
     ComPtr<ICpuValue> V;
-    m_pE->ConstInt (Bits ? Bits : m_WordBits, N, &V);
-    return Pool (std::move (V), Bits ? Bits : m_WordBits);
+    m_pE->GetRegister (Index, Width, &V);
+    Value Out = Pool (std::move (V), Width);
+    if (!m_Generate) { m_RegCache[Index] = Out; }
+    return Out;
+}
+
+void
+Translator::PutReg (UINT32 Index, ICpuValue *pVal, UINT32 Width)
+{
+    m_RegCache.erase (Index);                 // the cached read is now stale
+    m_pE->PutRegister (Index, pVal, Width, FALSE);
 }
 
 Value
 Translator::Bin (CPU_BINOP Op, Value CONST &A, Value CONST &B)
 {
+    // Fold when both operands are integer constants -- the runtime op is not emitted.
+    if (A.IsConst && B.IsConst && !A.Float && !B.Float && A.Lanes == 0 && B.Lanes == 0) {
+        UINT64 a = A.K, b = B.K; UINT32 W = A.Bits ? A.Bits : m_WordBits;
+        INT64  sa = (INT64) SignExtend (a, A.Bits), sb = (INT64) SignExtend (b, B.Bits);
+        UINT64 R;
+        bool   Ok = true;
+        switch (Op) {
+        case BinAdd:  R = a + b; break;
+        case BinSub:  R = a - b; break;
+        case BinMul:  R = a * b; break;
+        case BinAnd:  R = a & b; break;
+        case BinOr:   R = a | b; break;
+        case BinXor:  R = a ^ b; break;
+        case BinShl:  R = a << (b & 63); break;
+        case BinLShr: R = a >> (b & 63); break;
+        case BinAShr: R = (UINT64) (sa >> (b & 63)); break;
+        case BinUDiv: if (b == 0) { Ok = false; R = 0; } else { R = a / b; } break;
+        case BinSDiv: if (sb == 0) { Ok = false; R = 0; } else { R = (UINT64) (sa / sb); } break;
+        case BinURem: if (b == 0) { Ok = false; R = 0; } else { R = a % b; } break;
+        case BinSRem: if (sb == 0) { Ok = false; R = 0; } else { R = (UINT64) (sa % sb); } break;
+        default:      Ok = false; R = 0; break;
+        }
+        if (Ok) { return ConstVal (W, R); }
+    }
+    // Algebraic identities when ONE operand is a constant (the other runtime): a zero displacement's
+    // `0 + base`, `x | 0`, `x << 0`, `x * 1`, `x & ~0` -> the other operand; `x * 0` / `x & 0` -> 0.
+    if (!A.Float && !B.Float && A.Lanes == 0 && B.Lanes == 0) {
+        UINT32 W = A.Bits ? A.Bits : m_WordBits;
+        UINT64 Ones = MaskW (~UINT64_C (0), W);
+        if (B.IsConst) {
+            switch (Op) {
+            case BinAdd: case BinSub: case BinOr: case BinXor:
+            case BinShl: case BinLShr: case BinAShr: case BinRol: case BinRor:
+                if (B.K == 0) { return A; } break;
+            case BinMul:  if (B.K == 1) { return A; } if (B.K == 0) { return ConstVal (W, 0); } break;
+            case BinUDiv: case BinSDiv: if (B.K == 1) { return A; } break;
+            case BinAnd:  if (B.K == Ones) { return A; } if (B.K == 0) { return ConstVal (W, 0); } break;
+            default: break;
+            }
+        }
+        if (A.IsConst) {
+            switch (Op) {
+            case BinAdd: case BinOr: case BinXor: if (A.K == 0) { return B; } break;
+            case BinMul:  if (A.K == 1) { return B; } if (A.K == 0) { return ConstVal (W, 0); } break;
+            case BinAnd:  if (A.K == Ones) { return B; } if (A.K == 0) { return ConstVal (W, 0); } break;
+            default: break;
+            }
+        }
+    }
     ComPtr<ICpuValue> V;
-    m_pE->BinaryOp (Op, A.V, B.V, &V);
+    m_pE->BinaryOp (Op, Use (A), Use (B), &V);
     return Pool (std::move (V), A.Bits);
 }
 
 Value
 Translator::Un (CPU_UNOP Op, Value CONST &A)
 {
+    if (A.IsConst && !A.Float && A.Lanes == 0) {
+        if (Op == UnNeg) { return ConstVal (A.Bits, (UINT64) (-(INT64) A.K)); }
+        if (Op == UnCom) { return ConstVal (A.Bits, ~A.K); }
+        if (Op == UnNot) { return ConstVal (1, (A.K != 0) ? 0 : 1); }
+    }
     ComPtr<ICpuValue> V;
-    m_pE->UnaryOp (Op, A.V, &V);
+    m_pE->UnaryOp (Op, Use (A), &V);
     return Pool (std::move (V), Op == UnNot ? 1 : A.Bits);
 }
 
 Value
 Translator::Cmp (CPU_CMP Pred, Value CONST &A, Value CONST &B)
 {
+    if (A.IsConst && B.IsConst && !A.Float && !B.Float && A.Lanes == 0 && B.Lanes == 0) {
+        UINT64 a = A.K, b = B.K;
+        INT64  sa = (INT64) SignExtend (a, A.Bits), sb = (INT64) SignExtend (b, B.Bits);
+        bool   R; bool Ok = true;
+        switch (Pred) {
+        case CmpEq:  R = (a == b); break;
+        case CmpNe:  R = (a != b); break;
+        case CmpULt: R = (a <  b); break;
+        case CmpULe: R = (a <= b); break;
+        case CmpUGt: R = (a >  b); break;
+        case CmpUGe: R = (a >= b); break;
+        case CmpSLt: R = (sa <  sb); break;
+        case CmpSLe: R = (sa <= sb); break;
+        case CmpSGt: R = (sa >  sb); break;
+        case CmpSGe: R = (sa >= sb); break;
+        default:     Ok = false; R = false; break;
+        }
+        if (Ok) { return ConstVal (1, R ? 1 : 0); }
+    }
     ComPtr<ICpuValue> V;
-    m_pE->Compare (Pred, A.V, B.V, &V);
+    m_pE->Compare (Pred, Use (A), Use (B), &V);
     return Pool (std::move (V), 1);
 }
 
 Value
 Translator::CastTo (CPU_CAST Op, Value CONST &A, UINT32 Bits)
 {
+    // Integer width casts fold; the float bitcasts (IToFBits/FToIBits) keep their runtime node so a
+    // float value is materialised correctly.
+    if (A.IsConst && A.Lanes == 0) {
+        if (Op == CastTrunc || Op == CastZExt) { return ConstVal (Bits, MaskW (A.K, Bits)); }
+        if (Op == CastSExt) { return ConstVal (Bits, MaskW ((UINT64) SignExtend (A.K, A.Bits), Bits)); }
+    }
     ComPtr<ICpuValue> V;
-    m_pE->Cast (Op, A.V, Bits, &V);
+    m_pE->Cast (Op, Use (A), Bits, &V);
     return Pool (std::move (V), Bits);
 }
 
@@ -161,8 +322,27 @@ Translator::TryConstIndex (Expr *pIdx, UINT64 *pVal) CONST
     if (pIdx->Kind == ExprName) {
         auto O = m_Operands.find (pIdx->Name);
         if (O != m_Operands.end () && O->second.Kind == Operand::Imm) { *pVal = O->second.ImmValue; return true; }
+        auto F = m_Fields.find (pIdx->Name);     // an addrmode selector field in scope (pre/post block)
+        if (F != m_Fields.end ()) { *pVal = F->second; return true; }
     }
     return false;
+}
+
+// %REG[group, field] : the register group <group>'s member selected by the (decode-constant) field.
+// Resolve to that member's name -- the group's positional alias <group><N> (R0..R7) -- so the ordinary
+// name path (EvalName / WriteName) reads or writes it. The field must fold to a constant, exactly as
+// the decoder resolves the same form for an addressing-mode base register.
+bool
+Translator::RegSelName (Expr *pExpr, std::string *pName) CONST
+{
+    if (pExpr == nullptr || pExpr->Kind != ExprMeta || pExpr->Name != "REG" || pExpr->Args.size () != 2) {
+        return false;
+    }
+    if (pExpr->Args[0]->Kind != ExprName) { return false; }
+    UINT64 Idx = 0;
+    if (!TryConstIndex (pExpr->Args[1], &Idx)) { return false; }
+    *pName = pExpr->Args[0]->Name + std::to_string ((unsigned long long) Idx);
+    return true;
 }
 
 // Does `array[idx]` resolve, at translation time, to a hardwired-zero physical register (r0)?
@@ -222,9 +402,7 @@ Translator::GetFlagBit (RegFlag CONST &Flag)
     }
     // Unmapped: read the bit straight out of the PSR word.
     RegPhys CONST &Psr = m_Layout.Phys[Flag.Parent];
-    ComPtr<ICpuValue> Reg;
-    m_pE->GetRegister (Psr.Index, Psr.Width, &Reg);
-    return Extract (Pool (std::move (Reg), Psr.Width), Flag.Bit, 1);
+    return Extract (GetReg (Psr.Index, Psr.Width), Flag.Bit, 1);
 }
 
 void
@@ -233,14 +411,13 @@ Translator::SetFlagBit (RegFlag CONST &Flag, Value CONST &Bit)
     Value One = Coerce (Bit, 1, false);
     CPU_FLAG Which;
     if (MapFlag (Flag, &Which)) {
-        m_pE->SetFlag (Which, One.V);
+        m_pE->SetFlag (Which, Use (One));
+        m_RegCache.erase (Flag.Parent);      // a flag may be PSR-resident: drop any cached PSR read
         return;
     }
     RegPhys CONST &Psr = m_Layout.Phys[Flag.Parent];
-    ComPtr<ICpuValue> Reg;
-    m_pE->GetRegister (Psr.Index, Psr.Width, &Reg);
-    Value Merged = Insert (Pool (std::move (Reg), Psr.Width), One, Flag.Bit, 1);
-    m_pE->PutRegister (Psr.Index, Merged.V, Psr.Width, FALSE);
+    Value Merged = Insert (GetReg (Psr.Index, Psr.Width), One, Flag.Bit, 1);
+    PutReg (Psr.Index, Use (Merged), Psr.Width);
 }
 
 // The static bit width of an expression, without emitting anything -- used to lay out a
@@ -286,13 +463,11 @@ Translator::MemAddress (Operand CONST &Op)
     Value Addr = Const (m_WordBits, (UINT64) Op.Disp);
     if (Op.Base1 != ~(UINT32) 0) {
         RegPhys CONST &B = m_Layout.Phys[Op.Base1];
-        ComPtr<ICpuValue> V; m_pE->GetRegister (B.Index, B.Width, &V);
-        Addr = Bin (BinAdd, Addr, Coerce (Pool (std::move (V), B.Width), m_WordBits, false));
+        Addr = Bin (BinAdd, Addr, Coerce (GetReg (B.Index, B.Width), m_WordBits, false));
     }
     if (Op.Base2 != ~(UINT32) 0) {
         RegPhys CONST &B = m_Layout.Phys[Op.Base2];
-        ComPtr<ICpuValue> V; m_pE->GetRegister (B.Index, B.Width, &V);
-        Addr = Bin (BinAdd, Addr, Coerce (Pool (std::move (V), B.Width), m_WordBits, false));
+        Addr = Bin (BinAdd, Addr, Coerce (GetReg (B.Index, B.Width), m_WordBits, false));
     }
     return Addr;
 }
@@ -304,13 +479,11 @@ Translator::ReadOperand (Operand CONST &Op)
     if (Op.Kind == Operand::Mem) {
         UINT32 Bits = Op.Bits ? Op.Bits : m_WordBits;
         Value Addr = MemAddress (Op);
-        ComPtr<ICpuValue> V; m_pE->Load (Addr.V, Bits, &V);
+        ComPtr<ICpuValue> V; m_pE->Load (Use (Addr), Bits, &V);
         return Pool (std::move (V), Bits);
     }
     RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
-    ComPtr<ICpuValue> V;
-    m_pE->GetRegister (Phys.Index, Phys.Width, &V);
-    Value Whole = Pool (std::move (V), Phys.Width);
+    Value Whole = GetReg (Phys.Index, Phys.Width);
     if (Op.SubWidth != 0 && Op.SubWidth != Phys.Width) { return Extract (Whole, Op.SubLo, Op.SubWidth); }
     return Whole;
 }
@@ -324,12 +497,15 @@ Translator::EvalName (std::string CONST &Name)
     auto E = m_Env.find (Name);
     if (E != m_Env.end ()) { return E->second; }
 
+    // An addrmode selector field in scope (during its pre/post block): a decode constant, so a byte
+    // mode can compute its own step, e.g. `%REG[R, sr] += (sr >= 6) ? 2 : 1`.
+    auto Fld = m_Fields.find (Name);
+    if (Fld != m_Fields.end ()) { return Const (m_WordBits, Fld->second); }
+
     auto P = m_Layout.PhysIndex.find (Name);
     if (P != m_Layout.PhysIndex.end ()) {
         RegPhys CONST &Phys = m_Layout.Phys[P->second];
-        ComPtr<ICpuValue> V;
-        m_pE->GetRegister (Phys.Index, Phys.Width, &V);
-        Value Out = Pool (std::move (V), Phys.Width);
+        Value Out = GetReg (Phys.Index, Phys.Width);
         Out.Float = Phys.Float;                          // a floating-point register (8087 st)
         return Out;
     }
@@ -337,9 +513,7 @@ Translator::EvalName (std::string CONST &Name)
     RegSub CONST *pSub;
     if (FindSub (Name, &pSub)) {
         RegPhys CONST &Phys = m_Layout.Phys[pSub->Parent];
-        ComPtr<ICpuValue> V;
-        m_pE->GetRegister (Phys.Index, Phys.Width, &V);
-        return Extract (Pool (std::move (V), Phys.Width), pSub->Lo, pSub->Width);
+        return Extract (GetReg (Phys.Index, Phys.Width), pSub->Lo, pSub->Width);
     }
 
     RegFlag CONST *pFlag;
@@ -449,6 +623,109 @@ MapCompare (TOKEN_KIND Op, bool Signed, CPU_CMP *pPred)
     }
 }
 
+// Mask a value to its bit width, for an unsigned interpretation (a narrow field compared/shifted
+// without sign).
+static UINT64
+MaskBits (INT64 V, UINT32 Bits)
+{
+    if (Bits == 0 || Bits >= 64) { return (UINT64) V; }
+    return (UINT64) V & ((UINT64_C (1) << Bits) - 1);
+}
+
+// Evaluate a pure compile-phase expression to a constant: literals, immediate operands, and addrmode
+// selector fields, combined by the integer operators. Returns false the moment a register / memory /
+// flag read (a generate-phase value) is reached, so a mixed expression naturally splits -- the
+// constant parts fold and the rest stays runtime. Signed (from %S) selects signed compares/shifts.
+bool
+Translator::FoldConst (Expr *pExpr, bool Signed, INT64 *pVal, UINT32 *pBits) CONST
+{
+    if (pExpr == nullptr) { return false; }
+    switch (pExpr->Kind) {
+    case ExprInt:
+        *pVal = (INT64) pExpr->Int; *pBits = m_WordBits; return true;
+
+    case ExprName: {
+        // A decode-time constant: an immediate operand, or an addrmode selector field in scope. A
+        // register/memory operand, an env local or a flag is a runtime value and does not fold. In
+        // generate phase the field/immediate is itself runtime (a sentinel), so only literals fold.
+        if (m_Generate) { return false; }
+        auto O = m_Operands.find (pExpr->Name);
+        if (O != m_Operands.end ()) {
+            if (O->second.Kind != Operand::Imm) { return false; }
+            *pVal = (INT64) O->second.ImmValue; *pBits = O->second.Bits ? O->second.Bits : m_WordBits;
+            return true;
+        }
+        auto F = m_Fields.find (pExpr->Name);
+        if (F != m_Fields.end ()) { *pVal = (INT64) F->second; *pBits = m_WordBits; return true; }
+        return false;
+    }
+
+    case ExprAugment:
+        if (pExpr->Args.empty ()) { return false; }
+        if (pExpr->Name == "S")    { return FoldConst (pExpr->Args[0], true,   pVal, pBits); }
+        if (pExpr->Name == "U" || pExpr->Name == "EVAL") { return FoldConst (pExpr->Args[0], Signed, pVal, pBits); }
+        return false;                        // %GEN / %FLT / %INT etc.: not a foldable integer
+
+    case ExprUnary: {
+        INT64 A; UINT32 AB;
+        if (!FoldConst (pExpr->Args[0], Signed, &A, &AB)) { return false; }
+        if (pExpr->Op == TokNot)   { *pVal = (A != 0) ? 0 : 1; *pBits = 1;  return true; }
+        if (pExpr->Op == TokTilde) { *pVal = ~A;               *pBits = AB; return true; }
+        *pVal = -A; *pBits = AB; return true;
+    }
+
+    case ExprSelect: {
+        INT64 C; UINT32 CB;
+        if (!FoldConst (pExpr->Args[0], Signed, &C, &CB)) { return false; }
+        return FoldConst ((C != 0) ? pExpr->Args[1] : pExpr->Args[2], Signed, pVal, pBits);
+    }
+
+    case ExprBinary: {
+        bool S = Signed
+              || (pExpr->Args[0]->Kind == ExprAugment && pExpr->Args[0]->Name == "S")
+              || (pExpr->Args[1]->Kind == ExprAugment && pExpr->Args[1]->Name == "S");
+        INT64 A, B; UINT32 AB, BB;
+        if (!FoldConst (pExpr->Args[0], S, &A, &AB)) { return false; }
+        if (!FoldConst (pExpr->Args[1], S, &B, &BB)) { return false; }
+        CPU_CMP Pred;
+        if (MapCompare (pExpr->Op, S, &Pred)) {
+            UINT64 ua = MaskBits (A, AB), ub = MaskBits (B, BB);
+            bool R;
+            switch (pExpr->Op) {
+            case TokEqEq:  R = (A == B); break;
+            case TokNotEq: R = (A != B); break;
+            case TokLt:    R = S ? (A <  B) : (ua <  ub); break;
+            case TokLtEq:  R = S ? (A <= B) : (ua <= ub); break;
+            case TokGt:    R = S ? (A >  B) : (ua >  ub); break;
+            case TokGtEq:  R = S ? (A >= B) : (ua >= ub); break;
+            default:       return false;
+            }
+            *pVal = R ? 1 : 0; *pBits = 1; return true;
+        }
+        INT64 R;
+        switch (pExpr->Op) {
+        case TokPlus:  R = A + B; break;
+        case TokMinus: R = A - B; break;
+        case TokStar:  R = A * B; break;
+        case TokAmp:   R = A & B; break;
+        case TokPipe:  R = A | B; break;
+        case TokCaret: R = A ^ B; break;
+        case TokAndAnd: R = (A && B) ? 1 : 0; *pBits = 1; *pVal = R; return true;
+        case TokOrOr:   R = (A || B) ? 1 : 0; *pBits = 1; *pVal = R; return true;
+        case TokShl:   R = A << (B & 63); break;
+        case TokShr:   R = S ? (A >> (B & 63)) : (INT64) (MaskBits (A, AB) >> (B & 63)); break;
+        case TokSlash:   if (B == 0) { return false; } R = A / B; break;
+        case TokPercent: if (B == 0) { return false; } R = A % B; break;
+        default: return false;
+        }
+        *pVal = R; *pBits = AB; return true;
+    }
+
+    default:
+        return false;
+    }
+}
+
 Value
 Translator::EvalExpr (Expr *pExpr)
 {
@@ -471,15 +748,23 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprName:
         return EvalName (pExpr->Name);
 
-    case ExprMeta:
+    case ExprMeta: {
+        // %REG[group, field]: read the group member the decode-constant field selects.
+        std::string RegSel;
+        if (RegSelName (pExpr, &RegSel)) { return EvalName (RegSel); }
         // a bare meta-register reference (%PC etc.); %result is an inlined-macro local.
         if (pExpr->Name == "result") { return EvalName ("result"); }
         return EvalName (pExpr->Name);
+    }
 
     case ExprMember:
         return EvalMember (pExpr);
 
     case ExprUnary: {
+        if (!m_Generate && m_NoFold == 0) {
+            INT64 K; UINT32 KB;
+            if (FoldConst (pExpr, false, &K, &KB)) { return Const (KB ? KB : m_WordBits, (UINT64) K); }
+        }
         Value A = EvalExpr (pExpr->Args[0]);
         if (pExpr->Op == TokNot)   { return Un (UnNot, A); }
         if (pExpr->Op == TokTilde) { return Un (UnCom, A); }
@@ -488,6 +773,10 @@ Translator::EvalExpr (Expr *pExpr)
     }
 
     case ExprBinary: {
+        if (!m_Generate && m_NoFold == 0) {
+            INT64 K; UINT32 KB;
+            if (FoldConst (pExpr, false, &K, &KB)) { return Const (KB ? KB : m_WordBits, (UINT64) K); }
+        }
         CPU_CMP Pred;
         Value A = EvalExpr (pExpr->Args[0]);
         Value B = EvalExpr (pExpr->Args[1]);
@@ -511,7 +800,7 @@ Translator::EvalExpr (Expr *pExpr)
                     Value ones = Const (LW, 0); ones = Bin (BinSub, ones, Const (LW, 1)); // all-ones
                     Value zero = Const (LW, 0);
                     ComPtr<ICpuValue> sel;
-                    m_pE->Select (c.V, ones.V, zero.V, &sel);
+                    m_pE->Select (Use (c), Use (ones), Use (zero), &sel);
                     lr = Pool (std::move (sel), LW);
                 } else {
                     lr = Bin (MapBinop (pExpr->Op, VSigned), la, lb);  // lane-width arithmetic wraps in-lane
@@ -548,6 +837,22 @@ Translator::EvalExpr (Expr *pExpr)
     }
 
     case ExprAugment: {
+        // %EVAL(e): force a compile-phase fold of e (it must reduce to a constant -- a decode field,
+        // immediate, or literal arithmetic); falls back to a normal evaluation if it cannot.
+        if (pExpr->Name == "EVAL") {
+            if (pExpr->Args.empty ()) { return Const (m_WordBits, 0); }
+            INT64 K; UINT32 KB;
+            if (FoldConst (pExpr->Args[0], false, &K, &KB)) { return Const (KB ? KB : m_WordBits, (UINT64) K); }
+            return EvalExpr (pExpr->Args[0]);
+        }
+        // %GEN(e): suppress folding -- emit e as generate-phase (runtime) code even if it is constant.
+        if (pExpr->Name == "GEN") {
+            if (pExpr->Args.empty ()) { return Const (m_WordBits, 0); }
+            m_NoFold++;
+            Value V = EvalExpr (pExpr->Args[0]);
+            m_NoFold--;
+            return V;
+        }
         // %FLT / %INT: a BITCAST (reinterpret the bit pattern), not a value conversion. %FLT reads an
         // integer's bits as an IEEE float of the same width (an f32 held in a 32-bit GPR); %INT reads
         // a float's bits back as an integer. Used by FP instructions whose operands live in GPRs.
@@ -639,7 +944,7 @@ Translator::EvalExpr (Expr *pExpr)
         // that reservation holds. The reservation is synthesised architectural state.
         if (pExpr->Linked) { SetReservation (Addr); }
         ComPtr<ICpuValue> V;
-        m_pE->Load (Addr.V, Bits, &V);
+        m_pE->Load (Use (Addr), Bits, &V);
         Value Out = Pool (std::move (V), Bits);
         // A float-typed memory load (`#f32 %M[..]`) reads the raw IEEE bytes, so reinterpret the
         // loaded integer bits as a float of that width (an 8087 FLD m32real / m64real).
@@ -663,12 +968,12 @@ Translator::EvalExpr (Expr *pExpr)
         Value  Ok     = Bin (BinAnd, BitSet, Match);
         // memory <- ok ? value : memory  (a conditional store via select on the current contents)
         ComPtr<ICpuValue> Cur;
-        m_pE->Load (Addr.V, Bits, &Cur);
+        m_pE->Load (Use (Addr), Bits, &Cur);
         Value  CurV = Pool (std::move (Cur), Bits);
         ComPtr<ICpuValue> Sel;
-        m_pE->Select (Ok.V, Val.V, CurV.V, &Sel);
+        m_pE->Select (Use (Ok), Use (Val), Use (CurV), &Sel);
         Value  Stored = Pool (std::move (Sel), Bits);
-        m_pE->Store (Stored.V, Addr.V, Bits);
+        m_pE->Store (Use (Stored), Use (Addr), Bits);
         // The reservation is consumed whether or not the store happened.
         Value Zero = Const (m_WordBits, 0);
         WriteName (ReservationBitName (), Zero);
@@ -676,12 +981,17 @@ Translator::EvalExpr (Expr *pExpr)
     }
 
     case ExprSelect: {
+        if (!m_Generate && m_NoFold == 0) {
+            INT64 K; UINT32 KB;
+            if (FoldConst (pExpr, false, &K, &KB)) { return Const (KB ? KB : m_WordBits, (UINT64) K); }
+        }
         Value C = EvalExpr (pExpr->Args[0]);
         Value T = EvalExpr (pExpr->Args[1]);
         Value F = EvalExpr (pExpr->Args[2]);
         F = Coerce (F, T.Bits, false);
+        if (C.IsConst) { return (C.K != 0) ? T : F; }    // a known condition collapses to one arm
         ComPtr<ICpuValue> V;
-        m_pE->Select (C.V, T.V, F.V, &V);
+        m_pE->Select (Use (C), Use (T), Use (F), &V);
         return Pool (std::move (V), T.Bits);
     }
 
@@ -731,14 +1041,14 @@ Translator::EvalExpr (Expr *pExpr)
             Value Idx  = EvalExpr (pExpr->Args[1]);
             Value Addr = RegBankAddr (*pArr, Idx);
             ComPtr<ICpuValue> V;
-            m_pE->Load (Addr.V, pArr->Width, &V);
+            m_pE->Load (Use (Addr), pArr->Width, &V);
             Value Out = Pool (std::move (V), pArr->Width);
             Out.Float = pArr->Float;
             return Out;
         }
         Value Addr = EvalExpr (pExpr->Args[1]);      // r[addr]: the index is a memory address
         ComPtr<ICpuValue> V;
-        m_pE->Load (Addr.V, m_WordBits, &V);
+        m_pE->Load (Use (Addr), m_WordBits, &V);
         return Pool (std::move (V), m_WordBits);
     }
 
@@ -888,9 +1198,10 @@ Translator::EmitCondition (Expr *pExpr, ICpuValue **ppOut)
     // A one-bit value (a flag, a compare) is the condition; anything wider is true when
     // non-zero (`if (reg)` == reg != 0).
     Value Bit = (V.Bits == 1) ? V : Cmp (CmpNe, V, Const (V.Bits ? V.Bits : m_WordBits, 0));
-    if (Bit.V == nullptr) { *ppOut = nullptr; return E_FAIL; }
-    Bit.V->AddRef ();                                // ownership transferred to the caller
-    *ppOut = Bit.V;
+    ICpuValue *Out = Use (Bit);                      // materialise (a constant condition emits here)
+    if (Out == nullptr) { *ppOut = nullptr; return E_FAIL; }
+    Out->AddRef ();                                  // ownership transferred to the caller
+    *ppOut = Out;
     return S_OK;
 }
 
@@ -898,9 +1209,10 @@ HRESULT
 Translator::EmitExpr (Expr *pExpr, ICpuValue **ppOut)
 {
     Value V = EvalExpr (pExpr);
-    if (V.V == nullptr) { *ppOut = nullptr; return E_FAIL; }
-    V.V->AddRef ();                                  // ownership transferred to the caller
-    *ppOut = V.V;
+    ICpuValue *Out = Use (V);                        // materialise (a constant result emits here)
+    if (Out == nullptr) { *ppOut = nullptr; return E_FAIL; }
+    Out->AddRef ();                                  // ownership transferred to the caller
+    *ppOut = Out;
     return S_OK;
 }
 
@@ -976,19 +1288,19 @@ Translator::EmitIf (Stmt *pStmt)
     ComPtr<ICpuBlock> Else = pStmt->Else.empty () ? ComPtr<ICpuBlock> () : NewBlock ("if.else");
     ComPtr<ICpuBlock> End  = NewBlock ("if.end");
 
-    m_pE->CondBranch (Cond.V, Then.Get (), Else.Get () ? Else.Get () : End.Get ());
+    m_pE->CondBranch (Use (Cond), Then.Get (), Else.Get () ? Else.Get () : End.Get ());
 
-    m_pE->SetInsertBlock (Then.Get ());
+    m_pE->SetInsertBlock (Then.Get ()); ClearRegCache ();
     bool Ok = Emit (pStmt->Then);
     m_pE->Branch (End.Get ());
 
     if (Else.Get () != nullptr) {
-        m_pE->SetInsertBlock (Else.Get ());
+        m_pE->SetInsertBlock (Else.Get ()); ClearRegCache ();
         Ok = Emit (pStmt->Else) && Ok;
         m_pE->Branch (End.Get ());
     }
 
-    m_pE->SetInsertBlock (End.Get ());
+    m_pE->SetInsertBlock (End.Get ()); ClearRegCache ();
     return Ok;
 }
 
@@ -1001,15 +1313,15 @@ Translator::EmitWhile (Stmt *pStmt)
     ComPtr<ICpuBlock> End  = NewBlock ("while.end");
 
     m_pE->Branch (Head.Get ());
-    m_pE->SetInsertBlock (Head.Get ());
+    m_pE->SetInsertBlock (Head.Get ()); ClearRegCache ();
     Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
-    m_pE->CondBranch (Cond.V, Body.Get (), End.Get ());
+    m_pE->CondBranch (Use (Cond), Body.Get (), End.Get ());
 
-    m_pE->SetInsertBlock (Body.Get ());
+    m_pE->SetInsertBlock (Body.Get ()); ClearRegCache ();
     bool Ok = Emit (pStmt->Body);
     m_pE->Branch (Head.Get ());
 
-    m_pE->SetInsertBlock (End.Get ());
+    m_pE->SetInsertBlock (End.Get ()); ClearRegCache ();
     return Ok;
 }
 
@@ -1025,23 +1337,23 @@ Translator::EmitFor (Stmt *pStmt)
     ComPtr<ICpuBlock> End  = NewBlock ("for.end");
 
     m_pE->Branch (Head.Get ());
-    m_pE->SetInsertBlock (Head.Get ());
+    m_pE->SetInsertBlock (Head.Get ()); ClearRegCache ();
     if (pStmt->Cond != nullptr) {
         Value Cond = Coerce (EvalExpr (pStmt->Cond), 1, false);
-        m_pE->CondBranch (Cond.V, Body.Get (), End.Get ());
+        m_pE->CondBranch (Use (Cond), Body.Get (), End.Get ());
     } else {
         m_pE->Branch (Body.Get ());          // for (;;) with no test
     }
 
-    m_pE->SetInsertBlock (Body.Get ());
+    m_pE->SetInsertBlock (Body.Get ()); ClearRegCache ();
     Ok = Emit (pStmt->Body) && Ok;
     m_pE->Branch (Step.Get ());
 
-    m_pE->SetInsertBlock (Step.Get ());
+    m_pE->SetInsertBlock (Step.Get ()); ClearRegCache ();
     Ok = Emit (pStmt->Step) && Ok;
     m_pE->Branch (Head.Get ());
 
-    m_pE->SetInsertBlock (End.Get ());
+    m_pE->SetInsertBlock (End.Get ()); ClearRegCache ();
     return Ok;
 }
 
@@ -1087,7 +1399,7 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
     // branch target; the caller emits the IndirectBranch after the body runs. The value is
     // pooled, so it stays alive until the translation ends.
     if (m_IndirectPc && IsPcTarget (pLhs)) {
-        m_IndirectTarget = Rhs.V;
+        m_IndirectTarget = Use (Rhs);
         return;
     }
 
@@ -1096,7 +1408,11 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         WriteName (pLhs->Name, Rhs);
         return;
 
-    case ExprMeta:
+    case ExprMeta: {
+        // %REG[group, field] = ... : write the group member the decode-constant field selects (the
+        // autoincrement/decrement post block bumping the very base register the mode named).
+        std::string RegSel;
+        if (RegSelName (pLhs, &RegSel)) { WriteName (RegSel, Rhs); return; }
         // %PA = ... is the MMU table-walk's output: store the physical address into the synthesised
         // result register that libcpu's TLB reads to install the translation.
         if (pLhs->Name == "PA") { WriteName (MmuResultName (), Rhs); return; }
@@ -1106,6 +1422,7 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         // inlined-macro locals.
         WriteName (pLhs->Name, Rhs);
         return;
+    }
 
     case ExprMember: {
         std::string Reg;
@@ -1127,7 +1444,7 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
         } else {
             V = Coerce (Rhs, Bits, false);
         }
-        m_pE->Store (V.V, Addr.V, Bits);
+        m_pE->Store (Use (V), Use (Addr), Bits);
         return;
     }
 
@@ -1138,12 +1455,13 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
             Value Idx  = EvalExpr (pLhs->Args[1]);
             Value Addr = RegBankAddr (*pArr, Idx);
             Value V    = Coerce (Rhs, pArr->Width, false);   // float: widths match, a no-op
-            m_pE->Store (V.V, Addr.V, pArr->Width);
+            m_pE->Store (Use (V), Use (Addr), pArr->Width);
+            ClearRegCache ();    // a runtime-indexed register write: any cached named read may be stale
             return;
         }
         Value Addr = EvalExpr (pLhs->Args[1]);       // r[addr] = ... : the index is a memory address
         Value V = Coerce (Rhs, m_WordBits, false);
-        m_pE->Store (V.V, Addr.V, m_WordBits);
+        m_pE->Store (Use (V), Use (Addr), m_WordBits);
         return;
     }
 
@@ -1177,18 +1495,16 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
             UINT32 Bits = Op.Bits ? Op.Bits : m_WordBits;
             Value Addr = MemAddress (Op);
             Value V = Coerce (Rhs, Bits, false);
-            m_pE->Store (V.V, Addr.V, Bits);
+            m_pE->Store (Use (V), Use (Addr), Bits);
             return;
         }
         RegPhys CONST &Phys = m_Layout.Phys[Op.RegIndex];
         if (Op.SubWidth != 0 && Op.SubWidth != Phys.Width) {
-            ComPtr<ICpuValue> Reg;
-            m_pE->GetRegister (Phys.Index, Phys.Width, &Reg);
-            Value Merged = Insert (Pool (std::move (Reg), Phys.Width), Rhs, Op.SubLo, Op.SubWidth);
-            m_pE->PutRegister (Phys.Index, Merged.V, Phys.Width, FALSE);
+            Value Merged = Insert (GetReg (Phys.Index, Phys.Width), Rhs, Op.SubLo, Op.SubWidth);
+            PutReg (Phys.Index, Use (Merged), Phys.Width);
         } else {
             Value V = Coerce (Rhs, Phys.Width, false);
-            m_pE->PutRegister (Phys.Index, V.V, Phys.Width, FALSE);
+            PutReg (Phys.Index, Use (V), Phys.Width);
         }
         return;
     }
@@ -1199,17 +1515,22 @@ Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
     if (P != m_Layout.PhysIndex.end ()) {
         RegPhys CONST &Phys = m_Layout.Phys[P->second];
         Value V = Coerce (Rhs, Phys.Width, false);
-        m_pE->PutRegister (Phys.Index, V.V, Phys.Width, FALSE);
+        PutReg (Phys.Index, Use (V), Phys.Width);
         return;
     }
 
     RegSub CONST *pSub;
     if (FindSub (Name, &pSub)) {
         RegPhys CONST &Phys = m_Layout.Phys[pSub->Parent];
-        ComPtr<ICpuValue> Reg;
-        m_pE->GetRegister (Phys.Index, Phys.Width, &Reg);
-        Value Merged = Insert (Pool (std::move (Reg), Phys.Width), Rhs, pSub->Lo, pSub->Width);
-        m_pE->PutRegister (Phys.Index, Merged.V, Phys.Width, FALSE);
+        // A full-width sub-register (a group positional alias like R6 == sp) covers the whole parent,
+        // so write it directly -- no read-modify-write. Only a narrower window needs the get/mask/or.
+        if (pSub->Lo == 0 && pSub->Width == Phys.Width) {
+            Value V = Coerce (Rhs, Phys.Width, false);
+            PutReg (Phys.Index, Use (V), Phys.Width);
+            return;
+        }
+        Value Merged = Insert (GetReg (Phys.Index, Phys.Width), Rhs, pSub->Lo, pSub->Width);
+        PutReg (Phys.Index, Use (Merged), Phys.Width);
         return;
     }
 
@@ -1251,7 +1572,7 @@ Translator::EmitMacroStmt (Expr *pCall)
                 }
             }
             Value Ret = Const (m_WordBits, m_TrapReturnPc);
-            pSys->EmitSyscall ((UINT32) Vec, Ret.V);
+            pSys->EmitSyscall ((UINT32) Vec, Use (Ret));
             pSys->Release ();
         }
         return true;

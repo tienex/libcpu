@@ -197,6 +197,11 @@ public:
     SRC_LOC                  Loc = 0;
     Expr                    *Cond = nullptr;     // the selecting condition (null = always)
     bool                     IsReg = false;
+    // Per-rule operand data width in bits, from an optional leading type (`=> #i8 reg[..]` /
+    // `=> #i8 %M[..]`). 0 = inherit the addrmode's default width. This lets one addrmode carry rules
+    // of different widths -- the PDP-11 MOVB writes a full 16-bit register (sign-extended) but only a
+    // byte to memory, and the register-direct byte modes read the low byte of a 16-bit register.
+    UINT32                   DataBits = 0;
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
     // Side-effect blocks: `pre { ... }` runs BEFORE the effective address is taken (autodecrement

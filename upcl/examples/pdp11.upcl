@@ -3,11 +3,21 @@
 // operand is a uniform 6-bit specifier: mode (bits 5:3) + register (bits 2:0), giving eight
 // addressing modes -- the orthogonality that makes the PDP-11 a joy to model.
 //
-// SCOPE: register-direct Rn, register-deferred (Rn), autoincrement (Rn)+, autodecrement -(Rn), and
-// indexed X(Rn) / PC-relative modes are expressed here, for BOTH operands, via UPCL `addrmode`. The
-// autoincrement/decrement modes use the addrmode pre/post side-effect (post ( Rn += 2 ) bumps the
-// base after the operand is used; pre ( Rn -= 2 ) before). Word forms (+/-2) only so far; the
-// deferred '@' modes, .B byte forms (+/-1), EIS, FP11 and the PMMU are the next increments.
+// ADDRESSING: register-direct Rn, register-deferred (Rn), autoincrement (Rn)+, autodecrement -(Rn),
+// and indexed X(Rn) / PC-relative modes, for BOTH operands, via UPCL `addrmode`. The autoinc/dec modes
+// use the addrmode pre/post side-effect (post { Rn += 2 } bumps the base after use; pre { Rn -= 2 }
+// before); byte modes step by 1 (by 2 for SP/PC). JMP/JSR transfer to the operand's effective address
+// (@lea), not its contents.
+//
+// INSTRUCTIONS: the full base set -- single- and double-operand word AND byte (.B) forms, all sixteen
+// conditional branches, JMP/JSR/RTS/SOB, the condition-code operators, and the trap/control group
+// (EMT/TRAP/BPT/IOT/HALT/WAIT/RESET/RTI/RTT, MTPS/MFPS) -- plus two features: `eis` (the Extended
+// Instruction Set: MUL/DIV/ASH/ASHC/XOR) and `fpp` (the FP11 floating-point processor, single-
+// precision F format: arithmetic, compares, conversions, AC0..AC5 + FPS). CPU models pdp11/20 (base),
+// /40 (+EIS), /45 and /70 (+EIS +FP11) gate the features. Verified by execution through the JIT.
+//
+// NEXT INCREMENTS: the deferred '@' addressing modes (3/5/7), FP11 D-format (double precision, which
+// shares these encodings under the FPS mode bit), and the PMMU.
 
 arch "pdp11" {
 
@@ -36,6 +46,20 @@ arch "pdp11" {
 				( #i11 0 : #i1 T : #i1 N -> %N : #i1 Z -> %Z : #i1 V -> %V : #i1 C -> %C ) ]
 		}
 
+		// FP11 floating-point accumulators AC0..AC5. Held as raw 32-bit IEEE-754 single (F format)
+		// bit patterns -- the FP bodies reinterpret them with %FLT and write results back with %INT,
+		// exactly as a GPR-resident float is handled. (The FPP's D format would widen these to 64 bits
+		// under the FPS double-precision mode bit; the single-precision subset is modelled here.)
+		group AC {
+			[ 6 ** #i32 ac?:0 ]
+		}
+
+		// Floating-point status register; its low four bits mirror the PSW condition codes
+		// (FC bit 0, FV bit 1, FZ bit 2, FN bit 3), which CFCC copies into the PSW.
+		group FS {
+			[ #i16 fps ]
+		}
+
 	}
 
 }
@@ -44,7 +68,10 @@ decoder_operands [
 	#i16 src, #i16 dst,        // the resolved source / destination operands (register or memory)
 	#i16 imm,                  // an index / PC-relative extension word
 	#i8  boff,                 // branch instructions: signed 8-bit word offset
-	#i6  trapn                 // EMT/TRAP code; rts register
+	#i6  trapn,                // EMT/TRAP code; rts/sob/jsr register
+	#i6  rnum,                 // EIS register field (MUL/DIV/ASH/ASHC/XOR destination register)
+	#i6  acn,                  // FP11 accumulator field (AC0..AC3 in arithmetic instructions)
+	#i32 fsrc, #i32 fdst       // FP11 resolved source / destination operands (32-bit F format)
 ];
 
 // ---------------------------------------------------------------------------
@@ -54,45 +81,65 @@ decoder_operands [
 //   0 Rn   register direct   1 (Rn) deferred   2 (Rn)+ autoinc   4 -(Rn) autodec   6 X(Rn) indexed
 // (the deferred '@' modes 3/5/7 are the next increment.)
 // ---------------------------------------------------------------------------
+// One field-indexed rule per mode: %REG[R, sr] names the register the mode selects, both as the
+// memory base AND as the autoincrement/decrement target in the pre/post block -- so a single rule
+// covers all eight registers (word forms step by 2).
 addrmode ea_src ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
-	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;        // Rn  register direct
-	sm == 1 => %M [ %REG[ R, sr ] ] ;                          // (Rn)  register deferred
-	sm == 2 && sr == 0 => %M [ %REG[ R, sr ] ] post { r0 += 2; } ;   // (Rn)+ autoincrement
-	sm == 2 && sr == 1 => %M [ %REG[ R, sr ] ] post { r1 += 2; } ;
-	sm == 2 && sr == 2 => %M [ %REG[ R, sr ] ] post { r2 += 2; } ;
-	sm == 2 && sr == 3 => %M [ %REG[ R, sr ] ] post { r3 += 2; } ;
-	sm == 2 && sr == 4 => %M [ %REG[ R, sr ] ] post { r4 += 2; } ;
-	sm == 2 && sr == 5 => %M [ %REG[ R, sr ] ] post { r5 += 2; } ;
-	sm == 2 && sr == 6 => %M [ %REG[ R, sr ] ] post { sp += 2; } ;
-	sm == 2 && sr == 7 => %M [ %REG[ R, sr ] ] post { pc += 2; } ;
-	sm == 4 && sr == 0 => pre { r0 -= 2; } %M [ %REG[ R, sr ] ] ;    // -(Rn) autodecrement
-	sm == 4 && sr == 1 => pre { r1 -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 4 && sr == 2 => pre { r2 -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 4 && sr == 3 => pre { r3 -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 4 && sr == 4 => pre { r4 -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 4 && sr == 5 => pre { r5 -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 4 && sr == 6 => pre { sp -= 2; } %M [ %REG[ R, sr ] ] ;
-	sm == 6 => %M [ %REG[ R, sr ] + disp ] ;                   // X(Rn) indexed (sr==7 => PC-relative)
+	sm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;             // Rn  register direct
+	sm == 1 => %M [ %REG[ R, sr ] ] ;                              // (Rn)  register deferred
+	sm == 2 => %M [ %REG[ R, sr ] ] post { %REG[ R, sr ] += 2; } ; // (Rn)+ autoincrement
+	sm == 4 => pre { %REG[ R, sr ] -= 2; } %M [ %REG[ R, sr ] ] ;  // -(Rn) autodecrement
+	sm == 6 => %M [ %REG[ R, sr ] + disp ] ;                       // X(Rn) indexed (sr==7 => PC-relative)
 }
 addrmode ea_dst ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
 	dm == 0 => reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
 	dm == 1 => %M [ %REG[ R, dr ] ] ;
-	dm == 2 && dr == 0 => %M [ %REG[ R, dr ] ] post { r0 += 2; } ;
-	dm == 2 && dr == 1 => %M [ %REG[ R, dr ] ] post { r1 += 2; } ;
-	dm == 2 && dr == 2 => %M [ %REG[ R, dr ] ] post { r2 += 2; } ;
-	dm == 2 && dr == 3 => %M [ %REG[ R, dr ] ] post { r3 += 2; } ;
-	dm == 2 && dr == 4 => %M [ %REG[ R, dr ] ] post { r4 += 2; } ;
-	dm == 2 && dr == 5 => %M [ %REG[ R, dr ] ] post { r5 += 2; } ;
-	dm == 2 && dr == 6 => %M [ %REG[ R, dr ] ] post { sp += 2; } ;
-	dm == 2 && dr == 7 => %M [ %REG[ R, dr ] ] post { pc += 2; } ;
-	dm == 4 && dr == 0 => pre { r0 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 1 => pre { r1 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 2 => pre { r2 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 3 => pre { r3 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 4 => pre { r4 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 5 => pre { r5 -= 2; } %M [ %REG[ R, dr ] ] ;
-	dm == 4 && dr == 6 => pre { sp -= 2; } %M [ %REG[ R, dr ] ] ;
+	dm == 2 => %M [ %REG[ R, dr ] ] post { %REG[ R, dr ] += 2; } ;
+	dm == 4 => pre { %REG[ R, dr ] -= 2; } %M [ %REG[ R, dr ] ] ;
 	dm == 6 => %M [ %REG[ R, dr ] + disp ] ;
+}
+
+// FP11 effective address (one floating operand per instruction). Mode 0 names a floating accumulator
+// AC0..AC5; the memory modes address 32-bit F-format cells through the general registers, so their
+// autoincrement / autodecrement step is 4 bytes (a single), not 2. The addrmode's data width is the
+// 32-bit accumulator width, so memory loads/stores are 4 bytes.
+addrmode ea_fp ( fm, fr ) disp ( ( fm == 6 || fm == 7 ) ? 16 : 0 ) {
+	fm == 0 => reg [ ac0, ac1, ac2, ac3, ac4, ac5, ac0, ac0 ] ;      // floating accumulator
+	fm == 1 => %M [ %REG[ R, fr ] ] ;
+	fm == 2 => %M [ %REG[ R, fr ] ] post { %REG[ R, fr ] += 4; } ;   // single (F) operands step by 4
+	fm == 4 => pre { %REG[ R, fr ] -= 4; } %M [ %REG[ R, fr ] ] ;
+	fm == 6 => %M [ %REG[ R, fr ] + disp ] ;
+}
+
+// Byte (.B) effective addresses. The operand width is one byte (`#i8` on every rule): register-direct
+// reads/writes the LOW byte of a register, and memory accesses are single bytes. Byte autoincrement /
+// autodecrement steps by 1 for R0..R5 but by 2 for SP and PC, keeping the stack/PC word-aligned.
+// Byte autoinc/dec steps by 1 for R0..R5 but by 2 for SP/PC: a field-indexed step `(sr >= 6) ? 2 : 1`
+// (sr is a decode constant, so this folds). One rule per mode covers all eight registers.
+addrmode ea_srcb ( sm, sr ) disp ( ( sm == 6 || sm == 7 ) ? 16 : 0 ) {
+	sm == 0 => #i8 reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
+	sm == 1 => #i8 %M [ %REG[ R, sr ] ] ;
+	sm == 2 => #i8 %M [ %REG[ R, sr ] ] post { %REG[ R, sr ] += ( sr >= 6 ) ? 2 : 1; } ;
+	sm == 4 => pre { %REG[ R, sr ] -= ( sr >= 6 ) ? 2 : 1; } #i8 %M [ %REG[ R, sr ] ] ;
+	sm == 6 => #i8 %M [ %REG[ R, sr ] + disp ] ;
+}
+addrmode ea_dstb ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
+	dm == 0 => #i8 reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
+	dm == 1 => #i8 %M [ %REG[ R, dr ] ] ;
+	dm == 2 => #i8 %M [ %REG[ R, dr ] ] post { %REG[ R, dr ] += ( dr >= 6 ) ? 2 : 1; } ;
+	dm == 4 => pre { %REG[ R, dr ] -= ( dr >= 6 ) ? 2 : 1; } #i8 %M [ %REG[ R, dr ] ] ;
+	dm == 6 => #i8 %M [ %REG[ R, dr ] + disp ] ;
+}
+
+// MOVB / MFPS destination: unlike every other byte instruction, a byte MOVE to a register sign-extends
+// bit 7 through the whole 16-bit register (so the register-direct rule is full width, #i16); memory
+// destinations still write a single byte.
+addrmode ea_dstb_x ( dm, dr ) disp ( ( dm == 6 || dm == 7 ) ? 16 : 0 ) {
+	dm == 0 => #i16 reg [ r0, r1, r2, r3, r4, r5, sp, pc ] ;
+	dm == 1 => #i8 %M [ %REG[ R, dr ] ] ;
+	dm == 2 => #i8 %M [ %REG[ R, dr ] ] post { %REG[ R, dr ] += ( dr >= 6 ) ? 2 : 1; } ;
+	dm == 4 => pre { %REG[ R, dr ] -= ( dr >= 6 ) ? 2 : 1; } #i8 %M [ %REG[ R, dr ] ] ;
+	dm == 6 => #i8 %M [ %REG[ R, dr ] + disp ] ;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,26 +176,330 @@ insn neg  : encode #i16 ( op:10 = 0x02c, dm:3, dr:3 -> dst @ea_dst ),
 	disasm ( mnemonic : "neg",  operands : dst )  => dst = %CC ( 0 - dst );
 insn tst  : encode #i16 ( op:10 = 0x02f, dm:3, dr:3 -> dst @ea_dst ),
 	disasm ( mnemonic : "tst",  operands : dst )  => %CC ( dst );
+insn swab : encode #i16 ( op:10 = 0x003, dm:3, dr:3 -> dst @ea_dst ),       // swap bytes
+	disasm ( mnemonic : "swab", operands : dst )  => dst = %CC ( ( dst << 8 ) | ( ( dst >> 8 ) & 0xff ) );
+insn adc  : encode #i16 ( op:10 = 0x02d, dm:3, dr:3 -> dst @ea_dst ),       // add carry
+	disasm ( mnemonic : "adc",  operands : dst )  => dst = %CC ( dst + %C );
+insn sbc  : encode #i16 ( op:10 = 0x02e, dm:3, dr:3 -> dst @ea_dst ),       // subtract carry
+	disasm ( mnemonic : "sbc",  operands : dst )  => dst = %CC ( dst - %C );
+insn sxt  : encode #i16 ( op:10 = 0x037, dm:3, dr:3 -> dst @ea_dst ),       // sign-extend (dst = -N)
+	disasm ( mnemonic : "sxt",  operands : dst )  => dst = %CC ( ( %N != 0 ) ? 0xffff : 0 );
+// Shifts/rotates by one. ROR/ROL rotate THROUGH the carry (a 17-bit rotate); ASR/ASL shift; C takes
+// the bit shifted out, V = N xor C, N/Z from the result.
+insn ror  : encode #i16 ( op:10 = 0x030, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "ror",  operands : dst )
+	{ #i16 v = dst; #i16 c = v & 1; dst = ( v >> 1 ) | ( %C << 15 );
+	  %N = ( dst >> 15 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 15 ) & 1 ) ^ c; }
+insn rol  : encode #i16 ( op:10 = 0x031, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "rol",  operands : dst )
+	{ #i16 v = dst; #i16 c = ( v >> 15 ) & 1; dst = ( v << 1 ) | %C;
+	  %N = ( dst >> 15 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 15 ) & 1 ) ^ c; }
+insn asr  : encode #i16 ( op:10 = 0x032, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "asr",  operands : dst )
+	{ #i16 v = dst; #i16 c = v & 1; #i16 t = %S ( v ) >> 1; dst = t;
+	  %N = ( dst >> 15 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 15 ) & 1 ) ^ c; }
+insn asl  : encode #i16 ( op:10 = 0x033, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "asl",  operands : dst )
+	{ #i16 v = dst; #i16 c = ( v >> 15 ) & 1; dst = v << 1;
+	  %N = ( dst >> 15 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 15 ) & 1 ) ^ c; }
+
+// ---------------------------------------------------------------------------
+// Byte (.B) instructions. The byte opcodes are the word opcodes with bit 15 set; they use the byte
+// addressing modes above (one-byte operands, register-direct touching the low byte). Condition codes
+// are taken from the byte result -- N is bit 7. MOVB and MFPS sign-extend into a whole register.
+// ---------------------------------------------------------------------------
+insn movb : encode #i16 ( op:4 = 0x9, sm:3, sr:3 -> src @ea_srcb, dm:3, dr:3 -> dst @ea_dstb_x ),
+	disasm ( mnemonic : "movb", operands : src, dst )  => dst = %S ( %CC ( src ) );
+insn cmpb : encode #i16 ( op:4 = 0xa, sm:3, sr:3 -> src @ea_srcb, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "cmpb", operands : src, dst )  => %CC ( src - dst );
+insn bitb : encode #i16 ( op:4 = 0xb, sm:3, sr:3 -> src @ea_srcb, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "bitb", operands : src, dst )  => %CC ( dst & src );
+insn bicb : encode #i16 ( op:4 = 0xc, sm:3, sr:3 -> src @ea_srcb, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "bicb", operands : src, dst )  => dst = %CC ( dst &~ src );
+insn bisb : encode #i16 ( op:4 = 0xd, sm:3, sr:3 -> src @ea_srcb, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "bisb", operands : src, dst )  => dst = %CC ( dst | src );
+
+insn clrb : encode #i16 ( op:10 = 0x228, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "clrb", operands : dst )  => dst = %CC ( #i8 0 );
+insn comb : encode #i16 ( op:10 = 0x229, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "comb", operands : dst )  => dst = %CC ( ~ dst );
+insn incb : encode #i16 ( op:10 = 0x22a, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "incb", operands : dst )  => dst = %CC ( dst + 1 );
+insn decb : encode #i16 ( op:10 = 0x22b, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "decb", operands : dst )  => dst = %CC ( dst - 1 );
+insn negb : encode #i16 ( op:10 = 0x22c, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "negb", operands : dst )  => dst = %CC ( 0 - dst );
+insn adcb : encode #i16 ( op:10 = 0x22d, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "adcb", operands : dst )  => dst = %CC ( dst + %C );
+insn sbcb : encode #i16 ( op:10 = 0x22e, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "sbcb", operands : dst )  => dst = %CC ( dst - %C );
+insn tstb : encode #i16 ( op:10 = 0x22f, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "tstb", operands : dst )  => %CC ( dst );
+insn rorb : encode #i16 ( op:10 = 0x230, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "rorb", operands : dst )
+	{ #i8 v = dst; #i8 c = v & 1; dst = ( v >> 1 ) | ( %C << 7 );
+	  %N = ( dst >> 7 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 7 ) & 1 ) ^ c; }
+insn rolb : encode #i16 ( op:10 = 0x231, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "rolb", operands : dst )
+	{ #i8 v = dst; #i8 c = ( v >> 7 ) & 1; dst = ( v << 1 ) | %C;
+	  %N = ( dst >> 7 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 7 ) & 1 ) ^ c; }
+insn asrb : encode #i16 ( op:10 = 0x232, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "asrb", operands : dst )
+	{ #i8 v = dst; #i8 c = v & 1; dst = %S ( v ) >> 1;
+	  %N = ( dst >> 7 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 7 ) & 1 ) ^ c; }
+insn aslb : encode #i16 ( op:10 = 0x233, dm:3, dr:3 -> dst @ea_dstb ),
+	disasm ( mnemonic : "aslb", operands : dst )
+	{ #i8 v = dst; #i8 c = ( v >> 7 ) & 1; dst = v << 1;
+	  %N = ( dst >> 7 ) & 1; %Z = ( dst == 0 ) ? 1 : 0; %C = c; %V = ( ( dst >> 7 ) & 1 ) ^ c; }
+
+// MTPS / MFPS: move a byte to / from the processor status word (LSI-11 and up).
+insn mtps : encode #i16 ( op:10 = 0x234, sm:3, sr:3 -> src @ea_srcb ),
+	disasm ( mnemonic : "mtps", operands : src )  => psw = ( psw & 0xff00 ) | ( src & 0xff );
+insn mfps : encode #i16 ( op:10 = 0x237, dm:3, dr:3 -> dst @ea_dstb_x ),
+	disasm ( mnemonic : "mfps", operands : dst )  { #i8 b = psw; dst = %S ( %CC ( b ) ); }
 
 // ---------------------------------------------------------------------------
 // Branches (op:8, signed 8-bit word offset; target = pc + 2*offset). The PC already reads as the
 // next instruction. Conditions test the codes set by the preceding compare.
 // ---------------------------------------------------------------------------
-jump insn br  : type branch, encode #i16 ( op:8 = 0x01, boff:8 -> boff ),
-	disasm ( mnemonic : "br",  operands : boff )  { pc = pc + ( %S ( boff ) << 1 ); }
-jump insn bne : type branch, encode #i16 ( op:8 = 0x02, boff:8 -> boff ),
-	disasm ( mnemonic : "bne", operands : boff )  { pc = ( %Z == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
-jump insn beq : type branch, encode #i16 ( op:8 = 0x03, boff:8 -> boff ),
-	disasm ( mnemonic : "beq", operands : boff )  { pc = ( %Z != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
-jump insn bmi : type branch, encode #i16 ( op:8 = 0x80, boff:8 -> boff ),
-	disasm ( mnemonic : "bmi", operands : boff )  { pc = ( %N != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
-jump insn bpl : type branch, encode #i16 ( op:8 = 0x81, boff:8 -> boff ),
-	disasm ( mnemonic : "bpl", operands : boff )  { pc = ( %N == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn br   : type branch, encode #i16 ( op:8 = 0x01, boff:8 -> boff ),
+	disasm ( mnemonic : "br",   operands : boff )  { pc = pc + ( %S ( boff ) << 1 ); }
+jump insn bne  : type branch, encode #i16 ( op:8 = 0x02, boff:8 -> boff ),
+	disasm ( mnemonic : "bne",  operands : boff )  { pc = ( %Z == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn beq  : type branch, encode #i16 ( op:8 = 0x03, boff:8 -> boff ),
+	disasm ( mnemonic : "beq",  operands : boff )  { pc = ( %Z != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bge  : type branch, encode #i16 ( op:8 = 0x04, boff:8 -> boff ),
+	disasm ( mnemonic : "bge",  operands : boff )  { pc = ( ( %N ^ %V ) == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn blt  : type branch, encode #i16 ( op:8 = 0x05, boff:8 -> boff ),
+	disasm ( mnemonic : "blt",  operands : boff )  { pc = ( ( %N ^ %V ) != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bgt  : type branch, encode #i16 ( op:8 = 0x06, boff:8 -> boff ),
+	disasm ( mnemonic : "bgt",  operands : boff )  { pc = ( ( %Z | ( %N ^ %V ) ) == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn ble  : type branch, encode #i16 ( op:8 = 0x07, boff:8 -> boff ),
+	disasm ( mnemonic : "ble",  operands : boff )  { pc = ( ( %Z | ( %N ^ %V ) ) != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bpl  : type branch, encode #i16 ( op:8 = 0x80, boff:8 -> boff ),
+	disasm ( mnemonic : "bpl",  operands : boff )  { pc = ( %N == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bmi  : type branch, encode #i16 ( op:8 = 0x81, boff:8 -> boff ),
+	disasm ( mnemonic : "bmi",  operands : boff )  { pc = ( %N != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bhi  : type branch, encode #i16 ( op:8 = 0x82, boff:8 -> boff ),
+	disasm ( mnemonic : "bhi",  operands : boff )  { pc = ( ( %C == 0 ) && ( %Z == 0 ) ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn blos : type branch, encode #i16 ( op:8 = 0x83, boff:8 -> boff ),
+	disasm ( mnemonic : "blos", operands : boff )  { pc = ( ( %C | %Z ) != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bvc  : type branch, encode #i16 ( op:8 = 0x84, boff:8 -> boff ),
+	disasm ( mnemonic : "bvc",  operands : boff )  { pc = ( %V == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bvs  : type branch, encode #i16 ( op:8 = 0x85, boff:8 -> boff ),
+	disasm ( mnemonic : "bvs",  operands : boff )  { pc = ( %V != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bcc  : type branch, encode #i16 ( op:8 = 0x86, boff:8 -> boff ),     // BCC / BHIS
+	disasm ( mnemonic : "bcc",  operands : boff )  { pc = ( %C == 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
+jump insn bcs  : type branch, encode #i16 ( op:8 = 0x87, boff:8 -> boff ),     // BCS / BLO
+	disasm ( mnemonic : "bcs",  operands : boff )  { pc = ( %C != 0 ) ? ( pc + ( %S ( boff ) << 1 ) ) : pc; }
 
-// JMP and the trap family.
+// SOB (subtract one and branch, EIS-era but on most models): rN -= 1; if rN != 0, pc -= 2*offset6.
+jump insn sob : type branch, encode #i16 ( op:7 = 0x3f, sr:3 -> trapn, off:6 -> boff ),
+	disasm ( mnemonic : "sob", operands : trapn, boff )
+	{ r[ trapn ] = r[ trapn ] - 1; pc = ( r[ trapn ] != 0 ) ? ( pc - ( boff << 1 ) ) : pc; }
+
+// JMP / JSR / RTS. JMP and JSR transfer to the operand's EFFECTIVE ADDRESS (the place the addressing
+// mode names), not the value stored there -- JMP (R4) goes to the address in R4, JMP X(R4) to R4+X --
+// so the target is @lea(dst), not dst. (Register-direct mode 0 is illegal for JMP/JSR.)
 jump insn jmp : type branch, encode #i16 ( op:10 = 0x001, dm:3, dr:3 -> dst @ea_dst ),
-	disasm ( mnemonic : "jmp", operands : dst )  { pc = dst; }
-jump insn trap : type trap, encode #i16 ( op:8 = 0x88, trapn:8 -> trapn ),
-	disasm ( mnemonic : "trap", operands : trapn )  { @trap ( 0x22 ); }
-jump insn emt  : type trap, encode #i16 ( op:8 = 0x89, trapn:8 -> trapn ),
-	disasm ( mnemonic : "emt",  operands : trapn )  { @trap ( 0x18 ); }
+	disasm ( mnemonic : "jmp", operands : dst )  { pc = @lea ( dst ); }
+jump insn jsr : type call, encode #i16 ( op:7 = 0x04, sr:3 -> trapn, dm:3, dr:3 -> dst @ea_dst ),
+	disasm ( mnemonic : "jsr", operands : trapn, dst )      // push reg, reg = return pc, pc = EA(dst)
+	{ sp = sp - 2; %M[ sp ] = r[ trapn ]; r[ trapn ] = pc; pc = @lea ( dst ); }
+jump insn rts : type return, encode #i16 ( op:13 = 0x010, sr:3 -> trapn ),
+	disasm ( mnemonic : "rts", operands : trapn )  { pc = r[ trapn ]; r[ trapn ] = %M[ sp ]; sp = sp + 2; }
+
+// Condition-code operators (0o0240..0o0277): bit 4 = set/clear, bits 3:0 = which of N Z V C. NOP is
+// the no-flag case. Encoded as op:8 = 0x0a, set:1, n/z/v/c bits.
+insn nop : encode #i16 ( op:16 = 0x00a0 ),  disasm ( mnemonic : "nop" )  => r0 = r0;
+insn clc : encode #i16 ( op:16 = 0x00a1 ),  disasm ( mnemonic : "clc" )  => %C = 0;
+insn clv : encode #i16 ( op:16 = 0x00a2 ),  disasm ( mnemonic : "clv" )  => %V = 0;
+insn clz : encode #i16 ( op:16 = 0x00a4 ),  disasm ( mnemonic : "clz" )  => %Z = 0;
+insn cln : encode #i16 ( op:16 = 0x00a8 ),  disasm ( mnemonic : "cln" )  => %N = 0;
+insn ccc : encode #i16 ( op:16 = 0x00af ),  disasm ( mnemonic : "ccc" )  { %N = 0; %Z = 0; %V = 0; %C = 0; }
+insn sec : encode #i16 ( op:16 = 0x00b1 ),  disasm ( mnemonic : "sec" )  => %C = 1;
+insn sev : encode #i16 ( op:16 = 0x00b2 ),  disasm ( mnemonic : "sev" )  => %V = 1;
+insn sez : encode #i16 ( op:16 = 0x00b4 ),  disasm ( mnemonic : "sez" )  => %Z = 1;
+insn sen : encode #i16 ( op:16 = 0x00b8 ),  disasm ( mnemonic : "sen" )  => %N = 1;
+insn scc : encode #i16 ( op:16 = 0x00bf ),  disasm ( mnemonic : "scc" )  { %N = 1; %Z = 1; %V = 1; %C = 1; }
+
+// Trap family + processor control.
+jump insn emt  : type trap, encode #i16 ( op:8 = 0x88, trapn:8 -> trapn ),
+	disasm ( mnemonic : "emt",  operands : trapn )  { @trap ( 0x18 ); }      // EMT 0o104000, vector 0o30
+jump insn trap : type trap, encode #i16 ( op:8 = 0x89, trapn:8 -> trapn ),
+	disasm ( mnemonic : "trap", operands : trapn )  { @trap ( 0x1c ); }      // TRAP 0o104400, vector 0o34
+jump insn bpt  : type trap, encode #i16 ( op:16 = 0x0003 ),  disasm ( mnemonic : "bpt" )  { @trap ( 0x0c ); }
+jump insn iot  : type trap, encode #i16 ( op:16 = 0x0004 ),  disasm ( mnemonic : "iot" )  { @trap ( 0x10 ); }
+jump insn halt : type trap, encode #i16 ( op:16 = 0x0000 ),  disasm ( mnemonic : "halt" ) { @trap ( 0x04 ); }
+jump insn wait : type trap, encode #i16 ( op:16 = 0x0001 ),  disasm ( mnemonic : "wait" ) { @trap ( 0x05 ); }
+jump insn reset: type trap, encode #i16 ( op:16 = 0x0005 ),  disasm ( mnemonic : "reset" ){ @trap ( 0x06 ); }
+jump insn rti  : type return, encode #i16 ( op:16 = 0x0002 ),  disasm ( mnemonic : "rti" )
+	{ pc = %M[ sp ]; sp = sp + 2; psw = %M[ sp ]; sp = sp + 2; }
+jump insn rtt  : type return, encode #i16 ( op:16 = 0x0006 ),  disasm ( mnemonic : "rtt" )
+	{ pc = %M[ sp ]; sp = sp + 2; psw = %M[ sp ]; sp = sp + 2; }
+
+// ===========================================================================
+// EIS -- Extended Instruction Set (feature `eis`). Integer multiply/divide and multi-bit shifts,
+// standard on the 11/40 and up. The register field (bits 8:6) names a general register R; for MUL/DIV
+// the operation spans the register PAIR R, R|1 (a 32-bit value). XOR exclusive-ORs R into a
+// destination operand.
+// ===========================================================================
+feature eis {
+
+	// MUL: R,R|1 <- R * src (signed 16x16 -> 32). When R is even the 32-bit product fills the pair;
+	// when R is odd only the low word survives (R|1 == R). C is set when the product does not fit in
+	// a signed 16-bit word (the low word, sign-extended, differs from the full product).
+	insn mul : encode #i16 ( op:7 = 0x38, rr:3 -> rnum, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "mul", operands : src, rnum )
+		{ #i32 p = %S ( r[ rnum ] ) * %S ( src );
+		  r[ rnum ] = p >> 16; r[ rnum | 1 ] = p;
+		  #i16 lo = p; #i32 ext = %S ( lo );
+		  %N = ( p < 0 ) ? 1 : 0; %Z = ( p == 0 ) ? 1 : 0; %V = 0; %C = ( ext != p ) ? 1 : 0; }
+
+	// DIV: the 32-bit dividend held in R,R|1 is divided by src; R <- quotient, R|1 <- remainder.
+	// Division by zero (or an oversized quotient) sets V and leaves the registers undisturbed.
+	insn div : encode #i16 ( op:7 = 0x39, rr:3 -> rnum, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "div", operands : src, rnum )
+		{ #i32 dvd = ( r[ rnum ] << 16 ) | ( r[ rnum | 1 ] & 0xffff );
+		  #i16 dvs = src;
+		  if ( dvs == 0 ) { %V = 1; %C = 1; }
+		  else { #i32 q = %S ( dvd ) / %S ( dvs ); #i32 rem = %S ( dvd ) % %S ( dvs );
+		         r[ rnum ] = q; r[ rnum | 1 ] = rem;
+		         %N = ( q < 0 ) ? 1 : 0; %Z = ( q == 0 ) ? 1 : 0; %V = 0; %C = 0; } }
+
+	// ASH: shift R by the signed 6-bit count in src -- positive shifts left, negative shifts right
+	// (arithmetic). C takes the last bit shifted out; V is set when the sign changes.
+	insn ash : encode #i16 ( op:7 = 0x3a, rr:3 -> rnum, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "ash", operands : src, rnum )
+		{ #i16 cnt = src & 0x3f; #i16 v = r[ rnum ]; #i16 res;
+		  if ( ( cnt & 0x20 ) != 0 ) { #i16 sh = 0x40 - cnt; res = %S ( v ) >> sh; %C = ( sh <= 16 ) ? ( ( v >> ( sh - 1 ) ) & 1 ) : 0; }
+		  else { res = v << cnt; %C = ( ( cnt >= 1 ) && ( cnt <= 16 ) ) ? ( ( v >> ( 16 - cnt ) ) & 1 ) : 0; }
+		  r[ rnum ] = res;
+		  %N = ( res >> 15 ) & 1; %Z = ( res == 0 ) ? 1 : 0; %V = ( ( ( res >> 15 ) & 1 ) ^ ( ( v >> 15 ) & 1 ) ); }
+
+	// ASHC: shift the 32-bit pair R,R|1 by the signed 6-bit count in src.
+	insn ashc : encode #i16 ( op:7 = 0x3b, rr:3 -> rnum, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "ashc", operands : src, rnum )
+		{ #i16 cnt = src & 0x3f; #i32 v = ( r[ rnum ] << 16 ) | ( r[ rnum | 1 ] & 0xffff ); #i32 res;
+		  if ( ( cnt & 0x20 ) != 0 ) { #i16 sh = 0x40 - cnt; res = %S ( v ) >> sh; %C = ( sh <= 32 ) ? ( ( v >> ( sh - 1 ) ) & 1 ) : 0; }
+		  else { res = v << cnt; %C = ( ( cnt >= 1 ) && ( cnt <= 32 ) ) ? ( ( v >> ( 32 - cnt ) ) & 1 ) : 0; }
+		  r[ rnum ] = res >> 16; r[ rnum | 1 ] = res;
+		  %N = ( res >> 31 ) & 1; %Z = ( res == 0 ) ? 1 : 0; %V = ( ( ( res >> 31 ) & 1 ) ^ ( ( v >> 31 ) & 1 ) ); }
+
+	// XOR: dst <- dst ^ R. Uses the standard destination addressing mode.
+	insn xor : encode #i16 ( op:7 = 0x3c, rr:3 -> rnum, dm:3, dr:3 -> dst @ea_dst ),
+		disasm ( mnemonic : "xor", operands : rnum, dst )  => dst = %CC ( dst ^ r[ rnum ] );
+
+}
+
+// ===========================================================================
+// FP11 -- the floating-point processor (feature `fpp`). Six accumulators AC0..AC5; arithmetic names
+// one accumulator (the 2-bit `ac` field selects AC0..AC3) and one floating effective address. The
+// accumulators hold IEEE-754 single bit patterns, so each body reinterprets them with %FLT, computes
+// in floating point, and writes the bits back with %INT. The FPS condition codes (FN/FZ/FV/FC in the
+// low nibble) are set by compares/tests and copied into the PSW by CFCC.
+//
+// SCOPE: single-precision (F format). The FPP's D format shares these encodings under the FPS FD mode
+// bit; modelling it would need 64-bit accumulators and dynamic-width memory access (a later step).
+// ===========================================================================
+feature fpp {
+
+	// --- floating arithmetic: AC <op> fsrc -> AC, FPS condition codes from the result. ---
+	insn mulf : encode #i16 ( op:8 = 0xf2, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "mulf", operands : fsrc, acn )
+		{ #f32 f = %FLT ( ac[ acn ] ) * %FLT ( fsrc ); ac[ acn ] = %INT ( f );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn addf : encode #i16 ( op:8 = 0xf4, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "addf", operands : fsrc, acn )
+		{ #f32 f = %FLT ( ac[ acn ] ) + %FLT ( fsrc ); ac[ acn ] = %INT ( f );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn subf : encode #i16 ( op:8 = 0xf6, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "subf", operands : fsrc, acn )
+		{ #f32 f = %FLT ( ac[ acn ] ) - %FLT ( fsrc ); ac[ acn ] = %INT ( f );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn divf : encode #i16 ( op:8 = 0xf9, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "divf", operands : fsrc, acn )
+		{ #f32 f = %FLT ( ac[ acn ] ) / %FLT ( fsrc ); ac[ acn ] = %INT ( f );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+
+	// CMPF: compare AC with fsrc (AC - fsrc), set only the FPS condition codes.
+	insn cmpf : encode #i16 ( op:8 = 0xf7, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "cmpf", operands : fsrc, acn )
+		{ #f32 d = %FLT ( ac[ acn ] ) - %FLT ( fsrc );
+		  fps = ( fps & 0xfff0 ) | ( ( d < 0.0 ) ? 8 : 0 ) | ( ( d == 0.0 ) ? 4 : 0 ); }
+
+	// MODF: split AC * fsrc into integer and fractional parts -- the integer part (truncated toward
+	// zero) goes to AC|1, the fraction to AC.
+	insn modf : encode #i16 ( op:8 = 0xf3, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "modf", operands : fsrc, acn )
+		{ #f32 p = %FLT ( ac[ acn ] ) * %FLT ( fsrc ); #f32 ip = #f32 ( #i32 p ); #f32 fr = p - ip;
+		  ac[ acn | 1 ] = %INT ( ip ); ac[ acn ] = %INT ( fr );
+		  fps = ( fps & 0xfff0 ) | ( ( fr < 0.0 ) ? 8 : 0 ) | ( ( fr == 0.0 ) ? 4 : 0 ); }
+
+	// LDF / STF: load an accumulator from / store it to a floating operand.
+	insn ldf : encode #i16 ( op:8 = 0xf5, ac:2 -> acn, fm:3, fr:3 -> fsrc @ea_fp ),
+		disasm ( mnemonic : "ldf", operands : fsrc, acn )
+		{ ac[ acn ] = fsrc; #f32 f = %FLT ( fsrc );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn stf : encode #i16 ( op:8 = 0xf8, ac:2 -> acn, fm:3, fr:3 -> fdst @ea_fp ),
+		disasm ( mnemonic : "stf", operands : acn, fdst )  => fdst = ac[ acn ];
+
+	// --- single-operand floating ops (no accumulator field). ---
+	insn clrf : encode #i16 ( op:10 = 0x3c4, fm:3, fr:3 -> fdst @ea_fp ),
+		disasm ( mnemonic : "clrf", operands : fdst )  { fdst = 0; fps = ( fps & 0xfff0 ) | 4; }
+	insn tstf : encode #i16 ( op:10 = 0x3c5, fm:3, fr:3 -> fdst @ea_fp ),
+		disasm ( mnemonic : "tstf", operands : fdst )
+		{ #f32 f = %FLT ( fdst ); fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn absf : encode #i16 ( op:10 = 0x3c6, fm:3, fr:3 -> fdst @ea_fp ),
+		disasm ( mnemonic : "absf", operands : fdst )
+		{ #f32 f = %FLT ( fdst ); #f32 g = ( f < 0.0 ) ? -f : f; fdst = %INT ( g );
+		  fps = ( fps & 0xfff0 ) | ( ( g == 0.0 ) ? 4 : 0 ); }
+	insn negf : encode #i16 ( op:10 = 0x3c7, fm:3, fr:3 -> fdst @ea_fp ),
+		disasm ( mnemonic : "negf", operands : fdst )
+		{ #f32 g = - %FLT ( fdst ); fdst = %INT ( g );
+		  fps = ( fps & 0xfff0 ) | ( ( g < 0.0 ) ? 8 : 0 ) | ( ( g == 0.0 ) ? 4 : 0 ); }
+
+	// --- conversions between floating and integer (the integer operand uses general registers). ---
+	// LDCIF: AC <- float(short integer src).  STCFI: dst <- (short integer) AC (truncating).
+	insn ldcif : encode #i16 ( op:8 = 0xfe, ac:2 -> acn, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "ldcif", operands : src, acn )
+		{ #f32 f = #f32 %S ( src ); ac[ acn ] = %INT ( f );
+		  fps = ( fps & 0xfff0 ) | ( ( f < 0.0 ) ? 8 : 0 ) | ( ( f == 0.0 ) ? 4 : 0 ); }
+	insn stcfi : encode #i16 ( op:8 = 0xfb, ac:2 -> acn, dm:3, dr:3 -> dst @ea_dst ),
+		disasm ( mnemonic : "stcfi", operands : acn, dst )  => dst = #i16 ( #i32 %FLT ( ac[ acn ] ) );
+
+	// STEXP / LDEXP: store / load the (unbiased) exponent of an accumulator as an integer.
+	insn stexp : encode #i16 ( op:8 = 0xfa, ac:2 -> acn, dm:3, dr:3 -> dst @ea_dst ),
+		disasm ( mnemonic : "stexp", operands : acn, dst )  => dst = ( ( ac[ acn ] >> 23 ) & 0xff ) - 127;
+	insn ldexp : encode #i16 ( op:8 = 0xfd, ac:2 -> acn, sm:3, sr:3 -> src @ea_src ),
+		disasm ( mnemonic : "ldexp", operands : src, acn )
+		=> ac[ acn ] = ( ac[ acn ] & 0x807fffff ) | ( ( ( src + 127 ) & 0xff ) << 23 );
+
+	// --- FP status + mode control. ---
+	insn ldfps : encode #i16 ( op:10 = 0x3c1, dm:3, dr:3 -> dst @ea_dst ),
+		disasm ( mnemonic : "ldfps", operands : dst )  => fps = dst;
+	insn stfps : encode #i16 ( op:10 = 0x3c2, dm:3, dr:3 -> dst @ea_dst ),
+		disasm ( mnemonic : "stfps", operands : dst )  => dst = fps;
+	insn cfcc : encode #i16 ( op:16 = 0xf000 ),  disasm ( mnemonic : "cfcc" )
+		{ %N = ( fps >> 3 ) & 1; %Z = ( fps >> 2 ) & 1; %V = ( fps >> 1 ) & 1; %C = fps & 1; }
+	insn setf : encode #i16 ( op:16 = 0xf001 ),  disasm ( mnemonic : "setf" )  => fps = fps &~ 0x80;   // single
+	insn setd : encode #i16 ( op:16 = 0xf009 ),  disasm ( mnemonic : "setd" )  => fps = fps | 0x80;    // double
+	insn seti : encode #i16 ( op:16 = 0xf002 ),  disasm ( mnemonic : "seti" )  => fps = fps &~ 0x40;   // short int
+	insn setl : encode #i16 ( op:16 = 0xf00a ),  disasm ( mnemonic : "setl" )  => fps = fps | 0x40;    // long int
+
+}
+
+// ===========================================================================
+// ISA features + CPU models. The base description is an 11/20-class machine; later models add the EIS
+// integer multiply/divide/shift and the FP11 floating-point processor. Select with --arch
+// upcl:pdp11.upcl@<model>.
+// ===========================================================================
+features {
+	eis "Extended Instruction Set (MUL/DIV/ASH/ASHC/XOR)";
+	fpp "FP11 floating-point processor (single-precision F format)";
+}
+
+cpu "pdp11/20" { }
+cpu "pdp11/40" { eis; }
+cpu "pdp11/45" { eis; fpp; }
+cpu "pdp11/70" { eis; fpp; }

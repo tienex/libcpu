@@ -493,9 +493,11 @@ GenerateCpp (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
             }
             E.Match = Match.empty () ? std::string ("true") : Match;
 
-            // Drive the Translator with the printing emitter to capture TranslateInstr.
+            // Drive the Translator with the printing emitter to capture TranslateInstr. Generate phase:
+            // decoder fields are runtime in a static frontend, so compile-phase folding is off here.
             SourceEmitter Em ("            ");
             Translator Tr (Layout, pArch, &Em, WordBits);
+            Tr.SetGenerate (true);
 
             // Bind each operand to a sentinel; ConstInt recovers the runtime expression. A
             // relative field resolves to its absolute target (NextPc + sign-extended disp).

@@ -234,7 +234,7 @@ Parser::ParsePrimary ()
             return E;
         }
         if (Name == "S" || Name == "U" || Name == "OFTRAP" || Name == "ORD" || Name == "UNO"
-            || Name == "FLT" || Name == "INT") {
+            || Name == "FLT" || Name == "INT" || Name == "EVAL" || Name == "GEN") {
             // %FLT / %INT: reinterpret the operand's BITS as float / integer (a bitcast, not a value
             // conversion) at the same width -- e.g. an IEEE single held in a 32-bit GPR.
             Expr *E = new Expr (ExprAugment); E->Loc = Loc; E->Name = Name;
@@ -256,6 +256,20 @@ Parser::ParsePrimary ()
         }
         if (Name == "SC") {                                 // %SC[addr] <- value -- store-conditional
             return ParseStoreCond (Loc, nullptr);
+        }
+        if (Name == "REG") {
+            // %REG[ group, field ] -- the register group's member selected by a decoder field. Usable
+            // as an rvalue or lvalue in a body / pre / post block (mirrors the addrmode base term).
+            Expr *E = new Expr (ExprMeta); E->Loc = Loc; E->Name = "REG";
+            Expect (TokLBracket, "after %REG");
+            Expr *G = new Expr (ExprName); G->Loc = m_Cur.Loc;
+            if (m_Cur.Kind == TokIdent) { G->Name = m_Cur.Text; Advance (); }
+            else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a register group name after %REG["); }
+            E->Args.push_back (G);
+            Expect (TokComma, "in %REG[group, field]");
+            E->Args.push_back (ParseExpr (0));
+            Expect (TokRBracket, "to close %REG[...]");
+            return E;
         }
         Expr *E = new Expr (ExprMeta); E->Loc = Loc; E->Name = Name;   // %PC, %V, %result, ...
         return E;
@@ -1273,6 +1287,9 @@ Parser::ParseAddrRule ()
     if (Accept (TokAssign)) { Accept (TokGt); }     // the '=>' arrow
     // `pre { ... }` -- statements run before the effective address is taken (autodecrement -(Rn)).
     if (AtKeyword ("pre")) { Advance (); ParseBlock (&R->Pre); }
+    // An optional leading type fixes this rule's operand width (`=> #i8 reg[..]` / `=> #i8 %M[..]`),
+    // overriding the addrmode default -- byte vs word operands, the PDP-11 .B forms.
+    if (m_Cur.Kind == TokType) { Type *T = ParseType (); R->DataBits = (T != nullptr) ? T->Width : 0; }
     if (AtKeyword ("reg")) {
         Advance ();
         R->IsReg = true;

@@ -968,16 +968,24 @@ private:
     }
 
     static CHAR8 CONST *BinopName (CPU_BINOP Op) {
+        // One entry per CPU_BINOP value, in enum order. The trailing float ops (fadd..fatan2) must be
+        // present or a floating BinaryOp reads past the array end -- printing the adjacent UnopName
+        // table's "neg"/"not" for an fadd/fmul (the same out-of-bounds class as the CastName fix).
         static CHAR8 CONST *N[] = { "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
-                                    "and", "or", "xor", "shl", "lshr", "ashr", "rol", "ror" };
+                                    "and", "or", "xor", "shl", "lshr", "ashr", "rol", "ror",
+                                    "fadd", "fsub", "fmul", "fdiv", "fatan2" };
         return N[Op];
     }
     static CHAR8 CONST *UnopName (CPU_UNOP Op) {
-        static CHAR8 CONST *N[] = { "neg", "com", "not" };
+        // Includes the floating unary ops (fneg..ftan); omitting them read past the array end.
+        static CHAR8 CONST *N[] = { "neg", "com", "not",
+                                    "fneg", "fabs", "fsqrt", "f2xm1", "flog2", "ftan" };
         return N[Op];
     }
     static CHAR8 CONST *CmpName (CPU_CMP Pred) {
-        static CHAR8 CONST *N[] = { "eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge" };
+        // Includes the floating compares (foeq..funo); omitting them read into CastName's "trunc".
+        static CHAR8 CONST *N[] = { "eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge",
+                                    "foeq", "folt", "fogt", "funo" };
         return N[Pred];
     }
     static CHAR8 CONST *CastName (CPU_CAST Op) {

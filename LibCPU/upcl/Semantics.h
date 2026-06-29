@@ -47,6 +47,11 @@ public:
     bool       Float  = false;   // the value is an IEEE float (drives BinF*/CastF* selection)
     bool       Signed = false;   // %S marks the value signed (drives sext widening + signed compare/div)
     UINT32     Lanes  = 0;       // >0 => a packed SIMD vector of this many lanes (lane width = Bits/Lanes)
+    // A compile-time constant: K holds its value (masked to Bits). It is materialised into a ConstInt
+    // node LAZILY -- only when actually consumed (see Translator::Use) -- so a folded-away or dead
+    // constant computation emits nothing. Operators over constants fold instead of emitting.
+    bool       IsConst = false;
+    UINT64     K       = 0;
 };
 
 // A decoded operand: the storage a decoder operand (src/dst/...) resolved to. The location
@@ -72,6 +77,10 @@ public:
     // (autoincrement). Pointers into the owning AddrRule's statement lists; null = none.
     std::vector<Stmt *> CONST *Pre  = nullptr;
     std::vector<Stmt *> CONST *Post = nullptr;
+    // The addrmode parameter values that selected this operand (e.g. dm, dr) -- decode constants
+    // exposed during the pre/post block so `%REG[group, field]` resolves the very register the mode
+    // names (collapsing one autoincrement/decrement rule per register into a single field-indexed one).
+    std::map<std::string, UINT64> Fields;
 };
 
 class Translator {
@@ -90,6 +99,10 @@ public:
     // The return address a `@trap(vector)` resumes at (the next instruction). The host reads
     // the trapped vector and resumes here -- for HLT this is "wait on interrupt".
     void SetTrapReturn (UINT64 Pc) { m_TrapReturnPc = Pc; }
+
+    // Generate phase (the `gen` static-frontend path): decoder fields are runtime, not yet known, so
+    // compile-phase constant folding is disabled. Default is compile phase (JIT / decode / emit).
+    void SetGenerate (bool On) { m_Generate = On; }
 
     // Translate a body (an instruction's Semantics or a macro's Body). Returns false on a
     // construct not yet handled (the caller can report it); already-emitted work stays.
@@ -119,6 +132,14 @@ private:
     Value EvalName (std::string CONST &Name);
     Value ReadOperand (Operand CONST &Op);   // read a decoded operand location
     bool  TryConstIndex (Expr *pIdx, UINT64 *pVal) CONST; // a compile-time-constant register index
+    bool  RegSelName (Expr *pExpr, std::string *pName) CONST; // %REG[group, field] -> the member's name
+
+    // COMPILE-PHASE FOLDING. Decoder fields and immediate operands are known when an instruction is
+    // translated (compile phase), so a pure expression over them -- a `(sr >= 6) ? 2 : 1` byte step,
+    // an operand comparison -- folds to a literal here, rather than emitting a runtime compare/select
+    // (generate phase). Register / memory / flag reads are inherently runtime and never fold. The
+    // split is automatic; %EVAL(e) forces a fold and %GEN(e) suppresses it.
+    bool  FoldConst (Expr *pExpr, bool Signed, INT64 *pVal, UINT32 *pBits) CONST;
     bool  ZeroWiredSlot (RegArray CONST &Arr, Expr *pIdx) CONST; // index resolves to a hardwired-0 reg
     Value MemAddress (Operand CONST &Op);     // the effective address of a memory operand
     Value EvalMember (Expr *pExpr);          // a.b  -> a sub-field of register a
@@ -167,6 +188,14 @@ private:
     Value Extract (Value CONST &Parent, UINT32 Lo, UINT32 Width);
     Value Insert (Value CONST &Parent, Value CONST &Field, UINT32 Lo, UINT32 Width);
     Value Pool (ComPtr<ICpuValue> V, UINT32 Bits);
+    Value      ConstVal (UINT32 Bits, UINT64 K) CONST;   // a lazy compile-time constant (no emission)
+    ICpuValue *Use (Value CONST &V);                      // materialise (emit a ConstInt for a lazy const)
+    // Register-read memoization: a physical register read once is reused until the register is written
+    // or the basic block changes, so an instruction's repeated GetRegister (an effective-address base
+    // and the same register's autoincrement) emits ONE load. Writes/flags/blocks invalidate it.
+    Value GetReg (UINT32 Index, UINT32 Width);
+    void  PutReg (UINT32 Index, ICpuValue *pVal, UINT32 Width);   // write + invalidate the cached read
+    void  ClearRegCache () { m_RegCache.clear (); }               // a block boundary / unknown-index write
 
     RegisterLayout CONST            &m_Layout;
     Arch                            *m_pArch;
@@ -177,6 +206,10 @@ private:
     UINT64                           m_TrapReturnPc = 0;    // @trap resume address
     std::map<std::string, Value>     m_Env;        // bound values / locals / %result
     std::map<std::string, Operand>   m_Operands;   // decoded operand locations (decoder path)
+    std::map<std::string, UINT64>    m_Fields;      // addrmode field values in scope (%REG[group, field])
+    std::map<UINT32, Value>          m_RegCache;    // memoized physical-register reads (GetReg)
+    bool                             m_Generate = false;   // generate phase: do not auto-fold (gen path)
+    UINT32                           m_NoFold = 0;          // %GEN(...) nesting: suppress auto-folding
     std::map<std::string, std::vector<Macro *>> m_Macros;  // name -> overloads (by arity)
     std::vector<ComPtr<ICpuValue>>   m_Pool;       // keeps every emitted value alive
 };
