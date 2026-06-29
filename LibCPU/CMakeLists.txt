@@ -1121,28 +1121,60 @@ set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|
 #   0x12 0x04 0x08    -> memory-relative SB: disp2(disp1(SB)); both disps consumed, length = 3 bytes
 #   0x16 0x04 0x08    -> external EXT(disp1)+disp2; MOD-based, two disps consumed, length = 3 bytes
 #   0x17              -> TOS source (pop): [sp] with post sp+=4, length = 1 byte
+# Each gen mode is now carried by a REAL `movd <gen>, r0` instruction (Format 4: op=0x5, i=11 ->
+# the high byte is the fixed 0x17 movd opcode, dst = r0). The original scaffold drove the gen modes
+# through the 1-byte `_probe`, but now that real data-movement/ALU instructions occupy the same
+# opcode space the more-specific real encodings win the decoder's specificity tie-break and shadow
+# the 1-byte probe -- so the probe can no longer carry these bytes unambiguously (the probe remains
+# in the .upcl for single-byte use; Task 11 removes it). Driving the modes through `movd` is strictly
+# better coverage: it proves gen decode through a production instruction. The leading byte is
+# (gen1 << 3) (gen1 = the 5-bit source mode, MSB-first in the byte stream), then 0x17, then the gen
+# tail. Byte counts are one higher than the probe forms (the extra movd opcode byte).
 add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
    \"$E\" upcl check \"$M\" > /dev/null && \
-   \"$E\" upcl decode \"$M\" 0x00 | grep -q 'r0' && \
-   \"$E\" upcl decode \"$M\" 0x15 0x10 | grep -q '0x10' && \
-   \"$E\" upcl decode \"$M\" 0x08 0x05 | grep -q 'r0+0x5' && \
-   \"$E\" upcl decode \"$M\" 0x18 0x20 | grep -q 'fp+0x20' && \
-   \"$E\" upcl decode \"$M\" 0x1E 0x0A | grep -q 'r2\\*4' && \
-   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '0x42' && \
-   \"$E\" upcl decode \"$M\" 0x14 0x00 0x00 0x00 0x42 | grep -q '5 byte' && \
-   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q 'fp' && \
-   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '0x4' && \
-   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '0x8' && \
-   \"$E\" upcl decode \"$M\" 0x10 0x04 0x08 | grep -q '3 byte' && \
-   \"$E\" upcl decode \"$M\" 0x11 0x04 0x08 | grep -q '3 byte' && \
-   \"$E\" upcl decode \"$M\" 0x12 0x04 0x08 | grep -q 'sb' && \
-   \"$E\" upcl decode \"$M\" 0x12 0x04 0x08 | grep -q '3 byte' && \
-   \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q 'mod' && \
-   \"$E\" upcl decode \"$M\" 0x16 0x04 0x08 | grep -q '3 byte' && \
-   \"$E\" upcl decode \"$M\" 0x17 | grep -q 'sp' && \
-   \"$E\" upcl decode \"$M\" 0x17 | grep -q '1 byte'")
+   \"$E\" upcl decode \"$M\" 0x00 0x17 | grep -q 'movd   dst=r0 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xA8 0x17 0x10 | grep -q 'src=\\[0x10\\]' && \
+   \"$E\" upcl decode \"$M\" 0x40 0x17 0x05 | grep -q 'r0+0x5' && \
+   \"$E\" upcl decode \"$M\" 0xC0 0x17 0x20 | grep -q 'fp+0x20' && \
+   \"$E\" upcl decode \"$M\" 0xF0 0x17 0x0A | grep -q 'r2\\*4' && \
+   \"$E\" upcl decode \"$M\" 0xA0 0x17 0x00 0x00 0x00 0x42 | grep -q 'src=0x42' && \
+   \"$E\" upcl decode \"$M\" 0xA0 0x17 0x00 0x00 0x00 0x42 | grep -q '6 byte' && \
+   \"$E\" upcl decode \"$M\" 0x80 0x17 0x04 0x08 | grep -q 'fp' && \
+   \"$E\" upcl decode \"$M\" 0x80 0x17 0x04 0x08 | grep -q '0x4' && \
+   \"$E\" upcl decode \"$M\" 0x80 0x17 0x04 0x08 | grep -q '0x8' && \
+   \"$E\" upcl decode \"$M\" 0x80 0x17 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x88 0x17 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x90 0x17 0x04 0x08 | grep -q 'sb' && \
+   \"$E\" upcl decode \"$M\" 0x90 0x17 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0xB0 0x17 0x04 0x08 | grep -q 'mod' && \
+   \"$E\" upcl decode \"$M\" 0xB0 0x17 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0xB8 0x17 | grep -q 'sp' && \
+   \"$E\" upcl decode \"$M\" 0xB8 0x17 | grep -q '2 byte'")
 set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
+# NS32000 integer data-movement + ALU (Formats 2/4/6/7). Each byte sequence is the real NS32000
+# encoding (opcode seeds + bit layout from binutils include/opcode/ns32k.h + opcodes/ns32k-dis.c):
+# gen1 = first/source general operand, gen2 = destination, the 2-bit `i` length field selects
+# byte/word/double. Because the NS32000 mixes 8/16/24-bit instruction words, the UPCL decoder
+# extracts the base word MSB-first from the byte stream, so these sequences are the logical
+# (big-endian-in-stream) field order; each pins the mnemonic AND the resolved src/dst operands so a
+# wrong opcode/length/operand-binding fails. Covers movd, addd, cmpd (with flag body), the quick
+# forms addqd/movqd, and the extended muld -- plus negd (Format 6), divd, and movzbd/movxbw (the
+# zero/sign-extend pairs) to exercise every format.
+add_test(NAME upcl.decode-ns32k COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x00 0x57 | grep -q 'movd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x10 0xC3 | grep -q 'addd   dst=r3 src=r2' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x47 | grep -q 'cmpd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x8F | grep -q 'addqd  dst=r1 quick=0x5' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xDF | grep -q 'movqd  dst=r2 quick=0xf' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x63 0xCE | grep -q 'muld   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x63 0x4E | grep -q 'negd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x7F 0xCE | grep -q 'divd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x58 0xCE | grep -q 'movzbd dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x50 0xCE | grep -q 'movxbw dst=r1 src=r0'")
+set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
