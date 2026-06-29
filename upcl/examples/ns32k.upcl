@@ -66,6 +66,76 @@ decoder_operands [
 ];
 
 // ---------------------------------------------------------------------------
+// Symbolic constants for the control-transfer section (Task 10). Every magic number the
+// Bcond table, the Format-1/2/3 opcode seeds, and the trap vectors would otherwise carry
+// is named here, so the encodings read against their architectural meaning rather than
+// raw hex. All values are taken verbatim from GNU binutils `include/opcode/ns32k.h`
+// (the `ns32k_opcodes[]` table) cross-checked with `opcodes/ns32k-dis.c`.
+//
+// BCOND CONDITION CODES (Format 0: the high nibble of the opcode byte; the low nibble is
+// always the Format-0 selector 0xA). From the ns32k_opcodes[] seeds beq=0x0a..buf=0xfa:
+const COND_EQ = 0x0;   // beq -- Z == 1                         (equal)
+const COND_NE = 0x1;   // bne -- Z == 0                         (not equal)
+const COND_CS = 0x2;   // bcs -- C == 1                         (carry set / lower, unsigned <)
+const COND_CC = 0x3;   // bcc -- C == 0                         (carry clear / hi-or-same, unsigned >=)
+const COND_HI = 0x4;   // bhi -- (L == 1) && (Z == 0)           (unsigned >)
+const COND_LS = 0x5;   // bls -- (L == 0) || (Z == 1)           (unsigned <=)
+const COND_GT = 0x6;   // bgt -- (N == 1) && (Z == 0)           (signed >)
+const COND_LE = 0x7;   // ble -- (N == 0) || (Z == 1)           (signed <=)
+const COND_FS = 0x8;   // bfs -- F == 1                         (flag set)
+const COND_FC = 0x9;   // bfc -- F == 0                         (flag clear)
+const COND_LO = 0xA;   // blo -- (L == 0) && (Z == 0)           (unsigned <, "lower")
+const COND_HS = 0xB;   // bhs -- (L == 1) || (Z == 1)           (unsigned >=, "higher-or-same")
+const COND_LT = 0xC;   // blt -- (N == 0) && (Z == 0)           (signed <)
+const COND_GE = 0xD;   // bge -- (N == 1) || (Z == 1)           (signed >=)
+const COND_BR = 0xE;   // br  -- unconditional (cond 0xE = "always true")
+
+// FORMAT 0 selector: the low nibble shared by every Bcond/BR opcode byte (0x_A).
+const FMT0_SEL = 0xA;
+
+// FORMAT 1 opcode bytes (one whole byte; `opcode_id_size = 8`). From the ns32k_opcodes[] seeds:
+const OP_BSR     = 0x02;   // bsr     -- 1p   (PC-relative disp): push return PC, branch
+const OP_RET     = 0x12;   // ret     -- 1d   (varlen disp): pop PC, pop `disp` arg bytes
+const OP_CXP     = 0x22;   // cxp     -- 1p   external procedure call via the link table
+const OP_RXP     = 0x32;   // rxp     -- 1d   return from external procedure
+const OP_RETT    = 0x42;   // rett    -- 1d   return from trap
+const OP_RETI    = 0x52;   // reti    -- ()   return from interrupt
+const OP_SAVE    = 0x62;   // save    -- 1U   push the register list
+const OP_RESTORE = 0x72;   // restore -- 1u   pop the register list
+const OP_ENTER   = 0x82;   // enter   -- 1U2d push regs + allocate a local frame
+const OP_EXIT    = 0x92;   // exit    -- 1u   restore frame + pop regs
+const OP_NOP     = 0xA2;   // nop     -- ()   no operation
+const OP_WAIT    = 0xB2;   // wait    -- ()   wait for interrupt
+const OP_DIA     = 0xC2;   // dia     -- ()   diagnose (self-branch)
+const OP_FLAG    = 0xD2;   // flag    -- ()   trap if PSR.F set
+const OP_SVC     = 0xE2;   // svc     -- ()   supervisor call (trap)
+const OP_BPT     = 0xF2;   // bpt     -- ()   breakpoint trap
+
+// FORMAT 3 11-bit opcode seeds (base word = gen:5 (bits 15:11) : opcode11:11 (bits 10:0)).
+// The low byte holds the Format-3 selector 111 in bits[2:0]; the `i` length is bits[1:0]
+// above it (C=00 byte, D=01 word, F=11 dword); `op` is bits[10:7].
+const OPC_JUMP  = 0x27f;   // jump  -- op=0x2, dword form
+const OPC_JSR   = 0x67f;   // jsr   -- op=0x6, dword form
+const OPC_CXPD  = 0x07f;   // cxpd  -- op=0x0, dword form
+const OPC_CASEB = 0x77c;   // caseb -- op=0x7, byte table entries
+const OPC_CASEW = 0x77d;   // casew -- op=0x7, word table entries
+const OPC_CASED = 0x77f;   // cased -- op=0x7, dword table entries
+
+// FORMAT 2 ACB (add-compare-and-branch). Base word = gen2:5 quick:4 op:5 i:2, then a
+// PC-relative varlen disp follows. acbb=0x4c acbw=0x4d acbd=0x4f -> op5=0x13, i in {0,1,3}.
+// op5 = 0b10011 is split into a 4-bit constant (OP_ACB_HI = 0b1001) and a 1-bit selector
+// (the low bit = 1) so the low bit can carry the PC-relative disp addrmode while the
+// `quick` field is left free to bind the immediate operand (see the ACB section).
+const OP_ACB_HI  = 0x9;   // op[4:1] of the ACB opcode (0b1001)
+const OP_ACB_SEL = 0x1;   // op[0]   of the ACB opcode (0b1) -- the disp-addrmode selector
+
+// TRAP VECTORS (NS32000 interrupt/trap dispatch table indices, PRM sec. 3.8). SVC/FLAG/BPT
+// take fixed vectors; the actual handler address is INTBASE + vector*4 at run time.
+const TRAP_SVC  = 0x5;   // SVC  -- supervisor-call trap
+const TRAP_FLG  = 0x7;   // FLAG -- flag (overflow-style) trap
+const TRAP_BPT  = 0x8;   // BPT  -- breakpoint trap
+
+// ---------------------------------------------------------------------------
 // NS32000 general addressing mode (`gen`). The 5-bit gen field appears in most
 // instruction formats; it is the single orthogonal EA selector covering all
 // addressing modes for both source and destination operands.
@@ -1342,3 +1412,301 @@ insn indexw : encode #i24 ( gen2:5 -> sub @gen_w(gen2), gen1:5 -> ext @gen_w(gen
 insn indexd : encode #i24 ( gen2:5 -> sub @gen(gen2),   gen1:5 -> ext @gen(gen1),   reg:3 -> rn, i:2 = 0x3, base:9 = 0x12e ),
     disasm ( mnemonic : "indexd", operands : rn, sub, ext )
     { %REG[ R, rn ] = %REG[ R, rn ] * ( ext + 1 ) + sub; }
+
+// ===========================================================================
+// CONTROL TRANSFER, MODULE CALLS, TRAPS (NS32000 Formats 0, 1, 2, 3).
+//
+// Encodings derived verbatim from GNU binutils `include/opcode/ns32k.h`
+// (ns32k_opcodes[]) cross-checked with `opcodes/ns32k-dis.c` (get_displacement,
+// print_insn_arg) and `gas/config/tc-ns32k.c`.
+//
+// BRANCH DISPLACEMENT (the structural feature of this section): NS32000 branch
+// targets use the SAME self-describing variable-length big-endian displacement as
+// gen-mode displacements -- the top two bits of the first displacement byte pick a
+// 7/14/30-bit signed value over 1/2/4 bytes (engine feature E2, `disp varlen`). It
+// is NOT a gen operand; it is a PC-relative displacement that follows the opcode.
+// binutils confirms (`print_insn_arg`, operand classes 'p'/'b') that the base is the
+// address of the BRANCH INSTRUCTION ITSELF (priv.insn_start), not the next instruction.
+//
+// We express the target by binding the operand to a one-rule addrmode whose memory term
+// is `%M [ pc + disp varlen ]`: the engine reads the varlen displacement from the tail
+// (advancing the decoded length by exactly the 1/2/4 bytes the encoding describes) and
+// records base = pc, Disp = sign_extended(disp). `@lea(target)` then yields `pc + disp`
+// -- the branch destination -- WITHOUT loading memory. Because the displacement length is
+// driven by E2 (not a fixed-width field), a short branch is 1 byte longer than the opcode
+// and a far branch is 4 bytes longer, so the decoded instruction length is always correct.
+//
+// Bcond needs DISTINCT mnemonics that each match one condition value, yet the opcode byte
+// (cond:4 : 0xA) leaves no spare field to hang the disp addrmode on -- and a single field
+// may be EITHER a constant match OR an operand binding, not both. So each condition has its
+// own disp addrmode that matches ONLY its COND_* value (`c == COND_xx => ...`); binding the
+// cond field through it both selects the right mnemonic (the insn fails to decode for any
+// other cond) and reads the PC-relative displacement. The bodies test the NS32000 PSR flags
+// per the spec Bcond table (Z, the unsigned-greater L flag, the signed-greater N flag, F).
+// ===========================================================================
+
+// Per-condition displacement addrmodes: each matches exactly its COND_* value, so the
+// bound branch decodes only for that condition. The single rule reads the PC-relative
+// varlen displacement; @lea on the resulting operand yields `pc + disp` (the target).
+addrmode bd_eq ( c ) { c == COND_EQ => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_ne ( c ) { c == COND_NE => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_cs ( c ) { c == COND_CS => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_cc ( c ) { c == COND_CC => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_hi ( c ) { c == COND_HI => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_ls ( c ) { c == COND_LS => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_gt ( c ) { c == COND_GT => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_le ( c ) { c == COND_LE => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_fs ( c ) { c == COND_FS => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_fc ( c ) { c == COND_FC => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_lo ( c ) { c == COND_LO => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_hs ( c ) { c == COND_HS => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_lt ( c ) { c == COND_LT => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_ge ( c ) { c == COND_GE => #i8 %M [ pc + disp varlen ] ; }
+addrmode bd_br ( c ) { c == COND_BR => #i8 %M [ pc + disp varlen ] ; }
+
+// The L flag (PSR bit 2, the UNSIGNED-greater result of CMP) has no %-meta-role, so the
+// conditions that test it read it directly out of `psr` with mask 0x4. The F flag (PSR
+// bit 5) is read with mask 0x20. Z and N use their meta-roles %Z / %N.
+//
+// Bcond cc: pc = cond ? @lea(target) : pc. Each `disp` operand is the PC-relative target.
+jump insn beq : type branch, encode #i8 ( cond:4 -> disp @bd_eq(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "beq", operands : disp )
+    { pc = ( %Z != 0 ) ? @lea ( disp ) : pc; }
+jump insn bne : type branch, encode #i8 ( cond:4 -> disp @bd_ne(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bne", operands : disp )
+    { pc = ( %Z == 0 ) ? @lea ( disp ) : pc; }
+jump insn bcs : type branch, encode #i8 ( cond:4 -> disp @bd_cs(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bcs", operands : disp )
+    { pc = ( %C != 0 ) ? @lea ( disp ) : pc; }
+jump insn bcc : type branch, encode #i8 ( cond:4 -> disp @bd_cc(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bcc", operands : disp )
+    { pc = ( %C == 0 ) ? @lea ( disp ) : pc; }
+jump insn bhi : type branch, encode #i8 ( cond:4 -> disp @bd_hi(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bhi", operands : disp )
+    { pc = ( ( ( psr & 0x4 ) != 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
+jump insn bls : type branch, encode #i8 ( cond:4 -> disp @bd_ls(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bls", operands : disp )
+    { pc = ( ( ( psr & 0x4 ) == 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
+jump insn bgt : type branch, encode #i8 ( cond:4 -> disp @bd_gt(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bgt", operands : disp )
+    { pc = ( ( %N != 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
+jump insn ble : type branch, encode #i8 ( cond:4 -> disp @bd_le(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "ble", operands : disp )
+    { pc = ( ( %N == 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
+jump insn bfs : type branch, encode #i8 ( cond:4 -> disp @bd_fs(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bfs", operands : disp )
+    { pc = ( ( psr & 0x20 ) != 0 ) ? @lea ( disp ) : pc; }
+jump insn bfc : type branch, encode #i8 ( cond:4 -> disp @bd_fc(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bfc", operands : disp )
+    { pc = ( ( psr & 0x20 ) == 0 ) ? @lea ( disp ) : pc; }
+jump insn blo : type branch, encode #i8 ( cond:4 -> disp @bd_lo(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "blo", operands : disp )
+    { pc = ( ( ( psr & 0x4 ) == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
+jump insn bhs : type branch, encode #i8 ( cond:4 -> disp @bd_hs(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bhs", operands : disp )
+    { pc = ( ( ( psr & 0x4 ) != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
+jump insn blt : type branch, encode #i8 ( cond:4 -> disp @bd_lt(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "blt", operands : disp )
+    { pc = ( ( %N == 0 ) && ( %Z == 0 ) ) ? @lea ( disp ) : pc; }
+jump insn bge : type branch, encode #i8 ( cond:4 -> disp @bd_ge(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "bge", operands : disp )
+    { pc = ( ( %N != 0 ) || ( %Z != 0 ) ) ? @lea ( disp ) : pc; }
+
+// BR: unconditional branch (cond 0xE). pc = target.
+jump insn br : type branch, encode #i8 ( cond:4 -> disp @bd_br(cond), op:4 = FMT0_SEL ),
+    disasm ( mnemonic : "br", operands : disp )
+    { pc = @lea ( disp ); }
+
+// ---------------------------------------------------------------------------
+// FORMAT 1 -- single opcode byte (`opcode_id_size = 8`). The opcodes share the low
+// nibble 0x2; the high nibble selects the instruction (bsr=0x0, ret=0x1, cxp=0x2,
+// rxp=0x3, rett=0x4 -> bytes 0x02/0x12/0x22/0x32/0x42).
+//
+// For the disp-bearing Format-1 instructions the variable-length displacement follows the
+// opcode byte directly -- there is no spare opcode bit and no fixed selector byte to hang a
+// disp addrmode on. So, exactly as Bcond, the high nibble is bound through a per-value
+// addrmode (`c == <hi> => disp varlen`) that matches only that instruction and reads the
+// PC-relative / absolute displacement from the tail; the low nibble is matched as 0x2.
+// ---------------------------------------------------------------------------
+
+// BSR -- branch to subroutine: push the return address (the next instruction), branch to a
+// PC-relative target. @lea(disp) = pc + disp.
+addrmode bd_bsr ( c ) { c == 0x0 => #i8 %M [ pc + disp varlen ] ; }
+jump insn bsr : type call, encode #i8 ( hi:4 -> disp @bd_bsr(hi), lo:4 = 0x2 ),
+    disasm ( mnemonic : "bsr", operands : disp )
+    { sp = sp - 4; %M [ sp ] = pc; pc = @lea ( disp ); }
+
+// RET disp -- return: pop the return PC, then pop `disp` bytes of arguments off the stack.
+// The disp is a plain varlen displacement (the stack adjustment), not a PC-relative target,
+// so the addrmode's memory term is `%M [ disp varlen ]` and @lea yields the bare disp value.
+addrmode d_ret ( c ) { c == 0x1 => #i8 %M [ disp varlen ] ; }
+jump insn ret : type return, encode #i8 ( hi:4 -> adj @d_ret(hi), lo:4 = 0x2 ),
+    disasm ( mnemonic : "ret", operands : adj )
+    { pc = %M [ sp ]; sp = sp + 4; sp = sp + @lea ( adj ); }
+
+// CXP disp -- call external procedure: the disp indexes the current module's link table.
+// The descriptor at MOD's link table gives a new module + entry. We push MOD and the return
+// PC, then load the new module context. (Link-table double-dereference is the run-time body;
+// the descriptor format is module := Mem32[Mem32[MOD+4] + index*4], entry the next word.)
+addrmode d_cxp ( c ) { c == 0x2 => #i8 %M [ disp varlen ] ; }
+jump insn cxp : type call, encode #i8 ( hi:4 -> idx @d_cxp(hi), lo:4 = 0x2 ),
+    disasm ( mnemonic : "cxp", operands : idx )
+    { #i32 desc = %M [ %M [ mod + 4 ] + @lea ( idx ) * 4 ];
+      sp = sp - 4; %M [ sp ] = mod; sp = sp - 4; %M [ sp ] = pc;
+      mod = desc & 0xffff; sb = %M [ desc & 0xffff ]; pc = %M [ ( desc & 0xffff ) + 8 ] + ( desc >> 16 ); }
+
+// RXP disp -- return from external procedure: pop PC and MOD, reload SB from the module
+// descriptor, then pop `disp` argument bytes.
+addrmode d_rxp ( c ) { c == 0x3 => #i8 %M [ disp varlen ] ; }
+jump insn rxp : type return, encode #i8 ( hi:4 -> adj @d_rxp(hi), lo:4 = 0x2 ),
+    disasm ( mnemonic : "rxp", operands : adj )
+    { pc = %M [ sp ]; sp = sp + 4; mod = %M [ sp ] & 0xffff; sp = sp + 4;
+      sb = %M [ mod ]; sp = sp + @lea ( adj ); }
+
+// RETT disp -- return from trap: pop PC, pop PSR (from the module/trap frame), pop MOD,
+// then pop `disp` argument bytes. (NS32000 trap frame: PC, then MOD:PSR pair.)
+addrmode d_rett ( c ) { c == 0x4 => #i8 %M [ disp varlen ] ; }
+jump insn rett : type return, encode #i8 ( hi:4 -> adj @d_rett(hi), lo:4 = 0x2 ),
+    disasm ( mnemonic : "rett", operands : adj )
+    { pc = %M [ sp ]; sp = sp + 4; mod = %M [ sp ] & 0xffff; psr = ( %M [ sp ] >> 16 ) & 0xffff;
+      sp = sp + 4; sp = sp + @lea ( adj ); }
+
+// RETI -- return from interrupt: pop PC, pop MOD:PSR (no argument adjustment); also
+// acknowledges the interrupt controller (modelled as the frame restore only).
+jump insn reti : type return, encode #i8 ( op:8 = OP_RETI ),
+    disasm ( mnemonic : "reti" )
+    { pc = %M [ sp ]; sp = sp + 4; mod = %M [ sp ] & 0xffff; psr = ( %M [ sp ] >> 16 ) & 0xffff; sp = sp + 4; }
+
+// SAVE reglist -- push the registers named by the bitmask byte. The `U` bitmap order is
+// bit0->r0 .. bit7->r7 (NS32000 ns32k-dis.c opt_U): registers are pushed r0 first.
+insn save : encode #i8 ( op:8 = OP_SAVE, mask:8 -> mask ),
+    disasm ( mnemonic : "save", operands : mask )
+    { if ( ( mask & 0x01 ) != 0 ) { sp = sp - 4; %M [ sp ] = r0; }
+      if ( ( mask & 0x02 ) != 0 ) { sp = sp - 4; %M [ sp ] = r1; }
+      if ( ( mask & 0x04 ) != 0 ) { sp = sp - 4; %M [ sp ] = r2; }
+      if ( ( mask & 0x08 ) != 0 ) { sp = sp - 4; %M [ sp ] = r3; }
+      if ( ( mask & 0x10 ) != 0 ) { sp = sp - 4; %M [ sp ] = r4; }
+      if ( ( mask & 0x20 ) != 0 ) { sp = sp - 4; %M [ sp ] = r5; }
+      if ( ( mask & 0x40 ) != 0 ) { sp = sp - 4; %M [ sp ] = r6; }
+      if ( ( mask & 0x80 ) != 0 ) { sp = sp - 4; %M [ sp ] = r7; } }
+
+// RESTORE reglist -- pop registers. The `u` bitmap order is bit-REVERSED relative to `U`
+// (ns32k-dis.c opt_u: bit0->r7 .. bit7->r0), so RESTORE pops in the order SAVE pushed:
+// r7 first off the stack ... matching the bit reversal. Pop sequence here pops r7..r0.
+insn restore : encode #i8 ( op:8 = OP_RESTORE, mask:8 -> mask ),
+    disasm ( mnemonic : "restore", operands : mask )
+    { if ( ( mask & 0x01 ) != 0 ) { r7 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x02 ) != 0 ) { r6 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x04 ) != 0 ) { r5 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x08 ) != 0 ) { r4 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x10 ) != 0 ) { r3 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x20 ) != 0 ) { r2 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x40 ) != 0 ) { r1 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x80 ) != 0 ) { r0 = %M [ sp ]; sp = sp + 4; } }
+
+// ENTER reglist, framesize -- procedure prologue: push FP, FP := SP, allocate `framesize`
+// local bytes (SP -= disp), then SAVE the register list. The reglist byte precedes the
+// varlen frame-size displacement in the stream.
+// The frame-size displacement follows the reglist (mask) byte. Bind the disp addrmode to
+// the mask field's slot (mask is a real byte in the word; the addrmode reads the trailing
+// varlen disp); the raw mask value is still read in the body for the register pushes.
+addrmode d_frame ( c ) { default => #i8 %M [ disp varlen ] ; }
+insn enter : encode #i8 ( op:8 = OP_ENTER, mask:8 -> fsz @d_frame(mask) ),
+    disasm ( mnemonic : "enter", operands : mask, fsz )
+    { sp = sp - 4; %M [ sp ] = fp; fp = sp; sp = sp - @lea ( fsz );
+      if ( ( mask & 0x01 ) != 0 ) { sp = sp - 4; %M [ sp ] = r0; }
+      if ( ( mask & 0x02 ) != 0 ) { sp = sp - 4; %M [ sp ] = r1; }
+      if ( ( mask & 0x04 ) != 0 ) { sp = sp - 4; %M [ sp ] = r2; }
+      if ( ( mask & 0x08 ) != 0 ) { sp = sp - 4; %M [ sp ] = r3; }
+      if ( ( mask & 0x10 ) != 0 ) { sp = sp - 4; %M [ sp ] = r4; }
+      if ( ( mask & 0x20 ) != 0 ) { sp = sp - 4; %M [ sp ] = r5; }
+      if ( ( mask & 0x40 ) != 0 ) { sp = sp - 4; %M [ sp ] = r6; }
+      if ( ( mask & 0x80 ) != 0 ) { sp = sp - 4; %M [ sp ] = r7; } }
+
+// EXIT reglist -- procedure epilogue: RESTORE the register list, SP := FP, pop FP.
+insn exit : encode #i8 ( op:8 = OP_EXIT, mask:8 -> mask ),
+    disasm ( mnemonic : "exit", operands : mask )
+    { if ( ( mask & 0x01 ) != 0 ) { r7 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x02 ) != 0 ) { r6 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x04 ) != 0 ) { r5 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x08 ) != 0 ) { r4 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x10 ) != 0 ) { r3 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x20 ) != 0 ) { r2 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x40 ) != 0 ) { r1 = %M [ sp ]; sp = sp + 4; }
+      if ( ( mask & 0x80 ) != 0 ) { r0 = %M [ sp ]; sp = sp + 4; }
+      sp = fp; fp = %M [ sp ]; sp = sp + 4; }
+
+// NOP / WAIT / DIA -- no register/memory effect in this functional model. WAIT idles until
+// an interrupt; DIA ("diagnose") is a self-branch used in test loops; both decode as no-ops.
+insn nop  : encode #i8 ( op:8 = OP_NOP  ),  disasm ( mnemonic : "nop"  )  => r0 = r0;
+insn wait : encode #i8 ( op:8 = OP_WAIT ),  disasm ( mnemonic : "wait" )  => r0 = r0;
+insn dia  : encode #i8 ( op:8 = OP_DIA  ),  disasm ( mnemonic : "dia"  )  => r0 = r0;
+
+// FLAG / SVC / BPT -- traps. FLAG traps if PSR.F is set; SVC and BPT trap unconditionally.
+// @trap(vector) raises the corresponding NS32000 trap (handler at INTBASE + vector*4).
+jump insn flag : type trap, encode #i8 ( op:8 = OP_FLAG ),
+    disasm ( mnemonic : "flag" )  { if ( ( psr & 0x20 ) != 0 ) { @trap ( TRAP_FLG ); } }
+jump insn svc  : type trap, encode #i8 ( op:8 = OP_SVC ),
+    disasm ( mnemonic : "svc"  )  { @trap ( TRAP_SVC ); }
+jump insn bpt  : type trap, encode #i8 ( op:8 = OP_BPT ),
+    disasm ( mnemonic : "bpt"  )  { @trap ( TRAP_BPT ); }
+
+// ---------------------------------------------------------------------------
+// FORMAT 3 -- gen operand + 11-bit opcode. base word = gen:5 (bits 15:11) : opcode11:11.
+// ---------------------------------------------------------------------------
+
+// JUMP -- unconditional indirect jump: pc = EA(gen) (the addressing mode names the target
+// address, not its contents), so @lea(dst).
+jump insn jump : type branch, encode #i16 ( gen1:5 -> dst @gen(gen1), opc:11 = OPC_JUMP ),
+    disasm ( mnemonic : "jump", operands : dst )
+    { pc = @lea ( dst ); }
+
+// JSR -- jump to subroutine (indirect): push return PC, pc = EA(gen).
+jump insn jsr : type call, encode #i16 ( gen1:5 -> dst @gen(gen1), opc:11 = OPC_JSR ),
+    disasm ( mnemonic : "jsr", operands : dst )
+    { sp = sp - 4; %M [ sp ] = pc; pc = @lea ( dst ); }
+
+// CXPD -- call external procedure with a descriptor named directly by the gen operand
+// (vs CXP's link-table index). Push MOD + return PC, load the new module context from the
+// descriptor (low half = MOD, SB = Mem32[MOD], entry = Mem32[MOD+8] + (descriptor>>16)).
+jump insn cxpd : type call, encode #i16 ( gen1:5 -> dst @gen(gen1), opc:11 = OPC_CXPD ),
+    disasm ( mnemonic : "cxpd", operands : dst )
+    { #i32 desc = dst;
+      sp = sp - 4; %M [ sp ] = mod; sp = sp - 4; %M [ sp ] = pc;
+      mod = desc & 0xffff; sb = %M [ desc & 0xffff ]; pc = %M [ ( desc & 0xffff ) + 8 ] + ( desc >> 16 ); }
+
+// CASEi -- multiway branch through a table. The gen operand addresses a table slot holding
+// a signed i-wide displacement; pc = pc + sign_extend(Mem<i>[EA(gen)]) (PRM sec. 4, CASE).
+// The added displacement is relative to the CASE instruction's own address.
+jump insn caseb : type branch, encode #i16 ( gen1:5 -> tbl @gen_b(gen1), opc:11 = OPC_CASEB ),
+    disasm ( mnemonic : "caseb", operands : tbl )
+    { #i8 d = %M [ @lea ( tbl ) ]; pc = pc + %S ( d ); }
+jump insn casew : type branch, encode #i16 ( gen1:5 -> tbl @gen_w(gen1), opc:11 = OPC_CASEW ),
+    disasm ( mnemonic : "casew", operands : tbl )
+    { #i16 d = %M [ @lea ( tbl ) ]; pc = pc + %S ( d ); }
+jump insn cased : type branch, encode #i16 ( gen1:5 -> tbl @gen(gen1), opc:11 = OPC_CASED ),
+    disasm ( mnemonic : "cased", operands : tbl )
+    { #i32 d = %M [ @lea ( tbl ) ]; pc = pc + %S ( d ); }
+
+// ---------------------------------------------------------------------------
+// FORMAT 2 -- ACBi (add, compare and branch). base word = gen2:5 quick:4 op:5 i:2, then a
+// PC-relative varlen displacement. dst += sign_extend(quick); if dst != 0, pc += disp.
+//
+// dst is the gen2 operand, quick is the 4-bit signed increment, and the disp is the
+// PC-relative target. A bound field can be EITHER an immediate operand OR an addrmode
+// trigger, and the body can only read a field's value through an immediate operand binding;
+// so `quick` is bound to the `quick` immediate operand (giving the body its increment), and
+// the disp addrmode is hung on the low bit of the opcode (op[0] = OP_ACB_SEL), which is
+// otherwise a fixed match bit. The addrmode reads the trailing varlen displacement; @lea
+// yields `pc + disp`. op[4:1] stays the constant OP_ACB_HI.
+// ---------------------------------------------------------------------------
+addrmode bd_acb ( c ) { c == OP_ACB_SEL => #i8 %M [ pc + disp varlen ] ; }
+jump insn acbb : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_b(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x0 ),
+    disasm ( mnemonic : "acbb", operands : quick, dst, disp )
+    { dst = dst + #i8 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
+jump insn acbw : type branch, encode #i16 ( gen2:5 -> dst @gen_dst_w(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x1 ),
+    disasm ( mnemonic : "acbw", operands : quick, dst, disp )
+    { dst = dst + #i16 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }
+jump insn acbd : type branch, encode #i16 ( gen2:5 -> dst @gen_dst(gen2), quick:4 -> quick, ophi:4 = OP_ACB_HI, osel:1 -> disp @bd_acb(osel), i:2 = 0x3 ),
+    disasm ( mnemonic : "acbd", operands : quick, dst, disp )
+    { dst = dst + #i32 %S ( quick ); pc = ( dst != 0 ) ? @lea ( disp ) : pc; }

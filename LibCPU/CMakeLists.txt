@@ -1226,6 +1226,60 @@ add_test(NAME upcl.decode-ns32k COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x00 0x07 0x2E | grep -q 'indexd'")
 set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
 
+# NS32000 CONTROL TRANSFER / module calls / traps (Task 10). Every byte sequence is the real
+# NS32000 encoding from binutils include/opcode/ns32k.h ns32k_opcodes[] (seeds cross-checked with
+# opcodes/ns32k-dis.c). The key structural property proven here is the VARIABLE-LENGTH branch
+# displacement: the same self-describing big-endian scheme as gen displacements (E2). The target
+# is rendered as [pc+0xNN] because it is bound through a one-rule addrmode `%M[pc + disp varlen]`
+# whose @lea yields pc + disp. Derivation:
+#   Bcond (Format 0): byte = cond<<4 | 0xA. beq cond=0 -> 0x0A; bne cond=1 -> 0x1A; bgt cond=6 ->
+#     0x6A; blo cond=0xA -> 0xAA; br cond=0xE -> 0xEA. Then a varlen PC-relative displacement.
+#   VARLEN PROOF: br with a 1-byte disp (0xEA 0x10) is 2 bytes; br with a 2-byte (14-bit) disp
+#     (0xEA 0x80 0x40, top bits 10 -> 2-byte form) is 3 bytes -- the decoded length tracks the
+#     displacement encoding, not a fixed width. bgt likewise 0x6A 0x10 -> 2 bytes.
+#   BSR (Format 1): 0x02 + disp. high nibble 0x0, low 0x2. 0x02 0x10 -> 2 bytes.
+#   RET (Format 1): 0x12 + varlen stack-adjust disp. 0x12 0x04 -> 2 bytes.
+#   SAVE (Format 1): 0x62 + reglist byte. 0x62 0x05 -> 2 bytes (mask=0x05 -> r0,r2).
+#   ENTER (Format 1): 0x82 + reglist byte + varlen frame disp. 0x82 0x03 0x08 -> 3 bytes.
+#   NOP/SVC/BPT (Format 1): 0xA2 / 0xE2 / 0xF2 -> 1 byte (SVC/BPT are @trap).
+#   JUMP (Format 3): word = gen:5 (bits15:11) : opcode11:11. jump opc=0x27f, gen=r0 -> 0x02 0x7F.
+#     jsr opc=0x67f -> 0x06 0x7F. cased opc=0x77f -> 0x07 0x7F.
+#   ACBd (Format 2): word = gen2:5 quick:4 op[4:1]=0x9 op[0]=1 i:2. acbd gen2=r0 quick=5 i=3 ->
+#     (0<<11)|(5<<7)|(0b10011<<2)|3 = 0x02CF -> 0x02 0xCF, then varlen disp 0x10 -> 3 bytes;
+#     the disasm pins quick=0x5 (the immediate is read in the body) AND the [pc+0x10] target.
+add_test(NAME upcl.decode-ns32k-ctl COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x1A 0x10 | grep -q 'bne' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x10 | grep -q 'bgt' && \
+   \"$E\" upcl decode \"$M\" 0xAA 0x10 | grep -q 'blo' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x10 | grep -q 'br' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q 'br' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x02 0x10 | grep -q 'bsr' && \
+   \"$E\" upcl decode \"$M\" 0x02 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0x12 0x04 | grep -q 'ret' && \
+   \"$E\" upcl decode \"$M\" 0x62 0x05 | grep -q 'save' && \
+   \"$E\" upcl decode \"$M\" 0x62 0x05 | grep -q 'mask=0x5' && \
+   \"$E\" upcl decode \"$M\" 0x82 0x03 0x08 | grep -q 'enter' && \
+   \"$E\" upcl decode \"$M\" 0x82 0x03 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0xA2 | grep -q 'nop' && \
+   \"$E\" upcl decode \"$M\" 0xE2 | grep -q 'svc' && \
+   \"$E\" upcl decode \"$M\" 0xF2 | grep -q 'bpt' && \
+   \"$E\" upcl decode \"$M\" 0x02 0x7F | grep -q 'jump   dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0x06 0x7F | grep -q 'jsr    dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0x07 0x7F | grep -q 'cased  tbl=r0' && \
+   \"$E\" upcl decode \"$M\" 0x02 0xCF 0x10 | grep -q 'acbd' && \
+   \"$E\" upcl decode \"$M\" 0x02 0xCF 0x10 | grep -q 'quick=0x5' && \
+   \"$E\" upcl decode \"$M\" 0x02 0xCF 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0x02 0xCF 0x10 | grep -q '3 byte'")
+set_tests_properties(upcl.decode-ns32k-ctl PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,
