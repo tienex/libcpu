@@ -235,7 +235,10 @@ public:
     // describing variable-length displacement): this is fixed-width and a literal, so disasm and
     // semantics treat it as an immediate.
     bool                     IsImm = false;
-    bool                     ImmBigEndian = false;  // the immediate is read big-endian
+    bool                     ImmBigEndian = false;    // the immediate is read big-endian
+    bool                     ImmMiddleEndian = false; // the immediate is read in PDP-11 middle-endian
+                                          //   order (2-3-0-1): bytes b0..b3 -> (b1<<24)|(b0<<16)|(b3<<8)|b2.
+                                          //   Only meaningful at 32-bit width; other widths fall back to little.
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
     // Side-effect blocks: `pre { ... }` runs BEFORE the effective address is taken (autodecrement

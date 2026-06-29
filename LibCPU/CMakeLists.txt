@@ -1067,6 +1067,16 @@ add_test(NAME upcl.engine-imm COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q 'src=0x12345678' && \
    \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
 
+# E5 MIDDLE-ENDIAN IMMEDIATE: `x == 1 => #i32:me imm ;` reads a 4-byte PDP-11-order immediate.
+# Middle-endian byte order 2-3-0-1: for stream 0x12 0x34 0x56 0x78,
+#   value = (0x34<<24)|(0x12<<16)|(0x78<<8)|0x56 = 0x34127856
+# The little-endian read of the same bytes would be 0x78563412, and big-endian 0x12345678;
+# 0x34127856 proves the middle-endian path is exercised.  Also assert 5 bytes consumed.
+add_test(NAME upcl.engine-me COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_me.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q 'src=0x34127856' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
+
 # NS32000 arch header + register file: the UPCL description must parse cleanly and report the
 # expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated
 # registers (pc/sp0/sp1/sp/fp/sb/intbase/mod/cfg), and the PSR flag splitter binding the

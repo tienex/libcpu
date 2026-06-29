@@ -1337,9 +1337,11 @@ Parser::ParseAddrRule ()
         // `imm be` / `imm le` keyword is also accepted. Default = the arch endianness.
         Advance ();
         R->IsImm = true;
-        if (RuleEndian == EndianBig) { R->ImmBigEndian = true; }
-        if (AtKeyword ("be")) { R->ImmBigEndian = true; Advance (); }
-        else if (AtKeyword ("le")) { R->ImmBigEndian = false; Advance (); }
+        if      (RuleEndian == EndianBig)    { R->ImmBigEndian = true; }
+        else if (RuleEndian == EndianMiddle) { R->ImmMiddleEndian = true; }
+        if (AtKeyword ("be")) { R->ImmBigEndian = true; R->ImmMiddleEndian = false; Advance (); }
+        else if (AtKeyword ("le")) { R->ImmBigEndian = false; R->ImmMiddleEndian = false; Advance (); }
+        else if (AtKeyword ("me")) { R->ImmMiddleEndian = true; R->ImmBigEndian = false; Advance (); }
     } else if (AtKeyword ("mem") || (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM"))) {
         // The operand is a MEMORY cell at the address that follows. Spelled `%M[..]` (consistent with
         // memory access elsewhere) or the legacy `mem[..]`; either way it declares the operand's

@@ -262,7 +262,8 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
             Local[AM->Params[I]] = Fields.count (Actual) ? Fields.at (Actual) : 0;
         }
         pEff = &Local;
-        Sel = AM->Params.empty () ? 0 : Local[AM->Params[0]];
+        Sel = AM->Params.empty () ? 0
+            : (Local.count (AM->Params[0]) ? Local.at (AM->Params[0]) : 0);
     } else {
         Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
     }
@@ -288,16 +289,27 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
         if (R->IsImm) {
             // E5 -- FIXED-WIDTH IMMEDIATE: read (RuleBits / 8) bytes from the tail and yield a literal
             // operand (not a memory EA, not a self-describing varlen displacement). Big-endian when the
-            // rule's type/keyword pinned it so (NS32000 immediates), else the arch endianness. The bytes
-            // are consumed at the tail cursor (the rule's start, since an immediate rule has no preceding
-            // terms) and reported via *pExtraBytes so a following operand reads from the right offset.
+            // rule's type/keyword pinned it so (NS32000 immediates), middle-endian when `:me` / `:mid`
+            // (PDP-11 32-bit word order: bytes 2-3-0-1), else the arch endianness. The bytes are consumed
+            // at the tail cursor (the rule's start, since an immediate rule has no preceding terms) and
+            // reported via *pExtraBytes so a following operand reads from the right offset.
+            if (RuleBits == 0) { return false; }
             UINT32 ImmBytes = RuleBits / 8;
             if ((UINT64) ImmBytes > TailAvail) { return false; }
-            bool ImmLittle = R->ImmBigEndian ? false : m_pArch->Little;
-            pOut->Kind     = Operand::Imm;
-            pOut->Bits     = RuleBits;
-            pOut->ImmValue = ExtractField (pTail, 0, RuleBits, ImmLittle);
-            *pExtraBytes  += ImmBytes;
+            pOut->Kind = Operand::Imm;
+            pOut->Bits = RuleBits;
+            if (R->ImmMiddleEndian && RuleBits == 32) {
+                // PDP-11 middle-endian: byte order 2-3-0-1 (the two 16-bit halves are big-endian-ordered,
+                // each half is little-endian internally). For stream bytes b0 b1 b2 b3:
+                //   value = (b1 << 24) | (b0 << 16) | (b3 << 8) | b2
+                UINT64 V = ((UINT64) pTail[1] << 24) | ((UINT64) pTail[0] << 16)
+                         | ((UINT64) pTail[3] <<  8) |  (UINT64) pTail[2];
+                pOut->ImmValue = V;
+            } else {
+                bool ImmLittle = (R->ImmBigEndian || R->ImmMiddleEndian) ? false : m_pArch->Little;
+                pOut->ImmValue = ExtractField (pTail, 0, RuleBits, ImmLittle);
+            }
+            *pExtraBytes += ImmBytes;
             return true;
         }
         // memory: base registers + an optional displacement
