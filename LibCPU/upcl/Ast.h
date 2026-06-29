@@ -647,6 +647,17 @@ public:
     std::string              FullName;      // name "...";
     SRC_LOC                  Loc = 0;
     bool                     Little = true;
+    bool                     LeWord = false; // `endian little word`: the multi-byte fixed opcode
+                                          //   WORD of every encoding is itself a little-endian
+                                          //   INTEGER in memory (low byte at the lowest address),
+                                          //   so each alternative's base word is byte-reversed
+                                          //   before the MSB-first field extraction. Set ONLY for
+                                          //   ISAs whose opcode word is a true LE scalar (NS32000):
+                                          //   byte-stream LE arches (6502/pdp11/8086) place the
+                                          //   opcode byte FIRST and must NOT be reversed, so this
+                                          //   stays false for them. Distinct from the decoder's
+                                          //   uniform-fixed-width auto-detection (Alpha/MIPS), which
+                                          //   needs no opt-in because every word is the same size.
     UINT32                   ByteSize = 0;   // old .def: byte_size
     UINT32                   WordSize = 0;
     UINT32                   FloatSize = 0;  // old .def: float_size

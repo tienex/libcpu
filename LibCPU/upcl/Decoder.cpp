@@ -472,10 +472,16 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     // A little-endian fixed-width word (e.g. Alpha) is a little-endian integer in memory; byte-
     // reverse it so the MSB-first extractor reads the logical encoding, and then extract straight
     // (no per-field swap -- that is for the byte-stream CISC path). Other arches read in place.
+    //
+    // The same reversal applies, per alternative, when the arch declares `endian little word`
+    // (Arch::LeWord): the base opcode word is a true little-endian integer of THIS alternative's
+    // own WordLen (NS32000 -- the variable 1/2/3/4-byte word can't use the uniform m_WordLen path).
+    // A 1-byte word reverses to itself, so Format-1 byte instructions are unaffected.
     UINT8        Rev[16];
     UINT8 CONST *pWord  = pBytes;
     bool         Little = m_pArch->Little;
-    if (m_LeWord && WordLen == m_WordLen && WordLen <= sizeof (Rev)) {
+    bool CONST   ReverseWord = (m_LeWord && WordLen == m_WordLen) || m_pArch->LeWord;
+    if (ReverseWord && WordLen <= sizeof (Rev)) {
         for (UINT32 I = 0; I < WordLen; ++I) { Rev[I] = pBytes[WordLen - 1 - I]; }
         pWord  = Rev;
         Little = false;

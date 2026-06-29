@@ -1134,6 +1134,11 @@ Parser::ParseArchItem (Arch *pArch)
         if (AtKeyword ("little") || AtKeyword ("both")) { pArch->Little = true; Advance (); }
         else if (AtKeyword ("big")) { pArch->Little = false; Advance (); }
         else { std::string M = "expected 'little', 'big' or 'both'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
+        // Optional `word` modifier: the multi-byte fixed opcode word of every encoding is a true
+        // little-endian INTEGER in memory (low byte first), so each alternative's base word is
+        // byte-reversed before MSB-first field extraction (NS32000). Only meaningful for a
+        // little-endian arch; a byte-stream LE ISA (6502/pdp11) places the opcode byte first.
+        if (AtKeyword ("word")) { pArch->LeWord = true; Advance (); }
         Expect (TokSemi, "after endian");
     } else if (AtKeyword ("word_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the word size"); pArch->WordSize = (UINT32) V;

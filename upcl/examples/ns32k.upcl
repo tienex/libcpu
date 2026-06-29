@@ -27,7 +27,15 @@ arch "ns32k" {
 
     name "National Semiconductor NS32000";
 
-    endian little;
+    // `endian little word`: the NS32000 is little-endian, AND its multi-byte fixed opcode word is
+    // itself a little-endian integer in memory -- the format/escape byte sits at the LOWEST address
+    // (e.g. movd, word 0x0057, is stored as bytes 0x57 0x00; lshd, word 0x00574E, as 0x4E 0x57 0x00).
+    // The `word` modifier tells the decoder to byte-reverse each encoding's base word before its
+    // MSB-first field extraction, so a REAL little-endian-ordered ns32k program decodes correctly.
+    // (A 1-byte Format-1 word reverses to itself.) The variable-length displacement/immediate tail
+    // that follows the base word keeps its own byte order: varlen disps are intrinsically big-endian,
+    // and immediates carry an explicit `:be` per the gen 0x14 rule.
+    endian little word;
     byte_size 8;
     word_size 32;
     address_size 32;
@@ -2665,6 +2673,7 @@ feature mmu {
     // =========================================================================
     insn rdval : encode #i24 ( gen1:5 -> ea @gen(gen1), op19:19 = OP19_RDVAL ),
         disasm ( mnemonic : "rdval", operands : ea )
+        // TODO(exec): conditional access check; always sets F for decode milestone
         { psr = ( psr &~ PSR_F ) | PSR_F; }
 
     // =========================================================================
@@ -2675,6 +2684,7 @@ feature mmu {
     // =========================================================================
     insn wrval : encode #i24 ( gen1:5 -> ea @gen(gen1), op19:19 = OP19_WRVAL ),
         disasm ( mnemonic : "wrval", operands : ea )
+        // TODO(exec): conditional access check; always sets F for decode milestone
         { psr = ( psr &~ PSR_F ) | PSR_F; }
 
     // =========================================================================
