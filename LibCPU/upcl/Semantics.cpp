@@ -1078,7 +1078,9 @@ Translator::EvalExpr (Expr *pExpr)
         if (C.IsConst) { return (C.K != 0) ? T : F; }    // a known condition collapses to one arm
         ComPtr<ICpuValue> V;
         m_pE->Select (Use (C), Use (T), Use (F), &V);
-        return Pool (std::move (V), T.Bits);
+        Value R = Pool (std::move (V), T.Bits);
+        R.Float = T.Float;                               // propagate float-ness from the arms
+        return R;
     }
 
     case ExprBitSlice: {
