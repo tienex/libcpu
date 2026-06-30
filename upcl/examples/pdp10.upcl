@@ -2579,6 +2579,16 @@ jump insn sojg   : type branch, encode #i36 ( op:9 = OP_SOJG,   ac:4 -> acn, i:1
     { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) > 0 ) ? @ea ( i, x, y ) : pc; }
 
 // ===========================================================================
+// FEATURE `kl_insns` -- KL/KS integer extensions shared by the KL10 and KS10.
+// The KA10 and KI10 do NOT support these instructions.
+//
+// Contains: ADJSP (adjust stack pointer).
+
+const OP_ADJSP = 0o105;
+
+feature kl_insns {
+
+// ===========================================================================
 // ADJSP -- ADJUST STACK POINTER (KL PDP-10; opcode 0o105, verified SIMH pdp10_cpu.c).
 //
 // ADJSP AC, E: the AC field is the stack pointer register.  The RIGHT HALF of AC is
@@ -2587,8 +2597,7 @@ jump insn sojg   : type branch, encode #i36 ( op:9 = OP_SOJG,   ac:4 -> acn, i:1
 // The LEFT HALF is adjusted by the SAME signed amount (it is a DOWNWARD-decrementing
 // counter of stack depth; adjusting by +n means we've logically pushed n words).
 // Both adjustments are modulo 2^18 (per-half, no inter-half carry).
-// This instruction is KL-only but is decoded here for completeness.
-const OP_ADJSP = 0o105;
+// Present on KL10 and KS10; absent on KA10/KI10/PDP-6.
 
 insn adjsp : encode #i36 ( op:9 = OP_ADJSP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "adjsp", operands : acn, i, x, y )
@@ -2599,6 +2608,8 @@ insn adjsp : encode #i36 ( op:9 = OP_ADJSP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
         #i18 newr = ( ( ac[ acn ] & HW_MASK ) + off ) & HW_MASK;
         ac[ acn ] = ( newl << HW_LSHFT ) | newr;
     }
+
+} // end feature kl_insns
 
 // ===========================================================================
 // BYTE INSTRUCTIONS (DEC PDP-10 Hardware Reference Manual, "Byte Manipulation";
@@ -3266,14 +3277,15 @@ const OP_EXTEND = 0o123;            // EXTEND -- string/decimal instruction pref
 
 // ---------------------------------------------------------------------------
 // FEATURE `extended` -- KL10 extended-addressing instructions.  Selected by `cpu "kl10"` only
-// (and `ks10`); ABSENT on the KA10/KI10, where the SETMI / HLLI encodings keep their base meaning.
+// (KL10 Model B -- 30-bit multi-section addressing); ABSENT on KA10/KI10/KS10/PDP-6.  The KS10
+// is a Model A machine (single-section, 18-bit address space) and does NOT have extended addressing.
 feature extended {
 
 // XMOVEI AC, E  (opcode 0o415 = SETMI; in a non-zero section SETMI is XMOVEI).  Compute the EA as a
 // 30-bit GLOBAL address and place it in AC (the extended counterpart of MOVEI / SETMI: "move
-// extended immediate").  Encoded identically to the base-ISA SETMI; under [@kl10] this feature-gated
-// definition WINS via `priority 1`, so 0o415 disassembles as XMOVEI; under [@ka10] (feature off) the
-// same word is the base SETMI.
+// extended immediate").  Encoded identically to the base-ISA SETMI; under [@kl10] (extended ON)
+// this feature-gated definition WINS via `priority 1`, so 0o415 disassembles as XMOVEI; under
+// [@ka10] / [@ki10] / [@ks10] (extended OFF) the same word is the base SETMI.
 insn xmovei : encode #i36 ( op:9 = OP_XMOVEI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ) priority 1,
     disasm ( mnemonic : "xmovei", operands : acn, i, x, y )
     => ac[ acn ] = @ea_ext ( i, x, y );        // AC <- 30-bit global EA
@@ -3313,20 +3325,23 @@ insn extend : encode #i36 ( op:9 = OP_EXTEND, ac:4 -> acn, i:1 -> i, x:4 -> x, y
 //   pdp6   {}                          -- base 36-bit user ISA; no hardware FP, no extended addressing
 //   ka10   { fp }                      -- KA10 adds hardware floating-point (inherits nothing from pdp6)
 //   ki10   { fp }                      -- KI10 inherits fp from ka10; paging is an implementation detail
-//   kl10   { fp, extended }            -- KL10 inherits fp from ki10; adds 30-bit multi-section addressing
-//   ks10   { fp, extended }            -- KS10 inherits fp+extended from ki10+kl10; microcode, last PDP-10
+//   kl10   { fp, extended, kl_insns }  -- KL10 inherits fp from ki10; 30-bit multi-section + KL integer ops
+//   ks10   { fp, kl_insns }            -- KS10 / DECSYSTEM-2020: Model A, single-section; KL integer ops, no extended
 //
 // The `extended` feature gates the XMOVEI / XHLLI / EXTEND instructions (and the @ea_ext macro).
-// Under [@ka10] / [@ki10] / [@pdp6] the `extended` feature is ABSENT, so the SETMI encoding (0o415)
-// disassembles as the base-ISA SETMI; under [@kl10] / [@ks10] the feature-gated XMOVEI wins via
-// its `priority 1` over SETMI.  The `fp` feature gates all floating-point instructions (FAD..DFAD).
+// Under [@ka10] / [@ki10] / [@ks10] / [@pdp6] the `extended` feature is ABSENT, so the SETMI
+// encoding (0o415) disassembles as the base-ISA SETMI; under [@kl10] the feature-gated XMOVEI
+// wins via its `priority 1` over SETMI.  The `fp` feature gates all floating-point instructions
+// (FAD..DFAD).  The `kl_insns` feature gates KL/KS integer extensions (ADJSP) shared by the
+// KL10 and KS10 but absent on KA10/KI10/PDP-6.
 features {
     fp;
     extended;
+    kl_insns;
 }
 
 cpu "pdp6" { }                                  // DEC PDP-6 (1964): 36-bit ancestor; base integer ISA
 cpu "ka10" extends "pdp6" { fp; }               // DEC KA10: first PDP-10; inherits pdp6 base + hardware FP
 cpu "ki10" extends "ka10" { }                   // DEC KI10: paging; inherits fp from ka10; no new features
-cpu "kl10" extends "ki10" { extended; }         // DEC KL10: 30-bit multi-section extended addressing + fp
-cpu "ks10" extends "ki10" { extended; }         // DEC KS10: microcode, last PDP-10; extended addressing + fp
+cpu "kl10" extends "ki10" { extended; kl_insns; } // DEC KL10: 30-bit multi-section extended addressing + KL integer ops
+cpu "ks10" extends "ki10" { kl_insns; }         // DEC KS10 / DECSYSTEM-2020: Model A, single-section; no extended
