@@ -294,7 +294,7 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
             // at the tail cursor (the rule's start, since an immediate rule has no preceding terms) and
             // reported via *pExtraBytes so a following operand reads from the right offset.
             if (RuleBits == 0) { return false; }
-            UINT32 ImmBytes = RuleBits / 8;
+            UINT32 ImmBytes = RuleBits / Unit ();    // in addressable units (bytes on a byte ISA)
             if ((UINT64) ImmBytes > TailAvail) { return false; }
             pOut->Kind = Operand::Imm;
             pOut->Bits = RuleBits;
@@ -414,7 +414,7 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
                     UINT32 DispBits = T.DispBits ? T.DispBits
                                     : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Eff) : 0);
                     if (DispBits > 0) {
-                        UINT32 DispBytes = DispBits / 8;
+                        UINT32 DispBytes = DispBits / Unit ();   // in addressable units (bytes on a byte ISA)
                         if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
                         bool DispLittle = T.DispBigEndian ? false : m_pArch->Little;
                         Disp = SignExtend (ExtractField (pTail + TailUsed, 0, DispBits, DispLittle), DispBits);
@@ -538,6 +538,56 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     return true;
 }
 
+// WORD-ADDRESSED match: the whole instruction is a single `word_size`-bit value (Word). Extract its
+// fields MSB-first by bit-shifting the value -- field i occupies bits [WordBits-BitOff-Width ..
+// WordBits-BitOff) numbered from the most-significant end (the same MSB-first ordering the byte path
+// gets from its big-endian bit-stream, but read directly from the integer rather than from bytes, so
+// a 36-bit value -- which spans no whole number of octets -- extracts cleanly). The reported Length
+// is 1 WORD; multi-word instructions (extension words for indexing/immediates) are Task 3. The
+// register / immediate / PC-relative operand resolution then reuses the shared byte-path helpers.
+bool
+Decoder::MatchAltWord (EncAlt *pAlt, UINT64 Word, DecodedInsn *pOut) CONST
+{
+    UINT32 Bits = pAlt->WordBits;
+    if (Bits == 0 || Bits > 64) { return false; }
+
+    // Mask the supplied value to the word width so a field at the most-significant end is read from
+    // the right bit position even if the caller passed a wider cell.
+    UINT64 CONST WordMask = (Bits >= 64) ? ~UINT64_C (0) : ((UINT64_C (1) << Bits) - 1);
+    Word &= WordMask;
+
+    // Extract the fixed-word fields MSB-first, checking the constant (opcode) fields. A word-addressed
+    // instruction has no byte tail, so every field lives in the word itself (Tail fields are a byte-
+    // path notion -- immediates after a variable-length addressing mode -- and are not produced here).
+    std::map<std::string, UINT64> FV;
+    UINT32 BitOff = 0;
+    for (EncField CONST &F : pAlt->Fields) {
+        if (F.Width == 0 || (UINT64) BitOff + F.Width > Bits) { return false; }
+        UINT32 CONST Shift = Bits - BitOff - F.Width;
+        UINT64 CONST Mask  = (F.Width >= 64) ? ~UINT64_C (0) : ((UINT64_C (1) << F.Width) - 1);
+        UINT64 V = (Word >> Shift) & Mask;
+        if (F.HasConst && V != F.Const) { return false; }
+        FV[F.Name] = V;
+        BitOff += F.Width;
+    }
+
+    pOut->Operands.clear ();
+
+    // The successor address is one word on (PC-relative fields measure in words on this machine).
+    UINT64 CONST NextPc = 1;
+    for (EncField CONST &F : pAlt->Fields) {
+        if (!F.Operand.empty () && F.AddrMode.empty ()) {
+            Operand Op;
+            if (!ResolveOperand (F, FV[F.Name], NextPc, &Op)) { return false; }
+            pOut->Operands[F.Operand] = Op;
+        }
+    }
+
+    pOut->pAlt   = pAlt;
+    pOut->Length = 1;                                 // word count
+    return true;
+}
+
 // How many bits an encoding fixes to constants -- its specificity, for tie-breaking when
 // several encodings match the same bytes (the more constrained, the more specific).
 static UINT32
@@ -583,6 +633,45 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
         if (!IsEnabled (J->Feature)) { continue; }
         for (EncAlt *A : J->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Prio = A->Priority;
+                INT32 Spec = (INT32) ConstBits (A);
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J;
+                }
+            }
+        }
+    }
+    return BestSpec >= 0;
+}
+
+// WORD-ADDRESSED decode: pick the best-matching encoding for the single machine word at WordPos.
+// The winner-selection mirrors Decode (highest priority, then most constant bits); only the per-
+// alternative match differs -- it extracts fields from the word value rather than a byte stream.
+bool
+Decoder::DecodeWord (UINT64 CONST *pWords, UINT64 WordCount, UINT64 WordPos, DecodedInsn *pOut) CONST
+{
+    if (pWords == nullptr || WordPos >= WordCount) { return false; }
+    UINT64 CONST Word = pWords[WordPos];
+
+    DecodedInsn Try;
+    INT32       BestPrio = INT32_MIN;
+    INT32       BestSpec = -1;
+    for (Insn *I : m_pArch->Insns) {
+        if (!IsEnabled (I->Feature)) { continue; }
+        for (EncAlt *A : I->Encodings) {
+            if (MatchAltWord (A, Word, &Try)) {
+                INT32 Prio = A->Priority;
+                INT32 Spec = (INT32) ConstBits (A);
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr;
+                }
+            }
+        }
+    }
+    for (JumpInsn *J : m_pArch->Jumps) {
+        if (!IsEnabled (J->Feature)) { continue; }
+        for (EncAlt *A : J->Encodings) {
+            if (MatchAltWord (A, Word, &Try)) {
                 INT32 Prio = A->Priority;
                 INT32 Spec = (INT32) ConstBits (A);
                 if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {

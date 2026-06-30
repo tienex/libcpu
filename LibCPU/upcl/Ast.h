@@ -664,6 +664,20 @@ public:
                                           //   needs no opt-in because every word is the same size.
     UINT32                   ByteSize = 0;   // old .def: byte_size
     UINT32                   WordSize = 0;
+    bool                     WordAddressed = false; // a WORD-ADDRESSED machine: the smallest
+                                          //   addressable unit IS the machine word, not an 8-bit
+                                          //   byte (PDP-10, PDP-6: 36-bit words, 18-bit word
+                                          //   addresses). Activated by the parser when `byte_size`
+                                          //   equals `word_size` and is NOT 8 -- on such a machine
+                                          //   the addressable unit (byte_size) and the word
+                                          //   coincide. The decoder then fetches a `word_size`-bit
+                                          //   instruction value from a WORD cell at a word offset
+                                          //   (not a byte stream), extracts MSB-first fields from
+                                          //   that value, sizes immediates/displacements in units
+                                          //   of `byte_size` (not the hardcoded 8), and reports
+                                          //   instruction Length as a WORD count. Default false
+                                          //   (`byte_size 8`) keeps every byte-addressed ISA on the
+                                          //   unchanged, byte-identical byte path.
     UINT32                   FloatSize = 0;  // old .def: float_size
     UINT32                   AddressSize = 0;
     UINT32                   PsrSize = 0;    // old .def: psr_size

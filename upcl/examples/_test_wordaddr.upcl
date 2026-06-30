@@ -1,0 +1,12 @@
+// Minimal WORD-ADDRESSED arch (PDP-10 shaped) to prove generic word-addressing in the decoder.
+// byte_size == word_size (36) and != 8 marks the arch as word-addressed: the decoder fetches a
+// 36-bit instruction word at a WORD offset, extracts MSB-first fields from that 36-bit value, and
+// sizes immediates/displacements in units of byte_size (36) rather than the hardcoded 8.
+arch "_test_wa" {
+    name "word-addr test";
+    endian big; byte_size 36; word_size 36; address_size 18;
+    register_file { group AC { [ 16 ** #i36 ac?:0 ] } group S { [ #i18 pc -> %PC ] } }
+}
+// PDP-10-shaped instruction word: op:9 ac:4 i:1 x:4 y:18 (MSB-first in a 36-bit word).
+insn movei : encode #i36 ( op:9 = 0o201, ac:4 -> ac, i:1, x:4, y:18 -> y ),
+    disasm ( mnemonic : "movei", operands : ac, y ) { ac[ ac ] = y; }

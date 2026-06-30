@@ -109,8 +109,8 @@ public:
     HRESULT STDMETHODCALLTYPE TagInstr (CPU_ADDR Pc, UINT32 *pTag, CPU_ADDR *pNewPc, CPU_ADDR *pNextPc) override {
         if (m_Standard) {
             DecodedInsn D;
-            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) {
-                *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + 1;   // unknown: skip a byte
+            if (!DecodeStd (Pc, &D)) {
+                *pTag = TagContinue; *pNewPc = (CPU_ADDR) -1; *pNextPc = Pc + 1;   // unknown: skip a unit
                 return S_OK;
             }
             *pNextPc = Pc + D.Length;
@@ -187,7 +187,7 @@ public:
     HRESULT STDMETHODCALLTYPE Disassemble (CPU_ADDR Pc, CHAR8 *pLine, UINT32 MaxLine) override {
         if (m_Standard) {
             DecodedInsn D;
-            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) {
+            if (!DecodeStd (Pc, &D)) {
                 std::snprintf (pLine, MaxLine, "db 0x%02x", m_pCode[Pc]);
                 return S_OK;
             }
@@ -274,7 +274,7 @@ public:
     HRESULT STDMETHODCALLTYPE TranslateInstr (CPU_ADDR Pc, ICpuEmitter *pE) override {
         if (m_Standard) {
             DecodedInsn D;
-            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return S_OK; }
+            if (!DecodeStd (Pc, &D)) { return S_OK; }
             Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
             for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
             // The program counter reads as the NEXT instruction's address (so a call pushes
@@ -360,7 +360,7 @@ public:
         *ppCond = nullptr;
         if (m_Standard) {
             DecodedInsn D;
-            if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return E_NOTIMPL; }
+            if (!DecodeStd (Pc, &D)) { return E_NOTIMPL; }
             Expr *Cond = nullptr;
             if (D.pJump != nullptr) {
                 Cond = D.pJump->Condition;          // a conditional jump (jcc)
@@ -381,13 +381,29 @@ public:
     }
 
 private:
+    // Decode the standard-path instruction at Pc, choosing the addressing model from the arch. A
+    // byte-addressed ISA decodes the byte stream at Pc exactly as before (byte-identical). A WORD-
+    // ADDRESSED machine (PDP-10) treats Pc as a WORD offset and the code memory as an array of
+    // machine words, decoding a single `word_size`-bit instruction value; D.Length is then a WORD
+    // count, so every caller's `Pc + D.Length` advance steps in words without further change. The
+    // full word-memory backing (a guest word store, byte<->word access) is wired in a later phase;
+    // this seam keeps the decode path generic so the byte path stays untouched.
+    bool DecodeStd (CPU_ADDR Pc, DecodedInsn *pOut) CONST {
+        if (m_pDecoder->IsWordAddressed ()) {
+            UINT64 CONST *pWords = reinterpret_cast<UINT64 CONST *> (m_pCode);
+            UINT64 CONST  Count  = m_CodeSize / sizeof (UINT64);
+            return m_pDecoder->DecodeWord (pWords, Count, Pc, pOut);
+        }
+        return m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, pOut);
+    }
+
     // Emit the body of the instruction in a delayed (.n) branch's delay slot, inline before the
     // branch transfer. The branch target was already captured from the pre-delay-slot register
     // state, so the delay slot's register effects run here and then control transfers. Only the
     // delay slot's side effects are emitted (a transfer in a delay slot is not modelled).
     void EmitDelaySlot (CPU_ADDR Pc, ICpuEmitter *pE) {
         DecodedInsn D;
-        if (!m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, &D)) { return; }
+        if (!DecodeStd (Pc, &D)) { return; }
         Translator Tr (m_Layout, m_pArch, pE, m_WordBits);
         for (auto CONST &Kv : D.Operands) { Operand Op = Kv.second; Tr.BindOperand (Kv.first, Op); }
         Operand PcOp; PcOp.Kind = Operand::Imm;

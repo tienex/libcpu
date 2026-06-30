@@ -1280,22 +1280,47 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
         Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
         Upcl::Decoder Dec (pArch, &Layout);
         UINT32 WordBits = pArch->WordSize ? pArch->WordSize : 16;
+        bool CONST WordAddressed = Dec.IsWordAddressed ();
 
-        // The byte stream follows the file name: each positional is one byte (0x.. or dec).
-        std::vector<UINT8> Bytes;
+        // The operand stream follows the file name. On a byte-addressed arch each positional is one
+        // byte; on a WORD-ADDRESSED arch (PDP-10) each positional is a full machine word value, so the
+        // 36-bit instruction word is supplied as a single number (e.g. octal 0o201040000005). Numbers
+        // accept 0x.. hex, 0b.. binary, 0o.. / 0.. octal (the PDP-10 word convention), or decimal.
+        auto ParseNum = [] (CHAR8 CONST *pTok) -> UINT64 {
+            if ((pTok[0] == '0') && (pTok[1] == 'o' || pTok[1] == 'O')) {
+                return (UINT64) std::strtoull (pTok + 2, nullptr, 8);
+            }
+            return (UINT64) std::strtoull (pTok, nullptr, 0);
+        };
+
+        std::vector<UINT8>  Bytes;
+        std::vector<UINT64> Words;
         for (int I = 2; ; I++) {
             CHAR8 CONST *pTok = Positional (argc, argv, I);
             if (pTok == nullptr) { break; }
-            Bytes.push_back ((UINT8) std::strtoul (pTok, nullptr, 0));
+            UINT64 V = ParseNum (pTok);
+            if (WordAddressed) { Words.push_back (V); } else { Bytes.push_back ((UINT8) V); }
         }
-        if (Bytes.empty ()) { std::printf ("lcx upcl decode: need at least one byte\n"); return 2; }
+        std::vector<UINT8> CONST &Stream = Bytes;        // alias for the byte-path printing below
+        UINT64 CONST Count = WordAddressed ? Words.size () : Bytes.size ();
+        if (Count == 0) {
+            std::printf ("lcx upcl decode: need at least one %s\n", WordAddressed ? "word" : "byte");
+            return 2;
+        }
 
         UINT64 Pos = 0;
-        while (Pos < Bytes.size ()) {
+        while (Pos < Count) {
             Upcl::DecodedInsn D;
-            if (!Dec.Decode (Bytes.data (), Bytes.size (), Pos, &D)) {
-                std::printf ("0x%04llx: db 0x%02x  (no encoding matched)\n",
-                             (unsigned long long) Pos, Bytes[(size_t) Pos]);
+            bool Ok = WordAddressed ? Dec.DecodeWord (Words.data (), Words.size (), Pos, &D)
+                                    : Dec.Decode (Stream.data (), Stream.size (), Pos, &D);
+            if (!Ok) {
+                if (WordAddressed) {
+                    std::printf ("0x%04llx: dw 0o%llo  (no encoding matched)\n",
+                                 (unsigned long long) Pos, (unsigned long long) Words[(size_t) Pos]);
+                } else {
+                    std::printf ("0x%04llx: db 0x%02x  (no encoding matched)\n",
+                                 (unsigned long long) Pos, Stream[(size_t) Pos]);
+                }
                 Pos += 1;
                 continue;
             }
@@ -1317,7 +1342,7 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
                     std::printf (" %s=0x%llx", Kv.first.c_str (), (unsigned long long) Op.ImmValue);
                 }
             }
-            std::printf ("   (%u byte(s))\n", D.Length);
+            std::printf ("   (%u %s)\n", D.Length, WordAddressed ? "word(s)" : "byte(s)");
 
             // Translate the body with the decoded operands bound to their locations. A jump insn
             // keeps its body in Pre + Action (regular insns keep theirs in Semantics).

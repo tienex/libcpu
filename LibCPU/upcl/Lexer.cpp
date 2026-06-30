@@ -168,6 +168,11 @@ Lexer::LexNumber (UINT32 Begin)
         while (Peek () == '0' || Peek () == '1') {
             Value = Value * 2 + (UINT32) (Advance () - '0');
         }
+    } else if (Peek () == '0' && (Peek (1) == 'o' || Peek (1) == 'O')) {
+        m_Pos += 2;                                  // `0o...` octal literal (the PDP-10 word convention --
+        while (Peek () >= '0' && Peek () <= '7') {   //   octal is how PDP-6/10 opcodes are written)
+            Value = Value * 8 + (UINT32) (Advance () - '0');
+        }
     } else if (Peek () == '0' && Peek (1) >= '0' && Peek (1) <= '7') {
         m_Pos++;                                      // leading 0 -> octal (old UPCL convention)
         while (Peek () >= '0' && Peek () <= '7') {

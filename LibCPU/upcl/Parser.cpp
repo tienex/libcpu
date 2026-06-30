@@ -1129,6 +1129,19 @@ Parser::ParseInsnDecl ()
     return I;
 }
 
+// Decide whether the architecture is WORD-ADDRESSED (its smallest addressable unit is the machine
+// word, not an 8-bit byte) from the addressing-unit declarations. The rule: word-addressing is ON
+// exactly when `byte_size` equals `word_size` and is NOT 8 -- i.e. the addressable unit and the
+// machine word coincide and that unit is not the conventional octet (PDP-10/PDP-6: 36-bit words,
+// 18-bit word addresses). The default `byte_size 8` (every existing byte-addressed ISA) leaves it
+// false. Recomputed whenever either size directive is parsed, so declaration order does not matter.
+static void
+MarkWordAddressed (Arch *pArch)
+{
+    pArch->WordAddressed = pArch->ByteSize != 0 && pArch->ByteSize == pArch->WordSize
+                        && pArch->ByteSize != 8;
+}
+
 void
 Parser::ParseArchItem (Arch *pArch)
 {
@@ -1153,12 +1166,14 @@ Parser::ParseArchItem (Arch *pArch)
     } else if (AtKeyword ("word_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the word size"); pArch->WordSize = (UINT32) V;
         Expect (TokSemi, "after word_size");
+        MarkWordAddressed (pArch);
     } else if (AtKeyword ("address_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the address size"); pArch->AddressSize = (UINT32) V;
         Expect (TokSemi, "after address_size");
     } else if (AtKeyword ("byte_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the byte size"); pArch->ByteSize = (UINT32) V;
         Expect (TokSemi, "after byte_size");
+        MarkWordAddressed (pArch);
     } else if (AtKeyword ("float_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the float size"); pArch->FloatSize = (UINT32) V;
         Expect (TokSemi, "after float_size");

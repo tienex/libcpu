@@ -1033,6 +1033,21 @@ set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding 
 add_test(NAME upcl.engine-be COMMAND sh -c
   "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_be.upcl' 0xAA 0x12 0x34 | grep '0x1234'")
 
+# Generic WORD-ADDRESSING (PDP-10 shaped): a 36-bit word-addressed arch (byte_size == word_size ==
+# 36, != 8) decodes a single 36-bit instruction word at a WORD offset, extracting MSB-first fields
+# (op:9 ac:4 i:1 x:4 y:18) straight from the word value -- which the byte path cannot do (36 bits
+# span no whole octet). The octal word 0o201040000005 = op 0o201 (movei), ac 1, y 5; assert the
+# decode AND that the reported length is 1 word (not bytes). The byte ISAs are unaffected: their
+# byte_size is 8 (or unset), so WordAddressed stays false and the byte path is byte-identical.
+add_test(NAME upcl.engine-wordaddr COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0o201040000005 > '${CMAKE_BINARY_DIR}/wordaddr.out' && \
+   grep -q '0x0000: movei' '${CMAKE_BINARY_DIR}/wordaddr.out' && \
+   grep -q 'ac=0x1'        '${CMAKE_BINARY_DIR}/wordaddr.out' && \
+   grep -q 'y=0x5'         '${CMAKE_BINARY_DIR}/wordaddr.out' && \
+   grep -q '(1 word(s))'   '${CMAKE_BINARY_DIR}/wordaddr.out'")
+set_tests_properties(upcl.engine-wordaddr PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # Self-describing variable-length displacement (`disp varlen`): the first tail byte's top bits
 # select the encoded width (1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit; big-endian,
 # sign-extended). The opcode byte 0x00 (op=0,m=0) selects the %M[ r0 + disp varlen ] rule; the
