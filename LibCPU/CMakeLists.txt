@@ -1243,6 +1243,66 @@ add_test(NAME upcl.decode-pdp10-test COMMAND sh -c
    grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.aobjn'")
 set_tests_properties(upcl.decode-pdp10-test PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
+# PDP-10 jump/control/stack instructions (Task 12): JRST (plain jump + halt), JUMPA/JUMPL,
+# AOJ/SOJ (add/sub-one-to-AC + conditional jump), PUSHJ/POPJ/PUSH/POP (stack), JSP, JFCL.
+# Opcodes sourced from DEC PDP-10 HRM and SIMH pdp10_sys.c.
+# Instruction word encoding (op:9 ac:4 i:1 x:4 y:18, MSB-first, 36-bit octal):
+#   JRST jump  (AC=0):  0o254000000100 = op=0o254 ac=0 y=0o100
+#   JRST halt  (AC=4):  0o254200000000 = op=0o254 ac=4 y=0
+#   JUMPA      (AC=1):  0o324040000100 = op=0o324 ac=1 y=0o100  (JUMP+always, op=0o320+4)
+#   AOJA       (AC=1):  0o344040000100 = op=0o344 ac=1 y=0o100  (AOJ+always, op=0o340+4)
+#   SOJA       (AC=1):  0o364040000100 = op=0o364 ac=1 y=0o100  (SOJ+always, op=0o360+4)
+#   PUSHJ      (AC=1):  0o260040000100 = op=0o260 ac=1 y=0o100
+#   POPJ       (AC=1):  0o263040000000 = op=0o263 ac=1 y=0
+#   PUSH       (AC=1):  0o261040000100 = op=0o261 ac=1 y=0o100
+#   POP        (AC=1):  0o262040000100 = op=0o262 ac=1 y=0o100
+#   JSP        (AC=1):  0o265040000100 = op=0o265 ac=1 y=0o100
+#   JFCL       (AC=1):  0o255040000100 = op=0o255 ac=1 y=0o100
+add_test(NAME upcl.decode-pdp10-jump COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o254000000100 > '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   grep -q '0x0000: jrst'   '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   grep -q 'acn=0x0'        '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   \"$E\" upcl decode \"$P\" 0o254200000000 > '${CMAKE_BINARY_DIR}/pdp10.halt' && \
+   grep -q 'jrst_halt'      '${CMAKE_BINARY_DIR}/pdp10.halt' && \
+   \"$E\" upcl decode \"$P\" 0o324040000100 > '${CMAKE_BINARY_DIR}/pdp10.jumpa' && \
+   grep -q '0x0000: jumpa'  '${CMAKE_BINARY_DIR}/pdp10.jumpa' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.jumpa' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.jumpa' && \
+   \"$E\" upcl decode \"$P\" 0o344040000100 > '${CMAKE_BINARY_DIR}/pdp10.aoja' && \
+   grep -q '0x0000: aoja'   '${CMAKE_BINARY_DIR}/pdp10.aoja' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.aoja' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.aoja' && \
+   \"$E\" upcl decode \"$P\" 0o364040000100 > '${CMAKE_BINARY_DIR}/pdp10.soja' && \
+   grep -q '0x0000: soja'   '${CMAKE_BINARY_DIR}/pdp10.soja' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.soja' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.soja' && \
+   \"$E\" upcl decode \"$P\" 0o260040000100 > '${CMAKE_BINARY_DIR}/pdp10.pushj' && \
+   grep -q '0x0000: pushj'  '${CMAKE_BINARY_DIR}/pdp10.pushj' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.pushj' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.pushj' && \
+   \"$E\" upcl decode \"$P\" 0o263040000000 > '${CMAKE_BINARY_DIR}/pdp10.popj' && \
+   grep -q '0x0000: popj'   '${CMAKE_BINARY_DIR}/pdp10.popj' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.popj' && \
+   \"$E\" upcl decode \"$P\" 0o261040000100 > '${CMAKE_BINARY_DIR}/pdp10.push' && \
+   grep -q '0x0000: push'   '${CMAKE_BINARY_DIR}/pdp10.push' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.push' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.push' && \
+   \"$E\" upcl decode \"$P\" 0o262040000100 > '${CMAKE_BINARY_DIR}/pdp10.pop' && \
+   grep -q '0x0000: pop'    '${CMAKE_BINARY_DIR}/pdp10.pop' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.pop' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.pop' && \
+   \"$E\" upcl decode \"$P\" 0o265040000100 > '${CMAKE_BINARY_DIR}/pdp10.jsp' && \
+   grep -q '0x0000: jsp'    '${CMAKE_BINARY_DIR}/pdp10.jsp' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.jsp' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.jsp' && \
+   \"$E\" upcl decode \"$P\" 0o255040000100 > '${CMAKE_BINARY_DIR}/pdp10.jfcl' && \
+   grep -q '0x0000: jfcl'   '${CMAKE_BINARY_DIR}/pdp10.jfcl' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.jfcl' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.jfcl'")
+set_tests_properties(upcl.decode-pdp10-jump PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

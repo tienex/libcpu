@@ -340,8 +340,38 @@ insn dmovn : encode #i36 ( op:9 = OP_DMOVN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     }
 
 // ---------------------------------------------------------------------------
-// JRST E -- jump: PC <- E.  E is used as a BARE jump target (@ea, not %M[E]); the same macro serves
-// both value and address contexts.
+// JRST -- the "Jump and ReSToRe flags" family.  The AC field selects the function:
+//   AC=0   plain jump:        pc = E.
+//   AC=2   JEN (restore PSW): restore pcflags from the LEFT half of M[E-1] (the stacked PCW),
+//          then pc = E.  (Deferred to execution in Task 18; decode only here.)
+//   AC=4   HALT:              stop the machine -- modelled as @trap(0) (host halt vector 0).
+//   AC=10  XJRSTF:            extended jump, KL only -- decode stub.
+//   AC=12  JEN (alternate):   same as AC=2 on some models.
+//   Other AC values: reserved / decode-only stubs in execution.
+//
+// Opcode 0o254, AC field is the function code (4 bits).  Source: DEC PDP-10 HRM ch.2 "JRST"
+// and SIMH pdp10_cpu.c `jrst()`.  Function constants (one-hot in the 4-bit AC):
+const JRST_FN_JUMP  = 0x0;     // AC=0  plain jump
+const JRST_FN_JEN   = 0x2;     // AC=2  restore flags, then jump (JEN)
+const JRST_FN_HALT  = 0x4;     // AC=4  HALT -- halt the machine
+const JRST_FN_XJRSF = 0xa;     // AC=10 XJRSTF (KL extended -- decode stub)
+const JRST_FN_JEN2  = 0xc;     // AC=12 JEN alternate (some models)
+
+// JRST is one instruction with a sub-function in the AC field.  We model the three
+// architecturally distinct behaviours as priority-ordered variants that differ only in the
+// ac constant value.  `priority` breaks the tie vs the generic `jrst` fallthrough.
+jump insn jrst_halt : type trap, encode #i36 ( op:9 = 0o254, ac:4 = JRST_FN_HALT, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jrst", operands : i, x, y )
+    { @trap ( 0 ); }   // HALT -- vector 0 = machine halt
+
+// JEN (AC=2): restore pcflags from left half of the stacked PCW, then jump to E.
+// Full restore deferred to Task 18 (needs the stacked-PCW memory read); decode here.
+jump insn jrst_jen : type branch, encode #i36 ( op:9 = 0o254, ac:4 = JRST_FN_JEN, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jrst", operands : i, x, y )
+    { pc = @ea ( i, x, y ); }   // NOTE: pcflags restore deferred to Task 18
+
+// Plain jump (AC=0): pc = E.  This is the base case and also covers all other unused AC values
+// via the catch-all below.
 jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "jrst", operands : i, x, y )  { pc = @ea ( i, x, y ); }
 
@@ -2023,8 +2053,9 @@ insn camg  : encode #i36 ( op:9 = OP_CAMG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
 // AOS (0o350-0o357): add 1 to M[E], store back; skip on the 8 conditions applied to the
 //   INCREMENTED value; if acn != 0, also store incremented value in AC[acn].
 //
-// SOS (0o360-0o367): subtract 1 from M[E], store back; skip on the 8 conditions applied to the
+// SOS (0o370-0o377): subtract 1 from M[E], store back; skip on the 8 conditions applied to the
 //   DECREMENTED value; if acn != 0, also store decremented value in AC[acn].
+//   NOTE: 0o360-0o367 = SOJ (subtract 1 from AC, Jump), added in Task 12.
 //
 // Skip conditions (same 8 as CAI/CAM, low 3 bits of opcode):
 //   +0 = never  +1 = skip if val < 0  +2 = skip if val == 0  +3 = skip if val <= 0
@@ -2048,14 +2079,14 @@ const OP_AOSA   = 0o354;
 const OP_AOSGE  = 0o355;
 const OP_AOSN   = 0o356;
 const OP_AOSG   = 0o357;
-const OP_SOS    = 0o360;
-const OP_SOSL   = 0o361;
-const OP_SOSE   = 0o362;
-const OP_SOSLE  = 0o363;
-const OP_SOSA   = 0o364;
-const OP_SOSGE  = 0o365;
-const OP_SOSN   = 0o366;
-const OP_SOSG   = 0o367;
+const OP_SOS    = 0o370;    // NOTE: corrected from Task 11 (was 0o360; 0o360-0o367 = SOJ)
+const OP_SOSL   = 0o371;
+const OP_SOSE   = 0o372;
+const OP_SOSLE  = 0o373;
+const OP_SOSA   = 0o374;
+const OP_SOSGE  = 0o375;
+const OP_SOSN   = 0o376;
+const OP_SOSG   = 0o377;
 
 // ---------------------------------------------------------------------------
 // SKIP -- test M[E]; if acn != 0 then AC <- M[E]; skip on the 8 conditions.
@@ -2178,4 +2209,393 @@ jump insn aobjn : type branch, encode #i36 ( op:9 = OP_AOBJN, ac:4 -> acn, i:1 -
         #i36 r = ( ( ( ( ac[ acn ] >> HW_LSHFT ) + 1 ) & HW_MASK ) << HW_LSHFT ) | ( ( ac[ acn ] + 1 ) & HW_MASK );
         ac[ acn ] = r;
         pc = ( ( r & SIGN_BIT36 ) != 0 ) ? @ea ( i, x, y ) : pc;   // jump if left half < 0 (negative)
+    }
+
+// ===========================================================================
+// JFCL -- JUMP IF FLAG, CLEAR (DEC PDP-10 HRM "JFCL"; opcode 0o255, verified SIMH pdp10_cpu.c).
+//
+// The AC field is a 4-bit FLAG SELECTOR that selects a subset of the four hardware-testable
+// flags (AROV, CRY0, CRY1, FOV -- bits 17..14 of pcflags = the top 4 bits within the 18-bit
+// left-half register).  Each bit in AC corresponds to one flag:
+//   AC bit 3 (=0x8) -> AROV  (pcflags bit 17 = PCF_AROV)
+//   AC bit 2 (=0x4) -> CRY0  (pcflags bit 16 = PCF_CRY0)
+//   AC bit 1 (=0x2) -> CRY1  (pcflags bit 15 = PCF_CRY1)
+//   AC bit 0 (=0x1) -> FOV   (pcflags bit 14 = PCF_FOV)
+//
+// If ANY selected flag was set in pcflags at the time of execution: jump to E.
+// Always clear the selected flags from pcflags (regardless of whether the jump is taken).
+//
+// The selector-to-pcflags mask: each AC bit selects a contiguous group of PCF_* bits.  The
+// mapping is: AC[3]=AROV (PCF_AROV=0x20000), AC[2]=CRY0 (PCF_CRY0=0x10000), AC[1]=CRY1
+// (PCF_CRY1=0x08000), AC[0]=FOV (PCF_FOV=0x04000).  The four flags occupy pcflags bits
+// 17..14 -- i.e. the top 4 bits of the 18-bit pcflags are these flags in order.  So the
+// selector mask in pcflags-space = acn << 14.
+const JFCL_FLAG_SHIFT = 14;    // AC bit i selects pcflags bit (i + 14) for AC bits 3..0 -> pcflags 17..14
+
+const OP_JFCL = 0o255;
+
+// JFCL: AC=0 means "no flags selected" -> never jump (NOP form), still clears nothing.
+jump insn jfcl : type branch, encode #i36 ( op:9 = OP_JFCL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jfcl", operands : acn, i, x, y )
+    {
+        #i18 sel  = ( acn & 0xf ) << JFCL_FLAG_SHIFT;  // selected pcflags mask
+        #i1  hit  = ( ( pcflags & sel ) != 0 ) ? 1 : 0;
+        pcflags   = pcflags & ( ~sel );                  // clear selected flags unconditionally
+        pc        = ( hit != 0 ) ? @ea ( i, x, y ) : pc;
+    }
+
+// ===========================================================================
+// XCT -- EXECUTE (DEC PDP-10 HRM "XCT"; opcode 0o256, verified SIMH pdp10_cpu.c).
+//
+// XCT fetches the instruction word at M[E] and executes it AS IF it were the current
+// instruction.  The AC field of XCT is ignored (conventionally 0).  Full execution
+// of XCT requires re-invoking the decode/dispatch loop on M[E] -- a capability that
+// depends on the execution engine (Task 18).  Here XCT is decoded as a stub; the
+// instruction body is intentionally left empty (the address is available via @ea but
+// the re-dispatch cannot be expressed in the UPCL body language yet).
+//
+// `type branch` (not trap) because XCT in principle just continues execution at the
+// next sequential word after the XCT'd instruction; the CFG type tells the engine this
+// is a control-flow point.  Task 18 will fill in the body.
+const OP_XCT = 0o256;
+
+jump insn xct : type branch, encode #i36 ( op:9 = OP_XCT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "xct", operands : acn, i, x, y )
+    { pc = pc; }   // NOTE: re-dispatch of M[@ea(i,x,y)] deferred to Task 18 -- body is a decode stub
+
+// ===========================================================================
+// MAP -- CHECK MAP (DEC PDP-10 HRM "MAP"; opcode 0o257, KL/KS extended addressing).
+//
+// MAP checks the memory map / page table for the EA and returns paging status in AC.
+// This is a KL-only instruction in the pager extension.  It is decoded here as a
+// stub; execution deferred to Task 18 / the memory-management subsystem.
+const OP_MAP = 0o257;
+
+insn map : encode #i36 ( op:9 = OP_MAP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "map", operands : acn, i, x, y )
+    => ;   // NOTE: pager result -> AC; deferred to Task 18 / KL pager support
+
+// ===========================================================================
+// STACK INSTRUCTIONS (DEC PDP-10 HRM "Stack"; opcodes verified SIMH pdp10_cpu.c).
+//
+// The PDP-10 stack pointer lives in an accumulator (AC).  The hardware convention is
+// that BOTH HALVES of the AC encode stack state:
+//   LEFT  HALF (bits 35..18) -- a DOWNWARD DECREMENTING COUNTER  (negated item count).
+//     When the stack has N items, the left half = -N (ones-complement: ~N in 18 bits
+//     = N XOR HW_MASK).  Incrementing the count means +1 to both halves simultaneously
+//     (equivalently adding 1,,1 to the AC word, the same per-half-independent arithmetic
+//     used by AOBJN).  An overflow check (left half wraps through 0 to positive) is a
+//     stack overflow / PDL OV -- this trap is handled in execution (Task 18).
+//   RIGHT HALF (bits 17..0)  -- the ADDRESS of the top-of-stack word (current top).
+//
+// PUSH: increment BOTH HALVES of AC independently (same per-half wrap as AOBJP/AOBJN --
+//   no carry between halves), then store operand to M[right-half(AC)].
+// POP:  load from M[right-half(AC)] into destination, THEN decrement both halves.
+// PUSHJ: like PUSH, but the operand is the combined process-context word (PCW):
+//   PCW = (pcflags << 18) | (pc + 1)   (flags in left half, return address in right half).
+//   After pushing, pc = E.  `type call`.
+// POPJ: pop the stacked PCW from the top of the stack, restore pc from its right half.
+//   `type return`.
+//
+// The PER-HALF INCREMENT: identical to AOBJN's arithmetic (no inter-half carry):
+//   new_AC = ( (((AC >> HW_LSHFT) + 1) & HW_MASK) << HW_LSHFT ) | ((AC + 1) & HW_MASK)
+//
+// Combined PCW assembly:
+//   pcw = ( pcflags << HW_LSHFT ) | ( (pc + 1) & HW_MASK )     (for PUSHJ/JSP/JSR)
+//
+// Opcodes: PUSHJ=0o260, PUSH=0o261, POP=0o262, POPJ=0o263 (SIMH pdp10_sys.c verified).
+const OP_PUSHJ = 0o260;
+const OP_PUSH  = 0o261;
+const OP_POP   = 0o262;
+const OP_POPJ  = 0o263;
+
+// Helper macro: increment both halves of a 36-bit AC word independently (no inter-half carry).
+macro incboth ( v ) {
+    result = ( ( ( ( v >> HW_LSHFT ) + 1 ) & HW_MASK ) << HW_LSHFT ) | ( ( v + 1 ) & HW_MASK );
+}
+// Helper macro: decrement both halves of a 36-bit AC word independently.
+macro decboth ( v ) {
+    result = ( ( ( ( v >> HW_LSHFT ) - 1 ) & HW_MASK ) << HW_LSHFT ) | ( ( v - 1 ) & HW_MASK );
+}
+
+// PUSH AC, E -- increment both halves of AC[acn], then M[right-half(AC)] <- M[E].
+// The AC field is the stack-pointer register; the source is M[E].  Not a jump insn
+// (no PC change), but shares the stack-pointer idiom with PUSHJ/POPJ.
+insn push : encode #i36 ( op:9 = OP_PUSH, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "push", operands : acn, i, x, y )
+    {
+        #i36 sp  = @incboth ( ac[ acn ] );
+        ac[ acn ] = sp;
+        %M[ sp & HW_MASK ] = %M[ @ea ( i, x, y ) ];   // M[right-half(sp)] <- M[E]
+    }
+
+// POP AC, E -- load from M[right-half(AC)] to M[E] (and to AC[acn] if acn != 0), then
+// decrement both halves.  The destination is M[E] (and optionally AC per HRM), then
+// SP decrements.  Per SIMH pdp10_cpu.c `pop()`: src = M[rh(AC)], store to M[E] and to AC.
+insn pop : encode #i36 ( op:9 = OP_POP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "pop", operands : acn, i, x, y )
+    {
+        #i36 sp  = ac[ acn ];
+        #i36 val = %M[ sp & HW_MASK ];                 // load from M[right-half(sp)]
+        %M[ @ea ( i, x, y ) ] = val;                   // store to M[E]
+        ac[ acn ] = @decboth ( sp );                   // decrement both halves
+    }
+
+// PUSHJ AC, E -- push the combined PCW (flags,,pc+1) onto the stack, then pc = E.
+// The PCW carries pcflags in the left half and (pc+1) -- the return address -- in the right.
+// `type call` because this is a subroutine call: it saves a return address.
+jump insn pushj : type call, encode #i36 ( op:9 = OP_PUSHJ, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "pushj", operands : acn, i, x, y )
+    {
+        #i36 sp  = @incboth ( ac[ acn ] );
+        ac[ acn ] = sp;
+        #i36 pcw = ( ( pcflags & HW_MASK ) << HW_LSHFT ) | ( ( pc + 1 ) & HW_MASK );
+        %M[ sp & HW_MASK ] = pcw;                      // push PCW onto stack
+        pc = @ea ( i, x, y );                          // jump to E
+    }
+
+// POPJ AC, -- pop the stacked PCW and restore pc from its right half.  E is not used as a
+// target; it conventionally encodes 0.  `type return` because this pops a saved return address.
+jump insn popj : type return, encode #i36 ( op:9 = OP_POPJ, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "popj", operands : acn, i, x, y )
+    {
+        #i36 sp  = ac[ acn ];
+        #i36 pcw = %M[ sp & HW_MASK ];                 // load PCW from top of stack
+        ac[ acn ] = @decboth ( sp );                   // decrement both halves
+        pc = pcw & HW_MASK;                            // restore pc from right half of PCW
+        // NOTE: pcflags restore from left half of PCW deferred to Task 18
+    }
+
+// ===========================================================================
+// JSR / JSP / JSA / JRA -- JUMP-AND-SAVE-CONTEXT (DEC PDP-10 HRM "JSR/JSP/JSA/JRA";
+// opcodes verified SIMH pdp10_sys.c).
+//
+// All four save the combined PCW = (pcflags,,pc+1) somewhere and then jump; they differ
+// in WHERE they save it and how the caller returns:
+//
+//   JSR  (0o264, AC ignored): store PCW at M[E], then pc = E+1.  Return: JRST/JRA at M[E].
+//   JSP  (0o265): store PCW in AC[acn], then pc = E.  Return: JRST 2, or POPJ.
+//   JSA  (0o266): store AC[acn] at M[E], save PCW in left half of (new) M[E], then
+//                  pc = E+1.  (Full JSA semantics defer to Task 18; decode stub body.)
+//   JRA  (0o267): restore AC[acn] from M[right-half(AC[acn])], then jump to E.
+//                  (JRA is JSA's return instruction.  Deferred to Task 18; decode stub.)
+//
+const OP_JSR = 0o264;
+const OP_JSP = 0o265;
+const OP_JSA = 0o266;
+const OP_JRA = 0o267;
+
+// JSR E -- store PCW at M[E], then pc = E+1.  `type call`.
+jump insn jsr : type call, encode #i36 ( op:9 = OP_JSR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jsr", operands : i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i36 pcw = ( ( pcflags & HW_MASK ) << HW_LSHFT ) | ( ( pc + 1 ) & HW_MASK );
+        %M[ e ] = pcw;                                  // store PCW at M[E]
+        pc = ( e + 1 ) & HW_MASK;                      // pc = E+1
+    }
+
+// JSP AC, E -- store PCW in AC[acn], then pc = E.  `type call`.
+jump insn jsp : type call, encode #i36 ( op:9 = OP_JSP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jsp", operands : acn, i, x, y )
+    {
+        #i36 pcw = ( ( pcflags & HW_MASK ) << HW_LSHFT ) | ( ( pc + 1 ) & HW_MASK );
+        ac[ acn ] = pcw;                                // save PCW in AC
+        pc = @ea ( i, x, y );                          // jump to E
+    }
+
+// JSA AC, E -- JSA save-and-jump (DEC HRM).  The full semantics are complex (interlock
+// with JRA via M[E]); decode-only stub here, Task 18 completes the body.  `type call`.
+jump insn jsa : type call, encode #i36 ( op:9 = OP_JSA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jsa", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i36 pcw = ( ( pcflags & HW_MASK ) << HW_LSHFT ) | ( ( pc + 1 ) & HW_MASK );
+        %M[ e ] = ( ( ac[ acn ] & HW_MASK ) << HW_LSHFT ) | ( pcw & HW_MASK );
+        // NOTE: full JSA body (save AC old left half, link chain) deferred to Task 18
+        pc = ( e + 1 ) & HW_MASK;
+    }
+
+// JRA AC, E -- JSA's return: restore AC[acn] from M[right-half(AC[acn])], then jump to E.
+// Decode stub; Task 18 completes.  `type return`.
+jump insn jra : type return, encode #i36 ( op:9 = OP_JRA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jra", operands : acn, i, x, y )
+    {
+        #i36 link = %M[ ac[ acn ] & HW_MASK ];          // M[right-half(AC)] = saved AC
+        ac[ acn ] = link;
+        pc = @ea ( i, x, y );                          // NOTE: full JRA chain-follow deferred to Task 18
+    }
+
+// ===========================================================================
+// JUMP{cond} -- JUMP ON CONDITION OF AC (DEC PDP-10 HRM "JUMP"; opcodes 0o320-0o327,
+// verified SIMH pdp10_sys.c).
+//
+// Each instruction tests AC[acn] against zero using a signed comparison (`%S`), and jumps
+// to E if the condition holds.  8 conditions, same ordering as CAI/CAM/SKIP:
+//   +0 = never   (JUMP  -- no-op)       +1 = less  (JUMPL)
+//   +2 = equal   (JUMPE)                +3 = less-or-equal (JUMPLE)
+//   +4 = always  (JUMPA)                +5 = greater-or-equal (JUMPGE)
+//   +6 = not-equal (JUMPN)              +7 = greater (JUMPG)
+//
+// Opcodes: base 0o320; low 3 bits = condition code.
+const OP_JUMP   = 0o320;    // JUMP  base: jump never (no-op, but still a branch insn)
+const OP_JUMPL  = 0o321;    // JUMPL  jump if AC < 0  (signed)
+const OP_JUMPE  = 0o322;    // JUMPE  jump if AC == 0
+const OP_JUMPLE = 0o323;    // JUMPLE jump if AC <= 0 (signed)
+const OP_JUMPA  = 0o324;    // JUMPA  jump always
+const OP_JUMPGE = 0o325;    // JUMPGE jump if AC >= 0 (signed)
+const OP_JUMPN  = 0o326;    // JUMPN  jump if AC != 0
+const OP_JUMPG  = 0o327;    // JUMPG  jump if AC > 0  (signed)
+
+jump insn jump   : type branch, encode #i36 ( op:9 = OP_JUMP,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jump",   operands : acn, i, x, y )  { pc = pc; }  // never jump
+
+jump insn jumpl  : type branch, encode #i36 ( op:9 = OP_JUMPL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpl",  operands : acn, i, x, y )
+    { pc = ( %S ( ac[ acn ] ) < 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn jumpe  : type branch, encode #i36 ( op:9 = OP_JUMPE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpe",  operands : acn, i, x, y )
+    { pc = ( ( ac[ acn ] & W36_MASK ) == 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn jumple : type branch, encode #i36 ( op:9 = OP_JUMPLE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumple", operands : acn, i, x, y )
+    { pc = ( %S ( ac[ acn ] ) <= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn jumpa  : type branch, encode #i36 ( op:9 = OP_JUMPA,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpa",  operands : acn, i, x, y )  { pc = @ea ( i, x, y ); }  // always jump
+
+jump insn jumpge : type branch, encode #i36 ( op:9 = OP_JUMPGE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpge", operands : acn, i, x, y )
+    { pc = ( %S ( ac[ acn ] ) >= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn jumpn  : type branch, encode #i36 ( op:9 = OP_JUMPN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpn",  operands : acn, i, x, y )
+    { pc = ( ( ac[ acn ] & W36_MASK ) != 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn jumpg  : type branch, encode #i36 ( op:9 = OP_JUMPG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jumpg",  operands : acn, i, x, y )
+    { pc = ( %S ( ac[ acn ] ) > 0 ) ? @ea ( i, x, y ) : pc; }
+
+// ===========================================================================
+// AOJ{cond} -- ADD ONE TO AC, JUMP ON CONDITION (DEC PDP-10 HRM "AOJ"; opcodes 0o340-0o347,
+// verified SIMH pdp10_sys.c).
+//
+// AOJ: AC <- (AC + 1) & W36_MASK, then test the INCREMENTED AC against zero and jump to E if
+// the condition holds.  Same 8 condition codes as JUMP.  Overflow flag update (AROV) per HRM:
+// the add_flags macro could be used but per SIMH aobjx() AOJ does NOT set flags -- it is
+// purely an AC-increment + conditional jump.  (If needed Task 18 can add flag updates.)
+//
+// Opcodes: base 0o340; low 3 bits = condition.
+const OP_AOJ    = 0o340;    // AOJ   add 1, jump never
+const OP_AOJL   = 0o341;    // AOJL  add 1, jump if result < 0
+const OP_AOJE   = 0o342;    // AOJE  add 1, jump if result == 0
+const OP_AOJLE  = 0o343;    // AOJLE add 1, jump if result <= 0
+const OP_AOJA   = 0o344;    // AOJA  add 1, jump always
+const OP_AOJGE  = 0o345;    // AOJGE add 1, jump if result >= 0
+const OP_AOJN   = 0o346;    // AOJN  add 1, jump if result != 0
+const OP_AOJG   = 0o347;    // AOJG  add 1, jump if result > 0
+
+jump insn aoj    : type branch, encode #i36 ( op:9 = OP_AOJ,    ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aoj",    operands : acn, i, x, y )
+    { ac[ acn ] = ( ac[ acn ] + 1 ) & W36_MASK; pc = pc; }  // add 1, never jump
+
+jump insn aojl   : type branch, encode #i36 ( op:9 = OP_AOJL,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aojl",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) < 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn aoje   : type branch, encode #i36 ( op:9 = OP_AOJE,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aoje",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( ( r & W36_MASK ) == 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn aojle  : type branch, encode #i36 ( op:9 = OP_AOJLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aojle",  operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) <= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn aoja   : type branch, encode #i36 ( op:9 = OP_AOJA,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aoja",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = @ea ( i, x, y ); }  // always jump
+
+jump insn aojge  : type branch, encode #i36 ( op:9 = OP_AOJGE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aojge",  operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) >= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn aojn   : type branch, encode #i36 ( op:9 = OP_AOJN,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aojn",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( ( r & W36_MASK ) != 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn aojg   : type branch, encode #i36 ( op:9 = OP_AOJG,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aojg",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] + 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) > 0 ) ? @ea ( i, x, y ) : pc; }
+
+// ===========================================================================
+// SOJ{cond} -- SUBTRACT ONE FROM AC, JUMP ON CONDITION (DEC PDP-10 HRM "SOJ"; opcodes
+// 0o360-0o367, verified SIMH pdp10_sys.c).
+//
+// SOJ: AC <- (AC - 1) & W36_MASK, then test the DECREMENTED AC against zero and jump to E
+// if the condition holds.  Same 8 condition codes as JUMP/AOJ.  (Per SIMH soj() / pdp10_cpu.c,
+// SOJ does not set arithmetic flags -- pure decrement + conditional jump.)
+//
+// Opcodes: base 0o360; low 3 bits = condition.
+const OP_SOJ    = 0o360;    // SOJ   subtract 1, jump never
+const OP_SOJL   = 0o361;    // SOJL  subtract 1, jump if result < 0
+const OP_SOJE   = 0o362;    // SOJE  subtract 1, jump if result == 0
+const OP_SOJLE  = 0o363;    // SOJLE subtract 1, jump if result <= 0
+const OP_SOJA   = 0o364;    // SOJA  subtract 1, jump always
+const OP_SOJGE  = 0o365;    // SOJGE subtract 1, jump if result >= 0
+const OP_SOJN   = 0o366;    // SOJN  subtract 1, jump if result != 0
+const OP_SOJG   = 0o367;    // SOJG  subtract 1, jump if result > 0
+
+jump insn soj    : type branch, encode #i36 ( op:9 = OP_SOJ,    ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "soj",    operands : acn, i, x, y )
+    { ac[ acn ] = ( ac[ acn ] - 1 ) & W36_MASK; pc = pc; }  // subtract 1, never jump
+
+jump insn sojl   : type branch, encode #i36 ( op:9 = OP_SOJL,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sojl",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) < 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn soje   : type branch, encode #i36 ( op:9 = OP_SOJE,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "soje",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( ( r & W36_MASK ) == 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn sojle  : type branch, encode #i36 ( op:9 = OP_SOJLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sojle",  operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) <= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn soja   : type branch, encode #i36 ( op:9 = OP_SOJA,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "soja",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = @ea ( i, x, y ); }  // always jump
+
+jump insn sojge  : type branch, encode #i36 ( op:9 = OP_SOJGE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sojge",  operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) >= 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn sojn   : type branch, encode #i36 ( op:9 = OP_SOJN,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sojn",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( ( r & W36_MASK ) != 0 ) ? @ea ( i, x, y ) : pc; }
+
+jump insn sojg   : type branch, encode #i36 ( op:9 = OP_SOJG,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sojg",   operands : acn, i, x, y )
+    { #i36 r = ( ac[ acn ] - 1 ) & W36_MASK; ac[ acn ] = r; pc = ( %S ( r ) > 0 ) ? @ea ( i, x, y ) : pc; }
+
+// ===========================================================================
+// ADJSP -- ADJUST STACK POINTER (KL PDP-10; opcode 0o105, verified SIMH pdp10_cpu.c).
+//
+// ADJSP AC, E: the AC field is the stack pointer register.  The RIGHT HALF of AC is
+// incremented by the SIGNED extension of E (18-bit signed offset: if bit 17 of E is
+// set, it is treated as a negative offset, so ADJSP can grow or shrink the stack).
+// The LEFT HALF is adjusted by the SAME signed amount (it is a DOWNWARD-decrementing
+// counter of stack depth; adjusting by +n means we've logically pushed n words).
+// Both adjustments are modulo 2^18 (per-half, no inter-half carry).
+// This instruction is KL-only but is decoded here for completeness.
+const OP_ADJSP = 0o105;
+
+insn adjsp : encode #i36 ( op:9 = OP_ADJSP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "adjsp", operands : acn, i, x, y )
+    {
+        // Sign-extend the 18-bit Y to get a signed offset; both halves adjusted by the same amount.
+        #i18 off  = @ea ( i, x, y );                    // 18-bit EA (x==0 typically, i==0)
+        #i18 newl = ( ( ( ac[ acn ] >> HW_LSHFT ) & HW_MASK ) + off ) & HW_MASK;
+        #i18 newr = ( ( ac[ acn ] & HW_MASK ) + off ) & HW_MASK;
+        ac[ acn ] = ( newl << HW_LSHFT ) | newr;
     }
