@@ -159,3 +159,33 @@ jump insn sad : type branch, encode #i18 ( op:5 = OPC_SAD, i:1 -> I, y:12 -> Y )
 jump insn sas : type branch, encode #i18 ( op:5 = OPC_SAS, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "sas", operands : I, Y )
     { pc = ( ac == %M[ @ea ( I, Y ) ] ) ? ( pc + 1 ) : pc; }
+
+// JMP -- PC <- E.
+jump insn jmp : type branch, encode #i18 ( op:5 = OPC_JMP, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "jmp", operands : I, Y )
+    { pc = @ea ( I, Y ); }
+// JSP -- "jump and save program counter": AC <- (OV<<17 | extm<<16 | PC), PC <- E.
+// (extm = 0 on the base machine; the saved word is the return linkage.)
+jump insn jsp : type call, encode #i18 ( op:5 = OPC_JSP, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "jsp", operands : I, Y )
+    { #i18 e = @ea ( I, Y ); ac = ( ( ov & 1 ) << 17 ) | ( pc & AMASK ); pc = e; }
+// CAL -- store AC at 0o100 of the current field, PC <- 0o101.  (op 007, bit5 = 0)
+jump insn cal : type call, encode #i18 ( op:5 = OPC_CALJDA, i:1 = 0, y:12 -> Y ),
+    disasm ( mnemonic : "cal", operands : Y )
+    {
+        #i18 m = ( %PC & EPCMASK ) | 0o100;
+        %M[ m ] = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
+        pc = m + 1;
+    }
+// JDA -- "jump and deposit AC": store AC at E, PC <- E+1.  (op 007, bit5 = 1)
+jump insn jda : type call, encode #i18 ( op:5 = OPC_CALJDA, i:1 = 1, y:12 -> Y ),
+    disasm ( mnemonic : "jda", operands : Y )
+    {
+        #i18 m = ( %PC & EPCMASK ) | ( Y & DAMASK );
+        %M[ m ] = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
+        pc = m + 1;
+    }
+// XCT -- execute M[E] as an instruction (host trap with the EA so the engine re-decodes there).
+jump insn xct : type branch, encode #i18 ( op:5 = OPC_XCT, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "xct", operands : I, Y )
+    { pc = @ea ( I, Y ); }
