@@ -1725,7 +1725,10 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o620100 | grep -q ': jsp' && \
    \"$E\" upcl decode \"$P\" 0o160100 | grep -q ': cal' && \
    \"$E\" upcl decode \"$P\" 0o170100 | grep -q ': jda' && \
-   \"$E\" upcl decode \"$P\" 0o100100 | grep -q ': xct'")
+   \"$E\" upcl decode \"$P\" 0o100100 | grep -q ': xct' && \
+   \"$E\" upcl decode \"$P\" 0o760000 | grep -q ': opr' && \
+   \"$E\" upcl decode \"$P\" 0o761200 | grep -q ': opr' && \
+   \"$E\" upcl decode \"$P\" 0o760400 | grep -q ': opr'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c
