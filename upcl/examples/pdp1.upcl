@@ -1,97 +1,56 @@
+// DEC PDP-1 (1959) -- 18-bit, WORD-ADDRESSED, ONE'S-COMPLEMENT. A single accumulator (AC) and
+// in-out register (IO), a 12/16-bit PC, an Overflow flip-flop, six program flags and six sense
+// switches, and an 18-bit test-word register. Instruction word: op[0:4]:5, indirect[5]:1,
+// address Y[6:17]:12. Sign bit is bit 0 (DEC numbers bit 0 = MSB). Encoding + semantics oracle:
+// SIMH PDP1/ (pdp1_defs.h, pdp1_cpu.c, pdp1_sys.c, pdp1_dpy.c). WORD-ADDRESSING: byte_size ==
+// word_size == 18 (!= 8) marks this word-addressed; the decoder fetches one 18-bit word per PC
+// step and %M[a] indexes an 18-bit word cell.
 arch "pdp1" {
+    name "DEC PDP-1";
+    byte_size 18;
+    word_size 18;
+    psr_size 18;
+    address_size 16;            // Type-15 memory-extension address space; one field = 4096 words
 
-	name "DEC PDP-1";
-
-	//	endian none;
-
-	byte_size 18;
-	word_size 18;
-	psr_size 18;
-	address_size 12;
-
-	register_file {
-
-		group R {
-
-			[ #i18 ac ],
-			[ #i18 io ]
-
-		}
-
-		group S {
-
-			[ #i12 pc -> %PC ],
-			[ #i3 pf ] // program flags
-
-		}
-
-		group USER {
-
-			[ #i18 twr ]
-		
-		}
-
-	}
-
+    register_file {
+        group R {
+            [ #i18 ac ],        // Reg[0] accumulator
+            [ #i18 io ]         // Reg[1] in-out register
+        }
+        group S {
+            [ #i16 pc -> %PC ], // Reg[2] program counter (word index)
+            [ #i1  ov ],        // Reg[3] overflow flip-flop
+            [ #i6  pf ],        // Reg[4] program flags 1..6
+            [ #i6  ss ]         // Reg[5] sense switches 1..6
+        }
+        group USER {
+            [ #i18 tw ]         // Reg[6] test-word toggle switches
+        }
+    }
 }
 
-decoder_operands [ #i18 Y, #i3 N ];
+// --- machine constants (octal, from SIMH pdp1_defs.h) ----------------------
+const SIGN    = 0o400000;       // bit 0 = sign / most-negative
+const DMASK   = 0o777777;       // 18-bit word mask
+const IA      = 0o010000;       // indirect bit (bit 5)
+const DAMASK  = 0o007777;       // 12-bit direct address field
+const EPCMASK = 0o170000;       // PC field bits (high address)
+const AMASK   = 0o177777;       // 16-bit extended address
 
-//reset {
-//	pf = 0;
-//	ac = 0;
-//	io = 0;
-//	twr = 0;
-//	pc = 0100;
-//}
+// Opcode prototypes -- the FULL 18-bit instruction value (5-bit op in bits 0..4).
+const OP_AND = 0o020000;  const OP_IOR = 0o040000;  const OP_XOR = 0o060000;
+const OP_XCT = 0o100000;  const OP_CALJDA = 0o160000;
+const OP_LAC = 0o200000;  const OP_LIO = 0o220000;  const OP_DAC = 0o240000;
+const OP_DAP = 0o260000;  const OP_DIP = 0o300000;  const OP_DIO = 0o320000;
+const OP_DZM = 0o340000;  const OP_ADD = 0o400000;  const OP_SUB = 0o420000;
+const OP_IDX = 0o440000;  const OP_ISP = 0o460000;  const OP_SAD = 0o500000;
+const OP_SAS = 0o520000;  const OP_MUL = 0o540000;  const OP_DIV = 0o560000;
+const OP_JMP = 0o600000;  const OP_JSP = 0o620000;  const OP_SKP = 0o640000;
+const OP_SFT = 0o660000;  const OP_LAW = 0o700000;  const OP_IOT = 0o720000;
+const OP_OPR = 0o760000;
 
-insn add : ac += Y;
-insn and : ac &= Y;
-jump insn cal : type branch
-				{ pc = 0100; }
+// host trap vectors (run loop routes IOT_VECTOR -> Pdp1Io, HLT_VECTOR -> stop)
+const IOT_VECTOR = 0o72;
+const HLT_VECTOR = 0o77;
 
-insn dac : Y = ac;
-insn dio : Y = io;
-insn dip : Y = io;
-
-insn dzm : Y = 0;
-insn idx : Y += 1;
-insn ior : ac |= Y;
-
-jump insn jda : type branch {
-	t = Y;
-	Y = ac;
-	@pdp1_jsp( t );
-}
-
-jump insn isp : type branch
-				pre Y += 1
-				condition %S( Y > 0 )
-				{ pc += Y; }
-
-insn lac : ac = %M[ ac + Y ];
-insn law : ac = N;
-insn lio : io = Y;
-insn mus : ;
-
-jump insn sad : type branch
-				condition Y != ac
-				{ pc += 1; }
-
-jump insn sas : type branch
-				condition Y == ac
-				{ pc += 1; }
-
-insn sub : ac -= Y;
-insn xct : @trap ( 2, Y );
-insn xor : ac ^= Y;
-
-insn cla : ac = 0;
-insn clf : pf[N:1] = 0;
-insn cli : io = 0;
-insn cma : ac = ~ac;
-insn hlt : @trap ( 1 );
-insn lat : ac = twr;
-insn nop : ;
-insn stf : pf[N:1] = 1;
-
+decoder_operands [ #i18 Y, #i13 F, #i1 I ];
