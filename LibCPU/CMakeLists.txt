@@ -1731,7 +1731,10 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o760400 | grep -q 'condbr' && \
    \"$E\" upcl decode \"$P\" 0o640100 | grep -q ': skp' && \
    \"$E\" upcl decode \"$P\" 0o650100 | grep -q ': skp' && \
-   \"$E\" upcl decode \"$P\" 0o661000 | grep -q ': sft'")
+   \"$E\" upcl decode \"$P\" 0o661000 | grep -q ': sft' && \
+   \"$E\" upcl decode \"$P\" 0o700100 | grep -q ': law' && \
+   \"$E\" upcl decode \"$P@pdp1\"    0o540100 | grep -q ': mus' && \
+   \"$E\" upcl decode \"$P@pdp1mul\" 0o540100 | grep -q ': mul'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c

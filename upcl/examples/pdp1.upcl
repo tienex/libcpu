@@ -287,3 +287,134 @@ jump insn sft : type branch, encode #i18 ( op:5 = OPC_SFT, f:13 -> F ),
             bits = bits >> 1;
         }
     }
+
+// LAW -- load AC with the 12-bit Y as an immediate; the indirect bit I loads the complement.
+// AC <- (Y & DAMASK) ^ (I ? DMASK : 0)  (SIMH pdp1_cpu.c case 035)
+insn law : encode #i18 ( op:5 = OPC_LAW, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "law", operands : I, Y )
+    { ac = ( Y & DAMASK ) ^ ( I ? DMASK : 0 ); }
+
+// --- one's-complement hardware multiply (SIMH pdp1_cpu.c, case 026, UNIT_MDV path) -----------
+// Magnitudes multiplied by 17-step shift-and-add; sign applied if result is nonzero.
+// Result is a 36-bit quantity: bits[35:18] -> AC (high), bits[17:0] -> IO (low).
+// (AC = 0 reset, IO = |a| at entry; 17 shifts build up ac_tmp from the b-magnitude partial sums.)
+macro mul1c ( a, b ) {
+    #i1  sa   = ( a & SIGN ) ? 1 : 0;
+    #i1  sb   = ( b & SIGN ) ? 1 : 0;
+    #i36 ma   = sa ? ( a ^ DMASK ) : a;            // |a|
+    #i36 mb   = sb ? ( b ^ DMASK ) : b;            // |b|
+    #i36 iac  = 0;
+    #i36 iio  = ma & DMASK;
+    #i9  i    = 0;
+    while ( i < 17 ) {
+        if ( ( iio & 1 ) != 0 ) { iac = iac + mb; }
+        iio = ( ( iio >> 1 ) | ( ( iac & 1 ) << 17 ) ) & DMASK;
+        iac = ( iac >> 1 ) & DMASK;
+        i   = i + 1;
+    }
+    // negate both halves if result sign is negative AND result is nonzero (SIMH: AC^IO test)
+    result = ( ( ( sa ^ sb ) != 0 ) && ( ( iac | iio ) != 0 ) )
+           ? ( ( ( iac ^ DMASK ) << 18 ) | ( ( iio ^ DMASK ) & DMASK ) )
+           : ( ( iac << 18 )             | ( iio & DMASK ) );
+}
+
+// --- one's-complement hardware divide (SIMH pdp1_cpu.c, case 027, UNIT_MDV path) -------------
+// 18-step non-restoring divide: quotient -> AC, remainder -> IO.  Skips on success (PC+1).
+// Divide-check (|AC| >= |divisor|) sets OV and does NOT skip; AC/IO are unchanged.
+// Internal arithmetic is two's-complement integer (magnitudes are always non-negative).
+macro div1c ( d ) {
+    #i18 dv   = d & DMASK;
+    #i18 absa = ( ac & SIGN ) ? ( ac ^ DMASK ) : ac;    // |AC|
+    #i18 absv = ( dv & SIGN ) ? ( dv ^ DMASK ) : dv;   // |divisor|
+    if ( absa >= absv ) {
+        // divide check: overflow; no skip, no change to AC/IO
+        ov = 1;
+    } else {
+        #i1  sqn  = ( ( ac ^ dv ) & SIGN ) ? 1 : 0;    // quotient sign
+        #i1  srmd = ( ac & SIGN ) ? 1 : 0;              // remainder sign = dividend sign
+        #i18 iac  = ac & DMASK;
+        #i18 iio  = io & DMASK;
+        // make dividend positive
+        if ( ( iac & SIGN ) != 0 ) {
+            iac = ( iac ^ DMASK ) & DMASK;
+            iio = ( iio ^ DMASK ) & DMASK;
+        }
+        #i18 t = 0;
+        #i9  i = 0;
+        while ( i < 18 ) {
+            // non-restoring: add or subtract divisor based on sign of partial remainder
+            if ( t != 0 ) { iac = ( iac + absv ) & DMASK; }
+            else           { iac = ( iac - absv ) & DMASK; }
+            t = ( iac >> 17 ) & 1;
+            if ( i != 17 ) { iac = ( ( iac << 1 ) | ( ( iio >> 17 ) & 1 ) ) & DMASK; }
+            iio = ( ( iio << 1 ) | ( t ^ 1 ) ) & DMASK;
+            i = i + 1;
+        }
+        // final remainder correction
+        if ( t != 0 ) { iac = ( iac + absv ) & DMASK; }
+        // swap: quotient was accumulated in iio, remainder in iac; apply signs
+        #i18 quot = ( ( sqn != 0 )  && ( iio != 0 ) ) ? ( iio ^ DMASK ) : iio;
+        #i18 rmd  = ( ( srmd != 0 ) && ( iac != 0 ) ) ? ( iac ^ DMASK ) : iac;
+        ac = quot;
+        io = rmd;
+        pc = pc + 1;                                    // skip on success (SIMH INCR_ADDR)
+    }
+}
+
+// Multiply/divide -- gated. Base machine: multiply-step / divide-step (op 026/027). Variant:
+// Type-10 hardware multiply/divide at the same opcodes. The two features are mutually exclusive
+// (each cpu enables exactly one), so opcodes 026/027 have a single definition per cpu.
+feature muldiv_step {
+    // MUS -- one multiply step: if IO bit 17 (LSB) is set, AC <- AC + M[E] (one's-comp add with
+    // end-around carry); then the AC:IO pair shifts right one. (SIMH case 026, non-UNIT_MDV path.)
+    insn mus : encode #i18 ( op:5 = OPC_MUL, i:1 -> I, y:12 -> Y ),
+        disasm ( mnemonic : "mus", operands : I, Y )
+        {
+            if ( ( io & 1 ) != 0 ) {
+                #i32 s = ( ac & DMASK ) + ( %M[ @ea ( I, Y ) ] & DMASK );
+                ac = ( s > DMASK ) ? ( ( s + 1 ) & DMASK ) : ( s & DMASK );
+            }
+            #i1 lb = ac & 1;
+            ac = ( ac >> 1 ) & DMASK;
+            io = ( ( io >> 1 ) | ( lb << 17 ) ) & DMASK;
+        }
+    // DIS -- one divide step (non-restoring). (SIMH case 027, non-UNIT_MDV path.)
+    insn dis : encode #i18 ( op:5 = OPC_DIV, i:1 -> I, y:12 -> Y ),
+        disasm ( mnemonic : "dis", operands : I, Y )
+        {
+            #i1  hb = ( ac >> 17 ) & 1;
+            ac = ( ( ac << 1 ) | ( ( io >> 17 ) & 1 ) ) & DMASK;
+            io = ( ( io << 1 ) | ( hb ^ 1 ) ) & DMASK;
+            #i18 mb = %M[ @ea ( I, Y ) ] & DMASK;
+            // if IO & 1: subtract (add complement+1); else add -- SIMH uses two's-comp arithmetic
+            if ( ( io & 1 ) != 0 ) {
+                #i32 s = ( ac & DMASK ) + ( mb ^ DMASK );
+                ac = ( s > DMASK ) ? ( ( s + 1 ) & DMASK ) : ( s & DMASK );
+            } else {
+                #i32 s = ( ac & DMASK ) + mb + 1;
+                #i18 r = s & DMASK;
+                r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
+                ac = ( r == DMASK ) ? 0 : r;
+            }
+        }
+}
+feature muldiv_hw {
+    // MUL -- hardware multiply: (AC:IO) <- AC * M[E], one's-complement.
+    // (SIMH pdp1_cpu.c case 026, UNIT_MDV path; see @mul1c above for the algorithm.)
+    insn mul : encode #i18 ( op:5 = OPC_MUL, i:1 -> I, y:12 -> Y ),
+        disasm ( mnemonic : "mul", operands : I, Y )
+        {
+            #i36 prod = @mul1c ( ac, %M[ @ea ( I, Y ) ] );
+            ac = ( prod >> 18 ) & DMASK;
+            io = prod & DMASK;
+        }
+    // DIV -- hardware divide: AC <- (AC:IO) / M[E], IO <- remainder; skip on success; OV on
+    // divide-check. (SIMH pdp1_cpu.c case 027, UNIT_MDV path; see @div1c above for algorithm.)
+    jump insn div : type branch, encode #i18 ( op:5 = OPC_DIV, i:1 -> I, y:12 -> Y ),
+        disasm ( mnemonic : "div", operands : I, Y )
+        { @div1c ( %M[ @ea ( I, Y ) ] ); }
+}
+
+features { muldiv_step; muldiv_hw; }
+cpu "pdp1"    { feature muldiv_step; }    // base PDP-1: multiply-step / divide-step
+cpu "pdp1mul" { feature muldiv_hw;   }    // Type-10 hardware multiply/divide (Spacewar target)
