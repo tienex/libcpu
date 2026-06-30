@@ -1160,6 +1160,46 @@ add_test(NAME upcl.decode-pdp10-boolean COMMAND sh -c
    grep -q 'acn=0x2'       '${CMAKE_BINARY_DIR}/pdp10.iors'")
 set_tests_properties(upcl.decode-pdp10-boolean PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
+# PDP-10 fixed-point arithmetic (ADD/SUB/MUL/IMUL/IDIV/DIV x4 modes, double DADD/DSUB/DMUL/DDIV,
+# shifts ASH/LSH/ROT/JFFO/ASHC/LSHC/ROTC). Opcodes sourced from SIMH pdp10_sys.c / DEC HRM.
+# Test words: i=0, x=0, ac=1, y=0o100. op:9 ac:4 i:1 x:4 y:18 MSB-first, 36-bit word.
+# ADD=0o270, SUB=0o274, IMUL=0o220, IDIV=0o230, ASH=0o240, LSH=0o242, ROT=0o241.
+add_test(NAME upcl.decode-pdp10-arith COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o270040000100 > '${CMAKE_BINARY_DIR}/pdp10.add' && \
+   grep -q '0x0000: add'   '${CMAKE_BINARY_DIR}/pdp10.add' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.add' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.add' && \
+   \"$E\" upcl decode \"$P\" 0o271040000100 > '${CMAKE_BINARY_DIR}/pdp10.addi' && \
+   grep -q '0x0000: addi'  '${CMAKE_BINARY_DIR}/pdp10.addi' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.addi' && \
+   \"$E\" upcl decode \"$P\" 0o274040000100 > '${CMAKE_BINARY_DIR}/pdp10.sub' && \
+   grep -q '0x0000: sub'   '${CMAKE_BINARY_DIR}/pdp10.sub' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.sub' && \
+   \"$E\" upcl decode \"$P\" 0o275040000100 > '${CMAKE_BINARY_DIR}/pdp10.subi' && \
+   grep -q '0x0000: subi'  '${CMAKE_BINARY_DIR}/pdp10.subi' && \
+   \"$E\" upcl decode \"$P\" 0o220040000100 > '${CMAKE_BINARY_DIR}/pdp10.imul' && \
+   grep -q '0x0000: imul'  '${CMAKE_BINARY_DIR}/pdp10.imul' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.imul' && \
+   \"$E\" upcl decode \"$P\" 0o221040000100 > '${CMAKE_BINARY_DIR}/pdp10.imuli' && \
+   grep -q '0x0000: imuli' '${CMAKE_BINARY_DIR}/pdp10.imuli' && \
+   \"$E\" upcl decode \"$P\" 0o230040000100 > '${CMAKE_BINARY_DIR}/pdp10.idiv' && \
+   grep -q '0x0000: idiv'  '${CMAKE_BINARY_DIR}/pdp10.idiv' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.idiv' && \
+   \"$E\" upcl decode \"$P\" 0o231040000100 > '${CMAKE_BINARY_DIR}/pdp10.idivi' && \
+   grep -q '0x0000: idivi' '${CMAKE_BINARY_DIR}/pdp10.idivi' && \
+   \"$E\" upcl decode \"$P\" 0o240040000100 > '${CMAKE_BINARY_DIR}/pdp10.ash' && \
+   grep -q '0x0000: ash'   '${CMAKE_BINARY_DIR}/pdp10.ash' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.ash' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.ash' && \
+   \"$E\" upcl decode \"$P\" 0o242040000100 > '${CMAKE_BINARY_DIR}/pdp10.lsh' && \
+   grep -q '0x0000: lsh'   '${CMAKE_BINARY_DIR}/pdp10.lsh' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.lsh' && \
+   \"$E\" upcl decode \"$P\" 0o241040000100 > '${CMAKE_BINARY_DIR}/pdp10.rot' && \
+   grep -q '0x0000: rot'   '${CMAKE_BINARY_DIR}/pdp10.rot' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.rot'")
+set_tests_properties(upcl.decode-pdp10-arith PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

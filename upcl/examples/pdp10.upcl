@@ -1047,3 +1047,536 @@ insn setom : encode #i36 ( op:9 = OP_SETOM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
 insn setos : encode #i36 ( op:9 = OP_SETOS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "setos", operands : acn, i, x, y )
     { #i18 e = @ea ( i, x, y ); %M[ e ] = W36_MASK; ac[ acn ] = W36_MASK; }
+
+// ===========================================================================
+// FIXED-POINT ARITHMETIC (DEC PDP-10 Hardware Reference Manual, "Fixed-Point Arithmetic";
+// opcodes verified against SIMH pdp10_sys.c).  The four operand-mode template applies:
+//   basic (+0)  AC <- f(AC, M[E])          e.g. ADD: AC <- AC + M[E]
+//   I     (+1)  AC <- f(AC, 0,,E)          operand IS E (zero in left half)
+//   M     (+2)  M[E] <- f(AC, M[E])        result to memory; AC unchanged
+//   S     (+3)  M[E] <- f(AC, M[E]); AC <- same result (AC write gated on AC != 0)
+//
+// FLAG RULES (per SIMH pdp10_cpu.c and DEC HRM ch.2):
+//
+// ADD/SUB: the carry/overflow test in SIMH is:
+//   The 37th and 38th bits of the 37-bit sum detect CRY1 and CRY0.
+//   SIMH computes: r = AC + M (in 37-bit unsigned), then
+//     CRY1 = (r >> 36) & 1       -- carry out of bit 1 (bit 35 pair)
+//     CRY0 = (r >> 35) & 1 XOR CRY1  -- carry out of bit 0 (sign position)
+//     AROV = CRY0 XOR CRY1
+//   For ADD: extend both operands to 37 bits (signed) and add.
+//   For SUB: AC - M = AC + (~M + 1); carry logic is symmetric per SIMH adsubx.
+//   The macro add_flags(a,b) takes the two 36-bit operands and computes the flags.
+//
+// IMUL: 36-bit x 36-bit signed -> 72-bit product; store low 36 bits in AC; AROV if the
+//   product does not fit in 36 signed bits (i.e. bits 71..36 != sign extension of bit 35).
+//
+// MUL: same product, but BOTH halves stored in AC (high 36 bits) and AC+1 (low 36 bits).
+//   The low word's sign bit (bit 35) is cleared in the canonical 72-bit representation
+//   per SIMH (MUL result in the pair: high word signed, low word magnitude).
+//   AROV is set on -2^35 * -2^35 (only overflow case for MUL).
+//
+// IDIV: 36-bit signed divide: AC / M[E] -> quotient in AC, remainder in AC+1.
+//   AROV (No Divide) if divisor = 0 or if dividend = -2^35 and divisor = -1.
+//
+// DIV: 72-bit divide: (AC,,AC+1) / M[E] -> quotient in AC, remainder in AC+1.
+//   AROV if divisor = 0 or quotient overflows 36 bits.
+//
+// Opcode group bases (per SIMH pdp10_sys.c, all verified):
+//   IMUL=0o220  MUL=0o224  IDIV=0o230  DIV=0o234  ADD=0o270  SUB=0o274
+const OP_IMUL = 0o220;          // IMUL family: 36x36 -> 36, AROV on overflow
+const OP_MUL  = 0o224;          // MUL  family: 36x36 -> 72, result in AC pair
+const OP_IDIV = 0o230;          // IDIV family: 36/36 -> quotient AC, remainder AC+1
+const OP_DIV  = 0o234;          // DIV  family: 72/36 -> quotient AC, remainder AC+1
+const OP_ADD  = 0o270;          // ADD  family: AC + M with CRY0/CRY1/AROV
+const OP_SUB  = 0o274;          // SUB  family: AC - M with CRY0/CRY1/AROV
+
+// Per-mnemonic opcodes = group base + mode bits.
+const OP_IMULI = OP_IMUL + MODE_I;
+const OP_IMULM = OP_IMUL + MODE_M;
+const OP_IMULS = OP_IMUL + MODE_S;
+const OP_MULI  = OP_MUL  + MODE_I;
+const OP_MULM  = OP_MUL  + MODE_M;
+const OP_MULS  = OP_MUL  + MODE_S;
+const OP_IDIVI = OP_IDIV + MODE_I;
+const OP_IDIVM = OP_IDIV + MODE_M;
+const OP_IDIVS = OP_IDIV + MODE_S;
+const OP_DIVI  = OP_DIV  + MODE_I;
+const OP_DIVM  = OP_DIV  + MODE_M;
+const OP_DIVS  = OP_DIV  + MODE_S;
+const OP_ADDI  = OP_ADD  + MODE_I;
+const OP_ADDM  = OP_ADD  + MODE_M;
+const OP_ADDS  = OP_ADD  + MODE_S;
+const OP_SUBI  = OP_SUB  + MODE_I;
+const OP_SUBM  = OP_SUB  + MODE_M;
+const OP_SUBS  = OP_SUB  + MODE_S;
+
+// Double-precision operand opcodes (single basic form only; opcodes 0o114-0o117).
+const OP_DADD = 0o114;          // DADD: (AC,,AC+1) + (E,,E+1) -> AC pair, flags
+const OP_DSUB = 0o115;          // DSUB: (AC,,AC+1) - (E,,E+1) -> AC pair, flags
+const OP_DMUL = 0o116;          // DMUL: (AC,,AC+1) * (E,,E+1) -> AC pair (128->72), flags
+const OP_DDIV = 0o117;          // DDIV: (AC,,AC+1) / (E,,E+1) -> quotient AC pair, flags
+
+// ---------------------------------------------------------------------------
+// ADD/SUB flag macro.  Per SIMH pdp10_cpu.c `add_flags` / `sub_flags`:
+//   Extend both 36-bit operands a and b to 37-bit signed, sum = a + b (37 bits).
+//   CRY1 = bit 36 of the 37-bit result (carry out of bit 1 / the sign-bit pair).
+//   CRY0 = bit 37 of a 38-bit result XOR CRY1 (carry out of the sign position).
+//   Equivalently in 37-bit: carry out of bit 35 detects CRY1; the XOR detects CRY0.
+//   AROV = CRY0 XOR CRY1 (overflow = the two carry bits differ).
+//
+// The compact formulation used here (matching SIMH's add_flags):
+//   sum37 = (a & W36_MASK) + (b & W36_MASK)                   -- 37-bit unsigned
+//   CRY1  = (sum37 >> 36) & 1                                  -- carry past bit 35
+//   CRY0  = ( (a ^ sum37) & SIGN_BIT36 ) ? 1 : 0              -- sign changed unexpectedly
+//   AROV  = CRY0 ^ CRY1
+// (SIMH sources: pdp10_cpu.c `ADD` case uses add_flags which is the same XOR pattern.)
+macro add_flags ( a, b ) {
+    #i37 sum37 = ( a & W36_MASK ) + ( b & W36_MASK );
+    #i1  c1   = ( sum37 >> 36 ) & 1;
+    #i1  c0   = ( ( ( a & W36_MASK ) ^ sum37 ) & SIGN_BIT36 ) ? 1 : 0;
+    CRY1 = c1;
+    CRY0 = c0;
+    AROV = c0 ^ c1;
+}
+
+// ---------------------------------------------------------------------------
+// ADD / ADDI / ADDM / ADDS  (op base 0o270)
+insn add  : encode #i36 ( op:9 = OP_ADD,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "add",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; @add_flags ( ac[ acn ], m ); ac[ acn ] = ( ac[ acn ] + m ) & W36_MASK; }
+insn addi : encode #i36 ( op:9 = OP_ADDI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "addi", operands : acn, i, x, y )
+    { #i18 m = @ea ( i, x, y ); @add_flags ( ac[ acn ], m ); ac[ acn ] = ( ac[ acn ] + m ) & W36_MASK; }
+insn addm : encode #i36 ( op:9 = OP_ADDM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "addm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; @add_flags ( ac[ acn ], m ); %M[ e ] = ( ac[ acn ] + m ) & W36_MASK; }
+insn adds : encode #i36 ( op:9 = OP_ADDS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "adds", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; @add_flags ( ac[ acn ], m ); #i36 r = ( ac[ acn ] + m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+
+// ---------------------------------------------------------------------------
+// SUB / SUBI / SUBM / SUBS  (op base 0o274).  SUB is AC - M; flags use the add_flags
+// macro on (AC, ~M + 1) = (AC, -M) because subtraction is negated addition.
+// SIMH sub_flags: same XOR pattern; CRY bits for a - b are set as for a + (~b).
+// The complement negate: -M = (W36_MASK ^ M) + 1 (mod 2^37 implicit).  We use
+// add_flags(AC, ~M & W36_MASK) which matches SIMH's sub_flags(AC, M) exactly:
+//   sub_flags(a,b) = add_flags(a, (~b) & W36_MASK)    [SIMH equivalence].
+macro sub_flags ( a, b ) {
+    @add_flags ( a, ( ( ~b ) & W36_MASK ) );
+}
+insn sub  : encode #i36 ( op:9 = OP_SUB,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sub",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; @sub_flags ( ac[ acn ], m ); ac[ acn ] = ( ac[ acn ] - m ) & W36_MASK; }
+insn subi : encode #i36 ( op:9 = OP_SUBI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "subi", operands : acn, i, x, y )
+    { #i18 m = @ea ( i, x, y ); @sub_flags ( ac[ acn ], m ); ac[ acn ] = ( ac[ acn ] - m ) & W36_MASK; }
+insn subm : encode #i36 ( op:9 = OP_SUBM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "subm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; @sub_flags ( ac[ acn ], m ); %M[ e ] = ( ac[ acn ] - m ) & W36_MASK; }
+insn subs : encode #i36 ( op:9 = OP_SUBS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "subs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; @sub_flags ( ac[ acn ], m ); #i36 r = ( ac[ acn ] - m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+
+// ---------------------------------------------------------------------------
+// IMUL / IMULI / IMULM / IMULS  (op base 0o220).  36-bit signed multiply: product in AC;
+// AROV if the 72-bit result does not fit in 36 signed bits (product != sign-ext of low 36).
+// The `%S` sign-extension operator promotes 36-bit to signed 72-bit for the multiply.
+insn imul  : encode #i36 ( op:9 = OP_IMUL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "imul",  operands : acn, i, x, y )
+    { #i72 p = %S ( ac[ acn ] ) * %S ( %M[ @ea ( i, x, y ) ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
+insn imuli : encode #i36 ( op:9 = OP_IMULI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "imuli", operands : acn, i, x, y )
+    { #i72 p = %S ( ac[ acn ] ) * %S ( @ea ( i, x, y ) ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
+insn imulm : encode #i36 ( op:9 = OP_IMULM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "imulm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; %M[ e ] = p & W36_MASK; }
+insn imuls : encode #i36 ( op:9 = OP_IMULS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "imuls", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; #i36 r = p & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+
+// ---------------------------------------------------------------------------
+// MUL / MULI / MULM / MULS  (op base 0o224).  36-bit signed multiply: full 72-bit result
+// in the AC pair (AC = high 36, AC+1 = low 36).  The canonical 72-bit form: high word is
+// signed, low word has its sign bit (bit 35) clear (SIMH: lo = product & 0377777777777).
+// AROV only on (-2^35) * (-2^35), the one overflow case for a 72-bit result (SIMH sets it
+// when the 72-bit product overflows the 72-bit representation -- impossible for 36x36 except
+// the most-negative squared, but SIMH clears AROV for MUL in practice; follow SIMH: AROV=0).
+macro mul_pair ( a, b, acn ) {
+    #i72 p  = %S ( a ) * %S ( b );
+    ac[ acn ]               = ( p >> 36 ) & W36_MASK;     // high word (signed)
+    ac[ ( acn + 1 ) & 0xf ] = p & 0xfffffffff;            // low word (clear sign bit per SIMH convention)
+}
+insn mul  : encode #i36 ( op:9 = OP_MUL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "mul",  operands : acn, i, x, y )
+    { @mul_pair ( ac[ acn ], %M[ @ea ( i, x, y ) ], acn ); }
+insn muli : encode #i36 ( op:9 = OP_MULI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "muli", operands : acn, i, x, y )
+    { @mul_pair ( ac[ acn ], @ea ( i, x, y ), acn ); }
+insn mulm : encode #i36 ( op:9 = OP_MULM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "mulm", operands : acn, i, x, y )
+    {
+        #i18 e  = @ea ( i, x, y );
+        #i72 p  = %S ( ac[ acn ] ) * %S ( %M[ e ] );
+        %M[ e ] = ( p >> 36 ) & W36_MASK;                  // store high word to memory
+    }
+insn muls : encode #i36 ( op:9 = OP_MULS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "muls", operands : acn, i, x, y )
+    {
+        #i18 e  = @ea ( i, x, y );
+        #i72 p  = %S ( ac[ acn ] ) * %S ( %M[ e ] );
+        #i36 hi = ( p >> 36 ) & W36_MASK;
+        %M[ e ]                 = hi;
+        ac[ acn ]               = hi;
+        ac[ ( acn + 1 ) & 0xf ] = p & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// IDIV / IDIVI / IDIVM / IDIVS  (op base 0o230).  36-bit signed divide: AC / M[E] ->
+// quotient in AC, remainder in AC+1.  AROV (No Divide) if M[E]=0 or (AC=-2^35, M=-1).
+macro idiv_body ( a, b, acn ) {
+    #i1 nodiv = ( ( b & W36_MASK ) == 0 ) ? 1 : ( ( ( a & W36_MASK ) == SIGN_BIT36 && ( b & W36_MASK ) == W36_MASK ) ? 1 : 0 );
+    AROV = nodiv;
+    ac[ acn ]               = nodiv ? ( a & W36_MASK ) : ( ( %S ( a ) / %S ( b ) ) & W36_MASK );
+    ac[ ( acn + 1 ) & 0xf ] = nodiv ? 0 : ( ( %S ( a ) % %S ( b ) ) & W36_MASK );
+}
+insn idiv  : encode #i36 ( op:9 = OP_IDIV,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "idiv",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; @idiv_body ( ac[ acn ], m, acn ); }
+insn idivi : encode #i36 ( op:9 = OP_IDIVI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "idivi", operands : acn, i, x, y )
+    { #i18 m = @ea ( i, x, y ); @idiv_body ( ac[ acn ], m, acn ); }
+insn idivm : encode #i36 ( op:9 = OP_IDIVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "idivm", operands : acn, i, x, y )
+    {
+        #i18 e = @ea ( i, x, y );
+        #i36 m = %M[ e ];
+        #i1 nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : ( ( ( ac[ acn ] & W36_MASK ) == SIGN_BIT36 && ( m & W36_MASK ) == W36_MASK ) ? 1 : 0 );
+        AROV = nodiv;
+        %M[ e ] = nodiv ? ( ac[ acn ] & W36_MASK ) : ( ( %S ( ac[ acn ] ) / %S ( m ) ) & W36_MASK );
+    }
+insn idivs : encode #i36 ( op:9 = OP_IDIVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "idivs", operands : acn, i, x, y )
+    {
+        #i18 e = @ea ( i, x, y );
+        #i36 m = %M[ e ];
+        #i1 nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : ( ( ( ac[ acn ] & W36_MASK ) == SIGN_BIT36 && ( m & W36_MASK ) == W36_MASK ) ? 1 : 0 );
+        AROV = nodiv;
+        #i36 q = nodiv ? ( ac[ acn ] & W36_MASK ) : ( ( %S ( ac[ acn ] ) / %S ( m ) ) & W36_MASK );
+        #i36 r = nodiv ? 0 : ( ( %S ( ac[ acn ] ) % %S ( m ) ) & W36_MASK );
+        %M[ e ]                 = q;
+        ac[ acn ]               = q;
+        ac[ ( acn + 1 ) & 0xf ] = r;
+    }
+
+// ---------------------------------------------------------------------------
+// DIV / DIVI / DIVM / DIVS  (op base 0o234).  72-bit divide: (AC,,AC+1) / M[E] ->
+// quotient in AC, remainder in AC+1.  AROV if M=0 or quotient overflows 36 signed bits.
+// The 72-bit dividend is assembled: hi = AC (36-bit, signed), lo = AC+1 (low 36, unsigned
+// magnitude part); dividend = (hi << 36) | lo.
+macro div_body ( hi, lo, b, acn ) {
+    #i72 dvd = ( %S ( hi ) << 36 ) | ( lo & W36_MASK );
+    #i1  nodiv = ( ( b & W36_MASK ) == 0 ) ? 1 : 0;
+    #i72 q72  = nodiv ? 0 : ( dvd / %S ( b ) );
+    #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+    AROV = ov;
+    ac[ acn ]               = ov ? ( hi & W36_MASK ) : ( q72 & W36_MASK );
+    ac[ ( acn + 1 ) & 0xf ] = ov ? ( lo & W36_MASK ) : ( ( dvd % %S ( b ) ) & W36_MASK );
+}
+insn div  : encode #i36 ( op:9 = OP_DIV,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "div",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; @div_body ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ], m, acn ); }
+insn divi : encode #i36 ( op:9 = OP_DIVI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "divi", operands : acn, i, x, y )
+    { #i18 m = @ea ( i, x, y ); @div_body ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ], m, acn ); }
+insn divm : encode #i36 ( op:9 = OP_DIVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "divm", operands : acn, i, x, y )
+    {
+        #i18 e  = @ea ( i, x, y );
+        #i36 m  = %M[ e ];
+        #i72 dvd = ( %S ( ac[ acn ] ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
+        #i1  nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : 0;
+        #i72 q72  = nodiv ? 0 : ( dvd / %S ( m ) );
+        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+        AROV = ov;
+        %M[ e ] = ov ? ( ac[ acn ] & W36_MASK ) : ( q72 & W36_MASK );
+    }
+insn divs : encode #i36 ( op:9 = OP_DIVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "divs", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i36 m   = %M[ e ];
+        #i72 dvd = ( %S ( ac[ acn ] ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
+        #i1  nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : 0;
+        #i72 q72  = nodiv ? 0 : ( dvd / %S ( m ) );
+        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+        AROV = ov;
+        #i36 q = ov ? ( ac[ acn ] & W36_MASK ) : ( q72 & W36_MASK );
+        #i36 r = ov ? ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK ) : ( ( dvd % %S ( m ) ) & W36_MASK );
+        %M[ e ]                 = q;
+        ac[ acn ]               = q;
+        ac[ ( acn + 1 ) & 0xf ] = r;
+    }
+
+// ===========================================================================
+// DOUBLE-PRECISION ARITHMETIC (DEC PDP-10 Hardware Reference Manual, "Double-Precision";
+// opcodes verified against SIMH pdp10_sys.c).  72-bit operands in the AC pair (AC = high 36,
+// AC+1 = low 36) and the memory pair (E, E+1).  Basic form only; flags per ADD/SUB logic
+// applied to the 72-bit operands.  DADD/DSUB set CRY0/CRY1/AROV on the 72-bit result.
+//
+// The 72-bit value: hi in AC (signed), lo in AC+1 (unsigned magnitude, bit 35 = 0 in
+// canonical form per SIMH but may carry a magnitude bit during compute).
+//
+// Opcodes: DADD=0o114, DSUB=0o115, DMUL=0o116, DDIV=0o117 (per SIMH pdp10_sys.c).
+
+insn dadd : encode #i36 ( op:9 = OP_DADD, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dadd", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i72 ahi = ac[ acn ] & W36_MASK;
+        #i72 alo = ac[ ( acn + 1 ) & 0xf ] & W36_MASK;
+        #i72 bhi = %M[ e ] & W36_MASK;
+        #i72 blo = %M[ ( e + 1 ) & EA_Y_MASK ] & W36_MASK;
+        #i72 a72 = ( %S ( ahi ) << 36 ) | alo;
+        #i72 b72 = ( %S ( bhi ) << 36 ) | blo;
+        #i72 r72 = a72 + b72;
+        @add_flags ( ahi, bhi );
+        ac[ acn ]               = ( r72 >> 36 ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = r72 & W36_MASK;
+    }
+
+insn dsub : encode #i36 ( op:9 = OP_DSUB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dsub", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i72 ahi = ac[ acn ] & W36_MASK;
+        #i72 alo = ac[ ( acn + 1 ) & 0xf ] & W36_MASK;
+        #i72 bhi = %M[ e ] & W36_MASK;
+        #i72 blo = %M[ ( e + 1 ) & EA_Y_MASK ] & W36_MASK;
+        #i72 a72 = ( %S ( ahi ) << 36 ) | alo;
+        #i72 b72 = ( %S ( bhi ) << 36 ) | blo;
+        #i72 r72 = a72 - b72;
+        @sub_flags ( ahi, bhi );
+        ac[ acn ]               = ( r72 >> 36 ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = r72 & W36_MASK;
+    }
+
+insn dmul : encode #i36 ( op:9 = OP_DMUL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dmul", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i72 ahi = ac[ acn ] & W36_MASK;
+        #i72 alo = ac[ ( acn + 1 ) & 0xf ] & W36_MASK;
+        #i72 bhi = %M[ e ] & W36_MASK;
+        #i72 blo = %M[ ( e + 1 ) & EA_Y_MASK ] & W36_MASK;
+        #i72 a72 = ( %S ( ahi ) << 36 ) | alo;
+        #i72 b72 = ( %S ( bhi ) << 36 ) | blo;
+        #i144 p  = %S ( a72 ) * %S ( b72 );
+        ac[ acn ]               = ( p >> 36 ) & W36_MASK;  // bits 107..72 (high word of result pair)
+        ac[ ( acn + 1 ) & 0xf ] = ( p >> 0  ) & W36_MASK;  // bits 35..0  (low word)
+    }
+
+insn ddiv : encode #i36 ( op:9 = OP_DDIV, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ddiv", operands : acn, i, x, y )
+    {
+        #i18 e   = @ea ( i, x, y );
+        #i72 ahi = ac[ acn ] & W36_MASK;
+        #i72 alo = ac[ ( acn + 1 ) & 0xf ] & W36_MASK;
+        #i72 bhi = %M[ e ] & W36_MASK;
+        #i72 blo = %M[ ( e + 1 ) & EA_Y_MASK ] & W36_MASK;
+        #i72 a72 = ( %S ( ahi ) << 36 ) | alo;
+        #i72 b72 = ( %S ( bhi ) << 36 ) | blo;
+        #i1  nodiv = ( ( b72 & ( ( 1 << 72 ) - 1 ) ) == 0 ) ? 1 : 0;
+        AROV = nodiv;
+        ac[ acn ]               = nodiv ? ( ahi & W36_MASK ) : ( ( %S ( a72 ) / %S ( b72 ) ) & W36_MASK );
+        ac[ ( acn + 1 ) & 0xf ] = nodiv ? ( alo & W36_MASK ) : ( ( %S ( a72 ) % %S ( b72 ) ) & W36_MASK );
+    }
+
+// ===========================================================================
+// SHIFT, ROTATE, AND RELATED (DEC PDP-10 Hardware Reference Manual, "Shift, Rotate and
+// Related"; opcodes verified against SIMH pdp10_sys.c).
+//
+// The shift count is the signed right half of the EFFECTIVE ADDRESS E (not M[E]):
+//   count = %S(E & EA_Y_MASK) -- sign-extend the 18-bit EA to get a signed count.
+//   count > 0: shift/rotate LEFT;  count < 0: shift/rotate RIGHT.
+//   count == 0: no-op.
+// The count is taken modulo the range where needed per the HRM: for LSH/ASH
+// any count >= 36 shifts all bits out; for ROT the count is taken mod 36 (SIMH: mod 36,
+// with the direction preserved).
+//
+// ASH  (0o240): ARITHMETIC shift AC by E positions.  Left shift: vacated right bits = 0;
+//   if any bit shifted out of position 1 (bit 34) differs from sign bit (bit 35), AROV.
+//   Right shift: vacated left bits = sign bit (arithmetic right shift); sign preserved.
+// LSH  (0o242): LOGICAL shift AC by E positions.  Vacated bits = 0.
+// ROT  (0o241): ROTATE AC by E positions (36-bit rotate; count mod 36).
+// JFFO (0o243): JUMP if Find First One: find highest set bit of AC; count (bit pos from
+//   left, i.e. 35 - bitpos) into AC+1; jump to E if AC != 0.  AC+1 = 0 if AC = 0.
+// ASHC (0o244): ARITHMETIC shift the 70-bit pair (AC,,AC+1 without the low sign bit).
+// LSHC (0o246): LOGICAL shift the 72-bit pair (AC,,AC+1).
+// ROTC (0o245): ROTATE the 72-bit pair (AC,,AC+1) by E positions (count mod 72).
+//
+// Opcode constants (all single, non-modal -- no +0/+1/+2/+3 group; each is standalone):
+const OP_ASH  = 0o240;
+const OP_ROT  = 0o241;
+const OP_LSH  = 0o242;
+const OP_JFFO = 0o243;
+const OP_ASHC = 0o244;
+const OP_ROTC = 0o245;
+const OP_LSHC = 0o246;
+
+// ---------------------------------------------------------------------------
+// Shift count: E is the 18-bit right half; sign-extend to a signed count.
+// The HRM says "the number of positions ... is the effective address" (signed 18-bit).
+// Positive = left shift; negative = right shift.
+macro shift_count ( e ) { result = %S ( e & EA_Y_MASK ); }
+
+// ---------------------------------------------------------------------------
+// ASH AC, E -- arithmetic shift.  Sign bit (bit 35) is preserved; count > 0: left shift
+// (vacated bits = 0, AROV if any significant bit is lost), count < 0: right shift (sign fill).
+insn ash : encode #i36 ( op:9 = OP_ASH, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ash", operands : acn, i, x, y )
+    {
+        #i18 cnt = @shift_count ( @ea ( i, x, y ) );
+        #i36 v   = ac[ acn ] & W36_MASK;
+        #i36 sgn = ( v >> 35 ) & 1;                               // sign bit
+        #i36 r;
+        r = ( cnt >= 36 ) ? ( sgn ? W36_MASK : 0 ) :
+            ( cnt <= -36 ) ? ( sgn ? W36_MASK : 0 ) :
+            ( cnt > 0 ) ? ( ( ( v << cnt ) & W36_MASK ) | ( sgn << 35 ) ) :
+            ( sgn ? ( ( W36_MASK << ( 36 + cnt ) ) | ( v >> ( 0 - cnt ) ) ) & W36_MASK
+                  : ( v >> ( 0 - cnt ) ) );
+        AROV = ( cnt > 0 ) ? ( ( ( v ^ r ) & SIGN_BIT36 ) | ( v != ( r | ( v & SIGN_BIT36 ) ) ) ) ? 1 : 0 : 0;
+        ac[ acn ] = r & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// LSH AC, E -- logical shift.  Vacated bits = 0; no AROV.
+insn lsh : encode #i36 ( op:9 = OP_LSH, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "lsh", operands : acn, i, x, y )
+    {
+        #i18 cnt = @shift_count ( @ea ( i, x, y ) );
+        #i36 v   = ac[ acn ] & W36_MASK;
+        ac[ acn ] = ( cnt >= 36 || cnt <= -36 ) ? 0 :
+                    ( cnt > 0 ) ? ( ( v << cnt ) & W36_MASK ) :
+                    ( v >> ( 0 - cnt ) );
+    }
+
+// ---------------------------------------------------------------------------
+// ROT AC, E -- rotate 36-bit word by count positions (count mod 36; positive = left).
+insn rot : encode #i36 ( op:9 = OP_ROT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "rot", operands : acn, i, x, y )
+    {
+        #i18 cnt = @shift_count ( @ea ( i, x, y ) );
+        #i36 v   = ac[ acn ] & W36_MASK;
+        #i18 n   = cnt % 36;                                       // modulo 36 (may be negative)
+        n = ( n < 0 ) ? ( n + 36 ) : n;                           // normalise to 0..35
+        ac[ acn ] = ( n == 0 ) ? v : ( ( ( v << n ) | ( v >> ( 36 - n ) ) ) & W36_MASK );
+    }
+
+// ---------------------------------------------------------------------------
+// JFFO AC, E -- Jump if Find First One.  Find the highest set bit in AC; its ordinal
+// (0..35, counting from the LEFT = PDP-10 bit 0) goes into AC+1.  Jump to E if AC != 0.
+// "Highest set bit" = MSB position in the 36-bit word.  PDP-10 bit 0 = our bit 35.
+// If AC = 0, AC+1 <- 0 and no jump.
+insn jffo : encode #i36 ( op:9 = OP_JFFO, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jffo", operands : acn, i, x, y )
+    {
+        #i36 v = ac[ acn ] & W36_MASK;
+        #i18 pos = 0;
+        #i36 t = v;
+        #i18 b = 35;                                               // start from bit 35 (PDP-10 bit 0)
+        // find highest set bit: scan from bit 35 down to 0
+        pos = ( ( t >> 35 ) & 1 ) ? 0  :
+              ( ( t >> 34 ) & 1 ) ? 1  :
+              ( ( t >> 33 ) & 1 ) ? 2  :
+              ( ( t >> 32 ) & 1 ) ? 3  :
+              ( ( t >> 31 ) & 1 ) ? 4  :
+              ( ( t >> 30 ) & 1 ) ? 5  :
+              ( ( t >> 29 ) & 1 ) ? 6  :
+              ( ( t >> 28 ) & 1 ) ? 7  :
+              ( ( t >> 27 ) & 1 ) ? 8  :
+              ( ( t >> 26 ) & 1 ) ? 9  :
+              ( ( t >> 25 ) & 1 ) ? 10 :
+              ( ( t >> 24 ) & 1 ) ? 11 :
+              ( ( t >> 23 ) & 1 ) ? 12 :
+              ( ( t >> 22 ) & 1 ) ? 13 :
+              ( ( t >> 21 ) & 1 ) ? 14 :
+              ( ( t >> 20 ) & 1 ) ? 15 :
+              ( ( t >> 19 ) & 1 ) ? 16 :
+              ( ( t >> 18 ) & 1 ) ? 17 :
+              ( ( t >> 17 ) & 1 ) ? 18 :
+              ( ( t >> 16 ) & 1 ) ? 19 :
+              ( ( t >> 15 ) & 1 ) ? 20 :
+              ( ( t >> 14 ) & 1 ) ? 21 :
+              ( ( t >> 13 ) & 1 ) ? 22 :
+              ( ( t >> 12 ) & 1 ) ? 23 :
+              ( ( t >> 11 ) & 1 ) ? 24 :
+              ( ( t >> 10 ) & 1 ) ? 25 :
+              ( ( t >>  9 ) & 1 ) ? 26 :
+              ( ( t >>  8 ) & 1 ) ? 27 :
+              ( ( t >>  7 ) & 1 ) ? 28 :
+              ( ( t >>  6 ) & 1 ) ? 29 :
+              ( ( t >>  5 ) & 1 ) ? 30 :
+              ( ( t >>  4 ) & 1 ) ? 31 :
+              ( ( t >>  3 ) & 1 ) ? 32 :
+              ( ( t >>  2 ) & 1 ) ? 33 :
+              ( ( t >>  1 ) & 1 ) ? 34 :
+              ( ( t >>  0 ) & 1 ) ? 35 :
+              0;
+        ac[ ( acn + 1 ) & 0xf ] = ( v != 0 ) ? pos : 0;
+        pc = ( v != 0 ) ? @ea ( i, x, y ) : pc;
+    }
+
+// ---------------------------------------------------------------------------
+// ASHC AC, E -- arithmetic shift 70-bit pair.  The pair is: AC bits 34..0 (35 bits of
+// magnitude + sign from AC bit 35) and AC+1 bits 34..0 (35 bits, bit 35 of AC+1 is
+// a copy of sign of AC per the HRM).  SIMH: shift the 70-bit value (AC<0..34>, AC+1<0..34>)
+// left or right; sign bit of AC is preserved.
+insn ashc : encode #i36 ( op:9 = OP_ASHC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ashc", operands : acn, i, x, y )
+    {
+        #i18 cnt  = @shift_count ( @ea ( i, x, y ) );
+        #i36 ahi  = ac[ acn ] & W36_MASK;
+        #i36 alo  = ac[ ( acn + 1 ) & 0xf ] & W36_MASK;
+        #i36 sgn  = ( ahi >> 35 ) & 1;
+        // 70-bit number: bits 69..35 from ahi<34..0>, bits 34..0 from alo<34..0>.
+        #i72 pair = ( ( ahi & 0x7ffffffff ) << 35 ) | ( alo & 0x7ffffffff );
+        #i72 r70;
+        r70 = ( cnt >= 70 ) ? ( sgn ? 0x3ffffffffffffff : 0 ) :
+              ( cnt <= -70 ) ? ( sgn ? 0x3ffffffffffffff : 0 ) :
+              ( cnt > 0 ) ? ( ( pair << cnt ) & 0x3ffffffffffffff ) :
+              ( sgn ? ( ( 0x3ffffffffffffff << ( 70 + cnt ) ) | ( pair >> ( 0 - cnt ) ) ) & 0x3ffffffffffffff
+                    : ( pair >> ( 0 - cnt ) ) );
+        AROV = ( cnt > 0 ) ? ( ( pair != r70 ) && ( ( pair >> 69 ) == ( r70 >> 69 ) ) ) ? 1 : 0 : 0;
+        ac[ acn ]               = ( sgn << 35 ) | ( ( r70 >> 35 ) & 0x7ffffffff );
+        ac[ ( acn + 1 ) & 0xf ] = ( sgn << 35 ) | ( r70 & 0x7ffffffff );
+    }
+
+// ---------------------------------------------------------------------------
+// LSHC AC, E -- logical shift the 72-bit pair (AC,,AC+1) by count positions.  Vacated = 0.
+insn lshc : encode #i36 ( op:9 = OP_LSHC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "lshc", operands : acn, i, x, y )
+    {
+        #i18 cnt  = @shift_count ( @ea ( i, x, y ) );
+        #i72 pair = ( ( ac[ acn ] & W36_MASK ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
+        #i72 r72;
+        r72 = ( cnt >= 72 || cnt <= -72 ) ? 0 :
+              ( cnt > 0 ) ? ( pair << cnt ) :
+              ( pair >> ( 0 - cnt ) );
+        ac[ acn ]               = ( r72 >> 36 ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = r72 & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// ROTC AC, E -- rotate the 72-bit pair (AC,,AC+1) by count positions (count mod 72).
+insn rotc : encode #i36 ( op:9 = OP_ROTC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "rotc", operands : acn, i, x, y )
+    {
+        #i18 cnt  = @shift_count ( @ea ( i, x, y ) );
+        #i72 pair = ( ( ac[ acn ] & W36_MASK ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
+        #i18 n    = cnt % 72;
+        n = ( n < 0 ) ? ( n + 72 ) : n;
+        #i72 r72  = ( n == 0 ) ? pair : ( ( ( pair << n ) | ( pair >> ( 72 - n ) ) ) & 0xfffffffffffffffff );
+        ac[ acn ]               = ( r72 >> 36 ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = r72 & W36_MASK;
+    }
