@@ -1017,7 +1017,10 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     Pc = (CPU_ADDR) State.TrapPc;
                     continue;
                 }
-                bool IsPdp1 = std::strstr (pArchName, "pdp1") != nullptr;
+                // Match the PDP-1 frontend without colliding with "pdp11" (which contains "pdp1"
+                // as a substring): require "pdp1" present and "pdp11" absent.
+                bool IsPdp1 = std::strstr (pArchName, "pdp1") != nullptr
+                              && std::strstr (pArchName, "pdp11") == nullptr;
                 if (IsPdp1 && State.SyscallVector == 0072) {        // PDP-1 IOT -> host I/O
                     if (!Pdp1IoTrap (&State, Ram, sizeof (Ram))) { break; }
                     Pc = (CPU_ADDR) State.TrapPc;
