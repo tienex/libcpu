@@ -1779,6 +1779,18 @@ add_test(NAME upcl.pdp1-display COMMAND sh -c
    PDP1_DPY_DUMP=1 \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 | grep -q 'DPY '")
 set_tests_properties(upcl.pdp1-display PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# PDP-1 XCT execution: fall-through, skip, and nesting. Three programs assembled with
+# pdp1_asm.py into raw 18-bit images and run with --dump to verify memory results.
+add_test(NAME upcl.pdp1-xct COMMAND sh -c
+  "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; A='${CMAKE_CURRENT_SOURCE_DIR}/test/pdp1_asm.py'; B='${CMAKE_BINARY_DIR}'; \
+   python3 \"$A\" --org 0 0o100030 0o240032 0o760400 --at 0o30 0o200031 0o000007 > \"$B/xctft.raw\" && \
+   \"$E\" run \"$B/xctft.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o32 | grep -q '0o32. = 0x00007' && \
+   python3 \"$A\" --org 0 0o700005 0o240031 0o700005 0o100030 0o700001 0o240032 0o760400 --at 0o30 0o520031 > \"$B/xctsk.raw\" && \
+   \"$E\" run \"$B/xctsk.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o32 | grep -q '0o32. = 0x00005' && \
+   python3 \"$A\" --org 0 0o100030 0o240033 0o760400 --at 0o30 0o100031 0o200032 0o21 > \"$B/xctns.raw\" && \
+   \"$E\" run \"$B/xctns.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o33 | grep -q '0o33. = 0x00011'")
+set_tests_properties(upcl.pdp1-xct PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|XCT nesting")
+
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
 # (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better

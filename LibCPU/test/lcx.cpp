@@ -1078,6 +1078,7 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     } else {
         // JIT: translate a region, run to a trap, resume there, until it runs off.
         CPU_ADDR Pc = Entry;
+        int XctDepth = 0;
         for (int I = 0; I < 100000; I++) {
             ComPtr<ICpuCode> Code;
             if (FAILED (GenerateAotCfg (A.pArch, pBackend, Pc, End, &Code, nullptr)) || Code == nullptr) {
@@ -1090,6 +1091,63 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                 break;
             }
             if (State.SyscallVector != CPU_NO_SYSCALL) {
+                if (State.SyscallVector == CPU_EXEC_ONE) {
+                    // Iterative XCT chain: follow XCT-of-XCT-of-... until the innermost
+                    // non-XCT instruction completes (or we hit the depth cap, or it traps).
+                    // RetStack[0] is always the outermost XCT+1 return address; deeper nesting
+                    // pushes further RetPcs (not used for resume, kept for depth counting).
+                    std::vector<CPU_ADDR> RetStack;
+                    RetStack.push_back ((CPU_ADDR) State.TrapPc);  // outermost RetPc
+                    bool XctFailed = false;
+                    UINT32 ITag = 0;
+                    CPU_ADDR INewPc = 0, INextPc = 0, IExecPc = 0;
+                    while (State.SyscallVector == CPU_EXEC_ONE) {
+                        if ((int) RetStack.size () > 16) {         // SIMH xct_max -- runaway guard
+                            std::printf ("lcx: XCT nesting too deep (>16)\n");
+                            XctFailed = true;
+                            break;
+                        }
+                        IExecPc = (CPU_ADDR) State.DispPc;         // EA of word to execute
+                        A.pArch->TagInstr (IExecPc, &ITag, &INewPc, &INextPc);
+                        State.Reg[ArchInfo.PcRegIndex] = IExecPc;  // PC-relative effects see the EA
+                        ComPtr<ICpuCode> One;
+                        if (FAILED (GenerateAotCfg (A.pArch, pBackend, IExecPc, IExecPc + 1, &One, nullptr))
+                            || One == nullptr) {
+                            XctFailed = true;
+                            break;
+                        }
+                        State.TrapPc        = CPU_SMC_NO_TRAP;
+                        State.SyscallVector = CPU_NO_SYSCALL;
+                        One->Execute (Ram, &State, nullptr);
+                        if (State.SyscallVector == CPU_EXEC_ONE) {
+                            RetStack.push_back ((CPU_ADDR) State.TrapPc); // push nested RetPc
+                        }
+                    }
+                    if (XctFailed) { break; }
+                    XctDepth = 0;                                  // chain complete; reset depth
+                    CPU_ADDR OuterRetPc = RetStack[0];             // outermost XCT+1
+                    if (State.SyscallVector != CPU_NO_SYSCALL) {
+                        // innermost instruction trapped (IOT, HLT, ...): re-dispatch with the
+                        // outermost RetPc as the resume address after the trap returns.
+                        State.TrapPc = OuterRetPc;
+                        continue;
+                    }
+                    CPU_ADDR Target = (CPU_ADDR) State.TrapPc;
+                    if (Target != (CPU_ADDR) CPU_SMC_NO_TRAP) {
+                        Pc = Target;                               // computed/indirect jump
+                    } else if (ITag & TagConditional) {
+                        // Conditional skip: the instruction exited via pExit (skip taken), so the
+                        // delta is (INewPc - INextPc), applied relative to the outermost XCT+1.
+                        // INextPc = ExecPc + D.Length (the fall-through of this instruction);
+                        // INewPc = INextPc + skip_count (from UPCL's NextPc-relative folding).
+                        // The not-taken path would have looped within the region forever; returning
+                        // here proves the skip was taken.
+                        Pc = OuterRetPc + (INewPc - INextPc);     // skip: XCT+1 + skip delta
+                    } else {
+                        Pc = OuterRetPc;                           // fall-through: resume at XCT+1
+                    }
+                    continue;
+                }
                 CHAR8 CONST *Abi = Opt (argc, argv, "--abi", "");
                 if (std::strcmp (Abi, "obsd-m88k") == 0) {
                     if (!ObsdM88kSyscall (&State, Ram, sizeof (Ram))) { break; }   // exit -> stop
