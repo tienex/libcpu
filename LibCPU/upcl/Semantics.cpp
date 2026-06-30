@@ -1880,15 +1880,42 @@ Translator::EvalMacroCall (Expr *pCall)
     }
     m_Env.erase ("result");
 
+    // Save the loop-local scratch-register state so any promotion inside the macro body
+    // (PromoteLoopLocals on a while/for) is rolled back on exit, preventing leaks into the
+    // caller's scope. The scratch counter is also saved so slots are freed on return.
+    auto SavedEnvSlot      = m_EnvSlot;
+    auto SavedEnvSlotWidth = m_EnvSlotWidth;
+    UINT32 SavedNextScratch = m_NextScratch;
+
     Emit (M->Body);
 
+    // The macro body may contain a while/for loop that calls PromoteLoopLocals, which erases
+    // "result" from m_Env and spills it to a scratch register in m_EnvSlot. Read "result" from
+    // whichever storage it ended up in -- m_Env (not promoted) or the scratch register (promoted).
     Value Result;
     auto R = m_Env.find ("result");
-    Result = (R != m_Env.end ()) ? R->second : Const (m_WordBits, 0);
+    if (R != m_Env.end ()) {
+        Result = R->second;
+    } else {
+        auto Sl = m_EnvSlot.find ("result");
+        if (Sl != m_EnvSlot.end ()) {
+            UINT32 Width = m_EnvSlotWidth["result"];
+            Value  Addr  = Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Const (64, (UINT64) Sl->second));
+            ComPtr<ICpuValue> V; m_pE->Load (Use (Addr), Width, &V);
+            Result = Pool (std::move (V), Width);
+        } else {
+            Result = Const (m_WordBits, 0);
+        }
+    }
 
+    // Restore env + scratch state: erases all macro-body promoted locals, restoring the caller's
+    // scratch allocator state so macros don't leak scratch slots to the outer instruction.
     for (std::string CONST &N : Names) {
         if (Saved.count (N)) { m_Env[N] = Saved[N]; } else { m_Env.erase (N); }
     }
+    m_EnvSlot      = SavedEnvSlot;
+    m_EnvSlotWidth = SavedEnvSlotWidth;
+    m_NextScratch  = SavedNextScratch;
     return Result;
 }
 

@@ -88,9 +88,13 @@ insn dac : encode #i18 ( op:5 = OPC_DAC, i:1 -> I, y:12 -> Y ),
 
 // ONE'S-COMPLEMENT ADD: end-around carry; overflow when both operands share a sign and the result
 // sign differs (sticky -- only set, never cleared by ADD); then -0 (0o777777) is corrected to +0.
+// UPCL note: binary ops produce A.Bits-wide results, so both addends must be explicitly widened
+// to #i32 BEFORE the + so the 19th carry bit is visible in the 32-bit sum.
 macro add1c ( a, b ) {
-    #i32 s = ( a & DMASK ) + ( b & DMASK );
-    #i18 r = s & DMASK;
+    #i32 wa = a & DMASK;
+    #i32 wb = b & DMASK;
+    #i32 s  = wa + wb;
+    #i18 r  = s & DMASK;
     r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
     ov = ( ( ( ~a ^ b ) & ( a ^ r ) ) & SIGN ) ? 1 : ov;
     result = ( r == DMASK ) ? 0 : r;
@@ -98,16 +102,20 @@ macro add1c ( a, b ) {
 // ONE'S-COMPLEMENT SUB: complement AC, add with end-around carry, overflow test, recomplement.
 // NO -0 cleanup (SIMH-faithful: (-0)-(+0) yields -0).
 macro sub1c ( a, b ) {
-    #i18 t = a ^ DMASK;
-    #i32 s = ( t & DMASK ) + ( b & DMASK );
-    #i18 r = s & DMASK;
+    #i18 t  = a ^ DMASK;
+    #i32 wt = t & DMASK;
+    #i32 wb = b & DMASK;
+    #i32 s  = wt + wb;
+    #i18 r  = s & DMASK;
     r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
     ov = ( ( ( ~t ^ b ) & ( t ^ r ) ) & SIGN ) ? 1 : ov;
     result = r ^ DMASK;
 }
 // INDEX increment: +1 with end-around carry (carry test is >= DMASK, per the maintenance manual).
+// Widen to #i32 so the increment past 0o777777 is not truncated away by the 18-bit BinAdd.
 macro idx1c ( v ) {
-    #i32 s = ( v & DMASK ) + 1;
+    #i32 wv = v & DMASK;
+    #i32 s  = wv + 1;
     result = ( s >= DMASK ) ? ( ( s + 1 ) & DMASK ) : ( s & DMASK );
 }
 
@@ -239,7 +247,7 @@ jump insn skp : type branch, encode #i18 ( op:5 = OPC_SKP, f:13 -> F ),
 // shift/rotate STEP per set bit in the low 9 (matching the hardware, which shifts once per 1-bit).
 // Verified against SIMH pdp1_cpu.c: RCL/RCR correct; SCL fills IO bit0 with AC sign (not IO sign);
 // SCR puts AC bit0 into IO bit17 (no IO sign preserve); SAL/SIL fill vacated bit0 with sign bit.
-jump insn sft : type branch, encode #i18 ( op:5 = OPC_SFT, f:13 -> F ),
+insn sft : encode #i18 ( op:5 = OPC_SFT, f:13 -> F ),
     disasm ( mnemonic : "sft", operands : F )
     {
         #i4  sub  = ( F >> 9 ) & 0o17;

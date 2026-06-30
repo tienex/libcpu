@@ -108,7 +108,7 @@ Positional (int argc, char **argv, int Which)
             if (std::strcmp (argv[I], "--arch") == 0 || std::strcmp (argv[I], "--backend") == 0 ||
                 std::strcmp (argv[I], "--count") == 0 || std::strcmp (argv[I], "--entry") == 0 ||
                 std::strcmp (argv[I], "--dump") == 0 || std::strcmp (argv[I], "-o") == 0 ||
-                std::strcmp (argv[I], "--result") == 0) {
+                std::strcmp (argv[I], "--result") == 0 || std::strcmp (argv[I], "--start") == 0) {
                 I++;
             }
             continue;
@@ -118,6 +118,18 @@ Positional (int argc, char **argv, int Which)
         }
     }
     return nullptr;
+}
+
+// Parse a numeric string that may carry a Python-style 0o.. octal prefix (C's strtoull does not
+// understand 0o; only 0x hex, 0 octal, and decimal). Accepts 0o.., 0O.., 0x.., plain 0.., decimal.
+static UINT64
+ParseNum (CHAR8 CONST *pStr)
+{
+    if (pStr == nullptr) { return 0; }
+    if (pStr[0] == '0' && (pStr[1] == 'o' || pStr[1] == 'O')) {
+        return (UINT64) std::strtoull (pStr + 2, nullptr, 8);
+    }
+    return (UINT64) std::strtoull (pStr, nullptr, 0);
 }
 
 // --- backend / image / arch resolution -------------------------------------
@@ -818,6 +830,52 @@ LoadSav (UINT8 CONST *pFileBytes, UINT64 FileLen, UINT8 *pRam, UINT64 RamSize)
     return R;
 }
 
+// DEC PDP-1 RIM (Read-In Mode) paper-tape loader. Tapes are streams of 6-bit frames;
+// channel-8 bit (0200) marks a DATA frame (non-data frames are skipped). Three consecutive
+// data frames assemble one 18-bit word MSB-first. Words arrive in control+datum pairs:
+//   DIO (0320000) or DAC (0240000):  opcode | Y -- store next word at M[Y].
+//   JMP (0600000):                   opcode | Y -- Y is the start address; tape ends here.
+// The assembled words are deposited into RAM word cells (word index I at byte offset
+// I * CPU_WORD_CELL_BYTES, little-endian). Returns the start address and an Ok flag.
+struct RimInfo { UINT32 Start; bool Ok; };
+
+static RimInfo
+LoadRim (UINT8 CONST *pFileBytes, UINT64 FileLen, UINT8 *pRam, UINT64 RamSize)
+{
+    RimInfo R = { 0, false };
+    UINT64 P = 0;
+    auto GetWord = [&] (UINT32 *pW) -> bool {
+        UINT32 W = 0; int Got = 0;
+        while (P < FileLen && Got < 3) {
+            UINT8 Frame = pFileBytes[P++];
+            if (Frame & 0200) { W = (W << 6) | (UINT32) (Frame & 077); Got++; }
+        }
+        if (Got < 3) { return false; }
+        *pW = W & 0777777;
+        return true;
+    };
+    auto Store = [&] (UINT32 Idx, UINT32 V) {
+        UINT64 Off = (UINT64) Idx * CPU_WORD_CELL_BYTES;
+        if (Off + CPU_WORD_CELL_BYTES > RamSize) { return; }
+        for (UINT32 B = 0; B < CPU_WORD_CELL_BYTES; B++) { pRam[Off + B] = (UINT8) ((UINT64) V >> (8 * B)); }
+    };
+    for (;;) {
+        UINT32 Ctl;
+        if (!GetWord (&Ctl)) { break; }
+        UINT32 Op = Ctl & 0760000;
+        if (Op == 0320000 || Op == 0240000) {           // DIO / DAC : address + datum
+            UINT32 Datum;
+            if (!GetWord (&Datum)) { break; }
+            Store (Ctl & 07777, Datum);
+        } else if (Op == 0600000) {                     // JMP : start address, end of tape
+            R.Start = Ctl & 07777; R.Ok = true; break;
+        } else {
+            break;                                      // malformed
+        }
+    }
+    return R;
+}
+
 // Does a path end (case-insensitively) with the given extension (e.g. ".sav")?
 static bool
 HasExtension (CHAR8 CONST *pPath, CHAR8 CONST *pExt)
@@ -885,22 +943,20 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     // truncating to 32 bits and dropping the top 4 bits of a 36-bit word. Fail loudly here so a
     // wrong backend is never silently mis-executed; decode/disasm (no execution) are unaffected.
     bool WordAddressed = false;
-    {
-        CPU_ARCH_INFO ArchInfo;
-        std::memset (&ArchInfo, 0, sizeof (ArchInfo));
-        A.pArch->GetInfo (&ArchInfo);
-        WordAddressed = (ArchInfo.ByteSize != 0 && ArchInfo.ByteSize != 8);
-        if (WordAddressed) {
-            CHAR8 CONST *pBeName = pBackend->GetName ();
-            if (std::strcmp (pBeName, "interpreter") != 0) {
-                std::printf ("lcx %s: error: word-addressed architectures (byte_size=%u, != 8)"
-                             " currently require the interpreter backend;"
-                             " backend '%s' does not support >8-bit addressable units\n",
-                             pVerb, (unsigned) ArchInfo.ByteSize, pBeName);
-                A.pArch->Release ();
-                pBackend->Release ();
-                return 1;
-            }
+    CPU_ARCH_INFO ArchInfo;
+    std::memset (&ArchInfo, 0, sizeof (ArchInfo));
+    A.pArch->GetInfo (&ArchInfo);
+    WordAddressed = (ArchInfo.ByteSize != 0 && ArchInfo.ByteSize != 8);
+    if (WordAddressed) {
+        CHAR8 CONST *pBeName = pBackend->GetName ();
+        if (std::strcmp (pBeName, "interpreter") != 0) {
+            std::printf ("lcx %s: error: word-addressed architectures (byte_size=%u, != 8)"
+                         " currently require the interpreter backend;"
+                         " backend '%s' does not support >8-bit addressable units\n",
+                         pVerb, (unsigned) ArchInfo.ByteSize, pBeName);
+            A.pArch->Release ();
+            pBackend->Release ();
+            return 1;
         }
     }
 
@@ -927,12 +983,48 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         SavEnd   = Sv.End;
     }
 
-    CPU_ADDR Entry = (SavEntry != ~(UINT64) 0) ? (CPU_ADDR) SavEntry
-                   : (AoutEntry != ~(UINT64) 0) ? (CPU_ADDR) AoutEntry
+    // --rim: interpret the file as a DEC RIM (Read-In Mode) paper-tape image. The raw file bytes
+    // are still in Ram from LoadImage; copy them out, re-zero word memory, then run LoadRim to
+    // deposit each datum into its target word cell. The start address comes from the tape JMP word.
+    UINT64 RimEntry = ~(UINT64) 0;
+    UINT64 RimEnd   = 0;
+    bool   WantRim  = Flag (argc, argv, "--rim");
+    if (WantRim) {
+        std::vector<UINT8> File (Ram, Ram + Len);              // raw tape bytes, before relayout
+        std::memset (Ram, 0, sizeof (Ram));
+        RimInfo Ri = LoadRim (File.data (), Len, Ram, sizeof (Ram));
+        if (!Ri.Ok) {
+            std::printf ("lcx: RIM tape parse failed\n");
+            A.pArch->Release ();
+            pBackend->Release ();
+            return 2;
+        }
+        RimEntry = Ri.Start;
+        RimEnd   = Ri.Start + 1;                               // end: at least past the start word
+    }
+
+    // --raw18: the file is already a flat array of 8-byte word cells (as written by pdp1_asm.py);
+    // LoadImage already placed the bytes verbatim in Ram, so no relayout is needed. --start N
+    // (default 0) gives the entry word index; octal (0o..) and decimal both accepted.
+    UINT64 Raw18Entry = ~(UINT64) 0;
+    bool   WantRaw18  = Flag (argc, argv, "--raw18");
+    if (WantRaw18) {
+        Raw18Entry = ParseNum (Opt (argc, argv, "--start", "0"));
+    }
+
+    CPU_ADDR Entry = (SavEntry   != ~(UINT64) 0) ? (CPU_ADDR) SavEntry
+                   : (RimEntry   != ~(UINT64) 0) ? (CPU_ADDR) RimEntry
+                   : (Raw18Entry != ~(UINT64) 0) ? (CPU_ADDR) Raw18Entry
+                   : (AoutEntry  != ~(UINT64) 0) ? (CPU_ADDR) AoutEntry
                    : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     // The CFG walk reads units of the arch's addressable size: bytes for a byte ISA, WORDS for a
     // word-addressed arch. A .SAV gives the end in words directly; otherwise Len is a byte count.
-    CPU_ADDR End   = WantSav ? (CPU_ADDR) SavEnd : (CPU_ADDR) Len;
+    // End is in word units for word-addressed arches and byte units for byte-addressed arches.
+    // --raw18 files are 8-byte cells: convert the byte length to a word count.
+    CPU_ADDR End   = WantSav   ? (CPU_ADDR) SavEnd
+                   : WantRim   ? (CPU_ADDR) RimEnd
+                   : WantRaw18 ? (CPU_ADDR) (Len / CPU_WORD_CELL_BYTES)
+                   : (CPU_ADDR) Len;
     bool Cache = Flag (argc, argv, "--cache");
 
     // --reg <i>=<v>: seed an initial general register before running (entry-state setup for a
@@ -1034,9 +1126,19 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     }
     DumpRegs (A, &State);
     if (CHAR8 CONST *pDump = Opt (argc, argv, "--dump", nullptr)) {
-        CPU_ADDR Addr = (CPU_ADDR) std::strtoull (pDump, nullptr, 0);
-        std::printf ("[0x%llx] = 0x%04x\n", (unsigned long long) Addr,
-                     (unsigned) (Ram[Addr] | (Ram[Addr + 1] << 8)));
+        CPU_ADDR Addr = (CPU_ADDR) ParseNum (pDump);
+        if (WordAddressed) {
+            // Word-addressed arch: Addr is a word index; print in octal, value from the word cell.
+            UINT64 Off = (UINT64) Addr * CPU_WORD_CELL_BYTES;
+            UINT64 Val = 0;
+            for (UINT32 B = 0; B < CPU_WORD_CELL_BYTES; B++) { Val |= (UINT64) Ram[Off + B] << (8 * B); }
+            UINT32 CONST Digits = (ArchInfo.ByteSize + 3) / 4;
+            std::printf ("[0o%llo] = 0x%0*llx\n", (unsigned long long) Addr,
+                         (int) Digits, (unsigned long long) Val);
+        } else {
+            std::printf ("[0x%llx] = 0x%04x\n", (unsigned long long) Addr,
+                         (unsigned) (Ram[Addr] | (Ram[Addr + 1] << 8)));
+        }
     }
     A.pArch->Release ();
     pBackend->Release ();

@@ -1758,6 +1758,14 @@ add_test(NAME upcl.pdp1-shift COMMAND sh -c
      | grep -q '0o21. = 0x00008'")
 set_tests_properties(upcl.pdp1-shift PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+add_test(NAME upcl.pdp1-rim COMMAND sh -c
+  "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}/pdp1.rim'; \
+   python3 '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp1_asm.py' --rim \
+     --dio 0o30 0o000007 --dio 0o31 0o760400 --jmp 0o31 > \"$B\" && \
+   \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --rim --dump 0o30 | grep -q '0o30. = 0x00007'")
+set_tests_properties(upcl.pdp1-rim PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
 # (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better
