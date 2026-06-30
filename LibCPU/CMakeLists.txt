@@ -1594,6 +1594,42 @@ add_test(NAME upcl.pdp10-fp COMMAND sh -c
    grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.dfad'")
 set_tests_properties(upcl.pdp10-fp PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
+# PDP-10 KL10 EXTENDED ADDRESSING (Task 15; feature `extended`, selected by `cpu "kl10"`).
+# The same 36-bit word (op:9 ac:4 i:1 x:4 y:18) is decoded under the [@kl10] selector (extended
+# ON) and the [@ka10] selector (extended OFF), proving the feature gate. Opcodes sourced from the
+# PDP-10 opcode chart (ultimate.com/phil/pdp10/opcodes.txt) and the KL10 Hardware Reference:
+#   XMOVEI = SETMI (0o415): in a NON-ZERO section SETMI is XMOVEI -- compute the 30-bit EA into AC.
+#     Encoded identically to SETMI; XMOVEI wins under [@kl10] by feature+priority; under [@ka10]
+#     (no extended) the SAME word decodes as the base-ISA SETMI.
+#   ADJSP  = 0o105 (KL adjust stack pointer; present under kl10).
+#   EXTEND = 0o123 (KL string/decimal instruction PREFIX; present under kl10, absent under ka10).
+# The XMOVEI body resolves the EA through @ea_ext, whose indirect chain dispatches on the fetched
+# word's format bit (IFIW bit35=1 -> 18-bit local recompute; EFIW bit35=0 -> 30-bit global), so the
+# SSA carries the format-bit test and the while-loop chain.  Words: ac=1, y=0o100; the indirect
+# XMOVEI carries i=1, x=2 (0o415062000100) to exercise the IFIW/EFIW dispatch.
+add_test(NAME upcl.pdp10-extended COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.xmovei' && \
+   grep -q '0x0000: xmovei' '${CMAKE_BINARY_DIR}/pdp10.xmovei' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.xmovei' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.xmovei' && \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o415062000100 > '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   grep -q '0x0000: xmovei' '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   grep -q 'i=0x1'          '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   grep -q 'while.head'     '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   grep -q 'while.body'     '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   grep -q 'load.i36'       '${CMAKE_BINARY_DIR}/pdp10.xmovei.efiw' && \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o105040000100 > '${CMAKE_BINARY_DIR}/pdp10.adjsp.kl' && \
+   grep -q '0x0000: adjsp'  '${CMAKE_BINARY_DIR}/pdp10.adjsp.kl' && \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o123040000100 > '${CMAKE_BINARY_DIR}/pdp10.extend.kl' && \
+   grep -q '0x0000: extend' '${CMAKE_BINARY_DIR}/pdp10.extend.kl' && \
+   \"$E\" upcl decode \"$P[@ka10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.setmi.ka' && \
+   grep -q '0x0000: setmi'  '${CMAKE_BINARY_DIR}/pdp10.setmi.ka' && \
+   ! grep -q 'xmovei'       '${CMAKE_BINARY_DIR}/pdp10.setmi.ka' && \
+   \"$E\" upcl decode \"$P[@ka10]\" 0o123040000100 > '${CMAKE_BINARY_DIR}/pdp10.extend.ka' && \
+   grep -q 'no encoding matched' '${CMAKE_BINARY_DIR}/pdp10.extend.ka'")
+set_tests_properties(upcl.pdp10-extended PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
+
 # DEC PDP-10 arch header + register file (Phase 1 / Task 5). Verify: word=36 addr=18 big-endian
 # word-addressed arch; group AC with AC/low-memory aliasing (aliases_memory 0); group S with
 # 18-bit PC (%PC) and 18-bit pcflags (%PSR) carrying the 13 PC flag bits (AROV->%V, CRY0->%C,

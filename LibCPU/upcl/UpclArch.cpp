@@ -1096,11 +1096,13 @@ CollectFeatures (Cpu *C, std::map<std::string, Cpu *> CONST &Index,
     }
 }
 
+} // anonymous namespace
+
 // Resolve a CPU-model name to the set of features it enables. A null/unknown model
 // enables EVERY declared feature (the permissive default); a named model enables its
 // own features plus the transitive union of all extended parents' features.
-static std::set<std::string>
-ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
+std::set<std::string>
+ResolveCpuFeatures (Arch *pArch, CHAR8 CONST *pCpu)
 {
     std::set<std::string> Out;
     if (pCpu != nullptr) {
@@ -1119,8 +1121,6 @@ ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
     return Out;
 }
 
-} // anonymous namespace
-
 ICpuArchitecture *
 CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
                 std::vector<std::string> *pRegNamesOut)
@@ -1129,7 +1129,7 @@ CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu,
         return nullptr;
     }
     Arch *pArch = pModule->Archs[ArchIndex];
-    UpclArch *pUpcl = new UpclArch (pModule, pArch, ResolveFeatures (pArch, pCpu));
+    UpclArch *pUpcl = new UpclArch (pModule, pArch, ResolveCpuFeatures (pArch, pCpu));
     if (pRegNamesOut != nullptr) { pUpcl->RegisterNames (pRegNamesOut); }
     return pUpcl;
 }

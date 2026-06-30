@@ -3172,14 +3172,149 @@ insn fltr : encode #i36 ( op:9 = OP_FLTR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
 
 } // end feature fp
 
-// ---------------------------------------------------------------------------
-// CPU models: the KA10, KI10, KL10, and KS10 all include the floating-point unit.
-// The `fp` feature is selected for all standard models.
-features {
-    fp;
+// ===========================================================================
+// KL10 EXTENDED ADDRESSING  (DEC PDP-10 / DECSYSTEM-20 KL10 Hardware Reference,
+// "Extended Addressing"; the nocrew.org PDP-10 "Address Computation" page; opcodes from the
+// PDP-10 opcode chart at ultimate.com/phil/pdp10/opcodes.txt).  Gated under `feature extended`,
+// selected by `cpu "kl10"`.  The original PDP-10 has a single 18-bit address space ("section 0");
+// the KL10 Model B widened the virtual address to 30 bits = a 12-bit SECTION number plus an 18-bit
+// in-section WORD offset, giving up to 4096 sections of 256 Kwords each.
+//
+// A "local" address is 18 bits (an offset within the current section).  A "global" address is 30
+// bits: in our numeric (bit 35 = MSB / DEC bit 0) representation,
+//   word offset = bits 17..0    (18 bits)   -- EA_Y_MASK
+//   section     = bits 29..18   (12 bits)   -- SEC_SHIFT..
+// i.e. a 30-bit global address is laid out exactly as the low 30 bits of a word, with the section
+// number sitting just above the 18-bit offset.
+//
+// EFFECTIVE-ADDRESS CALCULATION IN A NON-ZERO SECTION.  An index register used as a GLOBAL index
+// contributes its full low 30 bits (not just the right half), so indexing can carry the address
+// across sections.  The instruction word's own I/X/Y are the same fields as in section 0; the
+// difference is the INDIRECT WORD format, which is what the extended @ea_ext macro below dispatches
+// on.  Two indirect-word formats exist, distinguished by the SIGN bit (DEC bit 0 = our bit 35):
+//
+//   IFIW -- Instruction Format Indirect Word (bit 35 = 1):  bit 35=1, then I=bit 22, X=bits 21..18,
+//           Y=bits 17..0.  The I/X/Y sit in the SAME positions as an instruction word, so an IFIW
+//           continues the chain LOCALLY (18-bit Y, right-half index) -- exactly the section-0 rule.
+//   EFIW -- Extended Format Indirect Word (bit 35 = 0):  bit 35=0, I=bit 34, X=bits 33..30, and a
+//           30-bit global address Y=bits 29..0.  An EFIW yields a full 30-bit global address; its
+//           index (when X!=0) is a GLOBAL index (full 30 bits of AC[X]).
+//
+// The indirect chain therefore must, at EACH step, fetch the word and branch on its bit-35 format
+// flag: an IFIW recomputes an 18-bit local E (the Task-6 rule), an EFIW recomputes a 30-bit global
+// E.  This is expressed below WITHIN the same `while` / `?:` machinery the Task-6 @ea uses -- the
+// dispatch is just a select on the fetched word's format bit; the engine needs no new construct.
+
+// --- Extended-address field layout (numeric / bit-35-MSB representation). ---
+const EA30_MASK    = 0x3fffffff;    // 30-bit global address mask (section:12 .. offset:18)
+const SEC_SHIFT    = 18;            // section number occupies bits 29..18 (just above the offset)
+const SEC_MASK     = 0xfff;         // 12-bit section number
+const IFIW_FLAG    = 0x800000000;   // bit 35 -- set in an IFIW, clear in an EFIW (= SIGN_BIT36)
+const EFIW_I_SHIFT = 34;            // EFIW indirect bit = DEC bit 1 = our bit 34
+const EFIW_X_SHIFT = 30;            // EFIW index field  = DEC bits 2..5 = our bits 33..30
+// (EFIW Y = bits 29..0 = the low 30 bits, masked with EA30_MASK.)
+
+// @ea_ext ( i, x, y ) -- the KL10 EXTENDED effective-address calculation.  Returns a 30-bit global
+// address E in `result`.  The first step mirrors the Task-6 @ea index step (local, 18-bit Y plus the
+// right half of AC[X]); the indirect chain then dispatches on each fetched word's bit-35 format flag:
+//   IFIW (bit35=1): take I=bit22, X=bits21..18, Y=bits17..0; recompute E LOCALLY (18-bit + right-half
+//                   index), preserving the current section's high bits.
+//   EFIW (bit35=0): take I=bit34, X=bits33..30, Y=bits29..0 (30-bit global); recompute E GLOBALLY
+//                   (30-bit + the full low 30 bits of AC[X] when X!=0).
+// As in Task 6 the chain is runtime-data-dependent (it iterates while the fetched word is indirect),
+// so it lives in this body macro.  The loop-carried `e`, `ci` are SSA values (see the Task-6 note on
+// loop-carried locals -- the single-level path is exact today; multi-iteration EXECUTION depends on
+// loop-carried-local support).
+macro ea_ext ( i, x, y ) {
+    // Initial index step is local (the instruction word's Y is an 18-bit local offset; X is a local
+    // index -- right half of AC[X]).  E starts as a 30-bit value (section bits initially 0).
+    #i30 e  = ( x != 0 ) ? ( ( y + ( ac[ x ] & EA_Y_MASK ) ) & EA30_MASK ) : ( y & EA30_MASK );
+    #i1  ci = i;
+    while ( ci != 0 ) {
+        #i36 w   = %M[ e & EA_Y_MASK ];                       // fetch the indirect word (in-section)
+        #i1  efw = ( ( w & IFIW_FLAG ) == 0 ) ? 1 : 0;        // bit35=0 -> EFIW (1); bit35=1 -> IFIW (0)
+        // EFIW fields (used when efw==1): 30-bit global Y, global index (full 30 bits of AC[X]).
+        #i4  ex  = ( w >> EFIW_X_SHIFT ) & EA_X_MASK;
+        #i30 ey  = w & EA30_MASK;
+        #i30 ge  = ( ex != 0 ) ? ( ( ey + ( ac[ ex ] & EA30_MASK ) ) & EA30_MASK ) : ey;
+        #i1  ei  = ( w >> EFIW_I_SHIFT ) & 1;
+        // IFIW fields (used when efw==0): 18-bit local Y, right-half (local) index of AC[X].
+        #i4  lx  = ( w >> EA_X_SHIFT ) & EA_X_MASK;
+        #i18 ly  = w & EA_Y_MASK;
+        #i30 le  = ( ( lx != 0 ) ? ( ( ly + ( ac[ lx ] & EA_Y_MASK ) ) & EA_Y_MASK ) : ly ) & EA30_MASK;
+        #i1  li  = ( w >> EA_I_SHIFT ) & 1;
+        // Dispatch on the format flag: EFIW -> global recompute, IFIW -> local recompute.
+        e  = ( efw != 0 ) ? ge : le;
+        ci = ( efw != 0 ) ? ei : li;
+    }
+    result = e;
 }
 
-cpu "ka10" { fp; }   // DEC KA10 (original PDP-10 CPU, also TOPS-10/TOPS-20 era)
-cpu "ki10" { fp; }   // DEC KI10 (paging; KI-series)
-cpu "kl10" { fp; }   // DEC KL10 (KL-series; supports double-precision G format)
-cpu "ks10" { fp; }   // DEC KS10 (microcode; last PDP-10)
+// @gbpea ( bp ) -- extract the data-word address from a ONE-WORD GLOBAL byte pointer.  In a one-word
+// global byte pointer the P (position) and S (size) fields keep their local positions (P=bits 35..30,
+// S=bits 29..24), but the remaining bits address memory as a 30-bit GLOBAL address rather than via the
+// I/X/Y instruction format.  Here we mask the low 30 bits as the global word address (the two-word
+// byte pointer, whose second word is an EFIW, is a Task-18 execution item).
+macro gbpea ( bp ) { result = bp & EA30_MASK; }
+
+// Opcode constants for the extended instructions (declared outside the feature block, like every
+// other `const` in this file).  XMOVEI shares SETMI's encoding (0o415) and XHLLI shares HLLI's
+// (0o501); in a non-zero section those base encodings ARE the extended mnemonics.
+const OP_XMOVEI = 0o415;            // = OP_SETMI; XMOVEI in a non-zero section
+const OP_XHLLI  = 0o501;            // = HLLI;     XHLLI  in a non-zero section
+const OP_EXTEND = 0o123;            // EXTEND -- string/decimal instruction prefix
+
+// ---------------------------------------------------------------------------
+// FEATURE `extended` -- KL10 extended-addressing instructions.  Selected by `cpu "kl10"` only
+// (and `ks10`); ABSENT on the KA10/KI10, where the SETMI / HLLI encodings keep their base meaning.
+feature extended {
+
+// XMOVEI AC, E  (opcode 0o415 = SETMI; in a non-zero section SETMI is XMOVEI).  Compute the EA as a
+// 30-bit GLOBAL address and place it in AC (the extended counterpart of MOVEI / SETMI: "move
+// extended immediate").  Encoded identically to the base-ISA SETMI; under [@kl10] this feature-gated
+// definition WINS via `priority 1`, so 0o415 disassembles as XMOVEI; under [@ka10] (feature off) the
+// same word is the base SETMI.
+insn xmovei : encode #i36 ( op:9 = OP_XMOVEI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ) priority 1,
+    disasm ( mnemonic : "xmovei", operands : acn, i, x, y )
+    => ac[ acn ] = @ea_ext ( i, x, y );        // AC <- 30-bit global EA
+
+// XHLLI AC, E  (opcode 0o501 = HLLI; in a non-zero section HLLI is XHLLI).  Set the LEFT half of AC
+// to the SECTION number of the EA (bits 29..18 of the 30-bit global E), clearing the rest -- the
+// extended "get my section" idiom.  Encoded identically to the base HLLI; priority-gated like XMOVEI.
+insn xhlli : encode #i36 ( op:9 = OP_XHLLI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ) priority 1,
+    disasm ( mnemonic : "xhlli", operands : acn, i, x, y )
+    => ac[ acn ] = @setleft ( ac[ acn ], ( @ea_ext ( i, x, y ) >> SEC_SHIFT ) & SEC_MASK );
+
+// EXTEND AC, E  (opcode 0o123).  The string / decimal-conversion instruction PREFIX: the EA addresses
+// an extended operation word (E0) whose own 9-bit op selects MOVSLJ / CMPSx / CVTDBx / EDIT / etc.
+// Decoding the prefix and resolving its operand EA is done here; the sub-operation dispatch is a
+// Task-18 execution item.  E is the 30-bit global address of the extended-op word.
+insn extend : encode #i36 ( op:9 = OP_EXTEND, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "extend", operands : acn, i, x, y )
+    {
+        // Resolve the operand EA (30-bit global) and fetch E0, the sub-operation word.  The 9-bit op
+        // in E0 selects the string/decimal operation (MOVSLJ / CMPSx / CVTDBx / EDIT / ...); that
+        // dispatch -- and the per-operation AC0..AC3 string-pointer/length updates -- is a Task-18
+        // execution item.  Here we resolve the EA and fetch E0 (the decode-stage work); the AC carries
+        // the operation length/state across the (microcoded) operation and is left unchanged for now.
+        #i30 e0    = @ea_ext ( i, x, y );       // 30-bit global address of the extended-op word E0
+        #i36 subop = %M[ e0 & EA_Y_MASK ];      // fetch E0 (the sub-operation word) -- dispatch is Task 18
+        ac[ acn ]  = ac[ acn ];                 // AC unchanged at decode stage (Task-18 updates it)
+    }
+
+} // end feature extended
+
+// ---------------------------------------------------------------------------
+// CPU models: the KA10, KI10, KL10, and KS10 all include the floating-point unit.  The `fp` feature
+// is selected for all standard models.  EXTENDED ADDRESSING (`extended`) is a KL10/KS10-only feature
+// (the KL10 Model B introduced multi-section addressing; the KS10 microcode also supports it); the
+// KA10/KI10 are single-section, so they do NOT enable `extended`.
+features {
+    fp;
+    extended;
+}
+
+cpu "ka10" { fp; }              // DEC KA10 (original PDP-10 CPU; single-section, no extended addressing)
+cpu "ki10" { fp; }              // DEC KI10 (paging; KI-series; single-section)
+cpu "kl10" { fp; extended; }    // DEC KL10 (KL-series; double-precision G format + extended addressing)
+cpu "ks10" { fp; extended; }    // DEC KS10 (microcode; last PDP-10; extended addressing)

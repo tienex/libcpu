@@ -22,6 +22,7 @@
 
 #include "LibCPU/ICpu.h"
 #include "Ast.h"
+#include <set>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,13 @@ namespace Upcl {
 // Returns nullptr if ArchIndex is out of range. Release() when done.
 ICpuArchitecture *CreateUpclArch (Module *pModule, UINT32 ArchIndex, CHAR8 CONST *pCpu = nullptr,
                                   std::vector<std::string> *pRegNamesOut = nullptr);
+
+// Resolve a CPU-model name to the set of ISA-feature names it enables. A null/unknown model
+// enables EVERY declared feature (the permissive default); a named model enables its own
+// features plus the transitive union of all its `extends` parents' features. Exposed so the
+// `lcx upcl decode <file>[@cpu]` path can drive the generic Decoder's feature gate with exactly
+// the same semantics CreateUpclArch uses for execution.
+std::set<std::string> ResolveCpuFeatures (Arch *pArch, CHAR8 CONST *pCpu);
 
 } // namespace Upcl
 } // namespace LibCPU

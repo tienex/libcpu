@@ -63,6 +63,7 @@
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
 #endif
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1294,12 +1295,27 @@ CmdUpcl (int argc, char **argv, CHAR8 CONST * /*pArgv0*/)
         return 0;
     }
     if (Decode) {
+        // The file argument may carry a CPU-model selector: `<file.upcl>[@cpu]` or `<file.upcl>@cpu`.
+        // Selecting a model restricts the decode to the base ISA plus exactly that model's features
+        // (so a `feature(extended)` KL10 instruction decodes under [@kl10] but not under [@ka10]),
+        // matching the gate the executing CreateUpclArch applies. No selector decodes everything.
+        std::string Spec (pFile), FilePart (Spec), Cpu;
+        std::string::size_type At = Spec.rfind ('@');
+        if (At != std::string::npos) {
+            Cpu = Spec.substr (At + 1);
+            std::string::size_type LB = (At > 0) ? At - 1 : std::string::npos;
+            // Accept the bracketed form `name[@cpu]`: drop a trailing ']' and the matching '['.
+            if (!Cpu.empty () && Cpu.back () == ']') { Cpu.pop_back (); }
+            FilePart = (LB != std::string::npos && Spec[LB] == '[') ? Spec.substr (0, LB)
+                                                                    : Spec.substr (0, At);
+        }
         Upcl::SourceManager Sm;
-        Upcl::Module *pMod = UpclParse (pFile, Sm);
+        Upcl::Module *pMod = UpclParse (FilePart.c_str (), Sm);
         if (pMod == nullptr || pMod->Archs.empty ()) { return 1; }
         Upcl::Arch *pArch = pMod->Archs[0];
         Upcl::RegisterLayout Layout = Upcl::BuildRegisterLayout (pArch);
-        Upcl::Decoder Dec (pArch, &Layout);
+        std::set<std::string> Enabled = Upcl::ResolveCpuFeatures (pArch, Cpu.empty () ? nullptr : Cpu.c_str ());
+        Upcl::Decoder Dec (pArch, &Layout, &Enabled);
         UINT32 WordBits = pArch->WordSize ? pArch->WordSize : 16;
         bool CONST WordAddressed = Dec.IsWordAddressed ();
 
