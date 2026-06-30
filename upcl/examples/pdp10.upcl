@@ -3305,16 +3305,28 @@ insn extend : encode #i36 ( op:9 = OP_EXTEND, ac:4 -> acn, i:1 -> i, x:4 -> x, y
 } // end feature extended
 
 // ---------------------------------------------------------------------------
-// CPU models: the KA10, KI10, KL10, and KS10 all include the floating-point unit.  The `fp` feature
-// is selected for all standard models.  EXTENDED ADDRESSING (`extended`) is a KL10/KS10-only feature
-// (the KL10 Model B introduced multi-section addressing; the KS10 microcode also supports it); the
-// KA10/KI10 are single-section, so they do NOT enable `extended`.
+// CPU variant lineage using `extends` inheritance.  Each `cpu` declaration computes its active
+// feature set as the UNION of all extended cpus' features and its own body.  The PDP-6 (1964) is
+// the 36-bit ancestor from which the PDP-10 family descends; the KA10 is the first PDP-10 proper.
+//
+// Feature set per model (via union of extends chain):
+//   pdp6   {}                          -- base 36-bit user ISA; no hardware FP, no extended addressing
+//   ka10   { fp }                      -- KA10 adds hardware floating-point (inherits nothing from pdp6)
+//   ki10   { fp }                      -- KI10 inherits fp from ka10; paging is an implementation detail
+//   kl10   { fp, extended }            -- KL10 inherits fp from ki10; adds 30-bit multi-section addressing
+//   ks10   { fp, extended }            -- KS10 inherits fp+extended from ki10+kl10; microcode, last PDP-10
+//
+// The `extended` feature gates the XMOVEI / XHLLI / EXTEND instructions (and the @ea_ext macro).
+// Under [@ka10] / [@ki10] / [@pdp6] the `extended` feature is ABSENT, so the SETMI encoding (0o415)
+// disassembles as the base-ISA SETMI; under [@kl10] / [@ks10] the feature-gated XMOVEI wins via
+// its `priority 1` over SETMI.  The `fp` feature gates all floating-point instructions (FAD..DFAD).
 features {
     fp;
     extended;
 }
 
-cpu "ka10" { fp; }              // DEC KA10 (original PDP-10 CPU; single-section, no extended addressing)
-cpu "ki10" { fp; }              // DEC KI10 (paging; KI-series; single-section)
-cpu "kl10" { fp; extended; }    // DEC KL10 (KL-series; double-precision G format + extended addressing)
-cpu "ks10" { fp; extended; }    // DEC KS10 (microcode; last PDP-10; extended addressing)
+cpu "pdp6" { }                                  // DEC PDP-6 (1964): 36-bit ancestor; base integer ISA
+cpu "ka10" extends "pdp6" { fp; }               // DEC KA10: first PDP-10; inherits pdp6 base + hardware FP
+cpu "ki10" extends "ka10" { }                   // DEC KI10: paging; inherits fp from ka10; no new features
+cpu "kl10" extends "ki10" { extended; }         // DEC KL10: 30-bit multi-section extended addressing + fp
+cpu "ks10" extends "ki10" { extended; }         // DEC KS10: microcode, last PDP-10; extended addressing + fp

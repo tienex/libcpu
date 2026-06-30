@@ -1630,6 +1630,43 @@ add_test(NAME upcl.pdp10-extended COMMAND sh -c
    grep -q 'no encoding matched' '${CMAKE_BINARY_DIR}/pdp10.extend.ka'")
 set_tests_properties(upcl.pdp10-extended PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
 
+# PDP-10 CPU VARIANT LINEAGE (Task 16 -- cpu "pdp6"/"ka10"/"ki10"/"kl10"/"ks10" via `extends`).
+# Verifies the `extends` union correctly propagates features through the lineage:
+#   pdp6:  no fp, no extended  -> fad = "no encoding matched"; setmi (0o415) = base SETMI
+#   ka10:  fp, no extended     -> fad decodes; setmi (0o415) = base SETMI (no xmovei)
+#   ki10:  fp (via extends ka10), no extended -> fad decodes; 0o415 = SETMI
+#   kl10:  fp + extended (via extends ki10 + body) -> fad decodes; 0o415 = XMOVEI
+#   ks10:  fp + extended (via extends ki10 + body) -> fad decodes; 0o415 = XMOVEI
+# Opcodes: FAD=0o140, XMOVEI/SETMI=0o415 (ac=1 i=0 x=0 y=0o100); extend=0o123.
+add_test(NAME upcl.pdp10-variants COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check  \"$P\" > '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   grep -q 'cpu \"pdp6\"' '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   grep -q 'cpu \"ka10\"' '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   grep -q 'cpu \"ki10\"' '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   grep -q 'cpu \"kl10\"' '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   grep -q 'cpu \"ks10\"' '${CMAKE_BINARY_DIR}/pdp10.v.check' && \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.xmovei.kl10' && \
+   grep -q '0x0000: xmovei' '${CMAKE_BINARY_DIR}/pdp10.v.xmovei.kl10' && \
+   \"$E\" upcl decode \"$P[@ks10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.xmovei.ks10' && \
+   grep -q '0x0000: xmovei' '${CMAKE_BINARY_DIR}/pdp10.v.xmovei.ks10' && \
+   \"$E\" upcl decode \"$P[@ka10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.setmi.ka10' && \
+   grep -q '0x0000: setmi'  '${CMAKE_BINARY_DIR}/pdp10.v.setmi.ka10' && \
+   ! grep -q 'xmovei' '${CMAKE_BINARY_DIR}/pdp10.v.setmi.ka10' && \
+   \"$E\" upcl decode \"$P[@ki10]\" 0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.setmi.ki10' && \
+   grep -q '0x0000: setmi'  '${CMAKE_BINARY_DIR}/pdp10.v.setmi.ki10' && \
+   \"$E\" upcl decode \"$P[@pdp6]\"  0o415040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.setmi.pdp6' && \
+   grep -q '0x0000: setmi'  '${CMAKE_BINARY_DIR}/pdp10.v.setmi.pdp6' && \
+   \"$E\" upcl decode \"$P[@ka10]\" 0o140040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.fad.ka10' && \
+   grep -q '0x0000: fad'    '${CMAKE_BINARY_DIR}/pdp10.v.fad.ka10' && \
+   \"$E\" upcl decode \"$P[@ki10]\" 0o140040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.fad.ki10' && \
+   grep -q '0x0000: fad'    '${CMAKE_BINARY_DIR}/pdp10.v.fad.ki10' && \
+   \"$E\" upcl decode \"$P[@kl10]\" 0o140040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.fad.kl10' && \
+   grep -q '0x0000: fad'    '${CMAKE_BINARY_DIR}/pdp10.v.fad.kl10' && \
+   \"$E\" upcl decode \"$P[@pdp6]\"  0o140040000100 > '${CMAKE_BINARY_DIR}/pdp10.v.fad.pdp6' && \
+   grep -q 'no encoding matched' '${CMAKE_BINARY_DIR}/pdp10.v.fad.pdp6'")
+set_tests_properties(upcl.pdp10-variants PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
+
 # DEC PDP-10 arch header + register file (Phase 1 / Task 5). Verify: word=36 addr=18 big-endian
 # word-addressed arch; group AC with AC/low-memory aliasing (aliases_memory 0); group S with
 # 18-bit PC (%PC) and 18-bit pcflags (%PSR) carrying the 13 PC flag bits (AROV->%V, CRY0->%C,
