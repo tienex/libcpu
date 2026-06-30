@@ -1078,7 +1078,6 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     } else {
         // JIT: translate a region, run to a trap, resume there, until it runs off.
         CPU_ADDR Pc = Entry;
-        int XctDepth = 0;
         for (int I = 0; I < 100000; I++) {
             ComPtr<ICpuCode> Code;
             if (FAILED (GenerateAotCfg (A.pArch, pBackend, Pc, End, &Code, nullptr)) || Code == nullptr) {
@@ -1141,7 +1140,6 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                         }
                     }
                     if (XctFailed) { break; }
-                    XctDepth = 0;                                  // chain complete; reset depth
                     CPU_ADDR OuterRetPc = RetStack[0];             // outermost XCT+1
                     if (State.SyscallVector != CPU_NO_SYSCALL) {
                         // Innermost instruction trapped (IOT, HLT, ...). Dispatch it now,

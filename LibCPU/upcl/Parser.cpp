@@ -1729,9 +1729,17 @@ Parser::ParseDisasmAtom ()
         Expect (TokRParen, "to close a disasm macro call");
         return F;
     }
-    Accept (TokDollar);                             // optional '$' before a parameter
+    // A '$word' now lexes as a single TokBuiltinIdent (the $ builtin sigil); accept it here so a
+    // disasm '$param' placeholder still resolves to the parameter name. A bare '$' not followed by
+    // a word remains TokDollar (the legacy `$` ident form).
     std::string Param;
-    if (m_Cur.Kind == TokIdent) { Param = m_Cur.Text; Advance (); }
+    if (m_Cur.Kind == TokBuiltinIdent) {
+        Param = m_Cur.Text;
+        Advance ();
+    } else {
+        Accept (TokDollar);                         // optional bare '$' before a parameter
+        if (m_Cur.Kind == TokIdent) { Param = m_Cur.Text; Advance (); }
+    }
     F->Text = Param;
     F->Kind = DFmtParam;
     if (Accept (TokColon)) {
