@@ -1060,6 +1060,34 @@ add_test(NAME upcl.pdp10-ea COMMAND sh -c
    grep -q 'put r16 <- '           '${CMAKE_BINARY_DIR}/pdp10.jrst'")
 set_tests_properties(upcl.pdp10-ea PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# PDP-10 full-word data transmission (MOVE/MOVS/MOVN/MOVM families, EXCH, BLT). The 36-bit word
+# (op:9 ac:4 i:1 x:4 y:18, MSB-first) is given as one octal value. The low two bits of the opcode
+# select the operand mode (00=basic, 01=Immediate, 10=Memory, 11=Self). The words below carry
+# ac=1, i=0, x=0, y=0o100 (=0x40), except the indexed MOVS which carries ac=2, x=3. Opcodes are
+# sourced from SIMH pdp10_sys.c / the DEC PDP-10 Hardware Reference Manual: MOVE=0o200, MOVS=0o204,
+# MOVN=0o210, MOVM=0o214 (with +1/+2/+3 for the I/M/S modes); EXCH=0o250, BLT=0o251.
+add_test(NAME upcl.decode-pdp10 COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o200040000100 > '${CMAKE_BINARY_DIR}/pdp10.move' && \
+   grep -q '0x0000: move'  '${CMAKE_BINARY_DIR}/pdp10.move' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.move' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.move' && \
+   \"$E\" upcl decode \"$P\" 0o201040000100 > '${CMAKE_BINARY_DIR}/pdp10.movei' && \
+   grep -q '0x0000: movei' '${CMAKE_BINARY_DIR}/pdp10.movei' && \
+   \"$E\" upcl decode \"$P\" 0o202040000100 > '${CMAKE_BINARY_DIR}/pdp10.movem' && \
+   grep -q '0x0000: movem' '${CMAKE_BINARY_DIR}/pdp10.movem' && \
+   \"$E\" upcl decode \"$P\" 0o213040000100 > '${CMAKE_BINARY_DIR}/pdp10.movns' && \
+   grep -q '0x0000: movns' '${CMAKE_BINARY_DIR}/pdp10.movns' && \
+   \"$E\" upcl decode \"$P\" 0o204103000100 > '${CMAKE_BINARY_DIR}/pdp10.movs' && \
+   grep -q '0x0000: movs'  '${CMAKE_BINARY_DIR}/pdp10.movs' && \
+   grep -q 'acn=0x2'       '${CMAKE_BINARY_DIR}/pdp10.movs' && \
+   grep -q 'x=0x3'         '${CMAKE_BINARY_DIR}/pdp10.movs' && \
+   \"$E\" upcl decode \"$P\" 0o250040000100 > '${CMAKE_BINARY_DIR}/pdp10.exch' && \
+   grep -q '0x0000: exch'  '${CMAKE_BINARY_DIR}/pdp10.exch' && \
+   \"$E\" upcl decode \"$P\" 0o251040000100 > '${CMAKE_BINARY_DIR}/pdp10.blt' && \
+   grep -q '0x0000: blt'   '${CMAKE_BINARY_DIR}/pdp10.blt'")
+set_tests_properties(upcl.decode-pdp10 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

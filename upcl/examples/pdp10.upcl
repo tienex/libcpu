@@ -162,18 +162,185 @@ macro ea ( i, x, y ) {
     result = e;
 }
 
-// ---------------------------------------------------------------------------
-// MOVE family -- the canonical operand-fetch users of @ea, sufficient to exercise the EA path
-// (index + indirect) for the decode milestone. The full instruction set arrives in later tasks.
-//   MOVE  AC, E   AC := M[E]              (op 0o200)
-//   MOVEM AC, E   M[E] := AC              (op 0o202)  -- E used as a store address
-//   JRST  E       PC := E                 (op 0o254)  -- E used as a bare jump target (@ea, not M[E])
-// ---------------------------------------------------------------------------
-insn move : encode #i36 ( op:9 = 0o200, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
-    disasm ( mnemonic : "move", operands : acn, i, x, y )  => ac[ acn ] = %M[ @ea ( i, x, y ) ];
+// ===========================================================================
+// FULL-WORD DATA TRANSMISSION (DEC PDP-10 Hardware Reference Manual, "Full Word Data
+// Transmission"; opcodes verified against SIMH pdp10_sys.c). These move whole 36-bit words
+// between an accumulator and the effective address (or, for the double-word forms, an AC pair
+// and an E pair). They are the TEMPLATE for the later instruction families.
+//
+// THE OPERAND-MODE TEMPLATE.  The MOVE/MOVS/MOVN/MOVM groups each occupy four consecutive
+// opcodes whose low two bits select WHERE the operand comes from and WHERE the result goes:
+//   base (op|0)  "basic"      AC <- f(E)            -- read M[E], result to AC
+//   I    (op|1)  "Immediate"  AC <- f(0,,E)         -- the operand IS E itself (0 in left half)
+//   M    (op|2)  "to Memory"  M[E] <- f(AC)         -- read AC, result back to M[E]
+//   S    (op|3)  "to Self"    M[E] <- f(E); AC<-... -- operate in place at M[E]; also to AC if AC#0
+// f is the per-group transform: identity (MOVE), half-swap (MOVS), negate (MOVN), magnitude
+// (MOVM). Self mode's "also to AC if AC != 0" is the PDP-10 rule that AC0 is suppressed as a
+// destination; here the body writes ac[acn] unconditionally (acn==0 writes AC0, harmless), the
+// faithful "AC != 0" gate is exercised by execution in Task 18.  Every member uses @ea: the basic
+// and Self/Memory forms as `%M[ @ea(..) ]`, the Immediate forms as the bare address `@ea(..)`.
+//
+// The op:9 group base octals: MOVE 0o200, MOVS 0o204, MOVN 0o210, MOVM 0o214.  The low two bits of
+// the opcode are the MODE bits (MODE_*); each member opcode is its group base + its mode, so the
+// full set is generated from four bases and four mode constants (the encode-field value below is a
+// const, the arithmetic is done here at const-definition time).
+const MODE_B = 0;               // 00 basic      AC <- f(E)
+const MODE_I = 1;               // 01 Immediate  AC <- f(0,,E)
+const MODE_M = 2;               // 10 to Memory  M[E] <- f(AC)
+const MODE_S = 3;               // 11 to Self    M[E] <- f(E); AC <- result if AC != 0
+const OP_MOVE = 0o200;          // MOVE family base (identity)
+const OP_MOVS = 0o204;          // MOVS family base (swap halves)
+const OP_MOVN = 0o210;          // MOVN family base (2's-complement negate)
+const OP_MOVM = 0o214;          // MOVM family base (magnitude / absolute value)
+const OP_EXCH = 0o250;          // EXCH  exchange AC and M[E]
+const OP_BLT  = 0o251;          // BLT   block transfer
+const OP_DMOVE = 0o120;         // DMOVE double-word move into the AC pair
+const OP_DMOVN = 0o121;         // DMOVN double-word negate into the AC pair
 
-insn movem : encode #i36 ( op:9 = 0o202, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+// Per-mnemonic opcodes = group base + mode bits.
+const OP_MOVEI = OP_MOVE + MODE_I;
+const OP_MOVEM = OP_MOVE + MODE_M;
+const OP_MOVES = OP_MOVE + MODE_S;
+const OP_MOVSI = OP_MOVS + MODE_I;
+const OP_MOVSM = OP_MOVS + MODE_M;
+const OP_MOVSS = OP_MOVS + MODE_S;
+const OP_MOVNI = OP_MOVN + MODE_I;
+const OP_MOVNM = OP_MOVN + MODE_M;
+const OP_MOVNS = OP_MOVN + MODE_S;
+const OP_MOVMI = OP_MOVM + MODE_I;
+const OP_MOVMM = OP_MOVM + MODE_M;
+const OP_MOVMS = OP_MOVM + MODE_S;
+
+// The right half (low 18 bits) and most-negative word -- needed by the swap and the negate/magnitude
+// overflow rules. SIGN_BIT36 is 400000,,000000 = -2^35, the one word whose negation overflows.
+const W36_MASK   = 0xfffffffff;     // 36-bit word mask
+const SIGN_BIT36 = 0x800000000;     // bit 35, the sign bit (also the most-negative value -2^35)
+
+// ---------------------------------------------------------------------------
+// MOVE -- copy the word unchanged.  AC <- E / E <- AC / E <- E.
+insn move  : encode #i36 ( op:9 = OP_MOVE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "move",  operands : acn, i, x, y )  => ac[ acn ] = %M[ @ea ( i, x, y ) ];
+insn movei : encode #i36 ( op:9 = OP_MOVEI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movei", operands : acn, i, x, y )  => ac[ acn ] = @ea ( i, x, y );   // 0,,E
+insn movem : encode #i36 ( op:9 = OP_MOVEM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "movem", operands : acn, i, x, y )  => %M[ @ea ( i, x, y ) ] = ac[ acn ];
+insn moves : encode #i36 ( op:9 = OP_MOVES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "moves", operands : acn, i, x, y )
+    { #i36 e = @ea ( i, x, y ); #i36 v = %M[ e ]; %M[ e ] = v; ac[ acn ] = v; }
 
+// ---------------------------------------------------------------------------
+// MOVS -- swap the two 18-bit halves: result = right(v),,left(v).  The transform is shared by all
+// four modes; the half-swap macro keeps each body to one line.
+macro swaphalves ( v ) { result = ( ( v >> 18 ) & EA_Y_MASK ) | ( ( v & EA_Y_MASK ) << 18 ); }
+insn movs  : encode #i36 ( op:9 = OP_MOVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movs",  operands : acn, i, x, y )  => ac[ acn ] = @swaphalves ( %M[ @ea ( i, x, y ) ] );
+insn movsi : encode #i36 ( op:9 = OP_MOVSI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movsi", operands : acn, i, x, y )  => ac[ acn ] = @swaphalves ( @ea ( i, x, y ) );  // E,,0
+insn movsm : encode #i36 ( op:9 = OP_MOVSM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movsm", operands : acn, i, x, y )  => %M[ @ea ( i, x, y ) ] = @swaphalves ( ac[ acn ] );
+insn movss : encode #i36 ( op:9 = OP_MOVSS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movss", operands : acn, i, x, y )
+    { #i36 e = @ea ( i, x, y ); #i36 v = @swaphalves ( %M[ e ] ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// MOVN -- 2's-complement negate: result = -v (mod 2^36).  Carry/overflow per the HRM:
+//   v == 0           : result 0, set CRY0 AND CRY1 (carry out of both bits, so no AROV).
+//   v == 400000,,0   : result unchanged (-2^35 has no positive form), set CRY1 AND AROV (CRY0 reset).
+//   otherwise        : no carry/overflow set by this instruction.
+// The flag assignments below set exactly the bits the manual names; CRY0 == %C, AROV == %V, and
+// CRY1 is the named PSR field. They are computed once from v and written unconditionally.
+macro movn_flags ( v ) {
+    #i1 isz = ( ( v & W36_MASK ) == 0 ) ? 1 : 0;            // v == 0
+    #i1 ism = ( ( v & W36_MASK ) == SIGN_BIT36 ) ? 1 : 0;   // v == -2^35
+    CRY0 = isz;                                             // carry out of bit 0 only when negating 0
+    CRY1 = isz | ism;                                       // carry out of bit 1 when 0 or most-negative
+    AROV = ism;                                             // overflow only for the most-negative word
+}
+insn movn  : encode #i36 ( op:9 = OP_MOVN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movn",  operands : acn, i, x, y )
+    { #i36 v = %M[ @ea ( i, x, y ) ]; @movn_flags ( v ); ac[ acn ] = 0 - v; }
+insn movni : encode #i36 ( op:9 = OP_MOVNI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movni", operands : acn, i, x, y )
+    { #i36 v = @ea ( i, x, y ); @movn_flags ( v ); ac[ acn ] = 0 - v; }   // negate of 0,,E (never overflows)
+insn movnm : encode #i36 ( op:9 = OP_MOVNM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movnm", operands : acn, i, x, y )
+    { #i36 v = ac[ acn ]; @movn_flags ( v ); %M[ @ea ( i, x, y ) ] = 0 - v; }
+insn movns : encode #i36 ( op:9 = OP_MOVNS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movns", operands : acn, i, x, y )
+    { #i36 e = @ea ( i, x, y ); #i36 v = %M[ e ]; @movn_flags ( v ); #i36 r = 0 - v; %M[ e ] = r; ac[ acn ] = r; }
+
+// ---------------------------------------------------------------------------
+// MOVM -- magnitude (absolute value): result = (v < 0) ? -v : v.  Only the most-negative word
+// 400000,,0 overflows (its magnitude is unrepresentable) -- it sets CRY1 and AROV, leaving the value
+// unchanged; every other word produces |v| with no flag change.  `%S` sign-extends the 36-bit word
+// so the sign test is a true signed compare.
+macro movm_flags ( v ) {
+    #i1 ism = ( ( v & W36_MASK ) == SIGN_BIT36 ) ? 1 : 0;   // v == -2^35 (only overflow case)
+    CRY1 = ism;
+    AROV = ism;
+}
+macro magnitude ( v ) { result = ( %S ( v ) < 0 ) ? ( 0 - v ) : v; }
+insn movm  : encode #i36 ( op:9 = OP_MOVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movm",  operands : acn, i, x, y )
+    { #i36 v = %M[ @ea ( i, x, y ) ]; @movm_flags ( v ); ac[ acn ] = @magnitude ( v ); }
+insn movmi : encode #i36 ( op:9 = OP_MOVMI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movmi", operands : acn, i, x, y )  => ac[ acn ] = @ea ( i, x, y );   // 0,,E is always >= 0
+insn movmm : encode #i36 ( op:9 = OP_MOVMM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movmm", operands : acn, i, x, y )
+    { #i36 v = ac[ acn ]; @movm_flags ( v ); %M[ @ea ( i, x, y ) ] = @magnitude ( v ); }
+insn movms : encode #i36 ( op:9 = OP_MOVMS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movms", operands : acn, i, x, y )
+    { #i36 e = @ea ( i, x, y ); #i36 v = %M[ e ]; @movm_flags ( v ); #i36 r = @magnitude ( v ); %M[ e ] = r; ac[ acn ] = r; }
+
+// ---------------------------------------------------------------------------
+// EXCH AC, E -- exchange: the contents of AC and M[E] are swapped.
+insn exch : encode #i36 ( op:9 = OP_EXCH, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "exch", operands : acn, i, x, y )
+    { #i36 e = @ea ( i, x, y ); #i36 t = ac[ acn ]; ac[ acn ] = %M[ e ]; %M[ e ] = t; }
+
+// ---------------------------------------------------------------------------
+// BLT AC, E -- block transfer.  The two halves of AC are addresses: the LEFT half is the current
+// source, the RIGHT half the current destination.  Words are copied M[src] -> M[dst], both halves
+// incrementing, until a word has been stored at an address >= E (the effective address); i.e. the
+// loop runs while the destination address dst <= E.  AC is left holding the addresses after the last
+// transfer.  (Per the HRM, AC is the running pointer pair; deep / interrupted BLT semantics are
+// exercised by execution in Task 18 -- here the loop shape and the half decomposition are pinned.)
+insn blt : encode #i36 ( op:9 = OP_BLT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "blt", operands : acn, i, x, y )
+    {
+        #i36 e   = @ea ( i, x, y );
+        #i18 src = ( ac[ acn ] >> 18 ) & EA_Y_MASK;     // left half  = first source address
+        #i18 dst = ac[ acn ] & EA_Y_MASK;               // right half = first destination address
+        while ( dst <= ( e & EA_Y_MASK ) ) {
+            %M[ dst ] = %M[ src ];                       // copy one word
+            src = ( src + 1 ) & EA_Y_MASK;              // advance both pointers (18-bit wrap)
+            dst = ( dst + 1 ) & EA_Y_MASK;
+            ac[ acn ] = ( src << 18 ) | dst;            // AC tracks the running source,,destination
+        }
+    }
+
+// ---------------------------------------------------------------------------
+// DMOVE / DMOVN -- double-word (72-bit) transfers into the AC pair (AC, AC+1) from the memory pair
+// (E, E+1).  DMOVE copies both words; DMOVN negates the 72-bit two's-complement value (the pair is
+// one big number: high word in AC, low word in AC+1), placing the result in the AC pair.  The low
+// word's sign bit is forced clear in the canonical 72-bit form, but the negate is performed on the
+// full 72-bit magnitude here.  AC+1 wraps within the 16-AC bank (& 0xf).
+insn dmove : encode #i36 ( op:9 = OP_DMOVE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dmove", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = %M[ e ]; ac[ ( acn + 1 ) & 0xf ] = %M[ ( e + 1 ) & EA_Y_MASK ]; }
+insn dmovn : encode #i36 ( op:9 = OP_DMOVN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dmovn", operands : acn, i, x, y )
+    {
+        #i18 e  = @ea ( i, x, y );
+        #i72 hi = %M[ e ];                              // high word -> bits 71..36 of the 72-bit value
+        #i72 lo = %M[ ( e + 1 ) & EA_Y_MASK ];          // low word  -> bits 35..0
+        #i72 d  = 0 - ( ( hi << 36 ) | lo );            // negate the full 72-bit number
+        ac[ acn ]               = ( d >> 36 ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = d & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// JRST E -- jump: PC <- E.  E is used as a BARE jump target (@ea, not %M[E]); the same macro serves
+// both value and address contexts.
 jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "jrst", operands : i, x, y )  { pc = @ea ( i, x, y ); }
