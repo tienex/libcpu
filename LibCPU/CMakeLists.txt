@@ -1119,6 +1119,41 @@ add_test(NAME upcl.decode-pdp10-halfword COMMAND sh -c
    grep -q '0x0000: hlle'  '${CMAKE_BINARY_DIR}/pdp10.hlle'")
 set_tests_properties(upcl.decode-pdp10-halfword PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
 
+# PDP-10 boolean instructions (16 functions x 4 modes, opcodes 0o400-0o477).
+# Truth table: SETZ=0, AND=AC&M, ANDCA=~AC&M, SETM=M, ANDCM=AC&~M, SETA=AC, XOR=AC^M,
+# IOR=AC|M, ANDCB=~AC&~M, EQV=~(AC^M), SETCA=~AC, ORCA=~AC|M, SETCM=~M, ORCM=AC|~M,
+# ORCB=~AC|~M, SETO=all-ones. Four modes: basic/I/M/S (+0/+1/+2/+3 on group base).
+# Opcodes sourced from SIMH pdp10_sys.c / DEC HRM.  Test words carry i=0, x=0.
+add_test(NAME upcl.decode-pdp10-boolean COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o404040000100 > '${CMAKE_BINARY_DIR}/pdp10.and' && \
+   grep -q '0x0000: and'   '${CMAKE_BINARY_DIR}/pdp10.and' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.and' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.and' && \
+   \"$E\" upcl decode \"$P\" 0o405040000200 > '${CMAKE_BINARY_DIR}/pdp10.andi' && \
+   grep -q '0x0000: andi'  '${CMAKE_BINARY_DIR}/pdp10.andi' && \
+   \"$E\" upcl decode \"$P\" 0o434100000300 > '${CMAKE_BINARY_DIR}/pdp10.ior' && \
+   grep -q '0x0000: ior'   '${CMAKE_BINARY_DIR}/pdp10.ior' && \
+   grep -q 'acn=0x2'       '${CMAKE_BINARY_DIR}/pdp10.ior' && \
+   \"$E\" upcl decode \"$P\" 0o400140000100 > '${CMAKE_BINARY_DIR}/pdp10.setz' && \
+   grep -q '0x0000: setz'  '${CMAKE_BINARY_DIR}/pdp10.setz' && \
+   grep -q 'acn=0x3'       '${CMAKE_BINARY_DIR}/pdp10.setz' && \
+   \"$E\" upcl decode \"$P\" 0o474200000200 > '${CMAKE_BINARY_DIR}/pdp10.seto' && \
+   grep -q '0x0000: seto'  '${CMAKE_BINARY_DIR}/pdp10.seto' && \
+   grep -q 'acn=0x4'       '${CMAKE_BINARY_DIR}/pdp10.seto' && \
+   \"$E\" upcl decode \"$P\" 0o430240000300 > '${CMAKE_BINARY_DIR}/pdp10.xor' && \
+   grep -q '0x0000: xor'   '${CMAKE_BINARY_DIR}/pdp10.xor' && \
+   grep -q 'acn=0x5'       '${CMAKE_BINARY_DIR}/pdp10.xor' && \
+   \"$E\" upcl decode \"$P\" 0o444300000400 > '${CMAKE_BINARY_DIR}/pdp10.eqv' && \
+   grep -q '0x0000: eqv'   '${CMAKE_BINARY_DIR}/pdp10.eqv' && \
+   \"$E\" upcl decode \"$P\" 0o420340000500 > '${CMAKE_BINARY_DIR}/pdp10.andcm' && \
+   grep -q '0x0000: andcm' '${CMAKE_BINARY_DIR}/pdp10.andcm' && \
+   \"$E\" upcl decode \"$P\" 0o414040000100 > '${CMAKE_BINARY_DIR}/pdp10.setm' && \
+   grep -q '0x0000: setm'  '${CMAKE_BINARY_DIR}/pdp10.setm' && \
+   \"$E\" upcl decode \"$P\" 0o470100000200 > '${CMAKE_BINARY_DIR}/pdp10.orcb' && \
+   grep -q '0x0000: orcb'  '${CMAKE_BINARY_DIR}/pdp10.orcb'")
+set_tests_properties(upcl.decode-pdp10-boolean PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c
