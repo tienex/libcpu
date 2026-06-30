@@ -1303,6 +1303,39 @@ add_test(NAME upcl.decode-pdp10-jump COMMAND sh -c
    grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.jfcl'")
 set_tests_properties(upcl.decode-pdp10-jump PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
+# PDP-10 byte instructions (Task 13): LDB/DPB/ILDB/IDPB/IBP.
+# Opcodes sourced from DEC PDP-10 HRM and SIMH pdp10_cpu.c:
+#   IBP=0o133, ILDB=0o134, LDB=0o135, IDPB=0o136, DPB=0o137.
+# Instruction word encoding (op:9 ac:4 i:1 x:4 y:18, MSB-first, 36-bit octal).
+# Test words use ac=1 (acn=1), i=0, x=0, y=0o100 (=0x40):
+#   LDB  (ac=1): 0o135040000100 = op=0o135 ac=1 y=0o100
+#   DPB  (ac=1): 0o137040000100 = op=0o137 ac=1 y=0o100
+#   IBP  (ac=1): 0o133040000100 = op=0o133 ac=1 y=0o100
+#   ILDB (ac=1): 0o134040000100 = op=0o134 ac=1 y=0o100
+#   IDPB (ac=1): 0o136040000100 = op=0o136 ac=1 y=0o100
+add_test(NAME upcl.decode-pdp10-byte COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o135040000100 > '${CMAKE_BINARY_DIR}/pdp10.ldb' && \
+   grep -q '0x0000: ldb'   '${CMAKE_BINARY_DIR}/pdp10.ldb' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.ldb' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.ldb' && \
+   \"$E\" upcl decode \"$P\" 0o137040000100 > '${CMAKE_BINARY_DIR}/pdp10.dpb' && \
+   grep -q '0x0000: dpb'   '${CMAKE_BINARY_DIR}/pdp10.dpb' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.dpb' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.dpb' && \
+   \"$E\" upcl decode \"$P\" 0o133040000100 > '${CMAKE_BINARY_DIR}/pdp10.ibp' && \
+   grep -q '0x0000: ibp'   '${CMAKE_BINARY_DIR}/pdp10.ibp' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.ibp' && \
+   \"$E\" upcl decode \"$P\" 0o134040000100 > '${CMAKE_BINARY_DIR}/pdp10.ildb' && \
+   grep -q '0x0000: ildb'  '${CMAKE_BINARY_DIR}/pdp10.ildb' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.ildb' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.ildb' && \
+   \"$E\" upcl decode \"$P\" 0o136040000100 > '${CMAKE_BINARY_DIR}/pdp10.idpb' && \
+   grep -q '0x0000: idpb'  '${CMAKE_BINARY_DIR}/pdp10.idpb' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.idpb' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.idpb'")
+set_tests_properties(upcl.decode-pdp10-byte PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

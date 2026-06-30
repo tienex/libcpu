@@ -2599,3 +2599,170 @@ insn adjsp : encode #i36 ( op:9 = OP_ADJSP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
         #i18 newr = ( ( ac[ acn ] & HW_MASK ) + off ) & HW_MASK;
         ac[ acn ] = ( newl << HW_LSHFT ) | newr;
     }
+
+// ===========================================================================
+// BYTE INSTRUCTIONS (DEC PDP-10 Hardware Reference Manual, "Byte Manipulation";
+// opcodes verified against SIMH pdp10_cpu.c and DEC PDP-10 HRM ch.2).
+//
+// Opcodes (octal): IBP/ADJBP=0o133, ILDB=0o134, LDB=0o135, IDPB=0o136, DPB=0o137.
+// On KI/KA: 0o133 with AC=0 is IBP; on KL: 0o133 with AC!=0 is ADJBP.  Here AC is
+// bound to `acn` from the instruction word; the IBP insn handles the AC=0 form; an
+// ADJBP stub (Task 18) handles the KL AC!=0 form (not implemented here).
+//
+// BYTE-POINTER WORD FORMAT (DEC PDP-10 HRM, "Byte Pointers", ch.2):
+// A byte pointer is one 36-bit word whose fields, in MSB-first bit numbering (bit 0 = MSB),
+// are: P[0:5] S[6:11] 0[12] I[13] X[14:17] Y[18:35].  In our numeric representation
+// (bit 35 = MSB), these map to:
+//   P  = bits 35..30  (6 bits) = bp >> 30
+//   S  = bits 29..24  (6 bits) = (bp >> 24) & 0x3f
+//   reserved bit 23 (ignored)
+//   I  = bit 22               = same position as the instruction I field
+//   X  = bits 21..18 (4 bits) = same position as the instruction X field
+//   Y  = bits 17..0  (18 bits) = same position as the instruction Y field
+// The byte pointer's I/X/Y are IDENTICAL in position to an instruction word's I/X/Y, so
+// the same @ea macro handles the SECOND-LEVEL address calculation (data word address).
+//
+// The instruction's own @ea(i,x,y) gives E = the ADDRESS of the byte-pointer word.
+// The byte pointer word bp = %M[E].  Then:
+//   bp_i = (bp >> EA_I_SHIFT) & 1        -- bp's indirect bit (bit 22)
+//   bp_x = (bp >> EA_X_SHIFT) & EA_X_MASK  -- bp's index field (bits 21..18)
+//   bp_y = bp & EA_Y_MASK                -- bp's address field (bits 17..0)
+// And data_addr = @ea(bp_i, bp_x, bp_y) -- same EA macro, second level.
+//
+// SEMANTICS:
+//   LDB AC, E:    bp = M[E].  byte = (M[data_addr] >> P) & ((1<<S)-1).  AC = byte.
+//   DPB AC, E:    bp = M[E].  mask = ((1<<S)-1) << P.
+//                 M[data_addr] = (M[data_addr] & ~mask) | ((AC << P) & mask).
+//   IBP E:        bp = M[E].  P = P - S.  If P < 0: P = 36 - S, Y++.  M[E] = updated bp.
+//                 (AC field of IBP is 0 on KI/KA; AC field ignored for pointer update.)
+//   ILDB AC, E:   do IBP(E), then LDB AC, E (using the UPDATED byte pointer).
+//   IDPB AC, E:   do IBP(E), then DPB AC, E (using the UPDATED byte pointer).
+//
+// NOTE -- P FIELD WIDTH AND SIGN: P and S are UNSIGNED 6-bit values extracted from the
+// byte pointer.  "P < 0" in the IBP increment is checked as a signed comparison on the
+// 6-bit value after subtraction, but since P and S are both <= 36 and the word is 36 bits,
+// (P - S) is negative when it underflows.  We compute new_p = P - S as a signed value
+// and check (new_p < 0) to detect the word-boundary wrap.  All P/S arithmetic is masked
+// to 6 bits (& 0x3f) after adjustment.
+//
+// NOTE -- INDIRECT POINTER-ON-POINTER: This implementation applies @ea ONCE to the byte
+// pointer's I/X/Y fields, handling one level of indirection.  If the byte pointer word
+// itself has I=1, the chain executes (the @ea macro loops), yielding the data word address
+// exactly as it does for instruction operands.  ADJBP (KL, AC!=0) is a Task-18 item.
+//
+// Byte-pointer field shift/mask constants.
+const BP_P_SHIFT = 30;              // P field: bits 35..30 (top 6 bits of the 36-bit word)
+const BP_S_SHIFT = 24;              // S field: bits 29..24
+const BP_PS_MASK = 0x3f;            // 6-bit mask for P and S fields
+const BP_WORD_BITS = 36;            // PDP-10 word size in bits (for IBP wrap: new P = 36 - S)
+
+// @bpea(bp) -- extract the data-word effective address from a byte-pointer word.
+// The byte pointer's I/X/Y occupy the SAME bit positions as an instruction word's I/X/Y,
+// so we extract them with the existing EA_I_SHIFT / EA_X_SHIFT / EA_X_MASK / EA_Y_MASK
+// constants and pass them through the @ea macro.
+macro bpea ( bp ) {
+    #i1  bpi = ( bp >> EA_I_SHIFT ) & 1;           // byte pointer's indirect bit (bit 22)
+    #i4  bpx = ( bp >> EA_X_SHIFT ) & EA_X_MASK;  // byte pointer's index field   (bits 21..18)
+    #i18 bpy = bp & EA_Y_MASK;                     // byte pointer's address field (bits 17..0)
+    result = @ea ( bpi, bpx, bpy );
+}
+
+// @ibp_update(bp) -- apply the IBP increment to a byte-pointer word and return the updated word.
+// P_new = P - S.  If P_new < 0 (underflow): P_new = 36 - S, Y_new = Y + 1.
+// The updated word is assembled by patching only the P and Y fields (S, I, X unchanged).
+macro ibp_update ( bp ) {
+    #i6  bp_p   = ( bp >> BP_P_SHIFT ) & BP_PS_MASK;
+    #i6  bp_s   = ( bp >> BP_S_SHIFT ) & BP_PS_MASK;
+    #i18 bp_y   = bp & EA_Y_MASK;
+    #i36 bp_mid = bp & ~( ( BP_PS_MASK << BP_P_SHIFT ) | EA_Y_MASK );  // zero P and Y fields
+    // Compute new P (treat as signed to detect wrap)
+    #i36 new_p  = ( ( bp_p & BP_PS_MASK ) - ( bp_s & BP_PS_MASK ) );   // may be negative
+    #i6  fin_p  = ( ( %S ( new_p ) < 0 ) ? ( BP_WORD_BITS - bp_s ) : new_p ) & BP_PS_MASK;
+    #i18 fin_y  = ( ( %S ( new_p ) < 0 ) ? ( ( bp_y + 1 ) & EA_Y_MASK ) : bp_y );
+    result = bp_mid | ( fin_p << BP_P_SHIFT ) | fin_y;
+}
+
+// @byte_mask(s) -- compute the byte mask: (1 << S) - 1, masked to W36_MASK.
+macro byte_mask ( s ) { result = ( ( 1 << s ) - 1 ) & W36_MASK; }
+
+// Opcode constants for the byte family.
+const OP_IBP  = 0o133;              // IBP  (AC=0) -- Increment Byte Pointer; ADJBP (AC!=0, KL)
+const OP_ILDB = 0o134;              // ILDB -- Increment and Load Byte
+const OP_LDB  = 0o135;              // LDB  -- Load Byte
+const OP_IDPB = 0o136;              // IDPB -- Increment and Deposit Byte
+const OP_DPB  = 0o137;              // DPB  -- Deposit Byte
+
+// ---------------------------------------------------------------------------
+// LDB AC, E -- Load Byte.
+// Read the byte pointer at M[E], resolve the data-word address from its I/X/Y,
+// extract S bits starting at bit P from the right of the data word, store in AC.
+insn ldb : encode #i36 ( op:9 = OP_LDB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ldb", operands : acn, i, x, y )
+    {
+        #i36 bp      = %M[ @ea ( i, x, y ) ];          // fetch the byte pointer word
+        #i6  bp_p    = ( bp >> BP_P_SHIFT ) & BP_PS_MASK;
+        #i6  bp_s    = ( bp >> BP_S_SHIFT ) & BP_PS_MASK;
+        #i36 dw      = %M[ @bpea ( bp ) ];             // fetch the data word
+        ac[ acn ]    = ( dw >> bp_p ) & @byte_mask ( bp_s );
+    }
+
+// ---------------------------------------------------------------------------
+// DPB AC, E -- Deposit Byte.
+// Read the byte pointer at M[E], resolve the data-word address from its I/X/Y,
+// deposit the low S bits of AC into the byte position of the data word.
+insn dpb : encode #i36 ( op:9 = OP_DPB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dpb", operands : acn, i, x, y )
+    {
+        #i36 bp      = %M[ @ea ( i, x, y ) ];          // fetch the byte pointer word
+        #i6  bp_p    = ( bp >> BP_P_SHIFT ) & BP_PS_MASK;
+        #i6  bp_s    = ( bp >> BP_S_SHIFT ) & BP_PS_MASK;
+        #i36 mask    = @byte_mask ( bp_s ) << bp_p;
+        #i18 da      = @bpea ( bp );                   // data word address
+        %M[ da ]     = ( ( %M[ da ] & ( ~mask & W36_MASK ) ) | ( ( ac[ acn ] << bp_p ) & mask ) ) & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// IBP E -- Increment Byte Pointer (AC=0 on KI/KA; KL AC!=0 = ADJBP, Task-18 item).
+// Increment P by -S; if P underflows (P < 0 after subtract), set P = 36 - S and Y += 1.
+// Write the updated byte pointer back to M[E].  The AC field is used here only to
+// disambiguate from ADJBP (KL) on the fly; IBP is valid for all AC values on KI/KA,
+// but the decode uses `acn` (bound to AC) and ignores it in the body.
+insn ibp : encode #i36 ( op:9 = OP_IBP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ibp", operands : i, x, y )
+    {
+        #i18 ep      = @ea ( i, x, y );                // E = address of the byte pointer word
+        #i36 bp      = %M[ ep ];                       // fetch the byte pointer
+        %M[ ep ]     = @ibp_update ( bp );             // increment P (with Y++ wrap) and write back
+    }
+
+// ---------------------------------------------------------------------------
+// ILDB AC, E -- Increment byte pointer, then Load Byte.
+// First increment the pointer (IBP semantics on M[E]), then load the byte using
+// the UPDATED pointer (same as LDB but with the fresh bp).
+insn ildb : encode #i36 ( op:9 = OP_ILDB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ildb", operands : acn, i, x, y )
+    {
+        #i18 ep      = @ea ( i, x, y );                // E = address of the byte pointer word
+        #i36 bp      = @ibp_update ( %M[ ep ] );       // increment P (with Y++ wrap)
+        %M[ ep ]     = bp;                             // write updated pointer back
+        #i6  bp_p    = ( bp >> BP_P_SHIFT ) & BP_PS_MASK;
+        #i6  bp_s    = ( bp >> BP_S_SHIFT ) & BP_PS_MASK;
+        ac[ acn ]    = ( %M[ @bpea ( bp ) ] >> bp_p ) & @byte_mask ( bp_s );
+    }
+
+// ---------------------------------------------------------------------------
+// IDPB AC, E -- Increment byte pointer, then Deposit Byte.
+// First increment the pointer (IBP semantics on M[E]), then deposit the byte using
+// the UPDATED pointer (same as DPB but with the fresh bp).
+insn idpb : encode #i36 ( op:9 = OP_IDPB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "idpb", operands : acn, i, x, y )
+    {
+        #i18 ep      = @ea ( i, x, y );                // E = address of the byte pointer word
+        #i36 bp      = @ibp_update ( %M[ ep ] );       // increment P (with Y++ wrap)
+        %M[ ep ]     = bp;                             // write updated pointer back
+        #i6  bp_p    = ( bp >> BP_P_SHIFT ) & BP_PS_MASK;
+        #i6  bp_s    = ( bp >> BP_S_SHIFT ) & BP_PS_MASK;
+        #i36 mask    = @byte_mask ( bp_s ) << bp_p;
+        #i18 da      = @bpea ( bp );                   // data word address
+        %M[ da ]     = ( ( %M[ da ] & ( ~mask & W36_MASK ) ) | ( ( ac[ acn ] << bp_p ) & mask ) ) & W36_MASK;
+    }
