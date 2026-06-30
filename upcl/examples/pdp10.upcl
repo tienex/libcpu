@@ -2248,23 +2248,15 @@ jump insn jfcl : type branch, encode #i36 ( op:9 = OP_JFCL, ac:4 -> acn, i:1 -> 
     }
 
 // ===========================================================================
-// XCT -- EXECUTE (DEC PDP-10 HRM "XCT"; opcode 0o256, verified SIMH pdp10_cpu.c).
-//
-// XCT fetches the instruction word at M[E] and executes it AS IF it were the current
-// instruction.  The AC field of XCT is ignored (conventionally 0).  Full execution
-// of XCT requires re-invoking the decode/dispatch loop on M[E] -- a capability that
-// depends on the execution engine (Task 18).  Here XCT is decoded as a stub; the
-// instruction body is intentionally left empty (the address is available via @ea but
-// the re-dispatch cannot be expressed in the UPCL body language yet).
-//
-// `type branch` (not trap) because XCT in principle just continues execution at the
-// next sequential word after the XCT'd instruction; the CFG type tells the engine this
-// is a control-flow point.  Task 18 will fill in the body.
+// XCT -- EXECUTE (DEC PDP-10 HRM "XCT"; opcode 0o256, SIMH pdp10_cpu.c). Executes the instruction
+// at the effective address as if it were the current instruction, then continues. The AC field is
+// ignored (conventionally 0). Implemented via the $exec engine intrinsic (execute-one-and-return);
+// the engine re-decodes the target, so the ISA is defined once.
 const OP_XCT = 0o256;
 
-jump insn xct : type branch, encode #i36 ( op:9 = OP_XCT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+jump insn xct : type trap, encode #i36 ( op:9 = OP_XCT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "xct", operands : acn, i, x, y )
-    { pc = pc; }   // NOTE: re-dispatch of M[@ea(i,x,y)] deferred to Task 18 -- body is a decode stub
+    { $exec ( @ea ( i, x, y ) ); }
 
 // ===========================================================================
 // MAP -- CHECK MAP (DEC PDP-10 HRM "MAP"; opcode 0o257, KL/KS extended addressing).

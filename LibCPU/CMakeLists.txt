@@ -2281,6 +2281,27 @@ add_test(NAME upcl.pdp10-run COMMAND sh -c
    grep -q '.0o200. = 0x000000028' \"$B/pdp10-run.out\"")
 set_tests_properties(upcl.pdp10-run PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
 
+# PDP-10 XCT EXECUTION (Task 4, $exec): XCT executes the instruction at the effective address
+# and then continues at XCT+1.  The fixture pdp10-xct.sav is a classic DEC SAV image (one IOWD
+# block of seventeen 36-bit words at origin 0o140, then the start word JRST,,0o140) hand-assembled
+# per the engine field layout (op:9 ac:4 i:1 x:4 y:18):
+#   0140 XCT    0o160     ; execute M[0o160]            0o256000000160  = 0x570000070
+#   0141 MOVEI  AC2,0o77  ; continuation: AC2 = 63      0o201100000077  = 0x40900003f
+#   0142 JRST   4,        ; HALT                         0o254200000000  = 0x562000000
+#   0143..0157            ; zero words (padding to 0o160)
+#   0160 MOVEI  AC1,0o123 ; the XCT'd insn: AC1 = 83    0o201040000123  = 0x408800053
+# The IOWD header is IOWD -17,,0o137 (17 words starting at 0o140).
+# XCT at 0o140 dispatches to M[0o160] = MOVEI AC1,0o123, setting AC1=0o123=0x53; then execution
+# continues at XCT+1 = 0o141, which sets AC2=0o77=0x3f; then HALT.  Both ACs must be set to
+# confirm execution of the XCT'd instruction AND continuation at XCT+1.
+add_test(NAME upcl.pdp10-xct COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
+   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-xct.sav' --arch upcl:\"$P\"@kl10 > \"$B/pdp10-xct.out\" 2>&1 && \
+   grep -q 'loaded pdp10 .SAV' \"$B/pdp10-xct.out\" && \
+   grep -q 'ac1=0000000053' \"$B/pdp10-xct.out\" && \
+   grep -q 'ac2=000000003f' \"$B/pdp10-xct.out\"")
+set_tests_properties(upcl.pdp10-xct PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|no JRST|XCT nesting")
+
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-
