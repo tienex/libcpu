@@ -1118,25 +1118,36 @@ const OP_DMUL = 0o116;          // DMUL: (AC,,AC+1) * (E,,E+1) -> AC pair (128->
 const OP_DDIV = 0o117;          // DDIV: (AC,,AC+1) / (E,,E+1) -> quotient AC pair, flags
 
 // ---------------------------------------------------------------------------
-// ADD/SUB flag macro.  Per SIMH pdp10_cpu.c `add_flags` / `sub_flags`:
-//   Extend both 36-bit operands a and b to 37-bit signed, sum = a + b (37 bits).
-//   CRY1 = bit 36 of the 37-bit result (carry out of bit 1 / the sign-bit pair).
-//   CRY0 = bit 37 of a 38-bit result XOR CRY1 (carry out of the sign position).
-//   Equivalently in 37-bit: carry out of bit 35 detects CRY1; the XOR detects CRY0.
-//   AROV = CRY0 XOR CRY1 (overflow = the two carry bits differ).
+// ADD/SUB flag macro.  Per SIMH pdp10_cpu.c `add()`:
+//   sum37 = (a & W36_MASK) + (b & W36_MASK)        -- 37-bit unsigned carry chain
+//   CRY0  = (sum37 >> 36) & 1                       -- carry OUT of the sign bit (bit 35)
+//   CRY1  = ((r >> 35) ^ (a >> 35) ^ (b >> 35)) & 1 -- carry INTO the sign bit
+//   AROV  = CRY0 ^ CRY1                             -- overflow = carry bits differ
+// where r = sum37 & W36_MASK (the 36-bit result).
 //
-// The compact formulation used here (matching SIMH's add_flags):
-//   sum37 = (a & W36_MASK) + (b & W36_MASK)                   -- 37-bit unsigned
-//   CRY1  = (sum37 >> 36) & 1                                  -- carry past bit 35
-//   CRY0  = ( (a ^ sum37) & SIGN_BIT36 ) ? 1 : 0              -- sign changed unexpectedly
-//   AROV  = CRY0 ^ CRY1
-// (SIMH sources: pdp10_cpu.c `ADD` case uses add_flags which is the same XOR pattern.)
+// Verification (-1 + -1):
+//   a = b = W36_MASK (all 36 bits set = unsigned 0xfffffffff).
+//   sum37 = 2 * 0xfffffffff = 0x1ffffffffe.
+//   r     = 0xffffffffe  (all 36 bits set minus bit 0 -- 0xfffffffff XOR 1 -- wait:
+//           0x1ffffffffe & 0xfffffffff = 0xffffffffe).
+//   CRY0  = (0x1ffffffffe >> 36) & 1 = 1.
+//   CRY1  = ((0xffffffffe >> 35) ^ (W36_MASK >> 35) ^ (W36_MASK >> 35)) & 1
+//         = (1 ^ 1 ^ 1) & 1 = 1.
+//   AROV  = 1 ^ 1 = 0.  Correct: -1 + -1 = -2, no signed overflow.
+//
+// For genuine overflow (e.g. MAX_POS + MAX_POS, both 0x7ffffffff):
+//   sum37 = 0xffffffffe; r = 0xffffffffe; CRY0 = 0.
+//   CRY1  = ((r>>35) ^ (a>>35) ^ (b>>35)) & 1 = (1^0^0) & 1 = 1.  AROV = 0^1 = 1. Correct.
+//
+// sub_flags(a,b) calls add_flags(a, ~b & W36_MASK); DADD/DSUB inherit the fix automatically.
+const SEXT37_ONES = 0x1FFFFFFFFF;                   // 37 ones -- sign-extension of a negative 36-bit value into upper bits
 macro add_flags ( a, b ) {
     #i37 sum37 = ( a & W36_MASK ) + ( b & W36_MASK );
-    #i1  c1   = ( sum37 >> 36 ) & 1;
-    #i1  c0   = ( ( ( a & W36_MASK ) ^ sum37 ) & SIGN_BIT36 ) ? 1 : 0;
-    CRY1 = c1;
+    #i36 r     = sum37 & W36_MASK;
+    #i1  c0    = ( sum37 >> 36 ) & 1;                                       // carry OUT of sign bit -> CRY0
+    #i1  c1    = ( ( r >> 35 ) ^ ( ( a & W36_MASK ) >> 35 ) ^ ( ( b & W36_MASK ) >> 35 ) ) & 1; // carry INTO sign bit -> CRY1
     CRY0 = c0;
+    CRY1 = c1;
     AROV = c0 ^ c1;
 }
 
@@ -1182,28 +1193,37 @@ insn subs : encode #i36 ( op:9 = OP_SUBS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
 // IMUL / IMULI / IMULM / IMULS  (op base 0o220).  36-bit signed multiply: product in AC;
 // AROV if the 72-bit result does not fit in 36 signed bits (product != sign-ext of low 36).
 // The `%S` sign-extension operator promotes 36-bit to signed 72-bit for the multiply.
+//
+// Overflow test: (p >> 35) must be all-zeros (positive fits) OR SEXT37_ONES (37 ones,
+// negative fits -- the sign extension of a negative 36-bit value into the upper 37 bits).
+// Using W36_MASK (36 ones) here would spuriously flag any in-range negative result.
 insn imul  : encode #i36 ( op:9 = OP_IMUL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "imul",  operands : acn, i, x, y )
-    { #i72 p = %S ( ac[ acn ] ) * %S ( %M[ @ea ( i, x, y ) ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
+    { #i72 p = %S ( ac[ acn ] ) * %S ( %M[ @ea ( i, x, y ) ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != SEXT37_ONES ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
 insn imuli : encode #i36 ( op:9 = OP_IMULI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "imuli", operands : acn, i, x, y )
-    { #i72 p = %S ( ac[ acn ] ) * %S ( @ea ( i, x, y ) ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
+    { #i72 p = %S ( ac[ acn ] ) * %S ( @ea ( i, x, y ) ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != SEXT37_ONES ) ? 1 : 0; ac[ acn ] = p & W36_MASK; }
 insn imulm : encode #i36 ( op:9 = OP_IMULM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "imulm", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; %M[ e ] = p & W36_MASK; }
+    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != SEXT37_ONES ) ? 1 : 0; %M[ e ] = p & W36_MASK; }
 insn imuls : encode #i36 ( op:9 = OP_IMULS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "imuls", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != ( W36_MASK >> 0 ) ) ? 1 : 0; #i36 r = p & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i72 p = %S ( ac[ acn ] ) * %S ( %M[ e ] ); AROV = ( ( p >> 35 ) != 0 && ( p >> 35 ) != SEXT37_ONES ) ? 1 : 0; #i36 r = p & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // MUL / MULI / MULM / MULS  (op base 0o224).  36-bit signed multiply: full 72-bit result
 // in the AC pair (AC = high 36, AC+1 = low 36).  The canonical 72-bit form: high word is
 // signed, low word has its sign bit (bit 35) clear (SIMH: lo = product & 0377777777777).
-// AROV only on (-2^35) * (-2^35), the one overflow case for a 72-bit result (SIMH sets it
-// when the 72-bit product overflows the 72-bit representation -- impossible for 36x36 except
-// the most-negative squared, but SIMH clears AROV for MUL in practice; follow SIMH: AROV=0).
+// AROV only on (-2^35) * (-2^35) -- the sole overflow case for a 36x36 -> 72 multiply:
+// the product +2^70 does not fit in 72-bit signed two's complement (max positive is 2^71-1,
+// but the 72-bit signed form has the MSB as sign, so +2^70 is in range; the real issue is that
+// the product 2^70 has its sign bit [bit 71 of the 72-bit word] set in the SIMH-canonical
+// two-word representation, triggering the hardware overflow latch).
+// Task-18 note: AROV is set here for the -2^35 * -2^35 case per HRM/SIMH; execution
+// verification deferred to Task 18.
 macro mul_pair ( a, b, acn ) {
     #i72 p  = %S ( a ) * %S ( b );
+    AROV = ( ( ( a & W36_MASK ) == SIGN_BIT36 ) && ( ( b & W36_MASK ) == SIGN_BIT36 ) ) ? 1 : 0;
     ac[ acn ]               = ( p >> 36 ) & W36_MASK;     // high word (signed)
     ac[ ( acn + 1 ) & 0xf ] = p & 0xfffffffff;            // low word (clear sign bit per SIMH convention)
 }
@@ -1274,11 +1294,14 @@ insn idivs : encode #i36 ( op:9 = OP_IDIVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
 // quotient in AC, remainder in AC+1.  AROV if M=0 or quotient overflows 36 signed bits.
 // The 72-bit dividend is assembled: hi = AC (36-bit, signed), lo = AC+1 (low 36, unsigned
 // magnitude part); dividend = (hi << 36) | lo.
+// Overflow test for DIV/IDIV quotient: (q72 >> 35) must be 0 (positive fits in 36 bits)
+// or SEXT37_ONES (37 ones -- negative fits).  W36_MASK (36 ones) would spuriously trigger
+// AROV on any in-range negative quotient.
 macro div_body ( hi, lo, b, acn ) {
     #i72 dvd = ( %S ( hi ) << 36 ) | ( lo & W36_MASK );
     #i1  nodiv = ( ( b & W36_MASK ) == 0 ) ? 1 : 0;
     #i72 q72  = nodiv ? 0 : ( dvd / %S ( b ) );
-    #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+    #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != SEXT37_ONES ) ? 1 : 0 );
     AROV = ov;
     ac[ acn ]               = ov ? ( hi & W36_MASK ) : ( q72 & W36_MASK );
     ac[ ( acn + 1 ) & 0xf ] = ov ? ( lo & W36_MASK ) : ( ( dvd % %S ( b ) ) & W36_MASK );
@@ -1297,7 +1320,7 @@ insn divm : encode #i36 ( op:9 = OP_DIVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
         #i72 dvd = ( %S ( ac[ acn ] ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
         #i1  nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : 0;
         #i72 q72  = nodiv ? 0 : ( dvd / %S ( m ) );
-        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != SEXT37_ONES ) ? 1 : 0 );
         AROV = ov;
         %M[ e ] = ov ? ( ac[ acn ] & W36_MASK ) : ( q72 & W36_MASK );
     }
@@ -1309,7 +1332,7 @@ insn divs : encode #i36 ( op:9 = OP_DIVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
         #i72 dvd = ( %S ( ac[ acn ] ) << 36 ) | ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK );
         #i1  nodiv = ( ( m & W36_MASK ) == 0 ) ? 1 : 0;
         #i72 q72  = nodiv ? 0 : ( dvd / %S ( m ) );
-        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != W36_MASK ) ? 1 : 0 );
+        #i1  ov   = nodiv ? 1 : ( ( ( q72 >> 35 ) != 0 && ( q72 >> 35 ) != SEXT37_ONES ) ? 1 : 0 );
         AROV = ov;
         #i36 q = ov ? ( ac[ acn ] & W36_MASK ) : ( q72 & W36_MASK );
         #i36 r = ov ? ( ac[ ( acn + 1 ) & 0xf ] & W36_MASK ) : ( ( dvd % %S ( m ) ) & W36_MASK );
