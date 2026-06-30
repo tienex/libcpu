@@ -1151,7 +1151,13 @@ add_test(NAME upcl.decode-pdp10-boolean COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o414040000100 > '${CMAKE_BINARY_DIR}/pdp10.setm' && \
    grep -q '0x0000: setm'  '${CMAKE_BINARY_DIR}/pdp10.setm' && \
    \"$E\" upcl decode \"$P\" 0o470100000200 > '${CMAKE_BINARY_DIR}/pdp10.orcb' && \
-   grep -q '0x0000: orcb'  '${CMAKE_BINARY_DIR}/pdp10.orcb'")
+   grep -q '0x0000: orcb'  '${CMAKE_BINARY_DIR}/pdp10.orcb' && \
+   \"$E\" upcl decode \"$P\" 0o433040000100 > '${CMAKE_BINARY_DIR}/pdp10.xors' && \
+   grep -q '0x0000: xors'  '${CMAKE_BINARY_DIR}/pdp10.xors' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.xors' && \
+   \"$E\" upcl decode \"$P\" 0o437100000200 > '${CMAKE_BINARY_DIR}/pdp10.iors' && \
+   grep -q '0x0000: iors'  '${CMAKE_BINARY_DIR}/pdp10.iors' && \
+   grep -q 'acn=0x2'       '${CMAKE_BINARY_DIR}/pdp10.iors'")
 set_tests_properties(upcl.decode-pdp10-boolean PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose

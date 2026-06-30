@@ -187,7 +187,7 @@ macro ea ( i, x, y ) {
 const MODE_B = 0;               // 00 basic      AC <- f(E)
 const MODE_I = 1;               // 01 Immediate  AC <- f(0,,E)
 const MODE_M = 2;               // 10 to Memory  M[E] <- f(AC)
-const MODE_S = 3;               // 11 to Self    M[E] <- f(E); AC <- result if AC != 0
+const MODE_S = 3;               // 11 to Self    M[E] <- f(AC, M[E]); AC <- same result if AC != 0
 const OP_MOVE = 0o200;          // MOVE family base (identity)
 const OP_MOVS = 0o204;          // MOVS family base (swap halves)
 const OP_MOVN = 0o210;          // MOVN family base (2's-complement negate)
@@ -746,7 +746,7 @@ insn hlres : encode #i36 ( op:9 = OP_HLRES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
 //   basic (+0)  AC <- f(AC, M[E])             -- E is the effective address; M = memory word at E
 //   I     (+1)  AC <- f(AC, 0,,E)             -- E itself (0 in left half) is the operand; no memory read
 //   M     (+2)  M[E] <- f(AC, M[E])           -- result stored to memory; AC unchanged
-//   S     (+3)  M[E] <- f(M[E], M[E]); AC<-r  -- operate in place; also to AC if AC != 0
+//   S     (+3)  M[E] <- f(AC, M[E]); AC <- same result (AC write gated on AC field != 0, deferred to execution)
 // NOTE: SETZ/SETO/SETA/SETCA ignore M entirely; SETM/SETCM ignore AC entirely. The I form for
 // SETA/SETCA still sets AC <- f(0,,E) (same as basic but M=0,,E), and SETM/SETCMI use M=0,,E.
 //
@@ -843,7 +843,7 @@ insn andm : encode #i36 ( op:9 = OP_ANDM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ac[ acn ] & %M[ e ] ) & W36_MASK; }
 insn ands : encode #i36 ( op:9 = OP_ANDS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "ands", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] & %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ac[ acn ] & %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // ANDCA / ANDCAI / ANDCAM / ANDCAS -- result = ~AC & M.
@@ -858,7 +858,7 @@ insn andcam : encode #i36 ( op:9 = OP_ANDCAM, ac:4 -> acn, i:1 -> i, x:4 -> x, y
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ( ~ac[ acn ] ) & %M[ e ] ) & W36_MASK; }
 insn andcas : encode #i36 ( op:9 = OP_ANDCAS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "andcas", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( ( ~m ) & m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ( ~ac[ acn ] ) & %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // SETM / SETMI / SETMM / SETMS -- result = M.  AC operand is not referenced.
@@ -888,7 +888,7 @@ insn andcmm : encode #i36 ( op:9 = OP_ANDCMM, ac:4 -> acn, i:1 -> i, x:4 -> x, y
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ac[ acn ] & ( ~%M[ e ] ) ) & W36_MASK; }
 insn andcms : encode #i36 ( op:9 = OP_ANDCMS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "andcms", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( m & ( ~m ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ac[ acn ] & ( ~%M[ e ] ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // SETA / SETAI / SETAM / SETAS -- result = AC.  Memory operand is not referenced.
@@ -916,7 +916,7 @@ insn xorm : encode #i36 ( op:9 = OP_XORM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ac[ acn ] ^ %M[ e ] ) & W36_MASK; }
 insn xors : encode #i36 ( op:9 = OP_XORS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "xors", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( m ^ m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ac[ acn ] ^ %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // IOR / IORI / IORM / IORS -- result = AC | M.
@@ -931,7 +931,7 @@ insn iorm : encode #i36 ( op:9 = OP_IORM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ac[ acn ] | %M[ e ] ) & W36_MASK; }
 insn iors : encode #i36 ( op:9 = OP_IORS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "iors", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( m | m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ac[ acn ] | %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // ANDCB / ANDCBI / ANDCBM / ANDCBS -- result = ~AC & ~M.
@@ -946,7 +946,7 @@ insn andcbm : encode #i36 ( op:9 = OP_ANDCBM, ac:4 -> acn, i:1 -> i, x:4 -> x, y
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ( ~ac[ acn ] ) & ( ~%M[ e ] ) ) & W36_MASK; }
 insn andcbs : encode #i36 ( op:9 = OP_ANDCBS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "andcbs", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( ( ~m ) & ( ~m ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ( ~ac[ acn ] ) & ( ~%M[ e ] ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // EQV / EQVI / EQVM / EQVS -- result = ~(AC ^ M)  (equivalence / XNOR).
@@ -961,7 +961,7 @@ insn eqvm : encode #i36 ( op:9 = OP_EQVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ~( ac[ acn ] ^ %M[ e ] ) ) & W36_MASK; }
 insn eqvs : encode #i36 ( op:9 = OP_EQVS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "eqvs", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( ~( m ^ m ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ~( ac[ acn ] ^ %M[ e ] ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // SETCA / SETCAI / SETCAM / SETCAS -- result = ~AC.  Memory operand is not referenced.
@@ -989,7 +989,7 @@ insn orcam : encode #i36 ( op:9 = OP_ORCAM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ( ~ac[ acn ] ) | %M[ e ] ) & W36_MASK; }
 insn orcas : encode #i36 ( op:9 = OP_ORCAS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "orcas", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( ( ~m ) | m ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ( ~ac[ acn ] ) | %M[ e ] ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // SETCM / SETCMI / SETCMM / SETCMS -- result = ~M.  AC operand is not referenced.
@@ -1019,7 +1019,7 @@ insn orcmm : encode #i36 ( op:9 = OP_ORCMM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ac[ acn ] | ( ~%M[ e ] ) ) & W36_MASK; }
 insn orcms : encode #i36 ( op:9 = OP_ORCMS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "orcms", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( m | ( ~m ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ac[ acn ] | ( ~%M[ e ] ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // ORCB / ORCBI / ORCBM / ORCBS -- result = ~AC | ~M  (NOR complement of ANDCB).
@@ -1034,7 +1034,7 @@ insn orcbm : encode #i36 ( op:9 = OP_ORCBM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     { #i18 e = @ea ( i, x, y ); %M[ e ] = ( ( ~ac[ acn ] ) | ( ~%M[ e ] ) ) & W36_MASK; }
 insn orcbs : encode #i36 ( op:9 = OP_ORCBS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "orcbs", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 m = %M[ e ]; #i36 r = ( ( ~m ) | ( ~m ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( ( ~ac[ acn ] ) | ( ~%M[ e ] ) ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
 
 // ---------------------------------------------------------------------------
 // SETO / SETOI / SETOM / SETOS -- result = W36_MASK (all 36 bits set).  No operands referenced.
