@@ -130,3 +130,32 @@ jump insn isp : type branch, encode #i18 ( op:5 = OPC_ISP, i:1 -> I, y:12 -> Y )
         %M[ e ] = ac;
         pc = ( ( ac & SIGN ) == 0 ) ? ( pc + 1 ) : pc;
     }
+
+// Logical (mem-ref): AC op= M[E].
+insn and : encode #i18 ( op:5 = OPC_AND, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "and", operands : I, Y )  => ac = ac & %M[ @ea ( I, Y ) ];
+insn ior : encode #i18 ( op:5 = OPC_IOR, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "ior", operands : I, Y )  => ac = ac | %M[ @ea ( I, Y ) ];
+insn xor : encode #i18 ( op:5 = OPC_XOR, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "xor", operands : I, Y )  => ac = ac ^ %M[ @ea ( I, Y ) ];
+// Load/store.
+insn lio : encode #i18 ( op:5 = OPC_LIO, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "lio", operands : I, Y )  => io = %M[ @ea ( I, Y ) ];
+insn dio : encode #i18 ( op:5 = OPC_DIO, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "dio", operands : I, Y )  => %M[ @ea ( I, Y ) ] = io;
+insn dzm : encode #i18 ( op:5 = OPC_DZM, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "dzm", operands : I, Y )  => %M[ @ea ( I, Y ) ] = 0;
+// DAP -- deposit address part (bits 6..17) only.  DIP -- deposit instruction part (bits 0..5) only.
+insn dap : encode #i18 ( op:5 = OPC_DAP, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "dap", operands : I, Y )
+    { #i18 e = @ea ( I, Y ); %M[ e ] = ( %M[ e ] & ~DAMASK ) | ( ac & DAMASK ); }
+insn dip : encode #i18 ( op:5 = OPC_DIP, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "dip", operands : I, Y )
+    { #i18 e = @ea ( I, Y ); %M[ e ] = ( %M[ e ] & DAMASK ) | ( ac & ~DAMASK ); }
+// SAD -- skip if AC != M[E].  SAS -- skip if AC == M[E].
+jump insn sad : type branch, encode #i18 ( op:5 = OPC_SAD, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "sad", operands : I, Y )
+    { pc = ( ac != %M[ @ea ( I, Y ) ] ) ? ( pc + 1 ) : pc; }
+jump insn sas : type branch, encode #i18 ( op:5 = OPC_SAS, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "sas", operands : I, Y )
+    { pc = ( ac == %M[ @ea ( I, Y ) ] ) ? ( pc + 1 ) : pc; }

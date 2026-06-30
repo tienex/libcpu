@@ -1714,7 +1714,13 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o440021 > '${CMAKE_BINARY_DIR}/pdp1.idx' && \
    grep -q '0x0000: idx' '${CMAKE_BINARY_DIR}/pdp1.idx' && \
    \"$E\" upcl decode \"$P\" 0o460021 > '${CMAKE_BINARY_DIR}/pdp1.isp' && \
-   grep -q '0x0000: isp' '${CMAKE_BINARY_DIR}/pdp1.isp'")
+   grep -q '0x0000: isp' '${CMAKE_BINARY_DIR}/pdp1.isp' && \
+   \"$E\" upcl decode \"$P\" 0o020100 | grep -q ': and' && \
+   \"$E\" upcl decode \"$P\" 0o040100 | grep -q ': ior' && \
+   \"$E\" upcl decode \"$P\" 0o060100 | grep -q ': xor' && \
+   \"$E\" upcl decode \"$P\" 0o340100 | grep -q ': dzm' && \
+   \"$E\" upcl decode \"$P\" 0o500100 | grep -q ': sad' && \
+   \"$E\" upcl decode \"$P\" 0o520100 | grep -q ': sas'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c
