@@ -548,6 +548,112 @@ GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
 }
 
 HRESULT
+GenerateAotExecOne (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                    CPU_ADDR Pc, OUT ICpuCode **ppCode)
+{
+    //
+    // Translate the single instruction at Pc for use by the $exec (XCT) run-loop handler.
+    // On return, CPU_STATE.DispPc holds the resolved successor address so the handler can
+    // route correctly for ALL exit kinds:
+    //
+    //   TagConditional (skip): DispPc = NewPc (skip target) if condition TRUE,
+    //                                   NextPc (fall-through) if condition FALSE.
+    //   TagBranch      (JMP):  DispPc = NewPc (static jump target).
+    //   TagContinue    (fall): DispPc = NextPc.
+    //   TagTrap (IOT/HLT/indirect): TrapPc and SyscallVector are set by the Syscall /
+    //                               IndirectBranch path; DispPc is never reached.
+    //
+    // Requires the backend to expose ICpuSmcEmitter (SetDispatchTarget). Returns E_NOTIMPL
+    // if the backend does not support it; the caller falls back to GenerateAotCfg.
+    //
+    if (pArch == nullptr || pBackend == nullptr || ppCode == nullptr) {
+        return E_INVALIDARG;
+    }
+    *ppCode = nullptr;
+
+    UINT32   Tag    = 0;
+    CPU_ADDR NewPc  = 0;
+    CPU_ADDR NextPc = 0;
+    if (FAILED (pArch->TagInstr (Pc, &Tag, &NewPc, &NextPc))) {
+        return E_FAIL;
+    }
+
+    ComPtr<ICpuEmitter> Emitter;
+    HRESULT hr = pBackend->CreateEmitter (pArch, &Emitter);
+    if (FAILED (hr) || Emitter == nullptr) {
+        return FAILED (hr) ? hr : E_FAIL;
+    }
+
+    ICpuSmcEmitter *pSmc = nullptr;
+    if (FAILED (Emitter->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc)) || pSmc == nullptr) {
+        return E_NOTIMPL;
+    }
+
+    //
+    // Four blocks: the instruction body, a taken-exit (writes NewPc to DispPc), a fall-exit
+    // (writes NextPc to DispPc), and the empty pExit (falls off, ends execution with ExecOk).
+    //
+    ICpuBlock *pBody      = nullptr;
+    ICpuBlock *pTakenExit = nullptr;
+    ICpuBlock *pFallExit  = nullptr;
+    ICpuBlock *pExit      = nullptr;
+    Emitter->CreateBlock ("body",  &pBody);
+    Emitter->CreateBlock ("taken", &pTakenExit);
+    Emitter->CreateBlock ("fall",  &pFallExit);
+    Emitter->CreateBlock ("exit",  &pExit);
+
+    // Body: translate the instruction; add the outgoing edge based on its tag.
+    Emitter->SetInsertBlock (pBody);
+    pArch->TranslateInstr (Pc, Emitter);
+    if (Tag & (TagTrap | TagReturn)) {
+        // TranslateInstr already emitted IndirectBranch / Syscall which terminates the
+        // block (the interpreter returns ExecSmc before reaching the next opcode). Emit a
+        // fallback branch so the block has a valid terminator in IR-based backends.
+        Emitter->Branch (pFallExit);
+    } else if (Tag & TagConditional) {
+        ComPtr<ICpuValue> Cond;
+        if (SUCCEEDED (pArch->TranslateCond (Pc, Emitter, &Cond)) && Cond != nullptr) {
+            Emitter->CondBranch (Cond, pTakenExit, pFallExit);
+        } else {
+            Emitter->Branch (pFallExit);   // condition unavailable; treat as not-taken
+        }
+    } else if (Tag & TagBranch) {
+        Emitter->Branch (pTakenExit);   // static direct jump
+    } else {
+        Emitter->Branch (pFallExit);    // TagContinue / fall-through
+    }
+
+    // Taken-exit: record NewPc as the resolved successor, then end execution.
+    Emitter->SetInsertBlock (pTakenExit);
+    {
+        ComPtr<ICpuValue> Val;
+        Emitter->ConstInt (64, (UINT64) NewPc, &Val);
+        pSmc->SetDispatchTarget (Val);
+    }
+    Emitter->Branch (pExit);
+
+    // Fall-exit: record NextPc as the resolved successor, then end execution.
+    Emitter->SetInsertBlock (pFallExit);
+    {
+        ComPtr<ICpuValue> Val;
+        Emitter->ConstInt (64, (UINT64) NextPc, &Val);
+        pSmc->SetDispatchTarget (Val);
+    }
+    Emitter->Branch (pExit);
+
+    // pExit has no body -- its BlockStart stays 0xFFFFFFFF, which the interpreter
+    // resolves to "past the end" so branching to it ends execution cleanly.
+
+    pSmc->Release ();
+    if (pBody      != nullptr) { pBody->Release ();      }
+    if (pTakenExit != nullptr) { pTakenExit->Release (); }
+    if (pFallExit  != nullptr) { pFallExit->Release ();  }
+    if (pExit      != nullptr) { pExit->Release ();      }
+
+    return pBackend->Compile (Emitter, ppCode);
+}
+
+HRESULT
 GenerateAotCfgProfiling (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                          CPU_ADDR Entry, CPU_ADDR End,
                          OUT ICpuCode **ppCode,

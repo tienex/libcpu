@@ -1779,8 +1779,24 @@ add_test(NAME upcl.pdp1-display COMMAND sh -c
    PDP1_DPY_DUMP=1 \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 | grep -q 'DPY '")
 set_tests_properties(upcl.pdp1-display PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
-# PDP-1 XCT execution: fall-through, skip, and nesting. Three programs assembled with
-# pdp1_asm.py into raw 18-bit images and run with --dump to verify memory results.
+# PDP-1 XCT execution: fall-through, skip (taken), nesting, skip (not taken), static JMP,
+# and inner HLT.  Six programs assembled with pdp1_asm.py into raw 18-bit images and run
+# with --dump to verify memory results.  The last three cover bugs fixed in this task:
+#
+#  xctnt -- skip-NOT-taken (Bug 1): XCT of SAS with AC != M[Y] -- skip not taken,
+#           XCT+1 must run (writes 7 to M[0o40]).  Old bug: treated as taken, wrote 3.
+#           Encoding: LAW 5 / DAC 0o31 / LAW 3 / XCT 0o30 / LAW 7 / DAC 0o40 / HLT;
+#           at 0o30: SAS 0o31 (check AC==M[0o31]; AC=3, M[0o31]=5 -> FALSE).
+#
+#  xctjmp -- static JMP (Bug 2): XCT of JMP 0o32 -- execution must continue at 0o32,
+#            NOT at XCT+1.  M[0o50] = 9 only if jump target is reached.
+#            Encoding: LAW 0 / XCT 0o30 / LAW 1 / HLT; at 0o30: JMP 0o32 / 0 / LAW 9 /
+#            DAC 0o50 / HLT.
+#
+#  xcthlt -- inner HLT (Bug 3): XCT of HLT must halt at the first iteration. If the
+#            inner HLT re-fires the XCT (old bug), the IDX at addr 0 runs 100000x and
+#            M[0o50] = 100000; with the fix it runs once and M[0o50] = 1.
+#            Encoding: IDX 0o50 / XCT 0o30 / HLT; at 0o30: HLT; at 0o50: 0.
 add_test(NAME upcl.pdp1-xct COMMAND sh -c
   "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; A='${CMAKE_CURRENT_SOURCE_DIR}/test/pdp1_asm.py'; B='${CMAKE_BINARY_DIR}'; \
    python3 \"$A\" --org 0 0o100030 0o240032 0o760400 --at 0o30 0o200031 0o000007 > \"$B/xctft.raw\" && \
@@ -1788,7 +1804,13 @@ add_test(NAME upcl.pdp1-xct COMMAND sh -c
    python3 \"$A\" --org 0 0o700005 0o240031 0o700005 0o100030 0o700001 0o240032 0o760400 --at 0o30 0o520031 > \"$B/xctsk.raw\" && \
    \"$E\" run \"$B/xctsk.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o32 | grep -q '0o32. = 0x00005' && \
    python3 \"$A\" --org 0 0o100030 0o240033 0o760400 --at 0o30 0o100031 0o200032 0o21 > \"$B/xctns.raw\" && \
-   \"$E\" run \"$B/xctns.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o33 | grep -q '0o33. = 0x00011'")
+   \"$E\" run \"$B/xctns.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o33 | grep -q '0o33. = 0x00011' && \
+   python3 \"$A\" --org 0 0o700005 0o240031 0o700003 0o100030 0o700007 0o240040 0o760400 --at 0o30 0o520031 > \"$B/xctnt.raw\" && \
+   \"$E\" run \"$B/xctnt.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o40 | grep -q '0o40. = 0x00007' && \
+   python3 \"$A\" --org 0 0o700000 0o100030 0o700001 0o760400 --at 0o30 0o600032 0 0o700011 0o240050 0o760400 > \"$B/xctjmp.raw\" && \
+   \"$E\" run \"$B/xctjmp.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o50 | grep -q '0o50. = 0x00009' && \
+   python3 \"$A\" --org 0 0o440050 0o100030 0o760400 --at 0o30 0o760400 --at 0o50 0 > \"$B/xcthlt.raw\" && \
+   \"$E\" run \"$B/xcthlt.raw\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o50 | grep -q '0o50. = 0x00001'")
 set_tests_properties(upcl.pdp1-xct PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|XCT nesting")
 
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd

@@ -48,6 +48,23 @@ HRESULT GenerateAotCfg (ICpuArchitecture *pArch, ICpuBackend *pBackend,
                         OUT ICpuCode **ppCode, OUT UINT32 *pInstrCount, BOOLEAN Pic = FALSE);
 
 //
+// Translate the single instruction at Pc for use by the $exec / XCT run-loop handler.
+// Arranges for CPU_STATE.DispPc to hold the resolved successor address on normal exit:
+//
+//   TagConditional (skip): DispPc = NewPc (skip target) if condition TRUE,
+//                                   NextPc (fall-through) if condition FALSE.
+//   TagBranch      (JMP):  DispPc = NewPc (static jump target).
+//   TagContinue    (fall): DispPc = NextPc.
+//   TagTrap (IOT/HLT/indirect): TrapPc and SyscallVector are set by the Syscall /
+//                               IndirectBranch path; DispPc is not meaningful.
+//
+// Requires the backend to expose ICpuSmcEmitter (SetDispatchTarget). Returns E_NOTIMPL
+// when the backend does not support it; the caller should fall back to GenerateAotCfg.
+//
+HRESULT GenerateAotExecOne (ICpuArchitecture *pArch, ICpuBackend *pBackend,
+                            CPU_ADDR Pc, OUT ICpuCode **ppCode);
+
+//
 // A static call edge discovered in a region: a CALL at Site to Callee, returning to
 // ReturnPoint (the instruction after the CALL). The call graph is static because
 // CALL targets are known at translate time; an edge/call-count trace weights these

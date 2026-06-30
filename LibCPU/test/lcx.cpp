@@ -1096,10 +1096,20 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     // non-XCT instruction completes (or we hit the depth cap, or it traps).
                     // RetStack[0] is always the outermost XCT+1 return address; deeper nesting
                     // pushes further RetPcs (not used for resume, kept for depth counting).
+                    //
+                    // GenerateAotExecOne translates a single instruction and, on normal exit,
+                    // writes the resolved successor PC to CPU_STATE.DispPc so the handler can
+                    // distinguish all cases:
+                    //   skip NOT taken: DispPc == NextPc  ->  delta = 0  ->  Pc = XCT+1
+                    //   skip     taken: DispPc == NewPc   ->  delta > 0  ->  Pc = XCT+1+delta
+                    //   static JMP:     DispPc == NewPc   ->  Pc = NewPc (not relative to XCT)
+                    //   fall-through:   DispPc == NextPc  ->  Pc = XCT+1
+                    //   TagTrap (IOT/HLT): TrapPc+SyscallVector set; DispPc irrelevant.
+                    //
                     std::vector<CPU_ADDR> RetStack;
                     RetStack.push_back ((CPU_ADDR) State.TrapPc);  // outermost RetPc
                     bool XctFailed = false;
-                    UINT32 ITag = 0;
+                    UINT32   ITag   = 0;
                     CPU_ADDR INewPc = 0, INextPc = 0, IExecPc = 0;
                     while (State.SyscallVector == CPU_EXEC_ONE) {
                         if ((int) RetStack.size () > 16) {         // SIMH xct_max -- runaway guard
@@ -1111,13 +1121,20 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                         A.pArch->TagInstr (IExecPc, &ITag, &INewPc, &INextPc);
                         State.Reg[ArchInfo.PcRegIndex] = IExecPc;  // PC-relative effects see the EA
                         ComPtr<ICpuCode> One;
-                        if (FAILED (GenerateAotCfg (A.pArch, pBackend, IExecPc, IExecPc + 1, &One, nullptr))
-                            || One == nullptr) {
+                        // Use GenerateAotExecOne so DispPc reflects the resolved successor on
+                        // normal exit. Fall back to the plain window if the backend does not
+                        // expose ICpuSmcEmitter (E_NOTIMPL).
+                        HRESULT HrOne = GenerateAotExecOne (A.pArch, pBackend, IExecPc, &One);
+                        if (HrOne == E_NOTIMPL) {
+                            HrOne = GenerateAotCfg (A.pArch, pBackend, IExecPc, IExecPc + 1, &One, nullptr);
+                        }
+                        if (FAILED (HrOne) || One == nullptr) {
                             XctFailed = true;
                             break;
                         }
                         State.TrapPc        = CPU_SMC_NO_TRAP;
                         State.SyscallVector = CPU_NO_SYSCALL;
+                        State.DispPc        = INextPc;             // safe default: fall-through
                         One->Execute (Ram, &State, nullptr);
                         if (State.SyscallVector == CPU_EXEC_ONE) {
                             RetStack.push_back ((CPU_ADDR) State.TrapPc); // push nested RetPc
@@ -1127,24 +1144,39 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     XctDepth = 0;                                  // chain complete; reset depth
                     CPU_ADDR OuterRetPc = RetStack[0];             // outermost XCT+1
                     if (State.SyscallVector != CPU_NO_SYSCALL) {
-                        // innermost instruction trapped (IOT, HLT, ...): re-dispatch with the
-                        // outermost RetPc as the resume address after the trap returns.
-                        State.TrapPc = OuterRetPc;
+                        // Innermost instruction trapped (IOT, HLT, ...). Dispatch it now,
+                        // inline -- do NOT continue to the top of the outer loop, which would
+                        // re-translate from Pc (still at the XCT address) and re-fire the XCT.
+                        // After dispatch, resume at OuterRetPc (= XCT+1).
+                        bool IsPdp1Inner = std::strstr (pArchName, "pdp1") != nullptr
+                                        && std::strstr (pArchName, "pdp11") == nullptr;
+                        if (IsPdp1Inner && State.SyscallVector == 0072) {   // inner IOT
+                            if (!Pdp1IoTrap (&State, Ram, sizeof (Ram))) { break; }
+                            Pc = OuterRetPc;   // resume at XCT+1 after the IOT (not at State.TrapPc)
+                        } else {
+                            break;             // inner HLT or unhandled trap: stop
+                        }
                         continue;
                     }
+                    // Resolved successor from GenerateAotExecOne (written to DispPc):
+                    //   TrapPc != NO_TRAP  ->  indirect branch or computed jump (OpIndirect)
+                    //   ITag & TagBranch   ->  DispPc = NewPc (static jump target)
+                    //   ITag & TagCond     ->  DispPc = NewPc (taken) or NextPc (not taken)
+                    //   else               ->  DispPc = NextPc (fall-through)
+                    // For skip and fall-through: delta = (DispPc - INextPc); Pc = XCT+1 + delta.
+                    // A not-taken skip has delta == 0 (DispPc == INextPc == XCT+1 equivalent).
+                    // A taken skip has delta == skip_count (typically 1).
+                    // For a static JMP the target is absolute: Pc = DispPc directly.
                     CPU_ADDR Target = (CPU_ADDR) State.TrapPc;
+                    CPU_ADDR Succ   = (CPU_ADDR) State.DispPc;
                     if (Target != (CPU_ADDR) CPU_SMC_NO_TRAP) {
-                        Pc = Target;                               // computed/indirect jump
-                    } else if (ITag & TagConditional) {
-                        // Conditional skip: the instruction exited via pExit (skip taken), so the
-                        // delta is (INewPc - INextPc), applied relative to the outermost XCT+1.
-                        // INextPc = ExecPc + D.Length (the fall-through of this instruction);
-                        // INewPc = INextPc + skip_count (from UPCL's NextPc-relative folding).
-                        // The not-taken path would have looped within the region forever; returning
-                        // here proves the skip was taken.
-                        Pc = OuterRetPc + (INewPc - INextPc);     // skip: XCT+1 + skip delta
+                        Pc = Target;                               // indirect/computed branch
+                    } else if (ITag & TagBranch) {
+                        Pc = Succ;                                 // static JMP: DispPc = jump target
                     } else {
-                        Pc = OuterRetPc;                           // fall-through: resume at XCT+1
+                        // Skip (taken or not) and fall-through: apply successor delta to XCT+1.
+                        // delta = 0 for fall-through and skip-not-taken; delta = skip_count for taken.
+                        Pc = OuterRetPc + (Succ - INextPc);
                     }
                     continue;
                 }
