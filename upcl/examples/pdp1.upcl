@@ -85,3 +85,48 @@ insn lac : encode #i18 ( op:5 = OPC_LAC, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "lac", operands : I, Y )  => ac = %M[ @ea ( I, Y ) ];
 insn dac : encode #i18 ( op:5 = OPC_DAC, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "dac", operands : I, Y )  => %M[ @ea ( I, Y ) ] = ac;
+
+// ONE'S-COMPLEMENT ADD: end-around carry; overflow when both operands share a sign and the result
+// sign differs (sticky -- only set, never cleared by ADD); then -0 (0o777777) is corrected to +0.
+macro add1c ( a, b ) {
+    #i32 s = ( a & DMASK ) + ( b & DMASK );
+    #i18 r = s & DMASK;
+    r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
+    ov = ( ( ( ~a ^ b ) & ( a ^ r ) ) & SIGN ) ? 1 : ov;
+    result = ( r == DMASK ) ? 0 : r;
+}
+// ONE'S-COMPLEMENT SUB: complement AC, add with end-around carry, overflow test, recomplement.
+// NO -0 cleanup (SIMH-faithful: (-0)-(+0) yields -0).
+macro sub1c ( a, b ) {
+    #i18 t = a ^ DMASK;
+    #i32 s = ( t & DMASK ) + ( b & DMASK );
+    #i18 r = s & DMASK;
+    r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
+    ov = ( ( ( ~t ^ b ) & ( t ^ r ) ) & SIGN ) ? 1 : ov;
+    result = r ^ DMASK;
+}
+// INDEX increment: +1 with end-around carry (carry test is >= DMASK, per the maintenance manual).
+macro idx1c ( v ) {
+    #i32 s = ( v & DMASK ) + 1;
+    result = ( s >= DMASK ) ? ( ( s + 1 ) & DMASK ) : ( s & DMASK );
+}
+
+insn add : encode #i18 ( op:5 = OPC_ADD, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "add", operands : I, Y )
+    { ac = @add1c ( ac, %M[ @ea ( I, Y ) ] ); }
+insn sub : encode #i18 ( op:5 = OPC_SUB, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "sub", operands : I, Y )
+    { ac = @sub1c ( ac, %M[ @ea ( I, Y ) ] ); }
+// IDX: AC <- M[E]+1 ; M[E] <- AC.  (no overflow, no skip)
+insn idx : encode #i18 ( op:5 = OPC_IDX, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "idx", operands : I, Y )
+    { #i18 e = @ea ( I, Y ); ac = @idx1c ( %M[ e ] ); %M[ e ] = ac; }
+// ISP: AC <- M[E]+1 ; M[E] <- AC ; skip if AC >= 0 (sign clear).
+jump insn isp : type branch, encode #i18 ( op:5 = OPC_ISP, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "isp", operands : I, Y )
+    {
+        #i18 e = @ea ( I, Y );
+        ac = @idx1c ( %M[ e ] );
+        %M[ e ] = ac;
+        pc = ( ( ac & SIGN ) == 0 ) ? ( pc + 1 ) : pc;
+    }
