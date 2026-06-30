@@ -344,3 +344,383 @@ insn dmovn : encode #i36 ( op:9 = OP_DMOVN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
 // both value and address contexts.
 jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "jrst", operands : i, x, y )  { pc = @ea ( i, x, y ); }
+
+// ===========================================================================
+// HALF-WORD DATA TRANSMISSION (DEC PDP-10 Hardware Reference Manual, "Half-Word Data
+// Transmission"; opcodes verified against SIMH pdp10_sys.c).  Each instruction moves one 18-bit
+// half of a 36-bit word to one half of the destination, and fills the OTHER half according to a
+// fill rule.  The naming is H<src-half><dst-half><fill> where:
+//   src-half  L = left half (bits 17..0 of the source word, i.e. the HIGH 18 bits)
+//             R = right half (bits 35..18 of the source word, i.e. the LOW  18 bits)
+//   dst-half  L = left half of destination
+//             R = right half of destination
+//   fill      (none) = leave the other half unchanged
+//             Z      = set the other half to all zeros
+//             O      = set the other half to all ones (0x3ffff)
+//             E      = sign-extend: replicate the high bit of the moved half
+//
+// NOTE ON BIT NUMBERING: PDP-10 uses MSB-first numbering (bit 0 = most significant). In a 36-bit
+// word, "left half" = bits 0..17 (PDP-10) = the HIGH 18 bits in our numeric representation =
+// bits 35..18 MSB-first = value >> 18 in the implementation. "Right half" = bits 18..35 (PDP-10)
+// = the LOW 18 bits = value & 0x3ffff.
+//
+// For SIGN-EXTEND (E fill): the "high bit of the moved half" is the most significant bit of the
+// half being moved. For a left-half source that means bit 0 of the PDP-10 word (bit 35 in our
+// numeric = the MSB = (v >> 35) & 1). For a right-half source it is bit 18 of the PDP-10 word
+// (bit 17 in our numeric = (v >> 17) & 1).
+//
+// THE OPERAND-MODE TEMPLATE is identical to the MOVE family (base/I/M/S = +0/+1/+2/+3 on the
+// group base), with the same four-operand decode (acn, i, x, y) and @ea macro for the EA.
+//
+// OPCODE TABLE (group bases, all in the 0o5xx block; per SIMH pdp10_sys.c):
+//   src=L dst=L: HLL=0o500  HLLZ=0o510  HLLO=0o520  HLLE=0o530
+//   src=R dst=L: HRL=0o504  HRLZ=0o514  HRLO=0o524  HRLE=0o534
+//   src=R dst=R: HRR=0o540  HRRZ=0o550  HRRO=0o560  HRRE=0o570
+//   src=L dst=R: HLR=0o544  HLRZ=0o554  HLRO=0o564  HLRE=0o574
+
+// Half-word masks and shift constants (right half = low 18 bits; left half = high 18 bits).
+const HW_MASK  = 0x3ffff;              // 18-bit half-word mask (= EA_Y_MASK)
+const HW_ONES  = 0x3ffff;              // all-ones in 18 bits (for O fill)
+const HW_LSHFT = 18;                   // shift to move right half to/from left-half position
+
+// Per-group opcode bases (group base + MODE_B/I/M/S generates the four member opcodes).
+const OP_HLL   = 0o500;               // HLL  family: left  of src -> left  of dst, no fill
+const OP_HRL   = 0o504;               // HRL  family: right of src -> left  of dst, no fill
+const OP_HLLZ  = 0o510;               // HLLZ family: left  of src -> left  of dst, zero right
+const OP_HRLZ  = 0o514;               // HRLZ family: right of src -> left  of dst, zero right
+const OP_HLLO  = 0o520;               // HLLO family: left  of src -> left  of dst, ones right
+const OP_HRLO  = 0o524;               // HRLO family: right of src -> left  of dst, ones right
+const OP_HLLE  = 0o530;               // HLLE family: left  of src -> left  of dst, sign-extend right
+const OP_HRLE  = 0o534;               // HRLE family: right of src -> left  of dst, sign-extend right
+const OP_HRR   = 0o540;               // HRR  family: right of src -> right of dst, no fill
+const OP_HLR   = 0o544;               // HLR  family: left  of src -> right of dst, no fill
+const OP_HRRZ  = 0o550;               // HRRZ family: right of src -> right of dst, zero left
+const OP_HLRZ  = 0o554;               // HLRZ family: left  of src -> right of dst, zero left
+const OP_HRRO  = 0o560;               // HRRO family: right of src -> right of dst, ones left
+const OP_HLRO  = 0o564;               // HLRO family: left  of src -> right of dst, ones left
+const OP_HRRE  = 0o570;               // HRRE family: right of src -> right of dst, sign-extend left
+const OP_HLRE  = 0o574;               // HLRE family: left  of src -> right of dst, sign-extend left
+
+// Per-mnemonic opcodes = group base + mode bits (same arithmetic as the MOVE family).
+const OP_HLLI  = OP_HLL  + MODE_I;
+const OP_HLLM  = OP_HLL  + MODE_M;
+const OP_HLLS  = OP_HLL  + MODE_S;
+const OP_HRLI  = OP_HRL  + MODE_I;
+const OP_HRLM  = OP_HRL  + MODE_M;
+const OP_HRLS  = OP_HRL  + MODE_S;
+const OP_HLLZI = OP_HLLZ + MODE_I;
+const OP_HLLZM = OP_HLLZ + MODE_M;
+const OP_HLLZS = OP_HLLZ + MODE_S;
+const OP_HRLZI = OP_HRLZ + MODE_I;
+const OP_HRLZM = OP_HRLZ + MODE_M;
+const OP_HRLZS = OP_HRLZ + MODE_S;
+const OP_HLLOI = OP_HLLO + MODE_I;
+const OP_HLLOM = OP_HLLO + MODE_M;
+const OP_HLLOS = OP_HLLO + MODE_S;
+const OP_HRLOI = OP_HRLO + MODE_I;
+const OP_HRLOM = OP_HRLO + MODE_M;
+const OP_HRLOS = OP_HRLO + MODE_S;
+const OP_HLLEI = OP_HLLE + MODE_I;
+const OP_HLLEM = OP_HLLE + MODE_M;
+const OP_HLLES = OP_HLLE + MODE_S;
+const OP_HRLEI = OP_HRLE + MODE_I;
+const OP_HRLEM = OP_HRLE + MODE_M;
+const OP_HRLES = OP_HRLE + MODE_S;
+const OP_HRRI  = OP_HRR  + MODE_I;
+const OP_HRRM  = OP_HRR  + MODE_M;
+const OP_HRRS  = OP_HRR  + MODE_S;
+const OP_HLRI  = OP_HLR  + MODE_I;
+const OP_HLRM  = OP_HLR  + MODE_M;
+const OP_HLRS  = OP_HLR  + MODE_S;
+const OP_HRRZI = OP_HRRZ + MODE_I;
+const OP_HRRZM = OP_HRRZ + MODE_M;
+const OP_HRRZS = OP_HRRZ + MODE_S;
+const OP_HLRZI = OP_HLRZ + MODE_I;
+const OP_HLRZM = OP_HLRZ + MODE_M;
+const OP_HLRZS = OP_HLRZ + MODE_S;
+const OP_HRROI = OP_HRRO + MODE_I;
+const OP_HRROM = OP_HRRO + MODE_M;
+const OP_HRROS = OP_HRRO + MODE_S;
+const OP_HLROI = OP_HLRO + MODE_I;
+const OP_HLROM = OP_HLRO + MODE_M;
+const OP_HLROS = OP_HLRO + MODE_S;
+const OP_HRREI = OP_HRRE + MODE_I;
+const OP_HRREM = OP_HRRE + MODE_M;
+const OP_HRRES = OP_HRRE + MODE_S;
+const OP_HLREI = OP_HLRE + MODE_I;
+const OP_HLREM = OP_HLRE + MODE_M;
+const OP_HLRES = OP_HLRE + MODE_S;
+
+// ---------------------------------------------------------------------------
+// Half-word extraction / construction macros.  These keep each instruction body to one line.
+//
+// @left(v)  -- extract the left half of v (bits 17..0 PDP-10 = high 18 bits)
+// @right(v) -- extract the right half of v (bits 18..35 PDP-10 = low 18 bits)
+// @setleft(d,h)  -- replace the left half of d with the 18-bit value h; right half unchanged
+// @setright(d,h) -- replace the right half of d with the 18-bit value h; left half unchanged
+macro left  ( v ) { result = ( v >> HW_LSHFT ) & HW_MASK; }
+macro right ( v ) { result = v & HW_MASK; }
+macro setleft  ( d, h ) { result = ( d & HW_MASK ) | ( ( h & HW_MASK ) << HW_LSHFT ); }
+macro setright ( d, h ) { result = ( d & ( HW_MASK << HW_LSHFT ) ) | ( h & HW_MASK ); }
+
+// Fill macros: given the destination word d, produce a version with the OTHER half filled.
+// The "other half" for dst=left is the right half; for dst=right it is the left half.
+//
+// fillr_zero(d)    -- zero the right half of d
+// fillr_ones(d)    -- set the right half of d to all ones
+// fillr_ext(d,bit) -- sign-extend into the right half: replicate bit into all 18 positions
+// filll_zero(d)    -- zero the left half of d
+// filll_ones(d)    -- set the left half of d to all ones
+// filll_ext(d,bit) -- sign-extend into the left half: replicate bit into all 18 positions
+macro fillr_zero ( d )      { result = d & ( HW_MASK << HW_LSHFT ); }
+macro fillr_ones ( d )      { result = ( d & ( HW_MASK << HW_LSHFT ) ) | HW_ONES; }
+macro fillr_ext  ( d, bit ) { result = ( d & ( HW_MASK << HW_LSHFT ) ) | ( ( 0 - bit ) & HW_MASK ); }
+macro filll_zero ( d )      { result = d & HW_MASK; }
+macro filll_ones ( d )      { result = ( d & HW_MASK ) | ( HW_ONES << HW_LSHFT ); }
+macro filll_ext  ( d, bit ) { result = ( d & HW_MASK ) | ( ( ( 0 - bit ) & HW_MASK ) << HW_LSHFT ); }
+
+// ---------------------------------------------------------------------------
+// HLL / HLLI / HLLM / HLLS -- left half of src -> left half of dst; right half unchanged.
+// src=left(E), dst=left(AC).  The four modes follow the MOVE template exactly.
+insn hll  : encode #i36 ( op:9 = OP_HLL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hll",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; ac[ acn ] = @setleft ( ac[ acn ], @left ( s ) ); }
+insn hlli : encode #i36 ( op:9 = OP_HLLI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlli", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @setleft ( ac[ acn ], 0 ); }   // 0,,E: left half of 0,,E = 0
+insn hllm : encode #i36 ( op:9 = OP_HLLM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @setleft ( %M[ e ], @left ( ac[ acn ] ) ); }
+insn hlls : encode #i36 ( op:9 = OP_HLLS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlls", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @setleft ( %M[ e ], @left ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRL / HRLI / HRLM / HRLS -- right half of src -> left half of dst; right half unchanged.
+insn hrl  : encode #i36 ( op:9 = OP_HRL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrl",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; ac[ acn ] = @setleft ( ac[ acn ], @right ( s ) ); }
+insn hrli : encode #i36 ( op:9 = OP_HRLI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrli", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @setleft ( ac[ acn ], e ); }   // 0,,E: right half of 0,,E = E itself
+insn hrlm : encode #i36 ( op:9 = OP_HRLM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @setleft ( %M[ e ], @right ( ac[ acn ] ) ); }
+insn hrls : encode #i36 ( op:9 = OP_HRLS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrls", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @setleft ( %M[ e ], @right ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLLZ / HLLZI / HLLZM / HLLZS -- left half of src -> left half of dst; right half := 0.
+insn hllz  : encode #i36 ( op:9 = OP_HLLZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllz",  operands : acn, i, x, y )
+    => ac[ acn ] = @fillr_zero ( @setleft ( 0, @left ( %M[ @ea ( i, x, y ) ] ) ) );
+insn hllzi : encode #i36 ( op:9 = OP_HLLZI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllzi", operands : acn, i, x, y )
+    => ac[ acn ] = 0;   // 0,,E: left half = 0; right half = 0 (zero fill)
+insn hllzm : encode #i36 ( op:9 = OP_HLLZM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllzm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @fillr_zero ( @setleft ( 0, @left ( ac[ acn ] ) ) ); }
+insn hllzs : encode #i36 ( op:9 = OP_HLLZS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllzs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @fillr_zero ( @setleft ( 0, @left ( %M[ e ] ) ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRLZ / HRLZI / HRLZM / HRLZS -- right half of src -> left half of dst; right half := 0.
+insn hrlz  : encode #i36 ( op:9 = OP_HRLZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlz",  operands : acn, i, x, y )
+    => ac[ acn ] = ( @right ( %M[ @ea ( i, x, y ) ] ) ) << HW_LSHFT;
+insn hrlzi : encode #i36 ( op:9 = OP_HRLZI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlzi", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = ( e & HW_MASK ) << HW_LSHFT; }
+insn hrlzm : encode #i36 ( op:9 = OP_HRLZM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlzm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = ( @right ( ac[ acn ] ) ) << HW_LSHFT; }
+insn hrlzs : encode #i36 ( op:9 = OP_HRLZS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlzs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = ( @right ( %M[ e ] ) ) << HW_LSHFT; %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLLO / HLLOI / HLLOM / HLLOS -- left half of src -> left half of dst; right half := all-ones.
+insn hllo  : encode #i36 ( op:9 = OP_HLLO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllo",  operands : acn, i, x, y )
+    => ac[ acn ] = @fillr_ones ( @setleft ( 0, @left ( %M[ @ea ( i, x, y ) ] ) ) );
+insn hlloi : encode #i36 ( op:9 = OP_HLLOI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlloi", operands : acn, i, x, y )
+    => ac[ acn ] = HW_ONES;   // 0,,E: left half = 0; right half = all-ones
+insn hllom : encode #i36 ( op:9 = OP_HLLOM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllom", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @fillr_ones ( @setleft ( 0, @left ( ac[ acn ] ) ) ); }
+insn hllos : encode #i36 ( op:9 = OP_HLLOS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllos", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @fillr_ones ( @setleft ( 0, @left ( %M[ e ] ) ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRLO / HRLOI / HRLOM / HRLOS -- right half of src -> left half of dst; right half := all-ones.
+insn hrlo  : encode #i36 ( op:9 = OP_HRLO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlo",  operands : acn, i, x, y )
+    => ac[ acn ] = @fillr_ones ( ( @right ( %M[ @ea ( i, x, y ) ] ) ) << HW_LSHFT );
+insn hrloi : encode #i36 ( op:9 = OP_HRLOI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrloi", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = ( ( e & HW_MASK ) << HW_LSHFT ) | HW_ONES; }
+insn hrlom : encode #i36 ( op:9 = OP_HRLOM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlom", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @fillr_ones ( ( @right ( ac[ acn ] ) ) << HW_LSHFT ); }
+insn hrlos : encode #i36 ( op:9 = OP_HRLOS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlos", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @fillr_ones ( ( @right ( %M[ e ] ) ) << HW_LSHFT ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLLE / HLLEI / HLLEM / HLLES -- left half of src -> left half of dst; sign-extend into right half.
+// The sign bit of the left half is PDP-10 bit 0 = our bit 35 = (v >> 35) & 1.
+insn hlle  : encode #i36 ( op:9 = OP_HLLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlle",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; #i18 h = @left ( s ); ac[ acn ] = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); }
+insn hllei : encode #i36 ( op:9 = OP_HLLEI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllei", operands : acn, i, x, y )
+    => ac[ acn ] = 0;   // 0,,E: left half = 0; sign bit = 0; right half = 0 (extend of 0)
+insn hllem : encode #i36 ( op:9 = OP_HLLEM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hllem", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @left ( ac[ acn ] ); %M[ e ] = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); }
+insn hlles : encode #i36 ( op:9 = OP_HLLES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlles", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @left ( %M[ e ] ); #i36 v = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRLE / HRLEI / HRLEM / HRLES -- right half of src -> left half of dst; sign-extend into right half.
+// The sign bit of the right half is PDP-10 bit 18 = our bit 17 = (v >> 17) & 1.
+insn hrle  : encode #i36 ( op:9 = OP_HRLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrle",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; #i18 h = @right ( s ); ac[ acn ] = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); }
+insn hrlei : encode #i36 ( op:9 = OP_HRLEI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlei", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @fillr_ext ( ( e & HW_MASK ) << HW_LSHFT, ( e >> 17 ) & 1 ); }
+insn hrlem : encode #i36 ( op:9 = OP_HRLEM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrlem", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @right ( ac[ acn ] ); %M[ e ] = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); }
+insn hrles : encode #i36 ( op:9 = OP_HRLES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrles", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @right ( %M[ e ] ); #i36 v = @fillr_ext ( h << HW_LSHFT, ( h >> 17 ) & 1 ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRR / HRRI / HRRM / HRRS -- right half of src -> right half of dst; left half unchanged.
+insn hrr  : encode #i36 ( op:9 = OP_HRR,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrr",  operands : acn, i, x, y )
+    => ac[ acn ] = @setright ( ac[ acn ], @right ( %M[ @ea ( i, x, y ) ] ) );
+insn hrri : encode #i36 ( op:9 = OP_HRRI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrri", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @setright ( ac[ acn ], e ); }   // right half of 0,,E = E
+insn hrrm : encode #i36 ( op:9 = OP_HRRM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @setright ( %M[ e ], @right ( ac[ acn ] ) ); }
+insn hrrs : encode #i36 ( op:9 = OP_HRRS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @setright ( %M[ e ], @right ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLR / HLRI / HLRM / HLRS -- left half of src -> right half of dst; left half unchanged.
+insn hlr  : encode #i36 ( op:9 = OP_HLR,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlr",  operands : acn, i, x, y )
+    => ac[ acn ] = @setright ( ac[ acn ], @left ( %M[ @ea ( i, x, y ) ] ) );
+insn hlri : encode #i36 ( op:9 = OP_HLRI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlri", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @setright ( ac[ acn ], 0 ); }   // 0,,E: left half of 0,,E = 0
+insn hlrm : encode #i36 ( op:9 = OP_HLRM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @setright ( %M[ e ], @left ( ac[ acn ] ) ); }
+insn hlrs : encode #i36 ( op:9 = OP_HLRS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @setright ( %M[ e ], @left ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRRZ / HRRZI / HRRZM / HRRZS -- right half of src -> right half of dst; left half := 0.
+insn hrrz  : encode #i36 ( op:9 = OP_HRRZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrz",  operands : acn, i, x, y )
+    => ac[ acn ] = @right ( %M[ @ea ( i, x, y ) ] );
+insn hrrzi : encode #i36 ( op:9 = OP_HRRZI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrzi", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = e & HW_MASK; }   // 0,,E with left=0
+insn hrrzm : encode #i36 ( op:9 = OP_HRRZM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrzm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @right ( ac[ acn ] ); }
+insn hrrzs : encode #i36 ( op:9 = OP_HRRZS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrzs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @right ( %M[ e ] ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLRZ / HLRZI / HLRZM / HLRZS -- left half of src -> right half of dst; left half := 0.
+insn hlrz  : encode #i36 ( op:9 = OP_HLRZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrz",  operands : acn, i, x, y )
+    => ac[ acn ] = @left ( %M[ @ea ( i, x, y ) ] );
+insn hlrzi : encode #i36 ( op:9 = OP_HLRZI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrzi", operands : acn, i, x, y )
+    => ac[ acn ] = 0;   // 0,,E: left half of 0,,E = 0
+insn hlrzm : encode #i36 ( op:9 = OP_HLRZM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrzm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @left ( ac[ acn ] ); }
+insn hlrzs : encode #i36 ( op:9 = OP_HLRZS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrzs", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @left ( %M[ e ] ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRRO / HRROI / HRROM / HRROS -- right half of src -> right half of dst; left half := all-ones.
+insn hrro  : encode #i36 ( op:9 = OP_HRRO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrro",  operands : acn, i, x, y )
+    => ac[ acn ] = @filll_ones ( @right ( %M[ @ea ( i, x, y ) ] ) );
+insn hrroi : encode #i36 ( op:9 = OP_HRROI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrroi", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = ( HW_ONES << HW_LSHFT ) | ( e & HW_MASK ); }
+insn hrrom : encode #i36 ( op:9 = OP_HRROM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrom", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @filll_ones ( @right ( ac[ acn ] ) ); }
+insn hrros : encode #i36 ( op:9 = OP_HRROS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrros", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @filll_ones ( @right ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLRO / HLROI / HLROM / HLROS -- left half of src -> right half of dst; left half := all-ones.
+insn hlro  : encode #i36 ( op:9 = OP_HLRO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlro",  operands : acn, i, x, y )
+    => ac[ acn ] = @filll_ones ( @left ( %M[ @ea ( i, x, y ) ] ) );
+insn hlroi : encode #i36 ( op:9 = OP_HLROI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlroi", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = ( HW_ONES << HW_LSHFT ) | 0; }   // 0,,E: left half = 0 -> right = 0
+insn hlrom : encode #i36 ( op:9 = OP_HLROM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrom", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @filll_ones ( @left ( ac[ acn ] ) ); }
+insn hlros : encode #i36 ( op:9 = OP_HLROS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlros", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 v = @filll_ones ( @left ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HRRE / HRREI / HRREM / HRRES -- right half of src -> right half of dst; sign-extend into left half.
+// The sign bit of the right half is PDP-10 bit 18 = our bit 17 = (v >> 17) & 1.
+insn hrre  : encode #i36 ( op:9 = OP_HRRE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrre",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; #i18 h = @right ( s ); ac[ acn ] = @filll_ext ( h, ( h >> 17 ) & 1 ); }
+insn hrrei : encode #i36 ( op:9 = OP_HRREI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrei", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = @filll_ext ( e & HW_MASK, ( e >> 17 ) & 1 ); }
+insn hrrem : encode #i36 ( op:9 = OP_HRREM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrrem", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @right ( ac[ acn ] ); %M[ e ] = @filll_ext ( h, ( h >> 17 ) & 1 ); }
+insn hrres : encode #i36 ( op:9 = OP_HRRES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hrres", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @right ( %M[ e ] ); #i36 v = @filll_ext ( h, ( h >> 17 ) & 1 ); %M[ e ] = v; ac[ acn ] = v; }
+
+// ---------------------------------------------------------------------------
+// HLRE / HLREI / HLREM / HLRES -- left half of src -> right half of dst; sign-extend into left half.
+// The sign bit of the left half is PDP-10 bit 0 = our bit 35 = (v >> 35) & 1.
+// In practice the left half occupies bits 35..18, so its sign bit = (h >> 17) & 1 where h = left(v).
+insn hlre  : encode #i36 ( op:9 = OP_HLRE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlre",  operands : acn, i, x, y )
+    { #i36 s = %M[ @ea ( i, x, y ) ]; #i18 h = @left ( s ); ac[ acn ] = @filll_ext ( h, ( h >> 17 ) & 1 ); }
+insn hlrei : encode #i36 ( op:9 = OP_HLREI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrei", operands : acn, i, x, y )
+    => ac[ acn ] = 0;   // 0,,E: left half = 0; sign bit = 0; left fill = 0
+insn hlrem : encode #i36 ( op:9 = OP_HLREM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlrem", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @left ( ac[ acn ] ); %M[ e ] = @filll_ext ( h, ( h >> 17 ) & 1 ); }
+insn hlres : encode #i36 ( op:9 = OP_HLRES, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "hlres", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i18 h = @left ( %M[ e ] ); #i36 v = @filll_ext ( h, ( h >> 17 ) & 1 ); %M[ e ] = v; ac[ acn ] = v; }

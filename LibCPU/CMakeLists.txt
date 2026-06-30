@@ -1088,6 +1088,37 @@ add_test(NAME upcl.decode-pdp10 COMMAND sh -c
    grep -q '0x0000: blt'   '${CMAKE_BINARY_DIR}/pdp10.blt'")
 set_tests_properties(upcl.decode-pdp10 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# PDP-10 halfword data transmission (H{L,R}{L,R}{-,Z,O,E} families x 4 modes). The 36-bit word
+# (op:9 ac:4 i:1 x:4 y:18, MSB-first) is given as one octal value. Opcodes sourced from SIMH
+# pdp10_sys.c / DEC HRM: HLL=0o500, HRL=0o504, HLLZ=0o510, HRLZ=0o514, HLLO=0o520, HRLO=0o524,
+# HLLE=0o530, HRLE=0o534, HRR=0o540, HLR=0o544, HRRZ=0o550, HLRZ=0o554, HRRO=0o560, HLRO=0o564,
+# HRRE=0o570, HLRE=0o574.  Each base +1/+2/+3 for I/M/S mode. Test words carry ac=N, i=0, x=0.
+add_test(NAME upcl.decode-pdp10-halfword COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o540040000100 > '${CMAKE_BINARY_DIR}/pdp10.hrr' && \
+   grep -q '0x0000: hrr'   '${CMAKE_BINARY_DIR}/pdp10.hrr' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.hrr' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.hrr' && \
+   \"$E\" upcl decode \"$P\" 0o504100000200 > '${CMAKE_BINARY_DIR}/pdp10.hrl' && \
+   grep -q '0x0000: hrl'   '${CMAKE_BINARY_DIR}/pdp10.hrl' && \
+   grep -q 'acn=0x2'       '${CMAKE_BINARY_DIR}/pdp10.hrl' && \
+   grep -q 'y=0x80'        '${CMAKE_BINARY_DIR}/pdp10.hrl' && \
+   \"$E\" upcl decode \"$P\" 0o550140000300 > '${CMAKE_BINARY_DIR}/pdp10.hrrz' && \
+   grep -q '0x0000: hrrz'  '${CMAKE_BINARY_DIR}/pdp10.hrrz' && \
+   grep -q 'acn=0x3'       '${CMAKE_BINARY_DIR}/pdp10.hrrz' && \
+   \"$E\" upcl decode \"$P\" 0o574200000400 > '${CMAKE_BINARY_DIR}/pdp10.hlre' && \
+   grep -q '0x0000: hlre'  '${CMAKE_BINARY_DIR}/pdp10.hlre' && \
+   grep -q 'acn=0x4'       '${CMAKE_BINARY_DIR}/pdp10.hlre' && \
+   \"$E\" upcl decode \"$P\" 0o500040000100 > '${CMAKE_BINARY_DIR}/pdp10.hll' && \
+   grep -q '0x0000: hll'   '${CMAKE_BINARY_DIR}/pdp10.hll' && \
+   \"$E\" upcl decode \"$P\" 0o554100000150 > '${CMAKE_BINARY_DIR}/pdp10.hlrz' && \
+   grep -q '0x0000: hlrz'  '${CMAKE_BINARY_DIR}/pdp10.hlrz' && \
+   \"$E\" upcl decode \"$P\" 0o560240000500 > '${CMAKE_BINARY_DIR}/pdp10.hrro' && \
+   grep -q '0x0000: hrro'  '${CMAKE_BINARY_DIR}/pdp10.hrro' && \
+   \"$E\" upcl decode \"$P\" 0o530300000600 > '${CMAKE_BINARY_DIR}/pdp10.hlle' && \
+   grep -q '0x0000: hlle'  '${CMAKE_BINARY_DIR}/pdp10.hlle'")
+set_tests_properties(upcl.decode-pdp10-halfword PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c
