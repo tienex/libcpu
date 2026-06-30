@@ -231,3 +231,59 @@ jump insn skp : type branch, encode #i18 ( op:5 = OPC_SKP, f:13 -> F ),
         ov = ( ( F & 0o01000 ) != 0 ) ? 0 : ov;                               // SZO clears OV
         pc = ( sk != 0 ) ? ( pc + 1 ) : pc;
     }
+
+// SHIFT / ROTATE GROUP (op 033).  sub-op = (F>>9)&017 ; count = #1-bits in (F & 0o777).
+// Sub-ops: 001 RAL 002 RIL 003 RCL 005 SAL 006 SIL 007 SCL ; 011 RAR 012 RIR 013 RCR
+//          015 SAR 016 SIR 017 SCR.  RxL/RxR rotate; SxL/SxR arithmetic (sign-preserving) shift.
+// Combined (RCx/SCx) treat AC:IO as one 36-bit register.  The count = popcount is realized by one
+// shift/rotate STEP per set bit in the low 9 (matching the hardware, which shifts once per 1-bit).
+// Verified against SIMH pdp1_cpu.c: RCL/RCR correct; SCL fills IO bit0 with AC sign (not IO sign);
+// SCR puts AC bit0 into IO bit17 (no IO sign preserve); SAL/SIL fill vacated bit0 with sign bit.
+jump insn sft : type branch, encode #i18 ( op:5 = OPC_SFT, f:13 -> F ),
+    disasm ( mnemonic : "sft", operands : F )
+    {
+        #i4  sub  = ( F >> 9 ) & 0o17;
+        #i9  bits = F & 0o777;
+        while ( bits != 0 ) {
+            #i1 step = bits & 1;
+            if ( step != 0 ) {
+                // AC rotates / shifts
+                if ( sub == 0o01 ) { ac = ( ( ac << 1 ) | ( ( ac >> 17 ) & 1 ) ) & DMASK; }         // RAL
+                if ( sub == 0o11 ) { ac = ( ( ac >> 1 ) | ( ( ac & 1 ) << 17 ) ) & DMASK; }          // RAR
+                if ( sub == 0o05 ) {                                                                  // SAL
+                    #i1 sg = ( ac >> 17 ) & 1;
+                    ac = ( ac & SIGN ) | ( ( ac << 1 ) & ( DMASK >> 1 ) ) | sg;
+                }
+                if ( sub == 0o15 ) { ac = ( ac & SIGN ) | ( ( ac >> 1 ) & ( DMASK >> 1 ) ); }        // SAR
+                // IO rotates / shifts
+                if ( sub == 0o02 ) { io = ( ( io << 1 ) | ( ( io >> 17 ) & 1 ) ) & DMASK; }          // RIL
+                if ( sub == 0o12 ) { io = ( ( io >> 1 ) | ( ( io & 1 ) << 17 ) ) & DMASK; }          // RIR
+                if ( sub == 0o06 ) {                                                                  // SIL
+                    #i1 sg = ( io >> 17 ) & 1;
+                    io = ( io & SIGN ) | ( ( io << 1 ) & ( DMASK >> 1 ) ) | sg;
+                }
+                if ( sub == 0o16 ) { io = ( io & SIGN ) | ( ( io >> 1 ) & ( DMASK >> 1 ) ); }        // SIR
+                // combined AC:IO (36-bit)
+                if ( sub == 0o03 ) {                                                                  // RCL
+                    #i1 hb = ( ac >> 17 ) & 1;
+                    ac = ( ( ac << 1 ) | ( ( io >> 17 ) & 1 ) ) & DMASK;
+                    io = ( ( io << 1 ) | hb ) & DMASK;
+                }
+                if ( sub == 0o13 ) {                                                                  // RCR
+                    #i1 lb = io & 1;
+                    io = ( ( io >> 1 ) | ( ( ac & 1 ) << 17 ) ) & DMASK;
+                    ac = ( ( ac >> 1 ) | ( lb << 17 ) ) & DMASK;
+                }
+                if ( sub == 0o07 ) {                                                                  // SCL
+                    #i1 sg = ( ac >> 17 ) & 1;
+                    ac = ( ac & SIGN ) | ( ( ac << 1 ) & ( DMASK >> 1 ) ) | ( ( io >> 17 ) & 1 );
+                    io = ( ( io << 1 ) | sg ) & DMASK;
+                }
+                if ( sub == 0o17 ) {                                                                  // SCR
+                    io = ( ( io >> 1 ) | ( ( ac & 1 ) << 17 ) ) & DMASK;
+                    ac = ( ac & SIGN ) | ( ( ac >> 1 ) & ( DMASK >> 1 ) );
+                }
+            }
+            bits = bits >> 1;
+        }
+    }

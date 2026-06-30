@@ -1730,7 +1730,8 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o761200 | grep -q ': opr' && \
    \"$E\" upcl decode \"$P\" 0o760400 | grep -q 'condbr' && \
    \"$E\" upcl decode \"$P\" 0o640100 | grep -q ': skp' && \
-   \"$E\" upcl decode \"$P\" 0o650100 | grep -q ': skp'")
+   \"$E\" upcl decode \"$P\" 0o650100 | grep -q ': skp' && \
+   \"$E\" upcl decode \"$P\" 0o661000 | grep -q ': sft'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c
@@ -1742,6 +1743,15 @@ add_test(NAME upcl.pdp1-arith COMMAND sh -c
    \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o22 \
      | grep -q '0o22. = 0x00003'")
 set_tests_properties(upcl.pdp1-arith PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
+add_test(NAME upcl.pdp1-shift COMMAND sh -c
+  "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}/pdp1shift.raw'; \
+   python3 '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp1_asm.py' \
+     --org 0 0o200020 0o661007 0o240021 0o760400 --at 0o20 0o000001 > \"$B\" && \
+   \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 --dump 0o21 \
+     | grep -q '0o21. = 0x00008'")
+set_tests_properties(upcl.pdp1-shift PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
