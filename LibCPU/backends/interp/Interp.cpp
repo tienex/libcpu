@@ -69,20 +69,26 @@ SignExtend (UINT64 Value, UINT32 Bits)
     return (Value ^ Mask) - Mask;
 }
 
+// A guest memory access spans ceil(Bits / 8) bytes, little-endian. A byte-addressed arch only ever
+// accesses byte-multiple widths (8/16/32/64), so this is the plain N-byte read it always was. A
+// WORD-ADDRESSED arch (PDP-10) accesses its word_size width directly -- e.g. 36 bits, which spans
+// the low 5 bytes of an 8-byte word cell; RamRead masks the loaded value back to Bits so the high,
+// out-of-word bytes (always zero, since a cell only ever holds a word_size value) never leak in.
 static UINT64
 RamRead (UINT8 CONST *pRam, UINT64 Addr, UINT32 Bits)
 {
     UINT64 Value = 0;
-    for (UINT32 Index = 0; Index < Bits / 8; Index++) {
+    for (UINT32 Index = 0; Index < (Bits + 7) / 8; Index++) {
         Value |= (UINT64) pRam[Addr + Index] << (8 * Index);
     }
-    return Value;
+    return MaskBits (Value, Bits);
 }
 
 static VOID
 RamWrite (UINT8 *pRam, UINT64 Addr, UINT64 Value, UINT32 Bits)
 {
-    for (UINT32 Index = 0; Index < Bits / 8; Index++) {
+    Value = MaskBits (Value, Bits);                  // a word-cell store keeps only the low word_size bits
+    for (UINT32 Index = 0; Index < (Bits + 7) / 8; Index++) {
         pRam[Addr + Index] = (UINT8)(Value >> (8 * Index));
     }
 }

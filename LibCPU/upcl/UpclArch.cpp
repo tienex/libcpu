@@ -384,15 +384,20 @@ private:
     // Decode the standard-path instruction at Pc, choosing the addressing model from the arch. A
     // byte-addressed ISA decodes the byte stream at Pc exactly as before (byte-identical). A WORD-
     // ADDRESSED machine (PDP-10) treats Pc as a WORD offset and the code memory as an array of
-    // machine words, decoding a single `word_size`-bit instruction value; D.Length is then a WORD
-    // count, so every caller's `Pc + D.Length` advance steps in words without further change. The
-    // full word-memory backing (a guest word store, byte<->word access) is wired in a later phase;
-    // this seam keeps the decode path generic so the byte path stays untouched.
+    // word cells -- each cell an 8-byte (CPU_WORD_CELL_BYTES) little-endian host slot holding one
+    // `word_size`-bit value, the SAME layout the %M[idx] Load/Store and the guest word RAM use.
+    // The single instruction word at Pc is assembled from its cell bytes (alignment-safe, no raw
+    // reinterpret) and decoded; D.Length is a WORD count, so every caller's `Pc + D.Length` advance
+    // steps in words without further change. The byte path is untouched.
     bool DecodeStd (CPU_ADDR Pc, DecodedInsn *pOut) CONST {
         if (m_pDecoder->IsWordAddressed ()) {
-            UINT64 CONST *pWords = reinterpret_cast<UINT64 CONST *> (m_pCode);
-            UINT64 CONST  Count  = m_CodeSize / sizeof (UINT64);
-            return m_pDecoder->DecodeWord (pWords, Count, Pc, pOut);
+            UINT64 CONST Count = m_CodeSize / CPU_WORD_CELL_BYTES;
+            if (Pc >= Count) { return false; }
+            UINT64 Word = 0;
+            for (UINT32 B = 0; B < CPU_WORD_CELL_BYTES; B++) {
+                Word |= (UINT64) m_pCode[Pc * CPU_WORD_CELL_BYTES + B] << (8 * B);
+            }
+            return m_pDecoder->DecodeWord (&Word, 1, 0, pOut);
         }
         return m_pDecoder->Decode (m_pCode, m_CodeSize, Pc, pOut);
     }

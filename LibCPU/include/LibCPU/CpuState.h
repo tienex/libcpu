@@ -125,6 +125,13 @@ typedef struct _CPU_STATE {
 // Default guest RAM size when CPU_STATE.RamSize is 0 (the legacy 16-bit space).
 #define CPU_RAM_DEFAULT            ((UINT64) 0x10000)
 
+// WORD-ADDRESSED guest memory cell stride. On a machine whose smallest addressable unit is the
+// machine word (PDP-10: word_size == byte_size != 8), guest RAM is an array of word cells, each
+// backed by an 8-byte (64-bit) host slot regardless of the word's bit width (<= 64). A word index
+// i therefore lives at byte offset i * CPU_WORD_CELL_BYTES; instruction fetch and the %M[idx]
+// Load/Store all use this same stride so the word program and word memory share one layout.
+#define CPU_WORD_CELL_BYTES        ((UINT64) 8)
+
 // Sentinel stored in TrapPc when no SMC guard has fired.
 #define CPU_SMC_NO_TRAP            (~UINT64_C (0))
 

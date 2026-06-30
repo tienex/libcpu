@@ -1,7 +1,9 @@
-// Minimal WORD-ADDRESSED arch (PDP-10 shaped) to prove generic word-addressing in the decoder.
-// byte_size == word_size (36) and != 8 marks the arch as word-addressed: the decoder fetches a
-// 36-bit instruction word at a WORD offset, extracts MSB-first fields from that 36-bit value, and
-// sizes immediates/displacements in units of byte_size (36) rather than the hardcoded 8.
+// Minimal WORD-ADDRESSED arch (PDP-10 shaped) to prove generic word-addressing in the decoder
+// AND in execution. byte_size == word_size (36) and != 8 marks the arch as word-addressed: the
+// decoder fetches a 36-bit instruction word at a WORD offset, extracts MSB-first fields from that
+// 36-bit value, and sizes immediates/displacements in units of byte_size (36) rather than the
+// hardcoded 8. At run time, guest RAM is an array of 36-bit word cells: `%M[y]` reads/writes the
+// whole 36-bit cell at WORD index y, and instruction fetch reads word cells at the WORD pc.
 arch "_test_wa" {
     name "word-addr test";
     endian big; byte_size 36; word_size 36; address_size 18;
@@ -10,3 +12,19 @@ arch "_test_wa" {
 // PDP-10-shaped instruction word: op:9 ac:4 i:1 x:4 y:18 (MSB-first in a 36-bit word).
 insn movei : encode #i36 ( op:9 = 0o201, ac:4 -> ac, i:1, x:4, y:18 -> y ),
     disasm ( mnemonic : "movei", operands : ac, y ) { ac[ ac ] = y; }
+// movsi ac, y : load y into the LEFT (high 18 bits) of the AC, low half cleared. With movei/iori
+// it builds a full 36-bit value out of two 18-bit halves (no single 36-bit immediate exists).
+insn movsi : encode #i36 ( op:9 = 0o205, ac:4 -> ac, i:1, x:4, y:18 -> y ),
+    disasm ( mnemonic : "movsi", operands : ac, y ) { ac[ ac ] = #i36 y << 18; }
+// iori ac, y : OR the 18-bit immediate y into the low half of the AC.
+insn iori : encode #i36 ( op:9 = 0o211, ac:4 -> ac, i:1, x:4, y:18 -> y ),
+    disasm ( mnemonic : "iori", operands : ac, y ) { ac[ ac ] = ac[ ac ] | y; }
+// movem ac, y : store the whole 36-bit AC into the memory WORD at index y.
+insn movem : encode #i36 ( op:9 = 0o202, ac:4 -> ac, i:1, x:4, y:18 -> y ),
+    disasm ( mnemonic : "movem", operands : ac, y ) { %M[ y ] = ac[ ac ]; }
+// move ac, y : load the whole 36-bit memory WORD at index y into the AC.
+insn move : encode #i36 ( op:9 = 0o200, ac:4 -> ac, i:1, x:4, y:18 -> y ),
+    disasm ( mnemonic : "move", operands : ac, y ) { ac[ ac ] = %M[ y ]; }
+// halt : trap to the host (stop the run).
+insn halt : encode #i36 ( op:9 = 0o254, ac:4, i:1, x:4, y:18 ),
+    disasm ( mnemonic : "halt" ) => @trap ( 0 );

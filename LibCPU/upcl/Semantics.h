@@ -147,6 +147,7 @@ private:
     bool  FoldConst (Expr *pExpr, bool Signed, INT64 *pVal, UINT32 *pBits) CONST;
     bool  ZeroWiredSlot (RegArray CONST &Arr, Expr *pIdx) CONST; // index resolves to a hardwired-0 reg
     Value MemAddress (Operand CONST &Op);     // the effective address of a memory operand
+    Value WordCellAddr (Value CONST &Addr);   // word-addressed: a word index -> its 64-bit-cell byte offset
     Value EvalMember (Expr *pExpr);          // a.b  -> a sub-field of register a
     Value EvalCC (Expr *pExpr);              // %CC ( expr [, flags] )
     Value EvalMacroCall (Expr *pExpr);       // @macro(args) used as a value (returns %result)

@@ -1048,6 +1048,21 @@ add_test(NAME upcl.engine-wordaddr COMMAND sh -c
    grep -q '(1 word(s))'   '${CMAKE_BINARY_DIR}/wordaddr.out'")
 set_tests_properties(upcl.engine-wordaddr PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# WORD-ADDRESSED EXECUTION: a 36-bit value round-trips through word memory. Guest RAM is an array of
+# 36-bit word cells (each backed by an 8-byte little-endian host slot); the program image is those
+# cells, one per instruction word. The program builds a full 36-bit AC value out of two 18-bit halves
+# (movsi ac1, 0o654321 -> high half; iori ac1, 0o123456 -> low half), stores it to memory WORD 100
+# (movem ac1, 100), loads it back into a DIFFERENT AC (move ac2, 100), then halts. ac2 must equal the
+# whole 36-bit value 0d6344a72e -- proving the word cell holds all 36 bits (a byte-array / 32-bit
+# access would drop the top 4 bits). Exercises word-index %M[] Load/Store + word-cell instruction
+# fetch on the interpreter backend. The five 8-byte LE word cells are emitted as octal printf escapes.
+if(TARGET interp_backend)
+  add_test(NAME upcl.engine-wordmem COMMAND sh -c
+    "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\321\\130\\203\\050\\004\\000\\000\\000\\056\\247\\200\\110\\004\\000\\000\\000\\144\\000\\200\\020\\004\\000\\000\\000\\144\\000\\000\\001\\004\\000\\000\\000\\000\\000\\000\\140\\005\\000\\000\\000' > '${CMAKE_BINARY_DIR}/wordmem.bin' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/wordmem.bin' --arch \"upcl:$M\" | grep -q 'ac2=0d6344a72e'")
+endif()
+
 # Self-describing variable-length displacement (`disp varlen`): the first tail byte's top bits
 # select the encoded width (1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit; big-endian,
 # sign-extended). The opcode byte 0x00 (op=0,m=0) selects the %M[ r0 + disp varlen ] rule; the

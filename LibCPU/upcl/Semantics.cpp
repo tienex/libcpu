@@ -472,6 +472,20 @@ Translator::MemAddress (Operand CONST &Op)
     return Addr;
 }
 
+// On a WORD-ADDRESSED machine (PDP-10: byte_size == word_size != 8) guest RAM is an array of
+// machine-word cells, each backed by a 64-bit (8-byte) host slot, and a `%M[addr]` address is a
+// WORD INDEX into that array -- not a byte address. Translate the index to the byte offset of its
+// cell (index * 8); the backend Load/Store then reads/writes the whole word_size-bit cell there
+// (the interpreter's RamRead/RamWrite handle a non-byte-multiple width by spanning the full cell
+// and masking to the width). A byte-addressed arch passes the address through unchanged, so every
+// existing ISA keeps its plain byte-array memory model.
+Value
+Translator::WordCellAddr (Value CONST &Addr)
+{
+    if (m_pArch == nullptr || !m_pArch->WordAddressed) { return Addr; }
+    return Bin (BinMul, Coerce (Addr, 64, false), Const (64, CPU_WORD_CELL_BYTES));
+}
+
 Value
 Translator::ReadOperand (Operand CONST &Op)
 {
@@ -938,7 +952,7 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprMem: {
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
         bool   IsFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
-        Value Addr = EvalExpr (pExpr->Args[0]);
+        Value Addr = WordCellAddr (EvalExpr (pExpr->Args[0]));
         // A load-linked (%LL) reads memory AND establishes a reservation on the address (the
         // hardware LLbit + reserved address) -- a later %SC to the same address succeeds only while
         // that reservation holds. The reservation is synthesised architectural state.
@@ -1434,7 +1448,7 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
     case ExprMem: {
         UINT32 Bits = (pLhs->VType != nullptr) ? pLhs->VType->Width : Rhs.Bits;
         bool   IsFloat = (pLhs->VType != nullptr && pLhs->VType->Kind == TypeFloat);
-        Value Addr = EvalExpr (pLhs->Args[0]);
+        Value Addr = WordCellAddr (EvalExpr (pLhs->Args[0]));
         Value V;
         if (IsFloat && Rhs.Float) {
             // A float-typed store (`#f32 %M[..] = st`): round to the target width, then write the
