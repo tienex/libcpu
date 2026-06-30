@@ -950,7 +950,11 @@ Parser::ParseRegDecl ()
     return R;
 }
 
-// `group <id> : <reg_decl> ;`  |  `group <id> { <reg_decl> , ... }`
+// `group <id> [aliases_memory [<base>]] : <reg_decl> ;`
+// `group <id> [aliases_memory [<base>]] { <reg_decl> , ... }`
+//
+// The optional `aliases_memory` clause marks this group as aliasing guest memory words
+// starting at word address <base> (default 0). See Group::MemAliasBase.
 Group *
 Parser::ParseGroup ()
 {
@@ -959,6 +963,14 @@ Parser::ParseGroup ()
     if (m_Cur.Kind == TokIdent) { G->Name = m_Cur.Text; G->Name_Loc = m_Cur.Loc; Advance (); }
     else { std::string M = std::string ("expected a group name, found ") + TokenName (m_Cur.Kind);
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
+    // Optional `aliases_memory [<base>]` clause: this group's elements alias memory words
+    // beginning at <base> (default 0). The base address is a non-negative integer literal.
+    if (AtKeyword ("aliases_memory")) {
+        Advance ();                                         // 'aliases_memory'
+        UINT64 Base = 0;
+        if (m_Cur.Kind == TokInt) { Base = m_Cur.Int; Advance (); }
+        G->MemAliasBase = (UINT32) Base;
+    }
     if (Accept (TokColon)) {                                // simple single-register group
         G->Regs.push_back (ParseRegDecl ());
         Expect (TokSemi, "after a simple group");

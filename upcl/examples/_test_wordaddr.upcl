@@ -4,10 +4,14 @@
 // 36-bit value, and sizes immediates/displacements in units of byte_size (36) rather than the
 // hardcoded 8. At run time, guest RAM is an array of 36-bit word cells: `%M[y]` reads/writes the
 // whole 36-bit cell at WORD index y, and instruction fetch reads word cells at the WORD pc.
+//
+// The AC group is declared with `aliases_memory 0`: AC0-AC15 ARE memory words 0-17 (octal).
+// A `%M[n]` access with n < 16 routes to the register bank (same physical storage as `ac[n]`),
+// replicating the PDP-10's architectural property that accumulators and low memory share storage.
 arch "_test_wa" {
     name "word-addr test";
     endian big; byte_size 36; word_size 36; address_size 18;
-    register_file { group AC { [ 16 ** #i36 ac?:0 ] } group S { [ #i18 pc -> %PC ] } }
+    register_file { group AC aliases_memory 0 { [ 16 ** #i36 ac?:0 ] } group S { [ #i18 pc -> %PC ] } }
 }
 // PDP-10-shaped instruction word: op:9 ac:4 i:1 x:4 y:18 (MSB-first in a 36-bit word).
 insn movei : encode #i36 ( op:9 = 0o201, ac:4 -> ac, i:1, x:4, y:18 -> y ),

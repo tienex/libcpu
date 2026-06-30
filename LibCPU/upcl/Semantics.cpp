@@ -486,6 +486,73 @@ Translator::WordCellAddr (Value CONST &Addr)
     return Bin (BinMul, Coerce (Addr, 64, false), Const (64, CPU_WORD_CELL_BYTES));
 }
 
+// Register/memory aliasing for `%M[addr]` on a word-addressed arch.
+//
+// When the arch has a register group declared with `aliases_memory`, memory word accesses
+// whose index falls in the aliased range must read/write the SAME storage as the
+// corresponding AC register (e.g. PDP-10: `%M[3]` and `ac3` share one physical slot).
+//
+// The mechanism: the interpreter's Load/Store already routes accesses to the register bank
+// when the address has CPU_REGBANK_FLAG set (the runtime-indexed `ac[i]` path). We reuse
+// that: for an aliased word index K, emit Load/Store at (CPU_REGBANK_FLAG | (PhysBase + K))
+// instead of (K * CPU_WORD_CELL_BYTES).
+//
+// Compile-time constant index: fold directly -- no branch emitted, no RAM touched.
+// Runtime index that MAY fall in the aliased range: emit a Select so that in-range accesses
+// go to the register bank and out-of-range accesses go to RAM. The `Select` on the address
+// is safe because both the bank-sentinel path and the memory path go through the same
+// Load/Store call; the interpreter dispatches on the sentinel flag at runtime.
+//
+// Word-addressed but NO aliasing group declared: return the plain word-cell byte offset
+// (identical to WordCellAddr).  Non-word-addressed arch: return the raw address unchanged.
+Value
+Translator::MemAliasAddr (Expr *pAddrExpr, Value CONST &WordAddr)
+{
+    if (m_pArch == nullptr || !m_pArch->WordAddressed) { return WordAddr; }
+    if (!m_Layout.HasMemAlias ()) { return WordCellAddr (WordAddr); }
+
+    UINT32 PhysBase  = m_Layout.MemAliasPhysBase;
+    UINT32 AliasCount = m_Layout.MemAliasCount;
+    UINT32 WordBase  = m_Layout.MemAliasWordBase;
+
+    // Compile-time constant address: fold the branch away.
+    UINT64 K = 0;
+    if (!m_Generate && pAddrExpr != nullptr && TryConstIndex (pAddrExpr, &K)) {
+        UINT32 PhysIdx = 0;
+        if (m_Layout.AliasedWordToReg (K, &PhysIdx)) {
+            // In the aliased range: return the register-bank sentinel address.
+            return Bin (BinOr, Const (64, CPU_REGBANK_FLAG),
+                               Const (64, (UINT64) PhysIdx));
+        }
+        // Outside the aliased range: plain word-cell byte offset.
+        return WordCellAddr (WordAddr);
+    }
+
+    // Runtime address: emit a Select between the bank-sentinel path and the RAM path.
+    // Condition: WordAddr >= WordBase AND WordAddr < WordBase + AliasCount.
+    // The bank address for word index W is: CPU_REGBANK_FLAG | (PhysBase + W - WordBase).
+    Value W64 = Coerce (WordAddr, 64, false);
+
+    // In-range check: (WordAddr - WordBase) < AliasCount.  Using unsigned comparison so that
+    // WordAddr < WordBase also falls out as "false" (wraps to a large unsigned number).
+    Value Offset = Bin (BinSub, W64, Const (64, (UINT64) WordBase));
+    Value InRange = Cmp (CmpULt, Offset, Const (64, (UINT64) AliasCount));
+
+    // Bank address: CPU_REGBANK_FLAG | (PhysBase + Offset).
+    Value BankAddr = Bin (BinOr, Const (64, CPU_REGBANK_FLAG),
+                                 Bin (BinAdd, Const (64, (UINT64) PhysBase), Offset));
+
+    // Memory address: the plain word-cell byte offset.
+    Value MemAddr = WordCellAddr (WordAddr);
+
+    // If InRange is a compile-time constant (e.g. both bounds folded), skip the Select.
+    if (InRange.IsConst) { return (InRange.K != 0) ? BankAddr : MemAddr; }
+
+    ComPtr<ICpuValue> Sel;
+    m_pE->Select (Use (InRange), Use (BankAddr), Use (MemAddr), &Sel);
+    return Pool (std::move (Sel), 64);
+}
+
 Value
 Translator::ReadOperand (Operand CONST &Op)
 {
@@ -952,7 +1019,12 @@ Translator::EvalExpr (Expr *pExpr)
     case ExprMem: {
         UINT32 Bits = (pExpr->VType != nullptr) ? pExpr->VType->Width : m_WordBits;
         bool   IsFloat = (pExpr->VType != nullptr && pExpr->VType->Kind == TypeFloat);
-        Value Addr = WordCellAddr (EvalExpr (pExpr->Args[0]));
+        // Route through MemAliasAddr: on a word-addressed arch with `aliases_memory`, an
+        // access whose index is in the AC group's range goes to the register bank.  On all
+        // other arches / groups this is identical to WordCellAddr (byte path is unchanged).
+        Expr  *pAddrExpr = pExpr->Args[0];
+        Value  WordAddr  = EvalExpr (pAddrExpr);
+        Value  Addr      = MemAliasAddr (pAddrExpr, WordAddr);
         // A load-linked (%LL) reads memory AND establishes a reservation on the address (the
         // hardware LLbit + reserved address) -- a later %SC to the same address succeeds only while
         // that reservation holds. The reservation is synthesised architectural state.
@@ -1448,7 +1520,10 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
     case ExprMem: {
         UINT32 Bits = (pLhs->VType != nullptr) ? pLhs->VType->Width : Rhs.Bits;
         bool   IsFloat = (pLhs->VType != nullptr && pLhs->VType->Kind == TypeFloat);
-        Value Addr = WordCellAddr (EvalExpr (pLhs->Args[0]));
+        // Same aliasing routing as the load path: in-range word indices go to the bank.
+        Expr  *pAddrExpr = pLhs->Args[0];
+        Value  WordAddr  = EvalExpr (pAddrExpr);
+        Value  Addr      = MemAliasAddr (pAddrExpr, WordAddr);
         Value V;
         if (IsFloat && Rhs.Float) {
             // A float-typed store (`#f32 %M[..] = st`): round to the target width, then write the

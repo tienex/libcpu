@@ -84,6 +84,30 @@ public:
     // PcFields["seg"] == "cs". So `pc.off` resolves to the offset register (ip).
     std::map<std::string, std::string> PcFields;
 
+    // Register / low-memory aliasing: the first group declared with `aliases_memory [<base>]`
+    // overlays guest memory words [MemAliasWordBase, MemAliasWordBase + MemAliasCount). On the
+    // PDP-10, AC0-15 alias words 0-17 (octal), so MemAliasWordBase=0, MemAliasCount=16, and
+    // MemAliasPhysBase is the layout index of AC0. The `%M[addr]` load/store path routes
+    // accesses whose word index falls in this range to the register bank.
+    // All three fields are 0/~0u when no group has declared aliasing.
+    UINT32 MemAliasPhysBase = ~(UINT32)0; // index into Phys[] of alias group element 0
+    UINT32 MemAliasCount    = 0;          // number of registers that alias memory
+    UINT32 MemAliasWordBase = 0;          // guest word address of alias group element 0
+
+    // True when any group has declared register/memory aliasing.
+    bool HasMemAlias () CONST { return MemAliasCount > 0 && MemAliasPhysBase != ~(UINT32)0; }
+
+    // True when word address WordAddr aliases a physical register. When true, *pPhysIndex
+    // receives the layout index of the physical register that WordAddr aliases.
+    bool AliasedWordToReg (UINT64 WordAddr, UINT32 *pPhysIndex) CONST {
+        if (!HasMemAlias ()) { return false; }
+        if (WordAddr < (UINT64) MemAliasWordBase) { return false; }
+        UINT64 Offset = WordAddr - (UINT64) MemAliasWordBase;
+        if (Offset >= (UINT64) MemAliasCount) { return false; }
+        *pPhysIndex = MemAliasPhysBase + (UINT32) Offset;
+        return true;
+    }
+
     // The physical register holding the program counter (or ~0 if none).
     UINT32 PcIndex () CONST {
         for (RegPhys CONST &P : Phys) { if (P.IsPc) { return P.Index; } }

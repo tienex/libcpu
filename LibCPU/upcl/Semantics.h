@@ -138,6 +138,13 @@ private:
     Value ReadOperand (Operand CONST &Op);   // read a decoded operand location
     bool  TryConstIndex (Expr *pIdx, UINT64 *pVal) CONST; // a compile-time-constant register index
     bool  RegSelName (Expr *pExpr, std::string *pName) CONST; // %REG[group, field] -> the member's name
+    // Register/memory aliasing (`group AC aliases_memory`): given a word-addressed %M[addr],
+    // return the address to pass to Load/Store. When aliasing is in effect and the word index
+    // falls in the AC group's range, the result carries the CPU_REGBANK_FLAG sentinel so the
+    // backend routes the access to the register bank rather than RAM. For non-aliased accesses
+    // the result is the plain byte-cell offset (the same as WordCellAddr). WordAddr must
+    // already be in word-index form (i.e. NOT yet scaled by CPU_WORD_CELL_BYTES).
+    Value MemAliasAddr (Expr *pAddrExpr, Value CONST &WordAddr);
 
     // COMPILE-PHASE FOLDING. Decoder fields and immediate operands are known when an instruction is
     // translated (compile phase), so a pure expression over them -- a `(sr >= 6) ? 2 : 1` byte step,

@@ -1061,6 +1061,28 @@ if(TARGET interp_backend)
     "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
      printf '\\321\\130\\203\\050\\004\\000\\000\\000\\056\\247\\200\\110\\004\\000\\000\\000\\144\\000\\200\\020\\004\\000\\000\\000\\144\\000\\000\\001\\004\\000\\000\\000\\000\\000\\000\\140\\005\\000\\000\\000' > '${CMAKE_BINARY_DIR}/wordmem.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/wordmem.bin' --arch \"upcl:$M\" | grep -q 'ac2=0d6344a72e'")
+
+  # E-AC: REGISTER/LOW-MEMORY ALIASING. On the PDP-10 the 16 accumulators (AC0-AC15) ARE
+  # memory words 0-17 (octal) -- the same physical storage. This test programs verifies BOTH
+  # directions of the alias on a word-addressed arch where AC is declared `aliases_memory 0`:
+  #
+  #   Direction A (AC -> %M): write a literal 42 into ac3 (movei ac=3, y=42), then load
+  #     %M[3] into ac9 (move ac=9, y=3).  With aliasing ac9 must equal 42.
+  #   Direction B (%M -> AC): write literal 99 into ac5 (movei ac=5, y=99), then store ac5
+  #     to %M[11] (movem ac=5, y=11), which with aliasing sets ac11=99.  Without aliasing
+  #     ac11 stays 0 (registers and RAM are disjoint).
+  #
+  # Program bytes (5 * 8-byte LE word cells):
+  #   \052\000\200\011\004\000\000\000  -- movei ac=3, y=42
+  #   \003\000\200\004\004\000\000\000  -- move  ac=9, y=3
+  #   \143\000\200\012\004\000\000\000  -- movei ac=5, y=99
+  #   \013\000\200\022\004\000\000\000  -- movem ac=5, y=11
+  #   \000\000\000\140\005\000\000\000  -- halt
+  add_test(NAME upcl.engine-ac-alias COMMAND sh -c
+    "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\052\\000\\200\\011\\004\\000\\000\\000\\003\\000\\200\\004\\004\\000\\000\\000\\143\\000\\200\\012\\004\\000\\000\\000\\013\\000\\200\\022\\004\\000\\000\\000\\000\\000\\000\\140\\005\\000\\000\\000' > '${CMAKE_BINARY_DIR}/acalias.bin' && \
+     OUT=\"$(\"$E\" run '${CMAKE_BINARY_DIR}/acalias.bin' --arch \"upcl:$M\")\"; \
+     echo \"$OUT\" | grep -q 'ac9=000000002a' && echo \"$OUT\" | grep -q 'ac11=0000000063'")
 endif()
 
 # WORD-ADDRESSED BACKEND GUARD: running a word-addressed arch on any backend other than the

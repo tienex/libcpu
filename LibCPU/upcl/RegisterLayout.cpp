@@ -152,6 +152,10 @@ BuildRegisterLayout (Arch *pArch)
 
     for (Group CONST *pGroup : pArch->RegFile->Groups) {
         UINT32 GroupPos = 0;        // position of each member within its group, for the <Group><N> alias
+        // Record the Phys base index BEFORE expanding this group's members, so we can
+        // wire the memory-alias metadata if this group carries `aliases_memory`.
+        UINT32 GroupPhysBase = (UINT32) Layout.Phys.size ();
+
         for (RegDecl CONST *pDecl : pGroup->Regs) {
             UINT32 Width = (pDecl->VType != nullptr) ? pDecl->VType->Width : 0;
             UINT32 Count = RepeatCount (pDecl);
@@ -215,6 +219,20 @@ BuildRegisterLayout (Arch *pArch)
                     && !pDecl->Binding->Split->Union) {
                     SplitColonList (&Layout, Layout.Phys.back (), pDecl->Binding->Split);
                 }
+            }
+        }
+
+        // Register/memory aliasing: if this group was declared with `aliases_memory [base]`,
+        // record the first unused alias (first encountered group wins). The aliased range is
+        // [MemAliasWordBase, MemAliasWordBase + MemAliasCount), mapping word offset N to the
+        // physical register at GroupPhysBase + N. Only the FIRST such group is wired; if a
+        // second group also declares aliasing it is silently ignored (no ISA has two such groups).
+        if (pGroup->MemAliasBase != ~(UINT32)0 && !Layout.HasMemAlias ()) {
+            UINT32 Count = (UINT32) Layout.Phys.size () - GroupPhysBase;
+            if (Count > 0) {
+                Layout.MemAliasPhysBase = GroupPhysBase;
+                Layout.MemAliasCount    = Count;
+                Layout.MemAliasWordBase = pGroup->MemAliasBase;
             }
         }
     }
