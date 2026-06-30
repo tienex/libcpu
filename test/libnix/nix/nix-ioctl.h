@@ -8,6 +8,6 @@
 #define NIX_TIOCSETAF 4
 
 /* File I/O */
-#define NIX_FIONREAD  0x100
+#define NIX_FIONREAD 0x100
 
-#endif  /* !__nix_ioctl_h */
+#endif /* !__nix_ioctl_h */

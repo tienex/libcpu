@@ -327,6 +327,15 @@ endif()
 # zstd -- the solid compressor behind knowledge-library (ZOO) archives. VENDORED as a
 # single-file amalgamation under third_party/zstd, so it builds from source (universal
 # across the toolchain's arches, no external dependency) and powers `lcx klib`.
+# libnix: the LibCPU-native UNIX host layer (xec-compat-free), built as a shared library (dylib) and
+# linked into lcx, which drives it from the guest syscall personalities. The nix dylib carries LCLog
+# (LibCPU/core/LcLog.c), so lcx gets the shared logging API from it.
+set(NIX_HOST_PROFILE "posix" CACHE STRING "" FORCE)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix ${CMAKE_BINARY_DIR}/libnix)
+if(TARGET nix)
+  target_compile_options(nix PRIVATE -w)   # libnix is older C; do not let its warnings fail the build
+endif()
+
 add_executable(lcx test/lcx.cpp
   aot/AotGenerator.cpp aot/ShadowCfg.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp core/CodeCache.cpp
@@ -335,9 +344,10 @@ add_executable(lcx test/lcx.cpp
   console/ConsoleChannel.cpp console/ConsoleBridge.cpp console/TerminalConsole.cpp
   frontends/v20/CpuV20.cpp frontends/i8080/CpuI8080.cpp frontends/m6502/Cpu6502.generated.cpp
   third_party/zstd/zstd.c)
-target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core console third_party/zstd)
+target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m6502 test aot core console third_party/zstd
+  ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix ${CMAKE_BINARY_DIR}/libnix)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
-target_link_libraries(lcx PRIVATE LibCPU upcl ${CMAKE_DL_LIBS})   # dl for HeaderParser's dlopen(libclang)
+target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -1033,6 +1043,27 @@ add_test(NAME upcl.pdp11-run COMMAND sh -c
    \"$E\" run \"$B/pdp11-jsr.bin\" --arch upcl:\"$P\" --reg 0=10 --reg 4=4 --reg 6=0x100 > \"$B/pdp11-jsr.out\" && \
    grep -q 'r0 =000b' \"$B/pdp11-jsr.out\" && \
    grep -q 'sp =0100' \"$B/pdp11-jsr.out\"")
+
+# The generalized 16-bit a.out loader: a PDP-11 OMAGIC (0407) exec -- 16-byte little-endian header
+# (magic, text=6, data, bss, syms, entry, unused, flag) followed by 6 bytes of text (ADD R1,R0;
+# MOV R0,R2; HALT) -- must load (header stripped, text at 0) and run to R0 = 8 from R0=5,R1=3.
+add_test(NAME upcl.pdp11-aout COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
+   printf '\\007\\001\\006\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\100\\140\\002\\020\\000\\000' > \"$B/pdp11-aout.bin\" && \
+   \"$E\" run \"$B/pdp11-aout.bin\" --arch upcl:\"$P\" --load aout --reg 0=5 --reg 1=3 > \"$B/pdp11-aout.out\" && \
+   grep -q 'loaded pdp11 a.out (OMAGIC)' \"$B/pdp11-aout.out\" && \
+   grep -q 'r0 =0008' \"$B/pdp11-aout.out\" && \
+   grep -q 'r2 =0008' \"$B/pdp11-aout.out\"")
+
+# PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
+# inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi unixv7. The write must reach
+# the host through libnix's nix_write (printing 'hi') and return 3 in r0; exit then stops the guest.
+add_test(NAME upcl.pdp11-unix COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
+   printf '\\007\\001\\017\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\004\\211\\001\\000\\014\\000\\003\\000\\001\\211\\000\\000\\150\\151\\012' > \"$B/pdp11-unix.bin\" && \
+   \"$E\" run \"$B/pdp11-unix.bin\" --arch upcl:\"$P\" --load aout --abi unixv7 > \"$B/pdp11-unix.out\" 2>&1 && \
+   grep -q '^hi' \"$B/pdp11-unix.out\" && \
+   grep -q 'r0 =0003' \"$B/pdp11-unix.out\"")
 
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z

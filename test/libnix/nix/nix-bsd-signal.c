@@ -7,7 +7,7 @@
 
 #include "nix.h"
 
-extern void *g_nix_log;
+extern void *g_LCLogImpl;
 
 int
 nix_bsd_sigblock(int mask, nix_env_t *env)
@@ -34,19 +34,19 @@ nix_bsd_sigsetmask(int mask, nix_env_t *env)
 }
 
 int
-nix_bsd_sigvec (int signo, struct nix_bsd_sigvec const *sv,
-	struct nix_bsd_sigvec *osv, nix_env_t *env)
+nix_bsd_sigvec(int signo, struct nix_bsd_sigvec const *sv,
+               struct nix_bsd_sigvec *osv, nix_env_t *env)
 {
 	return (nix_sigaction(signo, (struct nix_sigaction const *)sv,
-		(struct nix_sigaction *)osv, env));
+	                      (struct nix_sigaction *)osv, env));
 }
 
 int
-nix_bsd_sigstack (int signo, struct nix_bsd_sigstack const *ss,
-	struct nix_bsd_sigstack *oss, nix_env_t *env)
+nix_bsd_sigstack(int signo, struct nix_bsd_sigstack const *ss,
+                 struct nix_bsd_sigstack *oss, nix_env_t *env)
 {
 	return (nix_sigaltstack(signo, (struct nix_sigaltstack const *)ss,
-		(struct nix_sigaltstack *)oss, env));
+	                        (struct nix_sigaltstack *)oss, env));
 }
 
 int

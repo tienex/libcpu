@@ -8,7 +8,7 @@ struct nix_bsd_sigvec {
 	int       sv_mask;
 	int       sv_flags;
 #define NIX_SV_ONSTACK   NIX_SA_ONSTACK
-#define NIX_SV_INTERRUPT NIX_SA_RESTART  /* same bit, opposite sense */
+#define NIX_SV_INTERRUPT NIX_SA_RESTART /* same bit, opposite sense */
 #define NIX_SV_RESETHAND NIX_SA_RESETHAND
 #define NIX_SV_NODEFER   NIX_SA_NODEFER
 #define NIX_SV_NOCLDSTOP NIX_SA_NOCLDSTOP
@@ -25,4 +25,4 @@ struct nix_bsd_sigcontext;
 
 struct nix_bsd_kevent;
 
-#endif  /* !__nix_bsd_h */
+#endif /* !__nix_bsd_h */

@@ -1,14 +1,14 @@
-#include "xec-debug.h"
+#include "nix-syscall.h"
 #include "sc2int.h"
 
 int
-yywrap (void)
+yywrap(void)
 {
-  return 1;
+	return 1;
 }
 
 void
-yyerror (char const *msg)
+yyerror(char const *msg)
 {
-  XEC_LOG (NULL, XEC_LOG_FATAL, XEC_LOG_ERREXIT, "%s in file `%s' line %u.", msg, g_filename, g_line);
+	LCLog(NULL, LCLogFatal, LCLogErrExit, "%s in file `%s' line %u.", msg, g_filename, g_line);
 }

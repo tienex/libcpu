@@ -8,7 +8,7 @@
 
 int
 nix_linux_nfsservctl(int cmd, struct nix_linux_nfsctl_arg *arg,
-	union nix_linux_nfsctl_res *resp, nix_env_t *env)
+                     union nix_linux_nfsctl_res *resp, nix_env_t *env)
 {
 	return (nix_nosys(env));
 }

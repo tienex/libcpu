@@ -18,15 +18,15 @@ nix_bsd_revoke(char const *path, nix_env_t *env)
 		return (-1);
 	}
 #ifdef HAVE_REVOKE
-	if (revoke (path) != 0) {
+	if (revoke(path) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 
 	return (0);
 #else
-  /* XXX: What about this ? */
-  return (nix_nosys(env));
+	/* XXX: What about this ? */
+	return (nix_nosys(env));
 #endif
 }
 
@@ -51,12 +51,12 @@ nix_bsd_fchflags(int fd, int flags, nix_env_t *env)
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
 		return (-1);
-    }
-  
+	}
+
 	if (fchflags(rfd, flags) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
-    }
+	}
 
 	return (0);
 #else
@@ -65,16 +65,16 @@ nix_bsd_fchflags(int fd, int flags, nix_env_t *env)
 }
 
 int
-nix_bsd_chflags (char const *path, int flags, nix_env_t *env)
+nix_bsd_chflags(char const *path, int flags, nix_env_t *env)
 {
 #ifdef HAVE_CHFLAGS
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
-  
+
 	if (chflags(path, flags) != 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 

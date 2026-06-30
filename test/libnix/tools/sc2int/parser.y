@@ -5,7 +5,7 @@ extern int yylex(void);
 %}
 
 %union {
-  xec_param_type_t  pt;
+  nix_param_type_t  pt;
   int               iv;
   char             *sv;
   param_t          *prm;
@@ -37,16 +37,16 @@ extern int yylex(void);
 %%
 
 data_type:
-  T_BYTE       { $$ = XEC_PARAM_BYTE; }
-  | T_HALF     { $$ = XEC_PARAM_HALF; }
-  | T_WORD     { $$ = XEC_PARAM_WORD; }
-  | T_DWORD    { $$ = XEC_PARAM_DWORD; }
-  | T_SINGLE   { $$ = XEC_PARAM_SINGLE; }
-  | T_DOUBLE   { $$ = XEC_PARAM_DOUBLE; }
-  | T_EXTENDED { $$ = XEC_PARAM_EXTENDED; }
-  | T_VECTOR   { $$ = XEC_PARAM_VECTOR; }
-  | T_PTR      { $$ = XEC_PARAM_POINTER; }
-  | T_INTPTR   { $$ = XEC_PARAM_INTPTR; }
+  T_BYTE       { $$ = NIX_PARAM_BYTE; }
+  | T_HALF     { $$ = NIX_PARAM_HALF; }
+  | T_WORD     { $$ = NIX_PARAM_WORD; }
+  | T_DWORD    { $$ = NIX_PARAM_DWORD; }
+  | T_SINGLE   { $$ = NIX_PARAM_SINGLE; }
+  | T_DOUBLE   { $$ = NIX_PARAM_DOUBLE; }
+  | T_EXTENDED { $$ = NIX_PARAM_EXTENDED; }
+  | T_VECTOR   { $$ = NIX_PARAM_VECTOR; }
+  | T_PTR      { $$ = NIX_PARAM_POINTER; }
+  | T_INTPTR   { $$ = NIX_PARAM_INTPTR; }
   ;
 
 param:

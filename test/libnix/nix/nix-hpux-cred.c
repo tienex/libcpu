@@ -12,7 +12,7 @@ int
 nix_hpux_getresuid(nix_uid_t *ruid, nix_uid_t *euid, nix_uid_t *suid, nix_env_t *env)
 {
 	uid_t nruid, neuid, nsuid;
-  
+
 	if (ruid == NULL || euid == NULL || suid == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
@@ -46,7 +46,7 @@ nix_hpux_getresuid(nix_uid_t *ruid, nix_uid_t *euid, nix_uid_t *suid, nix_env_t 
 	}
 	__nix_end_try
 
-	return (0);
+	    return (0);
 }
 
 int
@@ -73,7 +73,7 @@ int
 nix_hpux_getresgid(nix_gid_t *rgid, nix_gid_t *egid, nix_gid_t *sgid, nix_env_t *env)
 {
 	gid_t nrgid, negid, nsgid;
-  
+
 	if (rgid == NULL || egid == NULL || sgid == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
@@ -95,29 +95,29 @@ nix_hpux_getresgid(nix_gid_t *rgid, nix_gid_t *egid, nix_gid_t *sgid, nix_env_t 
 #endif
 
 	__nix_try
-    {
+	{
 		*rgid = nrgid;
 		*egid = negid;
 		*sgid = nsgid;
 	}
 	__nix_catch_any
 	{
-    	nix_env_set_errno(env, EFAULT);
+		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 	__nix_end_try
 
-	return (0);
+	    return (0);
 }
 
 int
-nix_hpux_setresgid (nix_gid_t rgid, nix_gid_t egid, nix_gid_t sgid, nix_env_t *env)
+nix_hpux_setresgid(nix_gid_t rgid, nix_gid_t egid, nix_gid_t sgid, nix_env_t *env)
 {
 #ifdef HAVE_GETRESGID
 	if (setresgid(rgid, egid, sgid) < 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
-    }
+	}
 
 	return (0);
 #else

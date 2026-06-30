@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "xec-debug.h"
+#include "nix-host.h"
 
 #include "sc2int.h"
 #include "sc2int_parser.h"

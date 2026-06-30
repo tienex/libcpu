@@ -13,4 +13,4 @@ extern "C" {
 }
 #endif
 
-#endif  /* !__nix_h */
+#endif /* !__nix_h */

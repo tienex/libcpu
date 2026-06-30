@@ -11,6 +11,10 @@
 #cmakedefine HAVE_SYS_STATVFS_H 1
 #cmakedefine HAVE_SYS_STATFS_H 1
 #cmakedefine HAVE_BITSTRING_H 1
+#cmakedefine HAVE_SYS_REBOOT_H 1
+#cmakedefine HAVE_SYS_SHM_H 1
+#cmakedefine HAVE_NETINET_IN_SYSTM_H 1
+#cmakedefine HAVE_POLL_H 1
 #cmakedefine HAVE_SCHED_H 1
 #cmakedefine HAVE_PTHREAD_H 1
 #cmakedefine HAVE_UCRED_H 1

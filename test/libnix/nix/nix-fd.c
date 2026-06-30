@@ -13,22 +13,20 @@
 #endif
 
 #include "nix.h"
-#include "xec-mem.h"
-#include "xec-debug.h"
+#include "nix-host.h"
 
-extern void    *g_nix_log;
+extern void *g_LCLogImpl;
 
 static size_t    nix_fdtable_size = 0;
-static size_t    nix_usedfd       = 0;
-static int      *nix_fdtable      = NULL;
-static bitstr_t *nix_fdslots      = NULL;
+static size_t    nix_usedfd = 0;
+static int      *nix_fdtable = NULL;
+static bitstr_t *nix_fdslots = NULL;
 #ifdef _WIN32
-static bitstr_t *nix_fdsock       = NULL;  /* which gfds are win32 SOCKETs (route I/O to recv/send) */
+static bitstr_t *nix_fdsock = NULL; /* which gfds are win32 SOCKETs (route I/O to recv/send) */
 #endif
 
 #define NIX_FD_LOCK()
 #define NIX_FD_UNLOCK()
-
 
 // XXX THIS STUFF SHOULD BE IN THE nix_env!
 
@@ -37,16 +35,16 @@ nix_fd_init(size_t count)
 {
 	size_t n;
 
-	XEC_ASSERT(g_nix_log, count > 3);
+	LCAssert(g_LCLogImpl, count > 3);
 
 	nix_fdtable_size = count;
-	nix_fdtable = xec_mem_alloc_ntype(int, count, 0);
-	XEC_ASSERT(g_nix_log, nix_fdtable != NULL);
+	nix_fdtable = nix_alloc_ntype(int, count, 0);
+	LCAssert(g_LCLogImpl, nix_fdtable != NULL);
 	nix_fdslots = bit_alloc(count);
-	XEC_ASSERT(g_nix_log, nix_fdslots != NULL);
+	LCAssert(g_LCLogImpl, nix_fdslots != NULL);
 #ifdef _WIN32
 	nix_fdsock = bit_alloc(count);
-	XEC_ASSERT(g_nix_log, nix_fdsock != NULL);
+	LCAssert(g_LCLogImpl, nix_fdsock != NULL);
 #endif
 
 	for (n = 0; n < count; n++)
@@ -72,9 +70,9 @@ nix_fd_alloc(int fd, nix_env_t *env)
 		nix_env_set_errno(env, ENFILE);
 	else {
 		bit_ffc(nix_fdslots, nix_fdtable_size, &rc);
-      
-		XEC_ASSERT(g_nix_log, rc != -1);
-      
+
+		LCAssert(g_LCLogImpl, rc != -1);
+
 		bit_set(nix_fdslots, rc);
 
 		nix_fdtable[rc] = fd;
@@ -98,15 +96,15 @@ nix_fd_alloc_at(int gfd, int fd, nix_env_t *env)
 		if (bit_test(nix_fdslots, gfd)) {
 			nix_env_set_errno(env, EMFILE);
 			return (-1);
-        }
-      
+		}
+
 		bit_set(nix_fdslots, gfd);
 
 		nix_fdtable[gfd] = fd;
 
 		nix_usedfd++;
 	}
-	NIX_FD_UNLOCK ();
+	NIX_FD_UNLOCK();
 
 	return (rc);
 }
@@ -135,7 +133,7 @@ nix_fd_release(int fd, nix_env_t *env)
 			rc = 1;
 		}
 	}
-	NIX_FD_UNLOCK ();
+	NIX_FD_UNLOCK();
 
 	return (rc);
 }
@@ -159,7 +157,7 @@ nix_fd_get_nearest(nix_env_t *env, int fd, int dir)
 	else if (fd > (int)nix_fdtable_size)
 		fd = nix_fdtable_size;
 
-	NIX_FD_LOCK ();
+	NIX_FD_LOCK();
 	if (dir < 0) {
 		ssize_t n;
 
@@ -179,7 +177,7 @@ nix_fd_get_nearest(nix_env_t *env, int fd, int dir)
 			}
 		}
 	}
-	NIX_FD_UNLOCK ();
+	NIX_FD_UNLOCK();
 
 	return (nfd);
 }

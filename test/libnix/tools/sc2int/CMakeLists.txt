@@ -9,4 +9,4 @@ FLEX_TARGET(Lexer ${PROJECT_SOURCE_DIR}/lexer.l ${PROJECT_BINARY_DIR}/sc2int_lex
 INCLUDE_DIRECTORIES(${PROJECT_SOURCE_DIR} ${PROJECT_BINARY_DIR})
 
 ADD_EXECUTABLE(sc2int lists.c sc2int.c stuff.c ${PROJECT_BINARY_DIR}/sc2int_parser.c ${PROJECT_BINARY_DIR}/sc2int_lexer.c)
-TARGET_LINK_LIBRARIES(sc2int xec-compat)
+TARGET_LINK_LIBRARIES(sc2int nix)        # for nix_log (the former xec-compat dependency is gone)

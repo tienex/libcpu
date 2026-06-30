@@ -18,7 +18,7 @@ nix_bsd_sysarch(int number, void *args, nix_env_t *env)
 
 int
 nix_bsd_quotactl(char const *path, int cmd, nix_uid_t uid, void *arg,
-	nix_env_t *env)
+                 nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
@@ -38,7 +38,7 @@ nix_bsd_getkerninfo(int op, char *where, size_t *size, int arg, nix_env_t *env)
 
 int
 nix_bsd_quota(char const *name, unsigned int current, unsigned int max,
-	nix_env_t *env)
+              nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
@@ -46,13 +46,13 @@ nix_bsd_quota(char const *name, unsigned int current, unsigned int max,
 int
 nix_bsd_swapon(char const *name, nix_env_t *env)
 {
-  return nix_nosys (env);
+	return nix_nosys(env);
 }
 
 int
 nix_bsd_gethostid(char *buf, size_t bufsiz, nix_env_t *env)
 {
-#if defined (HAVE_GETHOSTID) && defined (HAVE_SETHOSTID)
+#if defined(HAVE_GETHOSTID) && defined(HAVE_SETHOSTID)
 	if (g_hostid == (long)0xba550770L)
 		g_hostid = gethostid();
 #endif
@@ -66,11 +66,11 @@ nix_bsd_sethostid(char const *hostid, nix_env_t *env)
 {
 	long hid = strtoul(hostid, NULL, 16);
 
-#if !defined (HAVE_GETHOSTID) || !defined (HAVE_SETHOSTID)
+#if !defined(HAVE_GETHOSTID) || !defined(HAVE_SETHOSTID)
 	if (nix_geteuid(env) != 0) {
 		nix_env_set_errno(env, EPERM);
 		return (-1);
-    }
+	}
 	g_hostid = hid;
 #else
 	errno = 0;

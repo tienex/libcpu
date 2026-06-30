@@ -6,7 +6,7 @@
 #include <errno.h>
 #include <unistd.h>
 #ifndef _WIN32
-#include <sys/resource.h>   /* struct rusage/rlimit, RLIMIT_*, PRIO_*; POSIX only (shim defines PRIO_PROCESS) */
+#include <sys/resource.h> /* struct rusage/rlimit, RLIMIT_*, PRIO_*; POSIX only (shim defines PRIO_PROCESS) */
 #endif
 
 #include "nix.h"
@@ -89,7 +89,7 @@ nix_getrusage(int who, struct nix_rusage *rusage, nix_env_t *env)
 
 #ifdef _WIN32
 	(void)who;
-	return (nix_nosys(env));   /* no getrusage/struct rusage on win32 (converter is POSIX-only) */
+	return (nix_nosys(env)); /* no getrusage/struct rusage on win32 (converter is POSIX-only) */
 #else
 	if (getrusage(who, &ru) != 0) {
 		nix_env_set_errno(env, errno);
@@ -117,33 +117,53 @@ nix_getrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 
 #ifdef _WIN32
 	(void)resource;
-	return (nix_nosys(env));   /* no getrlimit/struct rlimit/RLIMIT_* on win32 (converter is POSIX-only) */
+	return (nix_nosys(env)); /* no getrlimit/struct rlimit/RLIMIT_* on win32 (converter is POSIX-only) */
 #else
-	switch (resource)
-	  {
-	  case NIX_RLIMIT_CORE:    rrsrc = RLIMIT_CORE;    break;
-	  case NIX_RLIMIT_CPU:     rrsrc = RLIMIT_CPU;     break;
-	  case NIX_RLIMIT_DATA:    rrsrc = RLIMIT_DATA;    break;
-	  case NIX_RLIMIT_FSIZE:   rrsrc = RLIMIT_FSIZE;   break;
+	switch (resource) {
+	case NIX_RLIMIT_CORE:
+		rrsrc = RLIMIT_CORE;
+		break;
+	case NIX_RLIMIT_CPU:
+		rrsrc = RLIMIT_CPU;
+		break;
+	case NIX_RLIMIT_DATA:
+		rrsrc = RLIMIT_DATA;
+		break;
+	case NIX_RLIMIT_FSIZE:
+		rrsrc = RLIMIT_FSIZE;
+		break;
 #ifdef RLIMIT_MEMLOCK
-	  case NIX_RLIMIT_MEMLOCK: rrsrc = RLIMIT_MEMLOCK; break;
+	case NIX_RLIMIT_MEMLOCK:
+		rrsrc = RLIMIT_MEMLOCK;
+		break;
 #endif
-	  case NIX_RLIMIT_NOFILE:  rrsrc = RLIMIT_NOFILE;  break;
+	case NIX_RLIMIT_NOFILE:
+		rrsrc = RLIMIT_NOFILE;
+		break;
 #ifdef RLIMIT_NPROC
-	  case NIX_RLIMIT_NPROC:   rrsrc = RLIMIT_NPROC;   break;
+	case NIX_RLIMIT_NPROC:
+		rrsrc = RLIMIT_NPROC;
+		break;
 #endif
 #if defined(RLIMIT_RSS)
-	  case NIX_RLIMIT_RSS:     rrsrc = RLIMIT_RSS;     break;
+	case NIX_RLIMIT_RSS:
+		rrsrc = RLIMIT_RSS;
+		break;
 #elif defined(RLIMIT_VMEM)
-	  case NIX_RLIMIT_RSS:     rrsrc = RLIMIT_VMEM;    break;
+	case NIX_RLIMIT_RSS:
+		rrsrc = RLIMIT_VMEM;
+		break;
 #endif
-	  case NIX_RLIMIT_STACK:   rrsrc = RLIMIT_STACK;   break;
-	  default:				   nix_env_set_errno(env, EINVAL);
-							   return (-1);
-	  }
+	case NIX_RLIMIT_STACK:
+		rrsrc = RLIMIT_STACK;
+		break;
+	default:
+		nix_env_set_errno(env, EINVAL);
+		return (-1);
+	}
 
 	if (getrlimit(rrsrc, &rl) < 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 
@@ -156,17 +176,17 @@ nix_getrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 int
 nix_setrlimit(int resource, struct nix_rlimit *rlim, nix_env_t *env)
 {
-  return (nix_nosys(env));
+	return (nix_nosys(env));
 }
 
 nix_pid_t
 nix_wait(nix_pid_t wpid, nix_env_t *env)
 {
 #ifdef _WIN32
-  (void)wpid;
-  return (nix_nosys(env));   /* no child processes in the single-process win32 model */
+	(void)wpid;
+	return (nix_nosys(env)); /* no child processes in the single-process win32 model */
 #else
-  return (nix_bsd_wait4(wpid, NULL, 0, NULL, env));
+	return (nix_bsd_wait4(wpid, NULL, 0, NULL, env));
 #endif
 }
 
@@ -174,10 +194,11 @@ nix_pid_t
 nix_waitpid(nix_pid_t wpid, int options, nix_env_t *env)
 {
 #ifdef _WIN32
-  (void)wpid; (void)options;
-  return (nix_nosys(env));
+	(void)wpid;
+	(void)options;
+	return (nix_nosys(env));
 #else
-  return (nix_bsd_wait4(wpid, NULL, options, NULL, env));
+	return (nix_bsd_wait4(wpid, NULL, options, NULL, env));
 #endif
 }
 
@@ -185,10 +206,12 @@ nix_pid_t
 nix_wait3(nix_pid_t wpid, int *status, int options, nix_env_t *env)
 {
 #ifdef _WIN32
-  (void)wpid; (void)status; (void)options;
-  return (nix_nosys(env));
+	(void)wpid;
+	(void)status;
+	(void)options;
+	return (nix_nosys(env));
 #else
-  return (nix_bsd_wait4(wpid, status, options, NULL, env));
+	return (nix_bsd_wait4(wpid, status, options, NULL, env));
 #endif
 }
 
@@ -209,7 +232,7 @@ nix_nice(int incr, nix_env_t *env)
 
 	if (incr == 0)
 		return (prio);
-  
+
 	return (nix_setpriority(PRIO_PROCESS, 0, prio + incr, env));
 #endif
 }

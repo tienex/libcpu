@@ -16,31 +16,32 @@
 #ifdef HAVE_SYS_FILIO_H
 #include <sys/filio.h>
 #endif
+#ifdef HAVE_POLL_H
 #include <poll.h>
+#endif
 #include <termios.h>
 #include <unistd.h>
 #else
-#include <io.h>          /* win32: read/write/close/lseek live here (the MSVCRT POSIX layer) */
+#include <io.h> /* win32: read/write/close/lseek live here (the MSVCRT POSIX layer) */
 /* Socket fds need winsock I/O, not the CRT's _read/_write/_close. Declared by hand (matching the
    ws2_32 prototypes) so winsock.h stays confined to nix-socket.c; SOCKET is uintptr_t. */
-__declspec (dllimport) int __stdcall recv (uintptr_t s, char *buf, int len, int flags);
-__declspec (dllimport) int __stdcall send (uintptr_t s, char const *buf, int len, int flags);
-__declspec (dllimport) int __stdcall closesocket (uintptr_t s);
+__declspec(dllimport) int __stdcall recv(uintptr_t s, char *buf, int len, int flags);
+__declspec(dllimport) int __stdcall send(uintptr_t s, char const *buf, int len, int flags);
+__declspec(dllimport) int __stdcall closesocket(uintptr_t s);
 #endif
 
 #include "nix.h"
 #include "nix-fd.h"
 #include "nix-structs.h"
-#include "xec-mem.h"
-#include "xec-debug.h"
+#include "nix-host.h"
 
-extern void *g_nix_log;
+extern void *g_LCLogImpl;
 
-#ifndef _WIN32   /* sync(2) -- no win32 equivalent in the file-op core */
+#ifndef _WIN32 /* sync(2) -- no win32 equivalent in the file-op core */
 int
 nix_sync(nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "invoked", 0);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "invoked", 0);
 
 	errno = 0;
 	sync();
@@ -59,7 +60,7 @@ nix_dup(int oldd, nix_env_t *env)
 	int rnewfd;
 	int gnewfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "oldd=%d", oldd);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "oldd=%d", oldd);
 
 	if ((roldfd = nix_fd_get(oldd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -89,7 +90,7 @@ nix_dup2(int oldd, int newd, nix_env_t *env)
 	int rnewfd;
 	int gnewfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "oldd=%d newd=%d", oldd, newd);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "oldd=%d newd=%d", oldd, newd);
 
 	if (newd < 0) {
 		nix_env_set_errno(env, EINVAL);
@@ -118,7 +119,7 @@ nix_dup2(int oldd, int newd, nix_env_t *env)
 		gnewfd = nix_fd_alloc_at(newd, rnewfd, env);
 
 	if (gnewfd != newd) {
-		close (rnewfd);
+		close(rnewfd);
 		return (-1);
 	}
 
@@ -130,10 +131,10 @@ nix_close(int fd, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d", fd);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d", fd);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
-		nix_env_set_errno (env, EBADF);
+		nix_env_set_errno(env, EBADF);
 		return (-1);
 	}
 
@@ -149,7 +150,7 @@ nix_close(int fd, nix_env_t *env)
 		}
 
 		if (!nix_fd_release(fd, env))
-		  return (-1);
+			return (-1);
 	}
 
 	return (0);
@@ -161,7 +162,7 @@ nix_read(int fd, void *buf, size_t bufsiz, nix_env_t *env)
 	int     rfd;
 	ssize_t nb;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, buf=%p, len=%zu", fd, buf, bufsiz);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, buf=%p, len=%zu", fd, buf, bufsiz);
 
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -188,14 +189,14 @@ nix_read(int fd, void *buf, size_t bufsiz, nix_env_t *env)
 	return (nb);
 }
 
-#ifndef _WIN32   /* readv -- vectored I/O (sys/uio.h), not in the file-op core */
+#ifndef _WIN32 /* readv -- vectored I/O (sys/uio.h), not in the file-op core */
 nix_ssize_t
 nix_readv(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 {
 	int     rfd;
 	ssize_t nb;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, iov=%p, iovcnt=%zu", fd, iov, iovcnt);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, iov=%p, iovcnt=%zu", fd, iov, iovcnt);
 
 	if (iov == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -221,7 +222,7 @@ nix_readv(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 
 	return (nb);
 }
-#endif  /* !_WIN32 -- readv */
+#endif /* !_WIN32 -- readv */
 
 nix_ssize_t
 nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
@@ -229,7 +230,7 @@ nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
 	int     rfd;
 	ssize_t nb;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, buf=%p, len=%zu", fd, buf, bufsiz);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, buf=%p, len=%zu", fd, buf, bufsiz);
 
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -256,43 +257,40 @@ nix_write(int fd, void const *buf, size_t bufsiz, nix_env_t *env)
 	return (nb);
 }
 
-#ifndef _WIN32   /* writev -- vectored I/O (sys/uio.h), not in the file-op core */
+#ifndef _WIN32 /* writev -- vectored I/O (sys/uio.h), not in the file-op core */
 nix_ssize_t
 nix_writev(int fd, struct nix_iovec const *iov, int iovcnt, nix_env_t *env)
 {
 	int     rfd;
 	ssize_t nb;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, iov=%p, iovcnt=%zu", fd, iov, iovcnt);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, iov=%p, iovcnt=%zu", fd, iov, iovcnt);
 
-	if (iov == NULL)
-	  {
+	if (iov == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return -1;
-	  }
+	}
 
-	if (iovcnt < 0)
-	  {
+	if (iovcnt < 0) {
 		nix_env_set_errno(env, EINVAL);
 		return -1;
-	  }
+	}
 
-	if ((rfd = nix_fd_get(fd)) < 0)
-	  {
+	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
 		return -1;
-	  }
+	}
 
 	if (iovcnt == 0)
-	  return 0;
+		return 0;
 
 	nb = writev(rfd, (struct iovec *)iov, iovcnt);
 	if (nb < 0)
-	  nix_env_set_errno(env, errno);
+		nix_env_set_errno(env, errno);
 
 	return nb;
 }
-#endif  /* !_WIN32 -- writev */
+#endif /* !_WIN32 -- writev */
 
 /* pipe / ioctl / fcntl / select / poll -- POSIX multiplexing + control, brought up on
    non-POSIX hosts later (the file-op core does not need them). */
@@ -302,7 +300,7 @@ nix_pipe(int *fds, nix_env_t *env)
 {
 	int rfds[2];
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fds=%p", fds);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fds=%p", fds);
 
 	if (fds == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -316,10 +314,10 @@ nix_pipe(int *fds, nix_env_t *env)
 
 	fds[0] = nix_fd_alloc(rfds[0], env);
 	if (fds[0] < 0)
-	  goto fail;
+		goto fail;
 	fds[1] = nix_fd_alloc(rfds[1], env);
 	if (fds[1] < 0)
-	  goto fail;
+		goto fail;
 
 	return (0);
 
@@ -335,7 +333,7 @@ nix_ioctl(int fd, unsigned long request, void *data, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, request=%08x, data=%p", fd, request, data);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, request=%08x, data=%p", fd, request, data);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -343,83 +341,88 @@ nix_ioctl(int fd, unsigned long request, void *data, nix_env_t *env)
 	}
 
 	switch (request) {
-		/* Terminal I/O */
-		case NIX_TIOCGETA: /* Get Attributes */
-		{
-			struct termios nios;
+	/* Terminal I/O */
+	case NIX_TIOCGETA: /* Get Attributes */
+	{
+		struct termios nios;
 
-			if (data == NULL) {
-				nix_env_set_errno(env, EFAULT);
-				return (-1);
-			}
-
-			if (tcgetattr(rfd, &nios) != 0) {
-				nix_env_set_errno(env, EFAULT);
-				return (-1);
-			}
-
-			termios_to_nix_termios(&nios, data);
-			return (0);
+		if (data == NULL) {
+			nix_env_set_errno(env, EFAULT);
+			return (-1);
 		}
 
-		case NIX_TIOCSETA:  /* Set Attributes */
-		case NIX_TIOCSETAW: /* Set Attributes / Drain */
-		case NIX_TIOCSETAF: /* Set Attributes / Drain / Flush */
-		{
-			struct termios nios;
-			int            action = TCSANOW;
-
-			if (data == NULL) {
-				nix_env_set_errno(env, EFAULT);
-				return (-1);
-			}
-
-			switch (request) {
-				case NIX_TIOCSETA:  action = TCSANOW;   break;
-				case NIX_TIOCSETAW: action = TCSADRAIN; break;
-				case NIX_TIOCSETAF: action = TCSAFLUSH; break;
-			}
-
-			nix_termios_to_termios(data, &nios);
-
-			if (tcsetattr(rfd, action, &nios) != 0) {
-				nix_env_set_errno(env, errno);
-				return (-1);
-			}
-
-			return (0);
+		if (tcgetattr(rfd, &nios) != 0) {
+			nix_env_set_errno(env, EFAULT);
+			return (-1);
 		}
 
-		case NIX_FIONREAD:
-		{
-			int bytes;
+		termios_to_nix_termios(&nios, data);
+		return (0);
+	}
 
-			if (data == NULL) {
-				nix_env_set_errno(env, EFAULT);
-				return (-1);
-			}
+	case NIX_TIOCSETA:  /* Set Attributes */
+	case NIX_TIOCSETAW: /* Set Attributes / Drain */
+	case NIX_TIOCSETAF: /* Set Attributes / Drain / Flush */
+	{
+		struct termios nios;
+		int            action = TCSANOW;
 
-			if (ioctl(rfd, FIONREAD, &bytes) != 0) {
-				nix_env_set_errno(env, errno);
-				return (-1);
-			}
-
-			__nix_try
-			{
-				*(size_t *)data = bytes;
-			}
-			__nix_catch_any
-			{
-				nix_env_set_errno(env, EFAULT);
-				return (-1);
-			}
-			__nix_end_try
-
-			return (0);
+		if (data == NULL) {
+			nix_env_set_errno(env, EFAULT);
+			return (-1);
 		}
 
-		default:
-	  		break;
+		switch (request) {
+		case NIX_TIOCSETA:
+			action = TCSANOW;
+			break;
+		case NIX_TIOCSETAW:
+			action = TCSADRAIN;
+			break;
+		case NIX_TIOCSETAF:
+			action = TCSAFLUSH;
+			break;
+		}
+
+		nix_termios_to_termios(data, &nios);
+
+		if (tcsetattr(rfd, action, &nios) != 0) {
+			nix_env_set_errno(env, errno);
+			return (-1);
+		}
+
+		return (0);
+	}
+
+	case NIX_FIONREAD: {
+		int bytes;
+
+		if (data == NULL) {
+			nix_env_set_errno(env, EFAULT);
+			return (-1);
+		}
+
+		if (ioctl(rfd, FIONREAD, &bytes) != 0) {
+			nix_env_set_errno(env, errno);
+			return (-1);
+		}
+
+		__nix_try
+		{
+			*(size_t *)data = bytes;
+		}
+		__nix_catch_any
+		{
+			nix_env_set_errno(env, EFAULT);
+			return (-1);
+		}
+		__nix_end_try
+
+		    return (0);
+	}
+
+	default:
+		break;
 	}
 
 	nix_env_set_errno(env, EINVAL);
@@ -432,7 +435,7 @@ nix_fcntl(int fd, int cmd, int arg, nix_env_t *env)
 	int rc;
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, cmd=%08x, arg=%08x", fd, cmd, arg);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, cmd=%08x, arg=%08x", fd, cmd, arg);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EFAULT);
@@ -440,22 +443,22 @@ nix_fcntl(int fd, int cmd, int arg, nix_env_t *env)
 	}
 
 	switch (cmd) {
-		case F_DUPFD:
-			return nix_dup(fd, env);
+	case F_DUPFD:
+		return nix_dup(fd, env);
 
-		case F_GETFL:
-		case F_SETFL:
-			rc = fcntl(rfd, cmd, arg);
-			if (rc < 0) {
-				nix_env_set_errno(env, errno);
-				return (-1);
-			}
-			break;
-
-		default:
-			return (0); // XXX BAD BAD BAD, but helps.
-			nix_env_set_errno(env, EINVAL);
+	case F_GETFL:
+	case F_SETFL:
+		rc = fcntl(rfd, cmd, arg);
+		if (rc < 0) {
+			nix_env_set_errno(env, errno);
 			return (-1);
+		}
+		break;
+
+	default:
+		return (0); // XXX BAD BAD BAD, but helps.
+		nix_env_set_errno(env, EINVAL);
+		return (-1);
 	}
 
 	return (rc);
@@ -463,11 +466,11 @@ nix_fcntl(int fd, int cmd, int arg, nix_env_t *env)
 
 int
 nix_select(int                       highestfd,
-		   nix_fd_set               *rfds,
-		   nix_fd_set               *wfds,
-		   nix_fd_set               *xfds,
-		   struct nix_timeval const *tv,
-		   nix_env_t                *env)
+           nix_fd_set               *rfds,
+           nix_fd_set               *wfds,
+           nix_fd_set               *xfds,
+           struct nix_timeval const *tv,
+           nix_env_t                *env)
 {
 	fd_set          fds[3];
 	struct timeval  ntv;
@@ -476,16 +479,16 @@ nix_select(int                       highestfd,
 	int             lastfd = 0;
 	int             hfds[256]; /*XXX*/
 	struct timeval *pntv = (tv != NULL) ? &ntv : NULL;
-	fd_set         *pfds[3] = { NULL, NULL, NULL };
+	fd_set         *pfds[3] = {NULL, NULL, NULL};
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "highestfd=%d, rfds=%p, wfds=%p, xfds=%p, tv=%p",
-		highestfd, rfds, wfds, xfds, tv);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "highestfd=%d, rfds=%p, wfds=%p, xfds=%p, tv=%p",
+	        highestfd, rfds, wfds, xfds, tv);
 
 	if (pntv != NULL)
 		nix_timeval_to_timeval(tv, pntv);
-  
+
 	if (highestfd > 256) /*XXX FD_SETSIZE */
-		nfds = 256; /*XXX FD_SETSIZE */
+		nfds = 256;  /*XXX FD_SETSIZE */
 	else
 		nfds = highestfd;
 
@@ -513,9 +516,9 @@ nix_select(int                       highestfd,
 					if (!(hfd < 0) && hfd < 256) {
 						FD_SET(hfd, pfds[0]);
 						if (hfds[hfd] < 0)
-						  hfds[hfd] = n;
+							hfds[hfd] = n;
 						if (hfd > lastfd)
-						  lastfd = hfd + 1;
+							lastfd = hfd + 1;
 					}
 				}
 			}
@@ -529,9 +532,9 @@ nix_select(int                       highestfd,
 					if (!(hfd < 0) && hfd < 256) {
 						FD_SET(hfd, pfds[1]);
 						if (hfds[hfd] < 0)
-						  hfds[hfd] = n;
+							hfds[hfd] = n;
 						if (hfd > lastfd)
-						  lastfd = hfd + 1;
+							lastfd = hfd + 1;
 					}
 				}
 			}
@@ -545,9 +548,9 @@ nix_select(int                       highestfd,
 					if (!(hfd < 0) && hfd < 256) {
 						FD_SET(hfd, pfds[2]);
 						if (hfds[hfd] < 0)
-						  hfds[hfd] = n;
+							hfds[hfd] = n;
 						if (hfd > lastfd)
-						  lastfd = hfd + 1;
+							lastfd = hfd + 1;
 					}
 				}
 			}
@@ -556,7 +559,7 @@ nix_select(int                       highestfd,
 
 	errno = 0;
 	rc = select(lastfd, pfds[0], pfds[1], pfds[2], pntv);
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "select returned %d [lastfd=%d]", rc, lastfd);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "select returned %d [lastfd=%d]", rc, lastfd);
 	if (rc <= 0) {
 		nix_env_set_errno(env, errno);
 		goto done;
@@ -573,33 +576,33 @@ nix_select(int                       highestfd,
 				int gfd = hfds[n];
 
 				if (gfd == -1)
-				  continue;
+					continue;
 
 				if (pfds[0] != NULL) {
-					XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "selecting read hfd %d gfd %d", n, gfd);
+					LCLog(g_LCLogImpl, LCLogDebug, 0, "selecting read hfd %d gfd %d", n, gfd);
 					if (FD_ISSET(n, pfds[0]))
-					  FD_SET(gfd, (fd_set *)rfds);
+						FD_SET(gfd, (fd_set *)rfds);
 					else
-					  FD_CLR(gfd, (fd_set *)rfds);
+						FD_CLR(gfd, (fd_set *)rfds);
 				}
 
 				if (pfds[1] != NULL) {
-					XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "selecting write hfd %d gfd %d", n, gfd);
+					LCLog(g_LCLogImpl, LCLogDebug, 0, "selecting write hfd %d gfd %d", n, gfd);
 					if (FD_ISSET(n, pfds[1]))
-					  FD_SET(gfd, (fd_set *)wfds);
+						FD_SET(gfd, (fd_set *)wfds);
 					else
-					  FD_CLR(gfd, (fd_set *)wfds);
+						FD_CLR(gfd, (fd_set *)wfds);
 				}
 
 				if (pfds[2] != NULL) {
-					XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "selecting except hfd %d gfd %d", n, gfd);
+					LCLog(g_LCLogImpl, LCLogDebug, 0, "selecting except hfd %d gfd %d", n, gfd);
 					if (FD_ISSET(n, pfds[2]))
-					  FD_SET(gfd, (fd_set *)xfds);
+						FD_SET(gfd, (fd_set *)xfds);
 					else
-					  FD_CLR(gfd, (fd_set *)xfds);
+						FD_CLR(gfd, (fd_set *)xfds);
 				}
 			}
-		  }
+		}
 	}
 	__nix_catch_any
 	{
@@ -608,9 +611,12 @@ nix_select(int                       highestfd,
 	}
 	__nix_end_try
 
-done:
-	return (rc);
+	    done : return (rc);
 }
+
+/* poll(2) wrappers: gated on <poll.h> (POLLIN.. constants). Hosts without it -- e.g. OS/2's kLIBC --
+   omit these from the file-op core, as win32 omits the whole select/poll block. */
+#ifdef HAVE_POLL_H
 
 static __inline int
 nix_poll_events_to(int events)
@@ -700,15 +706,15 @@ nix_poll_events_from(int events)
 
 int
 nix_poll(struct nix_pollfd *fds,
-		 nix_nfds_t         nfds,
-		 int                timeout,
-		 nix_env_t         *env)
+         nix_nfds_t         nfds,
+         int                timeout,
+         nix_env_t         *env)
 {
 	int            rc;
 	size_t         n;
 	struct pollfd *_fds;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fds=%p, nfds=%u, timeout=%d", fds, nfds, timeout);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fds=%p, nfds=%u, timeout=%d", fds, nfds, timeout);
 
 	if (fds == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -721,15 +727,15 @@ nix_poll(struct nix_pollfd *fds,
 		return (-1);
 	}
 
-	_fds = xec_mem_alloc_ntype(struct pollfd, nfds, 0);
+	_fds = nix_alloc_ntype(struct pollfd, nfds, 0);
 	if (_fds == NULL) {
 		nix_env_set_errno(env, ENOMEM);
 		return (-1);
 	}
 
 	for (n = 0; n < nfds; n++) {
-		_fds[n].fd      = nix_fd_get(fds[n].fd);
-		_fds[n].events  = nix_poll_events_to(fds[n].events);
+		_fds[n].fd = nix_fd_get(fds[n].fd);
+		_fds[n].events = nix_poll_events_to(fds[n].events);
 		_fds[n].revents = 0;
 	}
 
@@ -747,8 +753,9 @@ nix_poll(struct nix_pollfd *fds,
 	}
 
 done:
-	xec_mem_free(_fds);
+	nix_free(_fds);
 
 	return (rc);
 }
-#endif  /* !_WIN32 -- pipe/ioctl/fcntl/select/poll */
+#endif /* HAVE_POLL_H -- poll(2) wrappers */
+#endif /* !_WIN32 -- pipe/ioctl/fcntl/select/poll */

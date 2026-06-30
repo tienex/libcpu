@@ -5,59 +5,59 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #ifndef _WIN32
-#include <sys/resource.h>   /* struct rusage / rlimit -- POSIX only */
-#include <termios.h>        /* struct termios -- POSIX only */
+#include <sys/resource.h> /* struct rusage / rlimit -- POSIX only */
+#include <termios.h>      /* struct termios -- POSIX only */
 #endif
 
 void
 timeval_to_nix_timeval(struct timeval const *in,
-					   struct nix_timeval   *out);
+                       struct nix_timeval   *out);
 
 void
 nix_timeval_to_timeval(struct nix_timeval const *in,
-					   struct timeval           *out);
+                       struct timeval           *out);
 
 void
 timespec_to_nix_timespec(struct timespec const *in,
-						 struct nix_timespec   *out);
+                         struct nix_timespec   *out);
 
 void
 nix_timespec_to_timespec(struct nix_timespec const *in,
-						 struct timespec           *out);
+                         struct timespec           *out);
 
 void
 timezone_to_nix_timezone(struct timezone const *in,
-						 struct nix_timezone   *out);
+                         struct nix_timezone   *out);
 
 void
 nix_timezone_to_timezone(struct nix_timezone const *in,
-						 struct timezone           *out);
+                         struct timezone           *out);
 
 void
 time_to_nix_timespec(time_t               secs,
-					 uint32_t             nsecs,
-					 struct nix_timespec *out);
+                     uint32_t             nsecs,
+                     struct nix_timespec *out);
 
 void
 stat_to_nix_stat(struct stat const *in,
-				 struct nix_stat   *out);
+                 struct nix_stat   *out);
 
-#ifndef _WIN32   /* rusage / rlimit / termios conversions -- POSIX-only host types */
+#ifndef _WIN32 /* rusage / rlimit / termios conversions -- POSIX-only host types */
 void
 rusage_to_nix_rusage(struct rusage const *in,
-					 struct nix_rusage   *out);
+                     struct nix_rusage   *out);
 
 void
 rlimit_to_nix_rlimit(struct rlimit const *in,
-					 struct nix_rlimit   *out);
+                     struct nix_rlimit   *out);
 
 void
 termios_to_nix_termios(struct termios const *in,
-					   struct nix_termios   *out);
+                       struct nix_termios   *out);
 
 void
 nix_termios_to_termios(struct nix_termios const *in,
-					   struct termios           *out);
+                       struct termios           *out);
 #endif
 
-#endif  /* !__nix_structs_h */
+#endif /* !__nix_structs_h */

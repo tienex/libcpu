@@ -3,24 +3,28 @@
 
 #include <setjmp.h>
 
-#define __nix_try					\
-do {								\
-	jmp_buf __jb;				    \
-	volatile int __xcpt = setjmp(__jb);		\
-	if (__xcpt == 0)				\
-		nix_xcpt_record(&__jb);		\
-	else							\
-    	nix_xcpt_forget();			\
-	if (__xcpt == 0) {
-  
-#define __nix_catch_any				\
-	} else {						\
+#define __nix_try                                   \
+	do {                                        \
+		jmp_buf      __jb;                  \
+		volatile int __xcpt = setjmp(__jb); \
+		if (__xcpt == 0)                    \
+			nix_xcpt_record(&__jb);     \
+		else                                \
+			nix_xcpt_forget();          \
+		if (__xcpt == 0) {
+
+#define __nix_catch_any \
+	}               \
+	else            \
+	{               \
 		nix_xcpt_forget();
 
-#define __nix_end_try				\
-	}								\
-	nix_xcpt_forget();				\
-} while (0);
+#define __nix_end_try      \
+	}                  \
+	nix_xcpt_forget(); \
+	}                  \
+	while (0)          \
+		;
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,4 +40,4 @@ nix_xcpt_forget(void);
 }
 #endif
 
-#endif  /* !__nix_xcpt_h */
+#endif /* !__nix_xcpt_h */

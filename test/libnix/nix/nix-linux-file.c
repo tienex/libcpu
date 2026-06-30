@@ -21,7 +21,7 @@ nix_linux_fdatasync(int fd, nix_env_t *env)
 	int rfd;
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
-		nix_env_set_errno (env, EBADF);
+		nix_env_set_errno(env, EBADF);
 		return (-1);
 	}
 

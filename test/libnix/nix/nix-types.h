@@ -1,7 +1,7 @@
 #ifndef __nix_types_h
 #define __nix_types_h
 
-#include "xec-base.h"
+#include "nix-host.h"
 
 typedef uint32_t nix_dev_t;
 typedef uint32_t nix_id_t;
@@ -44,27 +44,27 @@ struct nix_timezone {
 };
 
 struct nix_iovec {
-	void   *iov_base;
-	size_t  iov_len;
+	void  *iov_base;
+	size_t iov_len;
 };
 
 struct nix_stat {
-	nix_dev_t   st_dev;
-	nix_ino_t   st_ino;
-	nix_mode_t  st_mode;
-	nix_nlink_t st_nlink;
-	nix_uid_t   st_uid;
-	nix_gid_t   st_gid;
-	nix_dev_t   st_rdev;
+	nix_dev_t           st_dev;
+	nix_ino_t           st_ino;
+	nix_mode_t          st_mode;
+	nix_nlink_t         st_nlink;
+	nix_uid_t           st_uid;
+	nix_gid_t           st_gid;
+	nix_dev_t           st_rdev;
 	struct nix_timespec st_atimespec;
 	struct nix_timespec st_mtimespec;
 	struct nix_timespec st_ctimespec;
 	struct nix_timespec st_btimespec;
-	nix_off_t   st_size;
-	nix_blkcnt_t st_blocks;
-	nix_blksize_t st_blksize;
-	uint64_t   st_flags;
-	uint64_t   st_gen;
+	nix_off_t           st_size;
+	nix_blkcnt_t        st_blocks;
+	nix_blksize_t       st_blksize;
+	uint64_t            st_flags;
+	uint64_t            st_gen;
 };
 
 #define NIX_CLOCK_REALTIME  0
@@ -72,20 +72,20 @@ struct nix_stat {
 #define NIX_CLOCK_PROF      2
 #define NIX_CLOCK_MONOTONIC 4
 
-#define NIX_POLLIN      0x0001
-#define NIX_POLLPRI     0x0002
-#define NIX_POLLOUT     0x0004
-#define NIX_POLLERR     0x0008
-#define NIX_POLLHUP     0x0010
-#define NIX_POLLNVAL    0x0020
-#define NIX_POLLRDNORM  0x0040
-#define NIX_POLLWRNORM  NIX_POLLOUT
-#define NIX_POLLRDBAND  0x0080
-#define NIX_POLLWRBAND  0x0100
-#define NIX_POLLEXTEND  0x0200
-#define NIX_POLLATTRIB  0x0400
-#define NIX_POLLNLINK   0x0800
-#define NIX_POLLWRITE   0x1000
+#define NIX_POLLIN     0x0001
+#define NIX_POLLPRI    0x0002
+#define NIX_POLLOUT    0x0004
+#define NIX_POLLERR    0x0008
+#define NIX_POLLHUP    0x0010
+#define NIX_POLLNVAL   0x0020
+#define NIX_POLLRDNORM 0x0040
+#define NIX_POLLWRNORM NIX_POLLOUT
+#define NIX_POLLRDBAND 0x0080
+#define NIX_POLLWRBAND 0x0100
+#define NIX_POLLEXTEND 0x0200
+#define NIX_POLLATTRIB 0x0400
+#define NIX_POLLNLINK  0x0800
+#define NIX_POLLWRITE  0x1000
 
 struct nix_pollfd {
 	int fd;
@@ -147,4 +147,4 @@ struct nix_rlimit {
 	nix_rlim_t rlim_max;
 };
 
-#endif  /* !__nix_types_h */
+#endif /* !__nix_types_h */

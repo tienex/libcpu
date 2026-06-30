@@ -56,19 +56,19 @@ nix_bsd_kqueue(nix_env_t *env)
 		close(fd);
 		return (-1);
 	}
-  
+
 	return (gfd);
 #else
-	return (nix_nosys (env));
+	return (nix_nosys(env));
 #endif
 }
 
 int
-nix_bsd_kevent (int kq,
-	struct nix_bsd_kevent const *changelist, int nchanges,
-	struct nix_bsd_kevent *eventlist, int nevents,
-	struct nix_timespec const *timeout,
-	nix_env_t *env)
+nix_bsd_kevent(int                          kq,
+               struct nix_bsd_kevent const *changelist, int nchanges,
+               struct nix_bsd_kevent *eventlist, int nevents,
+               struct nix_timespec const *timeout,
+               nix_env_t                 *env)
 {
-  return (nix_nosys(env));
+	return (nix_nosys(env));
 }

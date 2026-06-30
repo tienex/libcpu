@@ -22,7 +22,7 @@ int
 nix_bsd_getlogin(char *buf, size_t bufsiz, nix_env_t *env)
 {
 	char *login;
-  
+
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
@@ -44,7 +44,7 @@ nix_bsd_getlogin(char *buf, size_t bufsiz, nix_env_t *env)
 	}
 	__nix_end_try
 
-	return (0);
+	    return (0);
 }
 
 int
@@ -57,7 +57,7 @@ nix_bsd_setlogin(char const *name, nix_env_t *env)
 
 #if defined(HAVE_SETLOGIN)
 	if (setlogin(name) != 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 
@@ -77,7 +77,7 @@ nix_bsd_acct(char const *file, nix_env_t *env)
 	}
 
 	if (acct(file) != 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 

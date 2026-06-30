@@ -4,7 +4,7 @@
 #include <errno.h>
 #include <unistd.h>
 #ifndef _WIN32
-#include <sys/sem.h>        /* SysV semaphores; no win32 analog (all ops are nix_nosys) */
+#include <sys/sem.h> /* SysV semaphores; no win32 analog (all ops are nix_nosys) */
 #endif
 
 #include "nix.h"

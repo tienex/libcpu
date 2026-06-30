@@ -28,28 +28,28 @@ nix_rt_sched_yield(nix_env_t *env)
 
 int
 nix_rt_sched_setparam(nix_pid_t pid, struct nix_rt_sched_param const *param,
-	nix_env_t *env)
+                      nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
 
 int
 nix_rt_sched_getparam(nix_pid_t pid, struct nix_rt_sched_param *param,
-	nix_env_t *env)
+                      nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
 
 int
 nix_rt_sched_setscheduler(nix_pid_t pid, int policy,
-	struct nix_rt_sched_param const *param, nix_env_t *env)
+                          struct nix_rt_sched_param const *param, nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
 
 int
 nix_rt_sched_getscheduler(nix_pid_t pid, int policy,
-	struct nix_rt_sched_param *param, nix_env_t *env)
+                          struct nix_rt_sched_param *param, nix_env_t *env)
 {
 	return (nix_nosys(env));
 }
@@ -68,7 +68,7 @@ nix_rt_sched_get_priority_max(int policy, nix_env_t *env)
 
 int
 nix_rt_sched_rr_get_interval(nix_pid_t pid, struct nix_timespec *interval,
-	nix_env_t *env)
+                             nix_env_t *env)
 {
 	return (nix_nosys(env));
 }

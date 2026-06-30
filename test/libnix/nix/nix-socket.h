@@ -42,4 +42,4 @@ struct nix_cmsghdr {
 	char          cmsg_data[1];
 };
 
-#endif  /* !__nix_socket_h */
+#endif /* !__nix_socket_h */

@@ -4,7 +4,7 @@
 #include "nix-types.h"
 
 typedef struct _nix_linux_cap_user_handler *nix_linux_cap_user_handler_t;
-typedef struct _nix_linux_cap_user_data *nix_linux_cap_user_data_t;
+typedef struct _nix_linux_cap_user_data    *nix_linux_cap_user_data_t;
 
 struct nix_linux_module {
 	int dummy;
@@ -13,7 +13,7 @@ struct nix_linux_module {
 struct nix_linux_kernel_sym {
 	int dummy;
 };
- 
+
 struct nix_linux_ustat {
 	uint64_t  f_tfree;
 	nix_ino_t f_tinode;
@@ -37,4 +37,4 @@ struct nix_linux_timex {
 	int dummy;
 };
 
-#endif  /* !__nix_linux_h */
+#endif /* !__nix_linux_h */

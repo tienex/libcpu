@@ -47,7 +47,7 @@ nix_getdomainname(char *buf, size_t bufsiz, nix_env_t *env)
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
-    }
+	}
 
 	if (bufsiz == 0)
 		return (0);
@@ -68,7 +68,7 @@ nix_setdomainname(char const *domainname, size_t len, nix_env_t *env)
 		return (-1);
 	}
 
-	if (setdomainname (domainname, len) != 0) {
+	if (setdomainname(domainname, len) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}

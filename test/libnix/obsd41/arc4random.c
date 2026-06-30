@@ -28,6 +28,7 @@
  */
 
 #include "nix-obsd41-config.h"
+#include "nix-host.h" /* NIX_MIN */
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -42,7 +43,7 @@
 #include <stdint.h>
 
 #include "arc4random.h"
-#include "xec-debug.h"
+#include "LibCPU/LcLog.h"
 
 extern void *g_bsd_log;
 
@@ -52,9 +53,9 @@ struct arc4_stream {
 	uint8_t s[256];
 };
 
-static int rs_initialized;
+static int                rs_initialized;
 static struct arc4_stream rs;
-static pid_t arc4_stir_pid;
+static pid_t              arc4_stir_pid;
 
 static __inline uint8_t arc4_getbyte(struct arc4_stream *);
 
@@ -64,7 +65,7 @@ arc4_init(struct arc4_stream *as)
 	int n;
 
 	for (n = 0; n < 256; n++)
-	  as->s[n] = n;
+		as->s[n] = n;
 	as->i = 0;
 	as->j = 0;
 }
@@ -72,7 +73,7 @@ arc4_init(struct arc4_stream *as)
 static void
 arc4_addrandom(struct arc4_stream *as, uint8_t const *dat, size_t datlen)
 {
-	size_t n;
+	size_t  n;
 	uint8_t si;
 
 	as->i--;
@@ -92,7 +93,7 @@ arc4_stir(struct arc4_stream *as)
 	int n, fd;
 	struct {
 		struct timeval tv;
-		uint32_t rnd[(128 - sizeof(struct timeval)) / sizeof(uint32_t)];
+		uint32_t       rnd[(128 - sizeof(struct timeval)) / sizeof(uint32_t)];
 	} rdat;
 
 	gettimeofday(&rdat.tv, NULL);
@@ -107,17 +108,17 @@ arc4_stir(struct arc4_stream *as)
 		/* /dev/urandom failed? Maybe we're in a chroot. */
 #ifdef HAVE_LINUX_SYSCTL_H
 		/* XXX this is for Linux, which uses enums */
-		int mib[3];
+		int    mib[3];
 		size_t i, len;
 
 		mib[0] = CTL_KERN;
 		mib[1] = KERN_RANDOM;
 		mib[2] = RANDOM_UUID;
 
-		for (i = 0; i < sizeof (rdat.rnd) / sizeof (uint32_t); i ++) {
-			len = sizeof (uint32_t);
-			if (sysctl (mib, 3, &rdat.rnd[i], &len, NULL, 0) < 0) {
-				fprintf (stderr, "warning: no entropy source\n");
+		for (i = 0; i < sizeof(rdat.rnd) / sizeof(uint32_t); i++) {
+			len = sizeof(uint32_t);
+			if (sysctl(mib, 3, &rdat.rnd[i], &len, NULL, 0) < 0) {
+				fprintf(stderr, "warning: no entropy source\n");
 				break;
 			}
 		}
@@ -138,7 +139,7 @@ arc4_stir(struct arc4_stream *as)
 	 * http://www.wisdom.weizmann.ac.il/~itsik/RC4/Papers/Rc4_ksa.ps
 	 * We discard 256 words. A long word is 4 bytes.
 	 */
-	for (n = 0; n < 256 * 4; n ++)
+	for (n = 0; n < 256 * 4; n++)
 		arc4_getbyte(as);
 }
 
@@ -167,7 +168,8 @@ arc4_getword(struct arc4_stream *as)
 	return (val);
 }
 
-void bsd_arc4random_stir(void)
+void
+bsd_arc4random_stir(void)
 {
 	if (!rs_initialized) {
 		arc4_init(&rs);
@@ -176,7 +178,8 @@ void bsd_arc4random_stir(void)
 	arc4_stir(&rs);
 }
 
-void bsd_arc4random_addrandom (uint8_t const *dat, size_t datlen)
+void
+bsd_arc4random_addrandom(uint8_t const *dat, size_t datlen)
 {
 	if (!rs_initialized)
 		bsd_arc4random_stir();
@@ -184,7 +187,8 @@ void bsd_arc4random_addrandom (uint8_t const *dat, size_t datlen)
 	arc4_addrandom(&rs, dat, datlen);
 }
 
-uint32_t bsd_arc4random(void)
+uint32_t
+bsd_arc4random(void)
 {
 	if (!rs_initialized || arc4_stir_pid != getpid())
 		bsd_arc4random_stir();
@@ -193,15 +197,16 @@ uint32_t bsd_arc4random(void)
 }
 
 /* Utility */
-void bsd_arc4random_bytes(uint8_t *out, size_t len)
+void
+bsd_arc4random_bytes(uint8_t *out, size_t len)
 {
 	size_t n;
 
 	if (!rs_initialized)
-	  bsd_arc4random_stir();
+		bsd_arc4random_stir();
 
-	XEC_LOG(g_bsd_log, XEC_LOG_DEBUG, 0, "invoked: output=%p length=%zu", out, len);
+	LCLog(g_bsd_log, LCLogDebug, 0, "invoked: output=%p length=%zu", out, len);
 
-	for (n = 0; n < XEC_MIN(len, 256); n++)
-	  out[n] = arc4_getbyte(&rs);
+	for (n = 0; n < NIX_MIN(len, 256); n++)
+		out[n] = arc4_getbyte(&rs);
 }

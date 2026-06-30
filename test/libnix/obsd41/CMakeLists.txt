@@ -40,5 +40,5 @@ ADD_LIBRARY(obsd41
       arch/${GUEST}/obsd41-guest.c)
 ADD_DEPENDENCIES(obsd41 sc2int)
 
-TARGET_LINK_LIBRARIES(obsd41 nix xec-compat)
+TARGET_LINK_LIBRARIES(obsd41 nix)   # the engine (monitor + us-syscall) now lives in the nix dylib
 

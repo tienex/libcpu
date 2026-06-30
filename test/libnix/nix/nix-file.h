@@ -6,4 +6,4 @@
 #define NIX_LOCK_NB 4
 #define NIX_LOCK_UN 8
 
-#endif  /* !__nix_file_h */
+#endif /* !__nix_file_h */

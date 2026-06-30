@@ -8,7 +8,7 @@
 
 uintmax_t
 nix_linux_mremap(uintmax_t oldaddr, size_t oldsize, size_t newsize,
-	int flags, nix_env_t *env)
+                 int flags, nix_env_t *env)
 {
 	return (nix_nosys(env));
 }

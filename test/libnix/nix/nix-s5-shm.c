@@ -3,8 +3,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
-#ifndef _WIN32
-#include <sys/shm.h>        /* SysV shared memory; no win32 analog (all ops are nix_nosys) */
+#ifdef HAVE_SYS_SHM_H
+#include <sys/shm.h> /* SysV shared memory. Absent on win32/Haiku; all ops are nix_nosys anyway. */
 #endif
 
 #include "nix.h"

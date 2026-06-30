@@ -1,13 +1,13 @@
 #include <stdlib.h>
 
 #include "nix.h"
-#include "xec-debug.h"
+#include "nix-host.h"
 
-void *g_nix_log = NULL;
+void *g_LCLogImpl = NULL;
 
 extern int nix_fd_init(size_t);
 #ifndef _WIN32
-extern int nix_signal_init(size_t);   /* nix-signal.c is part of the generic layer (not yet on win32) */
+extern int nix_signal_init(size_t); /* nix-signal.c is part of the generic layer (not yet on win32) */
 #endif
 
 // XXX MOVE TO ENV!
@@ -15,22 +15,22 @@ extern int nix_signal_init(size_t);   /* nix-signal.c is part of the generic lay
 void
 nix_init(size_t nfds, size_t nsigs)
 {
-	if (g_nix_log != NULL)
+	if (g_LCLogImpl != NULL)
 		return;
 
-	g_nix_log = xec_log_register("nix");
+	g_LCLogImpl = LCLogRegister("nix");
 
 	if (!nix_fd_init(nfds)) {
-		XEC_BUGCHECK(NULL, 500);
+		LCBugCheck(NULL, 500);
 		abort();
 	}
 
 #ifndef _WIN32
 	if (!nix_signal_init(nsigs)) {
-		XEC_BUGCHECK(NULL, 501);
+		LCBugCheck(NULL, 501);
 		abort();
 	}
 #else
-	(void) nsigs;
+	(void)nsigs;
 #endif
 }

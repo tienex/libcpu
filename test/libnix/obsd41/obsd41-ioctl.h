@@ -16,7 +16,7 @@
 
 int
 obsd41_ioctl_dispatch (nix_env_t        *env,
-					   xec_endian_t      endian,
+					   nix_endian_t      endian,
 					   int               fd,
 					   obsd41_ulong_t    request,
 					   obsd41_uintptr_t  arg);

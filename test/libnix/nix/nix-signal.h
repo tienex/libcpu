@@ -8,8 +8,8 @@ typedef uintmax_t nix_sigset_t;
 struct nix_siginfo;
 
 struct nix_sigaction {
-	uintmax_t    __sa_handler;
-	int          sa_flags;
+	uintmax_t __sa_handler;
+	int       sa_flags;
 #define NIX_SA_ONSTACK   0x0001 /* take signal on signal stack */
 #define NIX_SA_RESTART   0x0002 /* restart system on signal return */
 #define NIX_SA_DISABLE   0x0004 /* disable taking signals on alternate stack */
@@ -43,4 +43,4 @@ struct nix_itimerval {
 #define NIX_SIG_UNBLOCK 1
 #define NIX_SIG_SETMASK 2
 
-#endif  /* !__nix_signal_h */
+#endif /* !__nix_signal_h */

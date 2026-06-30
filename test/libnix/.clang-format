@@ -1,0 +1,21 @@
+# libnix house style (BSD/KNF): 8-wide tabs, return type on its own line for definitions,
+# function braces on the next line, control-statement braces attached, pointer bound to the name.
+Language:        Cpp
+BasedOnStyle:    LLVM
+UseTab:          ForIndentation
+IndentWidth:     8
+TabWidth:        8
+ContinuationIndentWidth: 4
+BreakBeforeBraces: Linux
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+PointerAlignment: Right
+SpaceBeforeParens: ControlStatements
+ColumnLimit:     0
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+IndentCaseLabels: false
+SortIncludes:    false
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+TypenameMacros: ['TAILQ_ENTRY', 'TAILQ_HEAD', 'LIST_ENTRY', 'LIST_HEAD', 'SLIST_ENTRY', 'SLIST_HEAD']
+ForEachMacros: ['TAILQ_FOREACH', 'LIST_FOREACH', 'SLIST_FOREACH']

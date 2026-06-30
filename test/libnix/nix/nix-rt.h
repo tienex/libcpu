@@ -7,4 +7,4 @@ struct nix_rt_sched_param {
 	int priority;
 };
 
-#endif  /* !__nix_rt_h */
+#endif /* !__nix_rt_h */

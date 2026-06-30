@@ -12,4 +12,4 @@ extern char        *g_gbl_bae;
 extern int          g_gbl_limit;
 extern call_list_t *g_calls;
 
-#endif  /* !__sc2int_h */
+#endif /* !__sc2int_h */

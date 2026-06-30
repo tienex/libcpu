@@ -5,8 +5,8 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#ifndef _WIN32
-#include <sys/reboot.h>     /* host reboot flags; win32 has no analog (reboot() stubbed in the shim) */
+#ifdef HAVE_SYS_REBOOT_H
+#include <sys/reboot.h> /* host reboot flags. Absent on win32/Haiku, where reboot() is a shim stub. */
 #endif
 
 #include "nix.h"
@@ -37,7 +37,7 @@ nix_pid_t
 nix_setsid(nix_env_t *env)
 {
 	pid_t pid;
-  
+
 	if ((pid = setsid()) < 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
@@ -50,7 +50,7 @@ nix_pid_t
 nix_getsid(nix_pid_t pid, nix_env_t *env)
 {
 	pid_t psid;
-  
+
 	if ((psid = getsid(pid)) < 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);

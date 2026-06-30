@@ -13,7 +13,7 @@
 **/
 
 #include "nix.h"
-#include "xec-mmap.h"
+#include "nix-host.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -21,183 +21,175 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-extern void xec_init (void);                  /* brings up the xec log + memory subsystems */
-
 int
-main (void)
+main(void)
 {
-	xec_init ();
-	nix_env_t *env = nix_env_create (NULL);   /* file ops use host pointers; no guest memory needed */
+	nix_env_t *env = nix_env_create(NULL); /* file ops use host pointers; no guest memory needed */
 	if (env == NULL) {
-		printf ("RESULT: FAIL (nix_env_create)\n");
+		printf("RESULT: FAIL (nix_env_create)\n");
 		return 1;
 	}
 
 	char const *path = "/tmp/nixtest.libnix.tmp";
-	char const *msg  = "libnix-host-ok";
-	size_t      len  = strlen (msg);
+	char const *msg = "libnix-host-ok";
+	size_t      len = strlen(msg);
 
 	/* Create + write. */
-	int fd = nix_open (path, O_WRONLY | O_CREAT | O_TRUNC, 0644, env);
+	int fd = nix_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644, env);
 	if (fd < 0) {
-		printf ("RESULT: FAIL (open-write errno=%lld)\n", (long long) nix_env_get_errno (env));
+		printf("RESULT: FAIL (open-write errno=%lld)\n", (long long)nix_env_get_errno(env));
 		return 1;
 	}
-	nix_ssize_t wrote = nix_write (fd, msg, len, env);
-	nix_close (fd, env);
+	nix_ssize_t wrote = nix_write(fd, msg, len, env);
+	nix_close(fd, env);
 
 	/* Reopen read-only + read back. */
 	char buf[64];
-	memset (buf, 0, sizeof (buf));
-	int fd2 = nix_open (path, O_RDONLY, 0, env);
+	memset(buf, 0, sizeof(buf));
+	int fd2 = nix_open(path, O_RDONLY, 0, env);
 	if (fd2 < 0) {
-		printf ("RESULT: FAIL (open-read errno=%lld)\n", (long long) nix_env_get_errno (env));
+		printf("RESULT: FAIL (open-read errno=%lld)\n", (long long)nix_env_get_errno(env));
 		return 1;
 	}
-	nix_ssize_t got = nix_read (fd2, buf, sizeof (buf), env);
+	nix_ssize_t got = nix_read(fd2, buf, sizeof(buf), env);
 
 	/* fstat the read handle for the size. */
 	struct nix_stat st;
-	memset (&st, 0, sizeof (st));
-	int sr = nix_fstat (fd2, &st, env);
+	memset(&st, 0, sizeof(st));
+	int sr = nix_fstat(fd2, &st, env);
 
-	nix_close (fd2, env);
-	remove (path);
+	nix_close(fd2, env);
+	remove(path);
 
-	int filok = (wrote == (nix_ssize_t) len)
-	         && (got == (nix_ssize_t) len)
-	         && (memcmp (buf, msg, len) == 0)
-	         && (sr == 0)
-	         && (st.st_size == (nix_off_t) len);
+	int filok = (wrote == (nix_ssize_t)len) && (got == (nix_ssize_t)len) && (memcmp(buf, msg, len) == 0) && (sr == 0) && (st.st_size == (nix_off_t)len);
 
 	/* Directory ops (create + remove) -- exercises the nix-dir host layer. */
 	char const *dir = "/tmp/nixtest.libnix.dir";
-	nix_rmdir (dir, env);                          /* clear any leftover */
-	int mk  = nix_mkdir (dir, 0755, env);
-	int rm  = nix_rmdir (dir, env);
+	nix_rmdir(dir, env); /* clear any leftover */
+	int mk = nix_mkdir(dir, 0755, env);
+	int rm = nix_rmdir(dir, env);
 	int dirok = (mk == 0) && (rm == 0);
 
 	/* Time op -- exercises the nix-time host layer (gettimeofday). */
 	struct nix_timeval tv;
-	memset (&tv, 0, sizeof (tv));
-	int tr = nix_gettimeofday (&tv, NULL, env);
-	int timeok = (tr == 0) && (tv.tv_sec > 1000000000);   /* a plausible wall clock (after 2001) */
+	memset(&tv, 0, sizeof(tv));
+	int tr = nix_gettimeofday(&tv, NULL, env);
+	int timeok = (tr == 0) && (tv.tv_sec > 1000000000); /* a plausible wall clock (after 2001) */
 
 	/* Host-identity op -- exercises the nix-hostinfo host layer (gethostname). */
 	char host[256];
-	memset (host, 0, sizeof (host));
-	int hr = nix_gethostname (host, sizeof (host), env);
-	int hostok = (hr == 0) && (host[0] != '\0');           /* a real machine name, non-empty */
+	memset(host, 0, sizeof(host));
+	int hr = nix_gethostname(host, sizeof(host), env);
+	int hostok = (hr == 0) && (host[0] != '\0'); /* a real machine name, non-empty */
 
 	/* Credentials -- exercises the nix-cred host layer (uid/gid identity + setid semantics). */
-	int uid = nix_getuid (env);
-	int gid = nix_getgid (env);
-	int seteu = nix_seteuid ((nix_uid_t) nix_geteuid (env), env);   /* re-set to self: must succeed */
-	int credok = (uid >= 0) && (gid >= 0) && (nix_geteuid (env) == uid) && (seteu == 0);
+	int uid = nix_getuid(env);
+	int gid = nix_getgid(env);
+	int seteu = nix_seteuid((nix_uid_t)nix_geteuid(env), env); /* re-set to self: must succeed */
+	int credok = (uid >= 0) && (gid >= 0) && (nix_geteuid(env) == uid) && (seteu == 0);
 
 	/* Memory ops -- exercises the nix-mem host layer. brk is nosys everywhere (returns the all-ones
-	   sentinel + ENOSYS); mprotect runs against a real page obtained portably from xec_mmap_create
+	   sentinel + ENOSYS); mprotect runs against a real page obtained portably from nix_host_mmap_create
 	   (VirtualAlloc on win32, mmap on POSIX), validating the win32 PAGE_* translation. */
-	uintmax_t brk = nix_brk ((uintmax_t) 0x1000, env);
-	xec_mmap_t *mm = xec_mmap_create (4096, XEC_MMAP_READ | XEC_MMAP_WRITE);
-	int mp = -1;
+	uintmax_t        brk = nix_brk((uintmax_t)0x1000, env);
+	nix_host_mmap_t *mm = nix_host_mmap_create(4096, NIX_HOST_MMAP_READ | NIX_HOST_MMAP_WRITE);
+	int              mp = -1;
 	if (mm != NULL) {
-		mp = nix_mprotect ((uintmax_t) (uintptr_t) xec_mmap_get_bytes (mm), 4096, NIX_PROT_READ, env);
-		xec_mmap_free (mm);
+		mp = nix_mprotect((uintmax_t)(uintptr_t)nix_host_mmap_bytes(mm), 4096, NIX_PROT_READ, env);
+		nix_host_mmap_free(mm);
 	}
-	int memok = (brk == (uintmax_t) -1) && (mm != NULL) && (mp == 0);
+	int memok = (brk == (uintmax_t)-1) && (mm != NULL) && (mp == 0);
 
 	/* POSIX realtime clock -- exercises the nix-rt-time host layer (clock_gettime, or its
 	   gettimeofday fallback where the host lacks clock_gettime). */
 	struct nix_timespec ts;
-	memset (&ts, 0, sizeof (ts));
-	int cr = nix_rt_clock_gettime (NIX_CLOCK_REALTIME, &ts, env);
-	int clockok = (cr == 0) && (ts.tv_sec > 1000000000);   /* plausible wall clock (after 2001) */
+	memset(&ts, 0, sizeof(ts));
+	int cr = nix_rt_clock_gettime(NIX_CLOCK_REALTIME, &ts, env);
+	int clockok = (cr == 0) && (ts.tv_sec > 1000000000); /* plausible wall clock (after 2001) */
 
 	/* SysV IPC -- exercises nix-s5-* (no analog off POSIX: nosys everywhere) -- and the realtime
 	   scheduler yield from nix-rt-process (advisory; succeeds even where it is a no-op). */
-	int ipc = nix_s5_msgget ((nix_key_t) 1, 0, env);
-	int yld = nix_rt_sched_yield (env);
+	int ipc = nix_s5_msgget((nix_key_t)1, 0, env);
+	int yld = nix_rt_sched_yield(env);
 	int rtok = (ipc == -1) && (yld == 0);
 
 	/* Process ops -- exercises nix-process. getpid/getppid are real; fork has no analog in the
 	   single-process model and must report the nosys sentinel. */
-	int pid  = nix_getpid (env);
-	int ppid = nix_getppid (env);
-	int frk  = nix_fork (env);
+	int pid = nix_getpid(env);
+	int ppid = nix_getppid(env);
+	int frk = nix_fork(env);
 	int procok = (pid > 0) && (ppid > 0) && (frk == -1);
 
 	/* Signal dispositions -- exercises nix-signal's guest-side core (host-independent): install a
 	   handler via sigaction, read it back, and round-trip the process signal mask. */
-	nix_signal_init (32);
+	nix_signal_init(32);
 	struct nix_sigaction sa, osa;
-	memset (&sa, 0, sizeof (sa));
-	memset (&osa, 0, sizeof (osa));
+	memset(&sa, 0, sizeof(sa));
+	memset(&osa, 0, sizeof(osa));
 	sa.__sa_handler = 0x1234;
-	int sga = nix_sigaction (2, &sa, NULL, env);    /* install */
-	int sgb = nix_sigaction (2, &sa, &osa, env);    /* reinstall, recovering the previous handler */
+	int          sga = nix_sigaction(2, &sa, NULL, env); /* install */
+	int          sgb = nix_sigaction(2, &sa, &osa, env); /* reinstall, recovering the previous handler */
 	nix_sigset_t oldmask = 0, newmask = 0x5;
 	/* nix_sigprocmask reports success via env errno (==0), which the obsd41 dispatcher clears at
 	   each syscall entry; model that boundary here since this harness calls primitives directly. */
-	nix_env_set_errno (env, 0);
-	int spm = nix_sigprocmask (NIX_SIG_SETMASK, &newmask, &oldmask, env);
+	nix_env_set_errno(env, 0);
+	int spm = nix_sigprocmask(NIX_SIG_SETMASK, &newmask, &oldmask, env);
 	int sigok = (sga == 0) && (sgb == 0) && (osa.__sa_handler == 0x1234) && (spm == 0);
 
 	/* Sockets -- exercises nix-socket AND the fd-unification (on win32 nix_write/nix_read on a
 	   socket fd route to send/recv, not the CRT _write/_read). A single-thread loopback TCP
 	   self-connect on 127.0.0.1: the handshake completes via the listen backlog before accept. */
-	nix_env_set_errno (env, 0);
-	int srv = nix_socket (NIX_AF_INET, 1 /* SOCK_STREAM */, 0, env);
-	int cli = -1, acc = -1, b = -1, l = -1, gn = -1, cc = -1;
+	nix_env_set_errno(env, 0);
+	int         srv = nix_socket(NIX_AF_INET, 1 /* SOCK_STREAM */, 0, env);
+	int         cli = -1, acc = -1, b = -1, l = -1, gn = -1, cc = -1;
 	nix_ssize_t sn = -1, rn = -1;
-	char rbuf = 0;
+	char        rbuf = 0;
 	if (srv >= 0) {
 		struct nix_sockaddr_in sin, bound, caddr, peer;
-		nix_socklen_t blen = sizeof (bound), plen = sizeof (peer);
-		memset (&sin, 0, sizeof (sin));
+		nix_socklen_t          blen = sizeof(bound), plen = sizeof(peer);
+		memset(&sin, 0, sizeof(sin));
 		sin.sin_family = NIX_AF_INET;
-		sin.sin_port   = 0;             /* let the OS choose a free port */
-		sin.sin_addr   = 0x0100007F;    /* 127.0.0.1 in network byte order (little-endian host) */
-		b  = nix_bind (srv, (struct nix_sockaddr *) &sin, sizeof (sin), env);
-		l  = nix_listen (srv, 1, env);
-		memset (&bound, 0, sizeof (bound));
-		gn = nix_getsockname (srv, (struct nix_sockaddr *) &bound, &blen, env);
-		cli = nix_socket (NIX_AF_INET, 1, 0, env);
-		memset (&caddr, 0, sizeof (caddr));
+		sin.sin_port = 0;          /* let the OS choose a free port */
+		sin.sin_addr = 0x0100007F; /* 127.0.0.1 in network byte order (little-endian host) */
+		b = nix_bind(srv, (struct nix_sockaddr *)&sin, sizeof(sin), env);
+		l = nix_listen(srv, 1, env);
+		memset(&bound, 0, sizeof(bound));
+		gn = nix_getsockname(srv, (struct nix_sockaddr *)&bound, &blen, env);
+		cli = nix_socket(NIX_AF_INET, 1, 0, env);
+		memset(&caddr, 0, sizeof(caddr));
 		caddr.sin_family = NIX_AF_INET;
-		caddr.sin_port   = bound.sin_port;   /* the assigned port, already in network order */
-		caddr.sin_addr   = 0x0100007F;
-		cc = nix_connect (cli, (struct nix_sockaddr *) &caddr, sizeof (caddr), env);
-		memset (&peer, 0, sizeof (peer));
-		acc = nix_accept (srv, (struct nix_sockaddr *) &peer, &plen, env);
+		caddr.sin_port = bound.sin_port; /* the assigned port, already in network order */
+		caddr.sin_addr = 0x0100007F;
+		cc = nix_connect(cli, (struct nix_sockaddr *)&caddr, sizeof(caddr), env);
+		memset(&peer, 0, sizeof(peer));
+		acc = nix_accept(srv, (struct nix_sockaddr *)&peer, &plen, env);
 		char sbuf = 'Z';
 		if (cli >= 0) {
-			sn = nix_write (cli, &sbuf, 1, env);   /* -> send() on win32 socket fds */
+			sn = nix_write(cli, &sbuf, 1, env); /* -> send() on win32 socket fds */
 		}
 		if (acc >= 0) {
-			rn = nix_read (acc, &rbuf, 1, env);    /* -> recv() on win32 socket fds */
+			rn = nix_read(acc, &rbuf, 1, env); /* -> recv() on win32 socket fds */
 		}
 		if (acc >= 0) {
-			nix_close (acc, env);
+			nix_close(acc, env);
 		}
 		if (cli >= 0) {
-			nix_close (cli, env);
+			nix_close(cli, env);
 		}
-		nix_close (srv, env);
+		nix_close(srv, env);
 	}
-	int sockok = (srv >= 0) && (b == 0) && (l == 0) && (gn == 0) && (cc == 0)
-	          && (acc >= 0) && (sn == 1) && (rn == 1) && (rbuf == 'Z');
+	int sockok = (srv >= 0) && (b == 0) && (l == 0) && (gn == 0) && (cc == 0) && (acc >= 0) && (sn == 1) && (rn == 1) && (rbuf == 'Z');
 
 	int ok = filok && dirok && timeok && hostok && credok && memok && clockok && rtok && procok && sigok && sockok;
 
-	printf ("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
-	        (long long) wrote, (long long) got, sr, (long long) st.st_size, (int) len, buf, mk, rm,
-	        tr, (long long) tv.tv_sec, hr, host, uid, gid, seteu,
-	        brk == (uintmax_t) -1 ? "ENOSYS" : "?", mp, cr, (long long) ts.tv_sec);
-	printf ("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d  sigaction=%d/%d handler=0x%llx sigprocmask=%d\n",
-	        ipc, yld, pid, ppid, frk, sga, sgb, (unsigned long long) osa.__sa_handler, spm);
-	printf ("  socket: srv=%d bind=%d listen=%d getsockname=%d connect=%d accept=%d  send=%lld recv=%lld byte='%c'\n",
-	        srv, b, l, gn, cc, acc, (long long) sn, (long long) rn, rbuf ? rbuf : '?');
-	printf ("RESULT: %s\n", ok ? "PASS" : "FAIL");
+	printf("  write=%lld read=%lld fstat=%d size=%lld data='%.*s'  mkdir=%d rmdir=%d  gettimeofday=%d sec=%lld  gethostname=%d host='%s'  uid=%d gid=%d seteuid(self)=%d  brk=%s mprotect=%d  clock_gettime=%d sec=%lld\n",
+	       (long long)wrote, (long long)got, sr, (long long)st.st_size, (int)len, buf, mk, rm,
+	       tr, (long long)tv.tv_sec, hr, host, uid, gid, seteu,
+	       brk == (uintmax_t)-1 ? "ENOSYS" : "?", mp, cr, (long long)ts.tv_sec);
+	printf("  msgget=%d (nosys expected -1)  sched_yield=%d  pid=%d ppid=%d fork=%d  sigaction=%d/%d handler=0x%llx sigprocmask=%d\n",
+	       ipc, yld, pid, ppid, frk, sga, sgb, (unsigned long long)osa.__sa_handler, spm);
+	printf("  socket: srv=%d bind=%d listen=%d getsockname=%d connect=%d accept=%d  send=%lld recv=%lld byte='%c'\n",
+	       srv, b, l, gn, cc, acc, (long long)sn, (long long)rn, rbuf ? rbuf : '?');
+	printf("RESULT: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

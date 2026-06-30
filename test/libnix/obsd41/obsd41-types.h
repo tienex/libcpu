@@ -1,7 +1,7 @@
 #ifndef __obsd41_types_h
 #define __obsd41_types_h
 
-#include "xec-base.h"
+#include "nix-host.h"
 #include "obsd41-guest-types.h"
 
 typedef int32_t  obsd41_dev_t;

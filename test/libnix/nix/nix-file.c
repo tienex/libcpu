@@ -12,16 +12,16 @@
 #include "nix.h"
 #include "nix-fd.h"
 #include "nix-structs.h"
-#include "xec-debug.h"
+#include "nix-host.h"
 
-extern void *g_nix_log;
+extern void *g_LCLogImpl;
 
 nix_mode_t
 nix_umask(nix_mode_t mode, nix_env_t *env)
 {
 	mode_t oldmode;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "mode=%o", mode);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "mode=%o", mode);
 
 	errno = 0;
 	oldmode = umask(mode);
@@ -39,7 +39,7 @@ nix_open(char const *path, int flags, int mode, nix_env_t *env)
 	int rfd;
 	int gfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s' flags=%x mode=%o", path, flags, mode);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s' flags=%x mode=%o", path, flags, mode);
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
@@ -58,17 +58,17 @@ nix_open(char const *path, int flags, int mode, nix_env_t *env)
 		return (-1);
 	}
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s' flags=%x mode=%o -> fd=%d", path, flags, mode, gfd);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s' flags=%x mode=%o -> fd=%d", path, flags, mode, gfd);
 	return (gfd);
 }
 
 int
 nix_access(char const *path, int mode, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', mode=%o", path, mode);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', mode=%o", path, mode);
 
 	if (path == NULL) {
-    	nix_env_set_errno(env, EFAULT);
+		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 
@@ -83,7 +83,7 @@ nix_access(char const *path, int mode, nix_env_t *env)
 int
 nix_creat(char const *path, int mode, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', mode=%o", path, mode);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', mode=%o", path, mode);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -98,7 +98,7 @@ nix_fsync(int fd, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d", fd);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d", fd);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -119,7 +119,7 @@ nix_lseek(int fd, nix_off_t offset, int whence, nix_env_t *env)
 	off_t off;
 	int   rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, offset=%lld, whence=%d", fd, offset, whence);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, offset=%lld, whence=%d", fd, offset, whence);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -140,14 +140,14 @@ nix_ftruncate(int fd, nix_off_t off, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, offset=%lld", fd, off);  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, offset=%lld", fd, off);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
 		return (-1);
 	}
 
-	if (ftruncate (fd, off) != 0) {
+	if (ftruncate(fd, off) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
@@ -160,8 +160,8 @@ nix_pread(int fd, void *buf, size_t bufsiz, nix_off_t offset, nix_env_t *env)
 {
 	int     rfd;
 	ssize_t nb;
-  
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, buf=%p, bufsiz=%zu, offset=%lld", fd, buf, bufsiz, offset);
+
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, buf=%p, bufsiz=%zu, offset=%lld", fd, buf, bufsiz, offset);
 
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -188,8 +188,8 @@ nix_pwrite(int fd, void const *buf, size_t bufsiz, nix_off_t offset, nix_env_t *
 {
 	int     rfd;
 	ssize_t nb;
-  
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, buf=%p, bufsiz=%zu, offset=%lld", fd, buf, bufsiz, offset);
+
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, buf=%p, bufsiz=%zu, offset=%lld", fd, buf, bufsiz, offset);
 
 	if (buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -217,7 +217,7 @@ nix_flock(int fd, int op, nix_env_t *env)
 	int rfd;
 	int rc;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, op=%d", fd, op);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, op=%d", fd, op);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -233,23 +233,23 @@ nix_flock(int fd, int op, nix_env_t *env)
 
 	rc = 0;
 
-	switch(op & ~NIX_LOCK_NB) {
-		case NIX_LOCK_UN:
-			flock.l_type |= F_UNLCK;
-			break;
+	switch (op & ~NIX_LOCK_NB) {
+	case NIX_LOCK_UN:
+		flock.l_type |= F_UNLCK;
+		break;
 
-		case NIX_LOCK_SH:
-			flock.l_type |= F_RDLCK;
-			break;
+	case NIX_LOCK_SH:
+		flock.l_type |= F_RDLCK;
+		break;
 
-		case NIX_LOCK_EX:
-			flock.l_type |= F_WRLCK;
-			break;
+	case NIX_LOCK_EX:
+		flock.l_type |= F_WRLCK;
+		break;
 
-		default:
-			rc = -1;
-			errno = EINVAL;
-			break;
+	default:
+		rc = -1;
+		errno = EINVAL;
+		break;
 	}
 
 	if (rc == 0) {
@@ -262,19 +262,19 @@ nix_flock(int fd, int op, nix_env_t *env)
 #endif
 
 	if (rc != 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 	return (0);
 }
 
 int
-nix_fstat (int fd, struct nix_stat *sb, nix_env_t *env)
+nix_fstat(int fd, struct nix_stat *sb, nix_env_t *env)
 {
 	struct stat nst;
 	int         rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, sb=%p", fd, sb);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, sb=%p", fd, sb);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -295,7 +295,7 @@ nix_fchmod(int fd, int mode, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, mode=%o", fd, mode);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, mode=%o", fd, mode);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -315,7 +315,7 @@ nix_fchown(int fd, nix_uid_t uid, nix_gid_t gid, nix_env_t *env)
 {
 	int rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, uid=%u, gid=%u", fd, uid, gid);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, uid=%u, gid=%u", fd, uid, gid);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -336,8 +336,8 @@ nix_futimes(int fd, struct nix_timeval const *times, nix_env_t *env)
 	struct timeval ntimes[2];
 	int            rfd;
 	int            rc;
-  
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, times={ %llu, %llu }", fd, times->tv_sec, times->tv_usec);
+
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, times={ %llu, %llu }", fd, times->tv_sec, times->tv_usec);
 
 	if (times == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -349,9 +349,9 @@ nix_futimes(int fd, struct nix_timeval const *times, nix_env_t *env)
 		return (-1);
 	}
 
-	ntimes[0].tv_sec  = times[0].tv_sec;
+	ntimes[0].tv_sec = times[0].tv_sec;
 	ntimes[0].tv_usec = times[0].tv_usec;
-	ntimes[1].tv_sec  = times[1].tv_sec;
+	ntimes[1].tv_sec = times[1].tv_sec;
 	ntimes[1].tv_usec = times[1].tv_usec;
 
 #if defined(HAVE_FUTIMES)
@@ -377,7 +377,7 @@ nix_fpathconf(int fd, int name, nix_env_t *env)
 	long rv;
 	int  rfd;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "fd=%d, name=%d", fd, name);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "fd=%d, name=%d", fd, name);
 
 	if ((rfd = nix_fd_get(fd)) < 0) {
 		nix_env_set_errno(env, EBADF);
@@ -388,15 +388,15 @@ nix_fpathconf(int fd, int name, nix_env_t *env)
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
-  
+
 	return (rv);
 }
 
 int
 nix_truncate(char const *path, nix_off_t off, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', offset=%lld", path, off);
-  
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', offset=%lld", path, off);
+
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
@@ -415,7 +415,7 @@ nix_stat(char const *path, struct nix_stat *sb, nix_env_t *env)
 {
 	struct stat nst;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', sb=%p", path, sb);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', sb=%p", path, sb);
 
 	if (path == NULL || sb == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -436,7 +436,7 @@ nix_lstat(char const *path, struct nix_stat *sb, nix_env_t *env)
 {
 	struct stat nst;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', sb=%p", path, sb);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', sb=%p", path, sb);
 
 	if (path == NULL || sb == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -455,7 +455,7 @@ nix_lstat(char const *path, struct nix_stat *sb, nix_env_t *env)
 int
 nix_mknod(char const *path, int mode, nix_dev_t dev, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', mode=%o dev=%x", path, mode, dev);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', mode=%o dev=%x", path, mode, dev);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -465,16 +465,15 @@ nix_mknod(char const *path, int mode, nix_dev_t dev, nix_env_t *env)
 	if (mknod(path, mode, (dev_t)dev) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
-    }
+	}
 
-  return (0);
+	return (0);
 }
 
-
 int
-nix_mkfifo (char const *path, nix_mode_t mode, nix_env_t *env)
+nix_mkfifo(char const *path, nix_mode_t mode, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', mode=%o", path, mode);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', mode=%o", path, mode);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -492,7 +491,7 @@ nix_mkfifo (char const *path, nix_mode_t mode, nix_env_t *env)
 int
 nix_chmod(char const *path, int mode, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', mode=%o", path, mode);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', mode=%o", path, mode);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -510,7 +509,7 @@ nix_chmod(char const *path, int mode, nix_env_t *env)
 int
 nix_chown(char const *path, nix_uid_t uid, nix_gid_t gid, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', uid=%u, gid=%u", path, uid, gid);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', uid=%u, gid=%u", path, uid, gid);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -528,7 +527,7 @@ nix_chown(char const *path, nix_uid_t uid, nix_gid_t gid, nix_env_t *env)
 int
 nix_lchown(char const *path, nix_uid_t uid, nix_gid_t gid, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', uid=%u, gid=%u", path, uid, gid);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', uid=%u, gid=%u", path, uid, gid);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -546,7 +545,7 @@ nix_lchown(char const *path, nix_uid_t uid, nix_gid_t gid, nix_env_t *env)
 int
 nix_link(char const *name1, char const *name2, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "name1='%s', name2='%s'", name1, name2);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "name1='%s', name2='%s'", name1, name2);
 
 	if (name1 == NULL || name2 == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -564,7 +563,7 @@ nix_link(char const *name1, char const *name2, nix_env_t *env)
 int
 nix_rename(char const *name1, char const *name2, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "name1='%s', name2='%s'", name1, name2);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "name1='%s', name2='%s'", name1, name2);
 
 	if (name1 == NULL || name2 == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -582,14 +581,14 @@ nix_rename(char const *name1, char const *name2, nix_env_t *env)
 int
 nix_unlink(char const *name, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s'", name);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s'", name);
 
 	if (name == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
-    }
+	}
 
-	if (unlink (name) != 0) {
+	if (unlink(name) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
@@ -600,7 +599,7 @@ nix_unlink(char const *name, nix_env_t *env)
 int
 nix_symlink(char const *name1, char const *name2, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "name1='%s', name2='%s'", name1, name2);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "name1='%s', name2='%s'", name1, name2);
 
 	if (name1 == NULL || name2 == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -618,7 +617,7 @@ nix_symlink(char const *name1, char const *name2, nix_env_t *env)
 int
 nix_readlink(char const *path, char *buf, int bufsiz, nix_env_t *env)
 {
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', buf=%p, bufsiz=%d", path, buf, bufsiz);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', buf=%p, bufsiz=%d", path, buf, bufsiz);
 
 	if (path == NULL || buf == NULL) {
 		nix_env_set_errno(env, EFAULT);
@@ -628,8 +627,8 @@ nix_readlink(char const *path, char *buf, int bufsiz, nix_env_t *env)
 	if (bufsiz == 0)
 		return (0);
 
-	if (readlink (path, buf, bufsiz) != 0) {
-		nix_env_set_errno (env, errno);
+	if (readlink(path, buf, bufsiz) != 0) {
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 
@@ -640,21 +639,21 @@ int
 nix_utimes(char const *path, struct nix_timeval const *times, nix_env_t *env)
 {
 	struct timeval ntimes[2];
-  
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', times={ %llu, %llu }", path, times->tv_sec, times->tv_usec);
+
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', times={ %llu, %llu }", path, times->tv_sec, times->tv_usec);
 
 	if (path == NULL || times == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 
-	ntimes[0].tv_sec  = times[0].tv_sec;
+	ntimes[0].tv_sec = times[0].tv_sec;
 	ntimes[0].tv_usec = times[0].tv_usec;
-	ntimes[1].tv_sec  = times[1].tv_sec;
+	ntimes[1].tv_sec = times[1].tv_sec;
 	ntimes[1].tv_usec = times[1].tv_usec;
 
 	if (utimes(path, ntimes) != 0) {
-		nix_env_set_errno (env, errno);
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
 
@@ -666,18 +665,18 @@ nix_pathconf(char const *path, int name, nix_env_t *env)
 {
 	long rv;
 
-	XEC_LOG(g_nix_log, XEC_LOG_DEBUG, 0, "path='%s', name=%d", path, name);
+	LCLog(g_LCLogImpl, LCLogDebug, 0, "path='%s', name=%d", path, name);
 
 	if (path == NULL) {
 		nix_env_set_errno(env, EFAULT);
 		return (-1);
-    }
+	}
 
 	// XXX should convert `name'
-	if ((rv = pathconf (path, name)) < 0) {
-		nix_env_set_errno (env, errno);
+	if ((rv = pathconf(path, name)) < 0) {
+		nix_env_set_errno(env, errno);
 		return (-1);
 	}
-  
+
 	return (rv);
 }

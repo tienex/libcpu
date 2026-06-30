@@ -17,8 +17,9 @@ ENDIF()
 INCLUDE_DIRECTORIES(lib engine arch ${PROJECT_BINARY_DIR})
 CONFIGURE_FILE(xec-base.h.cmake ${PROJECT_BINARY_DIR}/xec-base.h)
 
-# Static on win32 (self-contained test exe under Wine); shared on POSIX.
-IF(WIN32)
+# Static on win32 (self-contained test exe under Wine) and for the Haiku cross-build (compile +
+# archive with the Haiku cross toolchain, no target shared libroot to link); shared on POSIX.
+IF(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     SET(XEC_LIBTYPE STATIC)
 ELSE()
     SET(XEC_LIBTYPE SHARED)

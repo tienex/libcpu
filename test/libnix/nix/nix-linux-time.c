@@ -9,5 +9,5 @@
 int
 nix_linux_adjtimex(struct nix_linux_timex *buf, nix_env_t *env)
 {
-  return (nix_nosys(env));
+	return (nix_nosys(env));
 }

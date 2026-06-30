@@ -35,4 +35,4 @@ int
 nix_fd_is_socket(int gfd);
 #endif
 
-#endif  /* !__nix_fd_h */
+#endif /* !__nix_fd_h */

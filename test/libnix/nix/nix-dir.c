@@ -22,7 +22,7 @@ nix_fchdir(int fd, nix_env_t *env)
 	if (fchdir(rfd) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
-  }
+	}
 
 	return (0);
 }
@@ -47,11 +47,11 @@ int
 nix_mkdir(char const *path, nix_mode_t mode, nix_env_t *env)
 {
 	if (path == NULL) {
-		nix_env_set_errno (env, EFAULT);
+		nix_env_set_errno(env, EFAULT);
 		return (-1);
 	}
 
-	if (mkdir (path, mode) != 0) {
+	if (mkdir(path, mode) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
@@ -67,7 +67,7 @@ nix_rmdir(char const *path, nix_env_t *env)
 		return (-1);
 	}
 
-	if (rmdir (path) != 0) {
+	if (rmdir(path) != 0) {
 		nix_env_set_errno(env, errno);
 		return (-1);
 	}
