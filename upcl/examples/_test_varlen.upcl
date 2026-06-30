@@ -1,0 +1,10 @@
+arch "_test_varlen" {
+    name "varlen test";
+    endian little; byte_size 8; word_size 32; address_size 32;
+    register_file { group R { [ #i32 r0 ], [ #i32 pc -> %PC ] } }
+}
+addrmode ea ( m ) {
+    m == 0 => %M [ r0 + disp varlen ] ;
+}
+insn ld : encode #i8 ( op:5 = 0x00, m:3 -> src @ea ),
+    disasm ( mnemonic : "ld", operands : src ) { pc = pc; }

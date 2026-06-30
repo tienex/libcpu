@@ -1,0 +1,65 @@
+// Synthetic test for engine extension E7 -- `const` declarations: named symbolic constants usable
+// ANYWHERE a literal/constant is allowed.
+//
+// Four top-level consts replace the magic numbers in a tiny ISA. Each is exercised at one of the
+// three sites the feature targets, and a LITERAL twin instruction proves the const resolves to the
+// exact same value (same bytes -> same decode):
+//
+//   (a) ENCODE MATCH VALUE     `op:4 = OP_LD`              (OP_LD = 0x2)
+//   (b) ADDRMODE CONDITION     `x == SEL_IMM => ...`       (SEL_IMM = 0x1)
+//   (c) SEMANTIC-BODY MASK      `r0 = r0 & MASK_LOW`        (MASK_LOW = 0x0f)
+//
+// Const folding over the expression grammar is also exercised: MASK_LOW is written as an
+// expression over a prior const (`(1 << 4) - 1`), proving the initializer is the ordinary
+// compile-time-evaluable grammar, not just a bare literal.
+//
+// Encoding (8-bit): op(4), x(4). The IMMEDIATE addrmode rule fires for x == SEL_IMM and reads a
+// 4-byte little-endian immediate from the tail.
+//   ldc :  0x21 0x78 0x56 0x34 0x12  =>  src = 0x12345678, length 5
+//   ldl :  0x31 0x78 0x56 0x34 0x12  =>  src = 0x12345678, length 5   (the literal twin)
+// Both produce identical operand resolution and length, proving OP_*/SEL_IMM == their literals.
+
+const OP_LD    = 0x2;                       // (a) used as an encode match value
+const OP_LDLIT = 0x3;                       // the literal-twin opcode (kept distinct so both coexist)
+const SEL_IMM  = 0x1;                       // (b) used as an addrmode rule condition
+const SHIFT    = 0x4;                       //     an intermediate const, referenced by the next one
+const MASK_LOW = (0x1 << SHIFT) - 0x1;      // (c) folded over a prior const -> 0x0f, used as a mask
+
+arch "targ" {
+
+    name "E7 const test";
+
+    endian little;
+    byte_size 8;
+    word_size 32;
+    address_size 32;
+
+    register_file {
+        group R {
+            [ 8 ** #i32 r?:0 ]
+        }
+    }
+
+}
+
+// (b) the addrmode condition uses the const SEL_IMM where a literal selector value is expected.
+addrmode g ( x ) {
+    x == SEL_IMM => #i32 imm ;
+    x < 0x08     => #i32 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+}
+
+// the LITERAL twin addrmode -- identical, but spelled with the literal selector value 0x1.
+addrmode glit ( x ) {
+    x == 0x1 => #i32 imm ;
+    x < 0x08 => #i32 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+}
+
+// (a) the encode match value is the const OP_LD; (c) the body masks with the const MASK_LOW.
+insn ldc : encode #i8 ( op:4 = OP_LD, x:4 -> src @g(x) ),
+    disasm ( mnemonic : "ldc", operands : src )
+    { r0 = r0 & MASK_LOW; }
+
+// the LITERAL twin -- the same instruction spelled entirely with literals (op 0x3, sel 0x1, mask 0x0f).
+insn ldl : encode #i8 ( op:4 = OP_LDLIT, x:4 -> src @glit(x) ),
+    disasm ( mnemonic : "ldl", operands : src )
+    { r0 = r0 & 0x0f; }

@@ -244,18 +244,41 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
 {
     AddrMode *AM = FindAddrMode (Field.AddrMode);
     if (AM == nullptr) { return false; }
-    UINT64 Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
+
+    // E4 -- POSITIONAL ARGUMENT BINDING. With an argument list (`@gen(gen1)`), the addrmode's
+    // declared formal parameters bind to the ACTUAL decoder fields named in the arguments: formal
+    // AM->Params[i] := value of field Field.AddrModeArgs[i]. The rule conditions and the disp /
+    // %REG[group, field] terms are then evaluated against this LOCAL map (a copy of the global
+    // decode map with the formals shadowed in), so the same addrmode can serve two operand slots
+    // reading different fields. With NO argument list the map is the global one unchanged and the
+    // selector reads Field.Name, exactly as before (byte-identical for every existing ISA).
+    std::map<std::string, UINT64> Local;
+    std::map<std::string, UINT64> CONST *pEff = &Fields;
+    UINT64 Sel;
+    if (!Field.AddrModeArgs.empty ()) {
+        Local = Fields;
+        for (size_t I = 0; I < AM->Params.size () && I < Field.AddrModeArgs.size (); ++I) {
+            std::string CONST &Actual = Field.AddrModeArgs[I];
+            Local[AM->Params[I]] = Fields.count (Actual) ? Fields.at (Actual) : 0;
+        }
+        pEff = &Local;
+        Sel = AM->Params.empty () ? 0
+            : (Local.count (AM->Params[0]) ? Local.at (AM->Params[0]) : 0);
+    } else {
+        Sel = Fields.count (Field.Name) ? Fields.at (Field.Name) : 0;
+    }
+    std::map<std::string, UINT64> CONST &Eff = *pEff;
     UINT32 DataBits = AddrModeBits (AM);
 
     for (AddrRule *R : AM->Rules) {
-        if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Fields) == 0) { continue; }
+        if (R->Cond != nullptr && EvalFieldExpr (R->Cond, Eff) == 0) { continue; }
         // A rule may pin its own operand width (the .B byte forms); otherwise the addrmode default.
         UINT32 RuleBits = R->DataBits ? R->DataBits : DataBits;
         // Expose the addrmode's selector fields (e.g. dm, dr) so a pre/post block can name the very
         // register the mode picked, via %REG[group, field] -- one field-indexed rule for all registers.
         for (std::string CONST &P : AM->Params) {
-            auto F = Fields.find (P);
-            if (F != Fields.end ()) { pOut->Fields[P] = F->second; }
+            auto F = Eff.find (P);
+            if (F != Eff.end ()) { pOut->Fields[P] = F->second; }
         }
         if (R->IsReg) {
             std::vector<std::string> Regs;
@@ -263,30 +286,151 @@ Decoder::ResolveAddrMode (EncField CONST &Field, std::map<std::string, UINT64> C
             if (Sel >= Regs.size ()) { return false; }
             return ResolveRegName (Regs[(size_t) Sel], RuleBits, pOut);
         }
+        if (R->IsImm) {
+            // E5 -- FIXED-WIDTH IMMEDIATE: read (RuleBits / 8) bytes from the tail and yield a literal
+            // operand (not a memory EA, not a self-describing varlen displacement). Big-endian when the
+            // rule's type/keyword pinned it so (NS32000 immediates), middle-endian when `:me` / `:mid`
+            // (PDP-11 32-bit word order: bytes 2-3-0-1), else the arch endianness. The bytes are consumed
+            // at the tail cursor (the rule's start, since an immediate rule has no preceding terms) and
+            // reported via *pExtraBytes so a following operand reads from the right offset.
+            if (RuleBits == 0) { return false; }
+            UINT32 ImmBytes = RuleBits / 8;
+            if ((UINT64) ImmBytes > TailAvail) { return false; }
+            pOut->Kind = Operand::Imm;
+            pOut->Bits = RuleBits;
+            if (R->ImmMiddleEndian && RuleBits == 32) {
+                // PDP-11 middle-endian: byte order 2-3-0-1 (the two 16-bit halves are big-endian-ordered,
+                // each half is little-endian internally). For stream bytes b0 b1 b2 b3:
+                //   value = (b1 << 24) | (b0 << 16) | (b3 << 8) | b2
+                UINT64 V = ((UINT64) pTail[1] << 24) | ((UINT64) pTail[0] << 16)
+                         | ((UINT64) pTail[3] <<  8) |  (UINT64) pTail[2];
+                pOut->ImmValue = V;
+            } else {
+                bool ImmLittle = (R->ImmBigEndian || R->ImmMiddleEndian) ? false : m_pArch->Little;
+                pOut->ImmValue = ExtractField (pTail, 0, RuleBits, ImmLittle);
+            }
+            *pExtraBytes += ImmBytes;
+            return true;
+        }
         // memory: base registers + an optional displacement
         pOut->Kind = Operand::Mem;
         pOut->Bits = RuleBits;
         pOut->Base1 = ~(UINT32) 0; pOut->Base2 = ~(UINT32) 0; pOut->Disp = 0;
         std::string Text;
         UINT32 NBases = 0;
+        // A rule may carry several displacement terms; each is consumed left-to-right from the byte
+        // tail. TailUsed is the running cursor into pTail so a second disp reads AFTER the first (a
+        // single-disp rule keeps TailUsed == 0 throughout, so its extraction is byte-identical).
+        UINT64 TailUsed = 0;
         for (AddrTerm CONST &T : R->Mem) {
-            if (T.Disp) {
-                UINT32 DispBits = T.DispBits ? T.DispBits
-                                : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Fields) : 0);
-                if (DispBits > 0) {
-                    UINT32 DispBytes = DispBits / 8;
-                    if (DispBytes > TailAvail) { return false; }
-                    pOut->Disp = SignExtend (ExtractField (pTail, 0, DispBits, m_pArch->Little), DispBits);
-                    *pExtraBytes += DispBytes;
+            if (!T.NestedAddrMode.empty ()) {
+                //
+                // NESTED SCALED-INDEX dispatch (NS32000 [Rn:B/W/D/Q]): read ONE index byte laid out
+                // (basegen:NestedSelBits)(ireg:NestedRegBits), recurse into the named addrmode with
+                // `basegen` as its selector to form the base EA, then add R[ireg] * Scale. The nested
+                // base mode may itself read a `disp varlen`, so the recursion composes with Task 2's
+                // variable-length displacement path; its consumed bytes are accounted via NestedExtra.
+                //
+                if (TailUsed >= TailAvail) { return false; }
+                UINT8 CONST IndexByte = pTail[TailUsed];
+                UINT64 CONST BaseGen = ((UINT64) IndexByte >> T.NestedRegBits) & ((UINT64_C (1) << T.NestedSelBits) - 1);
+                UINT64 CONST IReg    = (UINT64) IndexByte & ((UINT64_C (1) << T.NestedRegBits) - 1);
+
+                AddrMode CONST *Nested = FindAddrMode (T.NestedAddrMode);
+                if (Nested == nullptr || Nested->Params.empty ()) { return false; }
+                EncField NestedField;
+                NestedField.AddrMode = T.NestedAddrMode;
+                NestedField.Name     = Nested->Params[0];
+                std::map<std::string, UINT64> NestedFields;
+                NestedFields[Nested->Params[0]] = BaseGen;
+
+                Operand NestedOp;
+                UINT32 NestedExtra = 0;
+                if (!ResolveAddrMode (NestedField, NestedFields, pTail + TailUsed + 1,
+                                      TailAvail - TailUsed - 1, &NestedExtra, &NestedOp)) { return false; }
+                TailUsed += 1 + NestedExtra;
+                *pExtraBytes += 1 + NestedExtra;        // index byte + nested mode's extension bytes
+
+                // Merge the nested base EA into this operand: a register base becomes Base1; a memory base
+                // contributes its Base1/Base2/Disp. Then add the scaled index register R[ireg] * Scale.
+                if (NestedOp.Kind == Operand::Reg) {
+                    if (NBases == 0) { pOut->Base1 = NestedOp.RegIndex; NBases++; }
+                    else if (NBases == 1) { pOut->Base2 = NestedOp.RegIndex; NBases++; }
                     if (!Text.empty ()) { Text += "+"; }
-                    char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) pOut->Disp);
+                    Text += NestedOp.RegName;
+                } else if (NestedOp.Kind == Operand::Mem) {
+                    if (NestedOp.Base1 != ~(UINT32) 0) {
+                        if (NBases == 0) { pOut->Base1 = NestedOp.Base1; NBases++; }
+                        else if (NBases == 1) { pOut->Base2 = NestedOp.Base1; NBases++; }
+                    }
+                    if (NestedOp.Base2 != ~(UINT32) 0 && NBases <= 1) { pOut->Base2 = NestedOp.Base2; NBases++; }
+                    pOut->Disp += NestedOp.Disp;
+                    if (!Text.empty ()) { Text += "+"; }
+                    Text += "@" + NestedOp.MemText;
+                }
+
+                // The scaled index register: group <RegGroup>'s element <IReg> via its positional alias.
+                std::string IxName = T.RegGroup + std::to_string ((unsigned long long) IReg);
+                UINT32 IxPhys = ~(UINT32) 0;
+                auto IP = m_pLayout->PhysIndex.find (IxName);
+                if (IP != m_pLayout->PhysIndex.end ()) { IxPhys = IP->second; }
+                else { for (RegSub CONST &S : m_pLayout->Subs) { if (S.Name == IxName) { IxPhys = S.Parent; break; } } }
+                if (IxPhys != ~(UINT32) 0) {
+                    pOut->IndexReg   = IxPhys;
+                    pOut->IndexScale = T.Scale;
+                    if (!Text.empty ()) { Text += "+"; }
+                    // Render the index by its physical register name (r2), not the positional group alias
+                    // (R2) used only to resolve it -- matching how base registers render in MemText.
+                    Text += m_pLayout->Phys[IxPhys].Name + "*" + std::to_string ((unsigned long long) T.Scale);
+                }
+            } else if (T.Disp) {
+                INT64 Disp = 0;
+                if (T.DispKind == AddrTerm::DispEncoding::VarLen) {
+                    //
+                    // NS32000-style self-describing displacement: the top bits of the first byte select
+                    // the encoded width. Bytes are big-endian; the value is sign-extended from the
+                    // encoded bit width. (`be` is implicit here, so DispBigEndian is irrelevant.)
+                    //
+                    if (TailUsed >= TailAvail) { return false; }
+                    UINT8 CONST B0 = pTail[TailUsed];
+                    UINT32 DispBytes;
+                    UINT32 DispBits;
+                    if ((B0 & 0x80) == 0)         { DispBytes = 1; DispBits = 7; }
+                    else if ((B0 & 0xC0) == 0x80) { DispBytes = 2; DispBits = 14; }
+                    else                          { DispBytes = 4; DispBits = 30; }
+                    if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
+                    UINT64 Raw = 0;
+                    for (UINT32 i = 0; i < DispBytes; ++i) { Raw = (Raw << 8) | pTail[TailUsed + i]; }  // big-endian
+                    Raw &= (DispBytes == 4) ? UINT64_C (0x3FFFFFFF)
+                         : (DispBytes == 2) ? UINT64_C (0x3FFF) : UINT64_C (0x7F);
+                    Disp = SignExtend (Raw, DispBits);
+                    TailUsed += DispBytes;
+                    *pExtraBytes += DispBytes;
+                    pOut->Disp += Disp;
+                    if (!Text.empty ()) { Text += "+"; }
+                    char B[24]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) Disp);
                     Text += B;
+                } else {
+                    UINT32 DispBits = T.DispBits ? T.DispBits
+                                    : (UINT32) (AM->DispSize ? EvalFieldExpr (AM->DispSize, Eff) : 0);
+                    if (DispBits > 0) {
+                        UINT32 DispBytes = DispBits / 8;
+                        if ((UINT64) DispBytes > TailAvail - TailUsed) { return false; }
+                        bool DispLittle = T.DispBigEndian ? false : m_pArch->Little;
+                        Disp = SignExtend (ExtractField (pTail + TailUsed, 0, DispBits, DispLittle), DispBits);
+                        TailUsed += DispBytes;
+                        *pExtraBytes += DispBytes;
+                        pOut->Disp += Disp;
+                        if (!Text.empty ()) { Text += "+"; }
+                        char B[16]; std::snprintf (B, sizeof (B), "0x%llx", (unsigned long long) Disp);
+                        Text += B;
+                    }
                 }
             } else if (!T.RegGroup.empty ()) {
                 // %REG[group, field]: the base is group <group>'s element selected by field <field>.
                 // Resolve via the group's positional alias (<group><N>), then fall back to a direct
                 // physical name -- yielding the base register's physical index.
-                UINT64 Idx = Fields.count (T.RegField) ? Fields.at (T.RegField) : 0;
+                UINT64 Idx = Eff.count (T.RegField) ? Eff.at (T.RegField) : 0;
                 std::string Name = T.RegGroup + std::to_string ((unsigned long long) Idx);
                 UINT32 Phys = ~(UINT32) 0;
                 auto P = m_pLayout->PhysIndex.find (Name);
@@ -328,10 +472,16 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     // A little-endian fixed-width word (e.g. Alpha) is a little-endian integer in memory; byte-
     // reverse it so the MSB-first extractor reads the logical encoding, and then extract straight
     // (no per-field swap -- that is for the byte-stream CISC path). Other arches read in place.
+    //
+    // The same reversal applies, per alternative, when the arch declares `endian little word`
+    // (Arch::LeWord): the base opcode word is a true little-endian integer of THIS alternative's
+    // own WordLen (NS32000 -- the variable 1/2/3/4-byte word can't use the uniform m_WordLen path).
+    // A 1-byte word reverses to itself, so Format-1 byte instructions are unaffected.
     UINT8        Rev[16];
     UINT8 CONST *pWord  = pBytes;
     bool         Little = m_pArch->Little;
-    if (m_LeWord && WordLen == m_WordLen && WordLen <= sizeof (Rev)) {
+    bool CONST   ReverseWord = (m_LeWord && WordLen == m_WordLen) || m_pArch->LeWord;
+    if (ReverseWord && WordLen <= sizeof (Rev)) {
         for (UINT32 I = 0; I < WordLen; ++I) { Rev[I] = pBytes[WordLen - 1 - I]; }
         pWord  = Rev;
         Little = false;
@@ -343,7 +493,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
     UINT32 BitOff = 0;
     for (EncField CONST &F : pAlt->Fields) {
         if (F.Tail) { continue; }
-        UINT64 V = ExtractField (pWord, BitOff, F.Width, Little);
+        UINT64 V = ExtractField (pWord, BitOff, F.Width, F.BigEndian ? false : Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
         BitOff += F.Width;
@@ -368,7 +518,7 @@ Decoder::MatchAlt (EncAlt *pAlt, UINT8 CONST *pBytes, UINT64 Avail, UINT64 NextB
         if (!F.Tail) { continue; }
         UINT32 FieldBytes = (F.Width + 7) / 8;
         if ((UINT64) TailOff + FieldBytes > Avail) { return false; }
-        UINT64 V = ExtractField (pBytes + TailOff, 0, F.Width, m_pArch->Little);
+        UINT64 V = ExtractField (pBytes + TailOff, 0, F.Width, F.BigEndian ? false : m_pArch->Little);
         if (F.HasConst && V != F.Const) { return false; }
         FV[F.Name] = V;
         TailOff += FieldBytes;
@@ -405,18 +555,27 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
     UINT8 CONST *p = pBytes + Pos;
     UINT64 Avail = Len - Pos;
 
-    // Among all encodings that match, prefer the MOST SPECIFIC -- the one constraining the
-    // most bits to constants -- so a full-opcode instruction (8080 HLT = 0x76) wins over a
-    // general pattern that also matches (MOV r,r covers 0x40..0x7F). Declaration order does
-    // not matter.
+    // Among all encodings that match, pick the winner by, FIRST, the higher decode PRIORITY
+    // (`encode ... priority N`; default 0), THEN -- for an equal priority -- the MOST SPECIFIC, the
+    // one constraining the most bits to constants, so a full-opcode instruction (8080 HLT = 0x76)
+    // wins over a general pattern that also matches (MOV r,r covers 0x40..0x7F). The priority tier is
+    // a no-op while every candidate stays at the default 0 (every existing ISA), and exists only to
+    // override the bit count where it picks wrongly: the NS32000 Format-0 Bcond byte (4 constant bits)
+    // must win over a coincidentally-matching Format-4 ALU word (6 constant bits) because a leading
+    // byte whose low nibble is 0xA is ALWAYS Format 0 on real hardware. Declaration order does not
+    // matter. A candidate replaces the best when Prio > BestPrio, or (Prio == BestPrio and Spec > Best).
     DecodedInsn Try;
+    INT32       BestPrio = INT32_MIN;
     INT32       BestSpec = -1;
     for (Insn *I : m_pArch->Insns) {
         if (!IsEnabled (I->Feature)) { continue; }
         for (EncAlt *A : I->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Prio = A->Priority;
                 INT32 Spec = (INT32) ConstBits (A);
-                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr; }
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = I; pOut->pJump = nullptr;
+                }
             }
         }
     }
@@ -424,8 +583,11 @@ Decoder::Decode (UINT8 CONST *pBytes, UINT64 Len, UINT64 Pos, DecodedInsn *pOut)
         if (!IsEnabled (J->Feature)) { continue; }
         for (EncAlt *A : J->Encodings) {
             if (MatchAlt (A, p, Avail, Pos, &Try)) {
+                INT32 Prio = A->Priority;
                 INT32 Spec = (INT32) ConstBits (A);
-                if (Spec > BestSpec) { BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J; }
+                if (Prio > BestPrio || (Prio == BestPrio && Spec > BestSpec)) {
+                    BestPrio = Prio; BestSpec = Spec; *pOut = Try; pOut->pInsn = nullptr; pOut->pJump = J;
+                }
             }
         }
     }

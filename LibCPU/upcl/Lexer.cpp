@@ -307,11 +307,26 @@ Lexer::Next ()
         return Make (TokAt, Begin);
     case '#': {
         CHAR8 K = Peek ();
-        if ((K == 'i' || K == 'f' || K == 'v') && IsDigit (Peek (1))) {          // #i16 / #f80 / #v4:32
+        if ((K == 'i' || K == 'f' || K == 'v') && IsDigit (Peek (1))) {          // #i16 / #f80 / #v4:32 / #i32x4
             m_Pos++;                                                             // the kind letter
             while (IsDigit (Peek ())) { m_Pos++; }
-            if (K == 'v' && Peek () == ':') { m_Pos++; while (IsDigit (Peek ())) { m_Pos++; } }
-            return Make (TokType, Begin);                                        // Text = "#i16"
+            // Vector lane count, two interchangeable spellings:
+            //   #v4:32  -- the legacy `#v` form: ':' followed by a DIGIT is `lanes:width`.
+            //   #i32x4  -- the general `xN` form: any kind followed by 'x' then a lane count.
+            // The ':digit' guard keeps the legacy form distinct from the alphabetic ':word' suffixes.
+            if (K == 'v' && Peek () == ':' && IsDigit (Peek (1))) { m_Pos++; while (IsDigit (Peek ())) { m_Pos++; } }
+            else if (Peek () == 'x' && IsDigit (Peek (1))) { m_Pos++; while (IsDigit (Peek ())) { m_Pos++; } }
+            // Optional trailing suffixes, each an alphabetic tag after ':': a bit-order (`:lsb` / `:msb`)
+            // then a byte-order (`:be` / `:le` / `:me` / `:big` / `:little` / `:mid`). Up to two, in that
+            // order; both optional, distinct from the vector-lanes ':digit' form. Folded into the token
+            // text -- ParseType decodes which is which. Lets any type literal pin its bit numbering and
+            // byte order (a big-endian immediate in a little-endian arch, the PDP-11 middle-endian 32-bit
+            // word), not bolted-on keywords.
+            for (UINT32 N = 0; N < 2 && Peek () == ':' && IsWordStart (Peek (1)); N++) {
+                m_Pos++;
+                while (IsWordCont (Peek ())) { m_Pos++; }
+            }
+            return Make (TokType, Begin);                                        // Text = "#i16" / "#i32x4:msb:be"
         }
         return Make (TokHash, Begin);
     }

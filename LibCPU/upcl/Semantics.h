@@ -71,6 +71,11 @@ public:
     UINT32      Base1    = ~(UINT32) 0;   // first base register index (~0 = none)
     UINT32      Base2    = ~(UINT32) 0;   // second base register index (~0 = none)
     INT64       Disp     = 0;             // signed displacement
+    // Scaled index (the NS32000 [Rn:B/W/D/Q] mode): EA gains IndexReg * IndexScale, on top of the
+    // Base1/Base2/Disp the nested base mode resolved. IndexReg is a physical register index (~0 =
+    // none); IndexScale is 1/2/4/8. Filled by a nested scaled-index addrmode term.
+    UINT32      IndexReg   = ~(UINT32) 0; // scaled index register index (~0 = none)
+    UINT32      IndexScale = 1;           // scale applied to the index register
     std::string MemText;                  // address rendering for disassembly, e.g. "bx+si"
     // Addressing-mode side-effect blocks (PDP-11 autoincrement/decrement, etc.): the matched addr
     // rule's `pre { }` runs BEFORE the EA (autodecrement), `post { }` AFTER the operand is used

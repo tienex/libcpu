@@ -1022,6 +1022,486 @@ add_test(NAME upcl.pdp11 COMMAND sh -c
    grep -q 'fadd '              '${CMAKE_BINARY_DIR}/pdp11.addf'")
 set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
+# imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
+add_test(NAME upcl.engine-be COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_be.upcl' 0xAA 0x12 0x34 | grep '0x1234'")
+
+# Self-describing variable-length displacement (`disp varlen`): the first tail byte's top bits
+# select the encoded width (1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit; big-endian,
+# sign-extended). The opcode byte 0x00 (op=0,m=0) selects the %M[ r0 + disp varlen ] rule; the
+# remaining bytes are the displacement. Asserts all three width boundaries AND sign extension:
+#   0x05            -> 1 byte, +5
+#   0x7F            -> 1 byte, 7-bit -1  (0xff...ff)
+#   0x90 0x00       -> 2 bytes, +0x1000
+#   0xA0 0x00       -> 2 bytes, 14-bit value 0x2000 sign-extends NEGATIVE (0xff...e000)
+#   0xC0 0x00 0x40 0x00 -> 4 bytes, +0x4000
+add_test(NAME upcl.engine-varlen COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_varlen.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x00 0x05 | grep -q 'disp=0x5 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x05 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x7F | grep -q 'disp=0xffffffffffffffff' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x90 0x00 | grep -q 'disp=0x1000 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x90 0x00 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xA0 0x00 | grep -q 'disp=0xffffffffffffe000' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q 'disp=0x4000 ' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xC0 0x00 0x40 0x00 | grep -q '5 byte'")
+
+# Nested scaled-index dispatch (NS32000 [Rn:B/W/D/Q]): one index byte (basegen:5)(ireg:3) recurses
+# into the named base addrmode with `basegen`, then adds R[ireg] * scale. The opcode 0x00 (op=0,m=0)
+# selects the %M[ @base[index] + %REG[R, ireg] * 4 ] rule. Asserts BOTH the register-base case and
+# the absolute-base case where the nested mode consumes its OWN varlen displacement (proving the
+# recursion composes with `disp varlen`):
+#   0x0A      -> base gen 0x01 (r1), ireg 2     => r1 + r2*4         (length 2)
+#   0xAB 0x10 -> base gen 0x15 (absolute), ireg 3, then 1-byte varlen disp 0x10 => @0x10 + r3*4 (len 3)
+add_test(NAME upcl.engine-index COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_index.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x00 0x0A | grep -q 'r1+r2\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x00 0x0A | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '@0x10+r3\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x00 0xAB 0x10 | grep -q '3 byte'")
+
+# E4 -- addrmode POSITIONAL ARGUMENT BINDING: one `addrmode m ( x )` serves two operand slots via
+# two DIFFERENT encode fields (`a:3 -> op1 @m(a), b:3 -> op2 @m(b)`). Byte 0x15 (op=0, a=2, b=5)
+# must resolve op1 and op2 to DIFFERENT registers (r2 and r5) -- proving the formal `x` binds per
+# slot to its actual field, not to one shared field name.
+add_test(NAME upcl.engine-addrarg COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl decode '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_addrarg.upcl' 0x15 | grep -q 'op1=r2 op2=r5'")
+
+# E5 -- FIXED-WIDTH BIG-ENDIAN IMMEDIATE addrmode term: `x == 1 => #i32 imm be ;` reads a 4-byte
+# big-endian immediate from the tail. Stream 0x01 0x12 0x34 0x56 0x78 must decode src=0x12345678
+# AND consume EXACTLY 5 bytes (1 opcode + 4 immediate) -- proving a fixed operand-width immediate,
+# distinct from a self-describing varlen displacement.
+add_test(NAME upcl.engine-imm COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_imm.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q 'src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
+
+# E5 MIDDLE-ENDIAN IMMEDIATE: `x == 1 => #i32:me imm ;` reads a 4-byte PDP-11-order immediate.
+# Middle-endian byte order 2-3-0-1: for stream 0x12 0x34 0x56 0x78,
+#   value = (0x34<<24)|(0x12<<16)|(0x78<<8)|0x56 = 0x34127856
+# The little-endian read of the same bytes would be 0x78563412, and big-endian 0x12345678;
+# 0x34127856 proves the middle-endian path is exercised.  Also assert 5 bytes consumed.
+add_test(NAME upcl.engine-me COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_me.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q 'src=0x34127856' && \
+   \"$E\" upcl decode \"$M\" 0x01 0x12 0x34 0x56 0x78 | grep -q '5 byte'")
+
+# Full type-literal grammar  #<kind><width>(xN)?(:lsb|:msb)?(:le|:me|:be)?.  Two ADDITIVE forms:
+#   * `#i32x4`    -- the general xN vector spelling (4 lanes of i32).  The 0xB0 opcode's padd lowers
+#                    lane-by-lane; the i128 lane-combine IR (shl/or over a 128-bit value) proves it
+#                    is a vector, identical to the legacy `#v4:32`.
+#   * `#i16:be`   -- byte-order suffix `:be` on an ADDRMODE-RULE type literal (the WIRED path):
+#                    `imm_be { x==0 => #i16:be imm ; }` -- the type-literal `:be` drives big-endian
+#                    decode (EndianBig -> ImmBigEndian), NOT a trailing `be` keyword in the encode.
+#                    RED: without `:be`, stream 0x12 0x34 decodes little-endian -> src=0x3412.
+#                    GREEN: with `:be`, same bytes decode big-endian -> src=0x1234.
+add_test(NAME upcl.engine-typegram COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_typegram.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0xB0 | grep -q 'const.i128' && \
+   \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q 'src=0x1234' && \
+   \"$E\" upcl decode \"$M\" 0xC0 0x12 0x34 | grep -q '3 byte'")
+set_tests_properties(upcl.engine-typegram PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
+
+# E7 -- `const` declarations: named symbolic constants usable ANYWHERE a literal/constant is. Four
+# top-level consts replace the magic numbers of a tiny ISA, each exercised at one of the three target
+# sites, with a LITERAL twin instruction proving the name resolves to the exact same value:
+#   (a) ENCODE MATCH VALUE   `op:4 = OP_LD`     (OP_LD = 0x2)  -- ldc decodes at opcode nibble 0x2
+#   (b) ADDRMODE CONDITION   `x == SEL_IMM`     (SEL_IMM = 0x1) -- the immediate rule fires for x=1
+#   (c) SEMANTIC-BODY MASK    `r0 & MASK_LOW`    (MASK_LOW = (1<<4)-1 = 0xf, folded over a prior const)
+# The const insn `ldc` (0x21 ..) and the literal twin `ldl` (0x31 ..) over the SAME immediate bytes
+# must resolve src=0x12345678 in 5 bytes AND lower the body to the SAME `const.i32 0xf` mask --
+# proving each const folds identically to its literal. (RED before E7: `const` is rejected at parse.)
+add_test(NAME upcl.engine-const COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_const.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" | grep -q '2 instruction' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q 'ldc *src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x21 0x78 0x56 0x34 0x12 | grep -q 'const.i32 0xf' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q 'ldl *src=0x12345678' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q 'const.i32 0xf'")
+set_tests_properties(upcl.engine-const PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
+
+# NS32000 arch header + register file: the UPCL description must parse cleanly and report the
+# expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated
+# registers (pc/sp0/sp1/sp/fp/sb/intbase/mod/cfg), and the PSR flag splitter binding the
+# carry (%C), zero (%Z), and negative (%N) meta-flags.
+add_test(NAME upcl.check-ns32k COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl' > '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'arch \"ns32k\"'  '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag C'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag Z'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'flag N'          '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'r0 '             '${CMAKE_BINARY_DIR}/ns32k.out' && \
+   grep -q 'pc '             '${CMAKE_BINARY_DIR}/ns32k.out'")
+set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
+# NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
+# <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
+# (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better
+# coverage: it proves gen decode through a production instruction. The bytes below are in
+# REAL little-endian memory order (`endian little word`): the 2-byte Format-4 base word is
+# stored low byte first, so it begins with 0x17 (the low byte = op[5]|i[11]|gen2=r0) and the
+# (gen1 << 3) high byte follows, then the gen tail (displacement/immediate).
+# Assertions (base word = 0x17 <hi>, then tail):
+#   0x17 0x00              -> movd r0 -> src=r0 (register-direct)
+#   0x17 0xA8 0x10         -> absolute  src=[0x10]
+#   0x17 0x40 0x05         -> register-relative r0+5 -> src=[r0+0x5]
+#   0x17 0xC0 0x20         -> FP-relative src=[fp+0x20]
+#   0x17 0xF0 0x0A         -> scaled-index r2*4
+#   0x17 0xA0 0x00..0x42   -> immediate src=0x42 (6-byte, E5 fixed-width)
+# Hard modes (Task 6):
+#   0x17 0x80 0x04 0x08    -> memory-relative FP disp2(disp1(FP)), 4-byte
+#   0x17 0x88 0x04 0x08    -> memory-relative SP, 4-byte
+#   0x17 0x90 0x04 0x08    -> memory-relative SB, 4-byte
+#   0x17 0xB0 0x04 0x08    -> external EXT(disp1)+disp2 (MOD-based), 4-byte
+#   0x17 0xB8              -> TOS source [sp] post sp+=4, 2-byte
+add_test(NAME upcl.ns32k-gen-modes COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x17 0x00 | grep -q 'movd   dst=r0 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xA8 0x10 | grep -q 'src=\\[0x10\\]' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x40 0x05 | grep -q 'r0+0x5' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xC0 0x20 | grep -q 'fp+0x20' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xF0 0x0A | grep -q 'r2\\*4' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xA0 0x00 0x00 0x00 0x42 | grep -q 'src=0x42' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xA0 0x00 0x00 0x00 0x42 | grep -q '6 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x80 0x04 0x08 | grep -q 'fp' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x80 0x04 0x08 | grep -q '0x4' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x80 0x04 0x08 | grep -q '0x8' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x80 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x88 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x90 0x04 0x08 | grep -q 'sb' && \
+   \"$E\" upcl decode \"$M\" 0x17 0x90 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xB0 0x04 0x08 | grep -q 'mod' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xB0 0x04 0x08 | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xB8 | grep -q 'sp' && \
+   \"$E\" upcl decode \"$M\" 0x17 0xB8 | grep -q '2 byte'")
+set_tests_properties(upcl.ns32k-gen-modes PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
+# NS32000 integer data-movement + ALU (Formats 2/4/6/7). Each byte sequence is the real NS32000
+# encoding (opcode seeds + bit layout from binutils include/opcode/ns32k.h + opcodes/ns32k-dis.c):
+# gen1 = first/source general operand, gen2 = destination, the 2-bit `i` length field selects
+# byte/word/double. The NS32000 stores its multi-byte opcode word as a little-endian integer
+# (`endian little word`), so the bytes below are in REAL memory order: the base word is byte-
+# reversed relative to its hex word value (movd word 0x0057 -> bytes 0x57 0x00; lshd word 0x00574E ->
+# 0x4E 0x57 0x00). Each pins the mnemonic AND the resolved src/dst operands so a wrong opcode/length/
+# operand-binding fails. Covers movd, addd, cmpd (with flag body), the quick forms addqd/movqd, and
+# the extended muld -- plus negd (Format 6), divd, and movzbd/movxbw (the zero/sign-extend pairs).
+# Task 8 decode byte-sequence derivation (word values from binutils ns32k_opcodes[] seeds, then
+# emitted low byte first):
+# FORMAT 4 (16-bit word): gen1:5 gen2:5 op:4 i:2
+#   andd  r0,r1: gen1=0,gen2=1,op=0xa,i=3 -> word 0x006B -> LE bytes 0x6B 0x00
+#   tbitd r0,r1: gen1=0,gen2=1,op=0xd,i=3 -> word 0x0077 -> LE bytes 0x77 0x00
+#   lshd  r0,r1: Format 6 (fmt=0x4e), word 0x00574E -> LE bytes 0x4E 0x57 0x00
+#   extd  r1,r0,r2: Format 8, word 0x00562E -> LE bytes 0x2E 0x56 0x00
+# Task 8 review fixes -- decode assertions:
+#   cvtp r2,r0,r1: word 0x00536E -> LE bytes 0x6E 0x53 0x00
+#   extsd r1,r0,{G=8,g=2}: Format 7 word 0x080FCE -> LE bytes 0xCE 0x0F 0x08, then tail 0x3A (4 bytes)
+#   ffsd r0,r1: Format 6 word 0x00476E -> LE bytes 0x6E 0x47 0x00
+add_test(NAME upcl.decode-ns32k COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0x57 0x00 | grep -q 'movd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xC3 0x10 | grep -q 'addd   dst=r3 src=r2' && \
+   \"$E\" upcl decode \"$M\" 0x47 0x00 | grep -q 'cmpd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x8F 0x0A | grep -q 'addqd  dst=r1 quick=0x5' && \
+   \"$E\" upcl decode \"$M\" 0xDF 0x17 | grep -q 'movqd  dst=r2 quick=0xf' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x63 0x00 | grep -q 'muld   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x4E 0x63 0x00 | grep -q 'negd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x7F 0x00 | grep -q 'divd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x58 0x00 | grep -q 'movzbd dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x50 0x00 | grep -q 'movxbw dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x6B 0x00 | grep -q 'andd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x4E 0x57 0x00 | grep -q 'lshd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x77 0x00 | grep -q 'tbitd  dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x2E 0x56 0x00 | grep -q 'extd   dst=r0 rn=0x2 src=r1' && \
+   \"$E\" upcl decode \"$M\" 0x6E 0x53 0x00 | grep -q 'cvtp' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x0F 0x08 0x3A | grep -q 'extsd' && \
+   \"$E\" upcl decode \"$M\" 0xCE 0x0F 0x08 0x3A | grep -q '4 byte' && \
+   \"$E\" upcl decode \"$M\" 0x6E 0x47 0x00 | grep -q 'ffsd' && \
+   \"$E\" upcl decode \"$M\" 0x0E 0x03 0x00 | grep -q 'movsd' && \
+   \"$E\" upcl decode \"$M\" 0x0E 0x03 0x00 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x4E 0x3F 0x00 | grep -q 'addpd' && \
+   \"$E\" upcl decode \"$M\" 0x4E 0x2F 0x00 | grep -q 'subpd' && \
+   \"$E\" upcl decode \"$M\" 0xEE 0x03 0x00 | grep -q 'checkd' && \
+   \"$E\" upcl decode \"$M\" 0x2E 0x07 0x00 | grep -q 'indexd'")
+set_tests_properties(upcl.decode-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32000 CONTROL TRANSFER / module calls / traps (Task 10). Every byte sequence is the real
+# NS32000 encoding from binutils include/opcode/ns32k.h ns32k_opcodes[] (seeds cross-checked with
+# opcodes/ns32k-dis.c). The key structural property proven here is the VARIABLE-LENGTH branch
+# displacement: the same self-describing big-endian scheme as gen displacements (E2). The target
+# is rendered as [pc+0xNN] because it is bound through a one-rule addrmode `%M[pc + disp varlen]`
+# whose @lea yields pc + disp. Derivation:
+#   Bcond (Format 0): byte = cond<<4 | 0xA. beq cond=0 -> 0x0A; bne cond=1 -> 0x1A; bgt cond=6 ->
+#     0x6A; blo cond=0xA -> 0xAA; br cond=0xE -> 0xEA. Then a varlen PC-relative displacement.
+#   VARLEN PROOF: br with a 1-byte disp (0xEA 0x10) is 2 bytes; br with a 2-byte (14-bit) disp
+#     (0xEA 0x80 0x40, top bits 10 -> 2-byte form) is 3 bytes -- the decoded length tracks the
+#     displacement encoding, not a fixed width. bgt likewise 0x6A 0x10 -> 2 bytes.
+#   BSR (Format 1): 0x02 + disp. high nibble 0x0, low 0x2. 0x02 0x10 -> 2 bytes.
+#   RET (Format 1): 0x12 + varlen stack-adjust disp. 0x12 0x04 -> 2 bytes.
+#   SAVE (Format 1): 0x62 + reglist byte. 0x62 0x05 -> 2 bytes (mask=0x05 -> r0,r2).
+#   ENTER (Format 1): 0x82 + reglist byte + varlen frame disp. 0x82 0x03 0x08 -> 3 bytes.
+#   NOP/SVC/BPT (Format 1): 0xA2 / 0xE2 / 0xF2 -> 1 byte (SVC/BPT are @trap).
+#   Bytes below are REAL little-endian memory order (`endian little word`): Format-0/1 use a
+#   single base byte (reverses to itself), so only the 2-byte Format-2/3 words are byte-swapped.
+#   JUMP (Format 3): word = gen:5 (bits15:11) : opcode11:11. jump opc=0x27f, gen=r0 -> word 0x027F
+#     -> LE bytes 0x7F 0x02. jsr opc=0x67f -> 0x7F 0x06. cased opc=0x77f -> 0x7F 0x07.
+#   ACBd (Format 2): word = gen2:5 quick:4 op[4:1]=0x9 op[0]=1 i:2. acbd gen2=r0 quick=5 i=3 ->
+#     word 0x02CF -> LE bytes 0xCF 0x02, then varlen disp 0x10 -> 3 bytes; the disasm pins
+#     quick=0x5 (the immediate is read in the body) AND the [pc+0x10] target.
+add_test(NAME upcl.decode-ns32k-ctl COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x1A 0x10 | grep -q 'bne' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x10 | grep -q 'bgt' && \
+   \"$E\" upcl decode \"$M\" 0xAA 0x10 | grep -q 'blo' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x10 | grep -q 'br' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q 'br' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0xEA 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x02 0x10 | grep -q 'bsr' && \
+   \"$E\" upcl decode \"$M\" 0x02 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0x12 0x04 | grep -q 'ret' && \
+   \"$E\" upcl decode \"$M\" 0x62 0x05 | grep -q 'save' && \
+   \"$E\" upcl decode \"$M\" 0x62 0x05 | grep -q 'mask=0x5' && \
+   \"$E\" upcl decode \"$M\" 0x82 0x03 0x08 | grep -q 'enter' && \
+   \"$E\" upcl decode \"$M\" 0x82 0x03 0x08 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0xA2 | grep -q 'nop' && \
+   \"$E\" upcl decode \"$M\" 0xE2 | grep -q 'svc' && \
+   \"$E\" upcl decode \"$M\" 0xF2 | grep -q 'bpt' && \
+   \"$E\" upcl decode \"$M\" 0x7F 0x02 | grep -q 'jump   dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0x7F 0x06 | grep -q 'jsr    dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0x7F 0x07 | grep -q 'cased  tbl=r0' && \
+   \"$E\" upcl decode \"$M\" 0xCF 0x02 0x10 | grep -q 'acbd' && \
+   \"$E\" upcl decode \"$M\" 0xCF 0x02 0x10 | grep -q 'quick=0x5' && \
+   \"$E\" upcl decode \"$M\" 0xCF 0x02 0x10 | grep -q 'pc+0x10' && \
+   \"$E\" upcl decode \"$M\" 0xCF 0x02 0x10 | grep -q '3 byte'")
+set_tests_properties(upcl.decode-ns32k-ctl PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32000 LONG-FORM Bcond (E8 decode-priority tie-break). A first byte whose low nibble is 0xA is
+# ALWAYS a Format-0 branch on real hardware, never a Format-4 ALU word -- but a long (multi-byte)
+# branch displacement makes the leading bytes ALSO match a wider Format-4 word that fixes MORE
+# constant bits (op:4 + i:2 = 6 vs the Bcond's op:4 = 4), so the most-constant-bits matcher used to
+# mis-decode `beq` (0x0A) with a 14-bit disp as `addb`. With `priority 1` on the Format-0/Format-2
+# encodings the branch now wins regardless of the bit count. RED before E8 (decoded addb), GREEN now.
+#   beq 14-bit disp: 0x0A 0x80 0x40 -- top disp bits 10 => 2-byte disp form => 3-byte insn, pc+0x40.
+#   beq 30-bit disp: 0x0A 0xC0 0x00 0x00 0x40 -- top bits 11 => 4-byte disp form => 5-byte insn.
+#   bgt long: 0x6A 0x80 0x40 -- the single-flag (N) condition, long disp; 3-byte, pc+0x40.
+# The short-disp forms (already covered by decode-ns32k-ctl) stay `beq`/`bgt`; the genuine Format-4
+# ALU words (addb/addd/movd/cmpd, low nibble != 0xA) are re-asserted here to prove they are unchanged.
+add_test(NAME upcl.ns32k-branch-long COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0xC0 0x00 0x00 0x40 | grep -q '5 byte' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q 'beq' && \
+   \"$E\" upcl decode \"$M\" 0x0A 0x10 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q 'bgt' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q 'pc+0x40' && \
+   \"$E\" upcl decode \"$M\" 0x6A 0x80 0x40 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x57 0x00 | grep -q 'movd   dst=r1 src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xC3 0x10 | grep -q 'addd   dst=r3 src=r2' && \
+   \"$E\" upcl decode \"$M\" 0x47 0x00 | grep -q 'cmpd   dst=r1 src=r0'")
+set_tests_properties(upcl.ns32k-branch-long PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32000 PROCESSOR-CONTROL instructions (Task 11). Byte sequences derived from binutils
+# include/opcode/ns32k.h (ns32k_opcodes[]) and gas/config/tc-ns32k.c (cpureg_032 table).
+#
+# LPR/SPR (Format 2-style, 16-bit): gen:5 : reg4:4 : op5:5 : i:2
+#   lprb=0x6c lprw=0x6d lprd=0x6f  -> op5=0x1b, i={0,1,3}
+#   sprb=0x2c sprw=0x2d sprd=0x2f  -> op5=0x0b, i={0,1,3}
+#   Bytes below are REAL little-endian memory order (`endian little word`): each base word is
+#   emitted low byte first.
+#   lprd psr(0xd),r0: gen2=0 reg4=0xd op5=0x1b i=3 -> word 0x06ef -> LE bytes 0xef 0x06
+#   sprd r0,psr(0xd): gen2=0 reg4=0xd op5=0x0b i=3 -> word 0x06af -> LE bytes 0xaf 0x06
+#   lprd sp(0x9),r1: gen2=1 reg4=0x9 op5=0x1b i=3 -> word 0x0cef -> LE bytes 0xef 0x0c
+#
+# ADJSP (16-bit, 11-bit opcode): gen:5 : op9:9 : i:2
+#   adjspd=0x057f -> op9=0x15f i=3; gen=r0(0): word 0x057f -> LE bytes 0x7f 0x05
+#
+# BISPSR/BICPSR (16-bit, 11-bit opcode): gen:5 : op9:9 : i:2
+#   bispsrw=0x037d -> op9=0xdf i=1; gen=r0(0): word 0x037d -> LE bytes 0x7d 0x03
+#   bicpsrw=0x017d -> op9=0x5f i=1; gen=r0(0): word 0x017d -> LE bytes 0x7d 0x01
+#
+# SETCFG (24-bit): gen(0):5 : opts:4 : op7:7 : fmt:8(=0x0e)
+#   setcfg seed=0x0b0e; opts=0: word 0x000b0e -> LE bytes 0x0e 0x0b 0x00
+add_test(NAME upcl.ns32k-sys COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0xef 0x06 | grep -q 'lprd' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x06 | grep -q 'dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x06 | grep -q 'reg=0xd' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x06 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x0c | grep -q 'lprd' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x0c | grep -q 'dst=r1' && \
+   \"$E\" upcl decode \"$M\" 0xef 0x0c | grep -q 'reg=0x9' && \
+   \"$E\" upcl decode \"$M\" 0xaf 0x06 | grep -q 'sprd' && \
+   \"$E\" upcl decode \"$M\" 0xaf 0x06 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0xaf 0x06 | grep -q 'reg=0xd' && \
+   \"$E\" upcl decode \"$M\" 0x7f 0x05 | grep -q 'adjspd' && \
+   \"$E\" upcl decode \"$M\" 0x7f 0x05 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x7f 0x05 | grep -q '2 byte' && \
+   \"$E\" upcl decode \"$M\" 0x7d 0x03 | grep -q 'bispsrw' && \
+   \"$E\" upcl decode \"$M\" 0x7d 0x03 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x7d 0x01 | grep -q 'bicpsrw' && \
+   \"$E\" upcl decode \"$M\" 0x7d 0x01 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x00 | grep -q 'setcfg' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x00 | grep -q 'opts=0x0' && \
+   \"$E\" upcl decode \"$M\" 0x0e 0x0b 0x00 | grep -q '3 byte'")
+set_tests_properties(upcl.ns32k-sys PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32081/NS32381 FPU (feature `fpu`). Byte sequences derived from GNU binutils
+# `include/opcode/ns32k.h` seeds (ns32k_opcodes[]), verified against the NS32081 (July 1988)
+# and NS32381 (April 1991) datasheets.
+#
+# ENCODING NOTES (24-bit instructions; word values below, then emitted LOW BYTE FIRST per
+# `endian little word` -- so the FPU escape byte 0xBE/0x3E/0xFE is at the LOWEST address):
+#   Format 11 (FMT11=0xBE): gen1:5 gen2:5 op:4 f:2 fmt:8(=0xBE)
+#     addf  gen1=0 gen2=0 op=0 f=1: word 0x0001BE -> LE bytes 0xBE 0x01 0x00
+#     movf  gen1=1 gen2=2 op=1 f=1: word 0x0885BE -> LE bytes 0xBE 0x85 0x08
+#     cmpf  gen1=0 gen2=1 op=2 f=1: word 0x0049BE -> LE bytes 0xBE 0x49 0x00
+#     movl  gen1=0 gen2=2 op=1 f=0: word 0x0084BE -> LE bytes 0xBE 0x84 0x00
+#   Format 9 (FMT9=0x3E): gen1:5 gen2:5 op:3 f:1 i:2 fmt:8(=0x3E)
+#     movbf gen1=0 gen2=0 op=0 f=1 i=0: word 0x00043E -> LE bytes 0x3E 0x04 0x00
+#     movdf gen1=0 gen2=0 op=0 f=1 i=3: word 0x00073E -> LE bytes 0x3E 0x07 0x00
+#     movfl gen1=0 gen2=2 sub=0x1b:     word 0x009B3E -> LE bytes 0x3E 0x9B 0x00
+#     lfsr  gen1=0 op=0x0f3e:            word 0x000F3E -> LE bytes 0x3E 0x0F 0x00
+#     sfsr  gen1=r0 gen2=0 op=6 f=1 i=3: word 0x00373E -> LE bytes 0x3E 0x37 0x00
+#   Format 12 (FMT12=0xFE): gen1:5 gen2:5 op:4 f:2 fmt:8(=0xFE)
+#     polyf gen1=0 gen2=1 op=2 f=1:  word 0x0049FE -> LE bytes 0xFE 0x49 0x00
+#     logbf gen1=0 gen2=1 op=5 f=1:  word 0x0055FE -> LE bytes 0xFE 0x55 0x00
+add_test(NAME upcl.ns32k-fpu COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x01 0x00 | grep -q 'addf' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x01 0x00 | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x01 0x00 | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x01 0x00 | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x85 0x08 | grep -q 'movf' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x85 0x08 | grep -q 'src=f1' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x85 0x08 | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x49 0x00 | grep -q 'cmpf' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x49 0x00 | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x49 0x00 | grep -q 'dst=f1' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x84 0x00 | grep -q 'movl' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x84 0x00 | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0xbe 0x84 0x00 | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x04 0x00 | grep -q 'movbf' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x04 0x00 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x04 0x00 | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x07 0x00 | grep -q 'movdf' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x07 0x00 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x07 0x00 | grep -q 'dst=f0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x9b 0x00 | grep -q 'movfl' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x9b 0x00 | grep -q 'src=f0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x9b 0x00 | grep -q 'dst=f2' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x0f 0x00 | grep -q 'lfsr' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x0f 0x00 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x37 0x00 | grep -q 'sfsr' && \
+   \"$E\" upcl decode \"$M\" 0x3e 0x37 0x00 | grep -q 'dst=r0' && \
+   \"$E\" upcl decode \"$M\" 0xfe 0x49 0x00 | grep -q 'polyf' && \
+   \"$E\" upcl decode \"$M\" 0xfe 0x55 0x00 | grep -q 'logbf'")
+set_tests_properties(upcl.ns32k-fpu PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32082/NS32382 MMU + NS32532/NS32732 cache (feature `mmu` + feature `cache`).
+# Encodings from GNU binutils `include/opcode/ns32k.h` (ns32k_opcodes[]) and
+# `gas/config/tc-ns32k.c` (mmureg_032 / mmureg_532 tables).
+#
+# ENCODING NOTES (24-bit instructions; word values below, then emitted LOW BYTE FIRST per
+# `endian little word` -- so the format escape byte 0x1e/0xae is at the LOWEST address):
+#   Format 14 (FMT14=0x1e): gen:5 | field:4 | op7:7 | fmt:8(=0x1e)
+#     lmr  gen=r1 mreg=ptb0(0xc) op7=0x0b: word 0x0e0b1e -> LE bytes 0x1e 0x0b 0x0e
+#     smr  gen=r0 mreg=msr(0xa)  op7=0x0f: word 0x050f1e -> LE bytes 0x1e 0x0f 0x05
+#     rdval gen=r0: word 0x00031e -> LE bytes 0x1e 0x03 0x00
+#     wrval gen=r0: word 0x00071e -> LE bytes 0x1e 0x07 0x00
+#   Format 14 (CINV, 14-bit opcode): gen:5 | opts:4 | zero:1 | op14:14(=0x271e)
+#     cinv gen=r0 opts=CINV_I(2): word 0x01271e -> LE bytes 0x1e 0x27 0x01
+#   Format 16 (FMT16=0xae): gen1:5 | gen2:5 | op14:14
+#     movsud gen1=r1(src) gen2=r2(dst): word 0x088fae -> LE bytes 0xae 0x8f 0x08
+#     movusd gen1=r0(src) gen2=r0(dst): word 0x001fae -> LE bytes 0xae 0x1f 0x00
+add_test(NAME upcl.ns32k-mmu COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl check \"$M\" > /dev/null && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0b 0x0e | grep -q 'lmr' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0b 0x0e | grep -q 'dst=r1' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0b 0x0e | grep -q 'mreg=0xc' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0b 0x0e | grep -q '3 byte' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0f 0x05 | grep -q 'smr' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0f 0x05 | grep -q 'src=r0' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x0f 0x05 | grep -q 'mreg=0xa' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x03 0x00 | grep -q 'rdval' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x03 0x00 | grep -q 'ea=r0' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x07 0x00 | grep -q 'wrval' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x07 0x00 | grep -q 'ea=r0' && \
+   \"$E\" upcl decode \"$M\" 0xae 0x8f 0x08 | grep -q 'movsud' && \
+   \"$E\" upcl decode \"$M\" 0xae 0x8f 0x08 | grep -q 'src=r1' && \
+   \"$E\" upcl decode \"$M\" 0xae 0x8f 0x08 | grep -q 'dst=r2' && \
+   \"$E\" upcl decode \"$M\" 0xae 0x1f 0x00 | grep -q 'movusd' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x27 0x01 | grep -q 'cinv' && \
+   \"$E\" upcl decode \"$M\" 0x1e 0x27 0x01 | grep -q 'opts=0x2' && \
+   printf '\\x1e\\x27\\x01' > '${CMAKE_BINARY_DIR}/cinv.bin' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/cinv.bin' --count 1 --arch \"upcl:\$M@ns32532\" | grep -q 'cinv' && \
+   ! \"$E\" disasm '${CMAKE_BINARY_DIR}/cinv.bin' --count 1 --arch \"upcl:\$M@ns32032\" | grep -q 'cinv'")
+set_tests_properties(upcl.ns32k-mmu PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error|not valid")
+
+# NS32000 PER-VARIANT feature selection (Task 14). The four cpu models each select a feature set;
+# this test pins the FEATURE-GATING behaviour through the `@cpu` selector on the `--arch upcl:`
+# path (the `disasm`/`run`/`decode` cpu suffix). CINV lives in `feature cache`, selected only by
+# ns32532/ns32732; the FPU lives in `feature fpu`, selected by all four. Bytes are real LE memory
+# order (`endian little word`): cinv word 0x01271e -> 0x1e 0x27 0x01; addf word 0x0001be -> 0xbe 0x01 0x00.
+#   - CINV must DECODE under ns32532 + ns32732 (cache present) and FALL THROUGH (db 0x1e, no `cinv`)
+#     under ns32032 + ns32332 (no cache) -- proving per-variant feature gating in BOTH directions.
+#   - ADDF (fpu) must decode under ALL FOUR models -- proving fpu is present in every variant.
+add_test(NAME upcl.ns32k-variants COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}'; \
+   printf '\\x1e\\x27\\x01' > \"$B/ns32k-cinv.bin\" && \
+   printf '\\xbe\\x01\\x00' > \"$B/ns32k-addf.bin\" && \
+   \"$E\" disasm \"$B/ns32k-cinv.bin\" --count 1 --arch \"upcl:\$M@ns32532\" | grep -q 'cinv' && \
+   \"$E\" disasm \"$B/ns32k-cinv.bin\" --count 1 --arch \"upcl:\$M@ns32732\" | grep -q 'cinv' && \
+   ! \"$E\" disasm \"$B/ns32k-cinv.bin\" --count 1 --arch \"upcl:\$M@ns32032\" | grep -q 'cinv' && \
+   ! \"$E\" disasm \"$B/ns32k-cinv.bin\" --count 1 --arch \"upcl:\$M@ns32332\" | grep -q 'cinv' && \
+   \"$E\" disasm \"$B/ns32k-addf.bin\" --count 1 --arch \"upcl:\$M@ns32032\" | grep -q 'addf' && \
+   \"$E\" disasm \"$B/ns32k-addf.bin\" --count 1 --arch \"upcl:\$M@ns32332\" | grep -q 'addf' && \
+   \"$E\" disasm \"$B/ns32k-addf.bin\" --count 1 --arch \"upcl:\$M@ns32532\" | grep -q 'addf' && \
+   \"$E\" disasm \"$B/ns32k-addf.bin\" --count 1 --arch \"upcl:\$M@ns32732\" | grep -q 'addf'")
+set_tests_properties(upcl.ns32k-variants PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
+# NS32000 EXECUTION (run-equivalent, Task 14). Drives a REAL little-endian-ordered ns32k program
+# through the JIT and observes the final register state -- the maximal execution check available
+# without a syscall personality (NS32000 has none yet; a stdout `lcx run` test is deferred to the
+# pc532 libnix personality follow-on). The program proves MOVQD + ADDD + a forward Bcond all EXECUTE
+# (not merely decode). All bytes are real LE memory order (`endian little word`):
+#   0x00 movqd $5,r0   DF 02   r0 = 5
+#   0x02 movqd $2,r1   5F 09   r1 = 2
+#   0x04 addd  r0,r1   43 00   r1 = 7         (register-register ADD executes)
+#   0x06 cmpqd $7,r1   9F 0B   Z = 1          (quick is SIGNED 4-bit; +7 is in range; r1==7 -> Z)
+#   0x08 beq   +2      0A 02   TAKEN          (target = successor(0x0a) + 2 = 0x0c; Bcond evaluates Z)
+#   0x0a movqd $0,r1   5F 08   SKIPPED        (would zero r1; the taken branch jumps over it)
+#   0x0c bpt           F2      trap -> stop   (no syscall handler: the run loop halts here)
+# Expected end state: r0 = 5, r1 = 7 (the beq was taken, so r1 keeps the ADDD result, not 0).
+# NOTE: the NS32000 Bcond target is modelled SUCCESSOR-relative (`@lea` over `%M[pc + disp]` bakes
+# the decode-time NextPc); real hardware is instruction-START-relative. Forward conditional control
+# flow executes correctly; a BACKWARD loop edge is not yet re-entered by the JIT region CFG (a JIT
+# plumbing gap, orthogonal to the frontend) -- both deferrals are documented for the pc532 follow-on.
+add_test(NAME upcl.ns32k-run COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/ns32k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}'; \
+   printf '\\xdf\\x02\\x5f\\x09\\x43\\x00\\x9f\\x0b\\x0a\\x02\\x5f\\x08\\xf2' > \"$B/ns32k-run.bin\" && \
+   \"$E\" run \"$B/ns32k-run.bin\" --arch upcl:\"$M\" > \"$B/ns32k-run.out\" && \
+   grep -q 'r0 =00000005' \"$B/ns32k-run.out\" && \
+   grep -q 'r1 =00000007' \"$B/ns32k-run.out\"")
+
 # PDP-11 TRANSLATION: drive the UPCL description through the JIT against real programs. A loop summing
 # 1..5 with SOB (a backward branch + per-iteration register decrement) must leave R0 = 15; an EIS MUL
 # of 7*6 must place the low word 42 in R1 and store it to memory; an FP11 round trip (int->float, ADDF,

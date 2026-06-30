@@ -1,0 +1,35 @@
+// Synthetic test for engine extension E4 -- addrmode POSITIONAL ARGUMENT BINDING.
+//
+// One addrmode `m ( x )` (formal parameter `x`) with two register rules selected by `x`.
+// A single instruction binds the SAME addrmode to two operands through two DIFFERENT encode
+// fields: `a:3 -> op1 @m(a)` and `b:3 -> op2 @m(b)`. Without E4 the addrmode's selector would
+// bind to one field name and both operands would resolve to the same register; with the
+// positional binding `@m(a)` / `@m(b)` each operand resolves through its own field.
+//
+// Encoding (8-bit): op(2)=0, a(3), b(3). Byte 0b00_010_101 = 0x15 -> a=2, b=5
+//   => op1 = r2, op2 = r5 (two DIFFERENT registers, proving positional binding).
+
+arch "targ" {
+
+    name "E4 addrarg test";
+
+    endian little;
+    byte_size 8;
+    word_size 32;
+    address_size 32;
+
+    register_file {
+        group R {
+            [ 8 ** #i32 r?:0 ]
+        }
+    }
+
+}
+
+addrmode m ( x ) {
+    x < 0x08 => #i32 reg [ r0, r1, r2, r3, r4, r5, r6, r7 ] ;
+}
+
+insn two : encode #i8 ( op:2 = 0x0, a:3 -> op1 @m(a), b:3 -> op2 @m(b) ),
+    disasm ( mnemonic : "two", operands : op1, op2 )
+    { r0 = r0; }

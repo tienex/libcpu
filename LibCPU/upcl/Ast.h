@@ -27,16 +27,40 @@ namespace Upcl {
 // ---- types ----------------------------------------------------------------
 
 // A UPCL type literal: #i<width> (integer), #f<width> (float), #v<lanes>:<width>
-// (vector). Parsed from a TokType spelling like "#i16" / "#f80" / "#v4:32".
+// (vector), or #<kind><width>x<lanes> (the general vector form -- #i32x4 == #v4:32).
+// Optional suffixes: a bit-order (:lsb/:msb) then a byte-order (:be/:le/:me).
+// Parsed from a TokType spelling like "#i16" / "#f80" / "#v4:32" / "#i32x4:msb:be".
 typedef enum _TYPE_KIND { TypeInt, TypeFloat, TypeVector } TYPE_KIND;
+
+// An optional byte-order on a type literal: `#i32:be` / `:le` / `:me` (or the long spellings
+// `:big` / `:little` / `:mid`). Default = the arch's declared endianness. `Middle` is the PDP-11
+// 32-bit word order (the two 16-bit halves big-endian-ordered, each half little-endian: 2-3-0-1).
+typedef enum _TYPE_ENDIAN { EndianDefault, EndianLittle, EndianBig, EndianMiddle } TYPE_ENDIAN;
+
+// An optional bit-numbering on a type literal: `#i16:lsb` (bit 0 is least-significant -- the
+// default, current behaviour) / `#i16:msb` (bit 0 is most-significant, IBM big-endian bit
+// numbering). Orthogonal to byte-order; written before it (`#i16:msb:be`). `BitDefault` == lsb.
+typedef enum _TYPE_BITORDER { BitDefault, BitLsb, BitMsb } TYPE_BITORDER;
 
 class Type {
 public:
-    TYPE_KIND   Kind  = TypeInt;
-    UINT32      Width = 0;       // element width in bits
-    UINT32      Lanes = 0;       // vector lane count (#v only)
-    std::string Spelling;       // "#i16"
-    SRC_LOC     Loc   = 0;
+    TYPE_KIND     Kind    = TypeInt;
+    UINT32        Width   = 0;       // element width in bits
+    UINT32        Lanes   = 0;       // vector lane count (#v4:32 / #i32x4)
+    TYPE_ENDIAN   Endian  = EndianDefault;  // `#i32:be`/:le/:me byte-order override (default = arch)
+                                            // WIRED when the type appears as an addrmode-rule type
+                                            //   (`=> #i32:be imm ;`) -- EndianBig drives ImmBigEndian.
+                                            // TODO: endian suffix used as a CAST in a semantic body
+                                            //   (`[ #i32:be expr ]`) is parsed and stored here but NOT
+                                            //   consulted by the decoder; the cast type's Endian is not
+                                            //   threaded into Semantics / value-lowering (analogous to
+                                            //   the :msb bit-order TODO below).
+    TYPE_BITORDER BitOrder = BitDefault;    // `#i16:lsb`/:msb bit-numbering (default = lsb)
+                                            // TODO: msb bit-order honored where applicable -- parsed
+                                            //   and stored, but the bit-slice operator [a:b] still
+                                            //   numbers lsb-first (default); see Semantics ExprBitSlice.
+    std::string   Spelling;          // "#i16" / "#i32x4:msb:be"
+    SRC_LOC       Loc     = 0;
 };
 
 // ---- expressions ----------------------------------------------------------
@@ -186,11 +210,30 @@ public:
     std::string Reg;     // a base register name ("" if a displacement / indexed term)
     bool        Disp = false;   // a displacement term
     UINT32      DispBits = 0;    // 0 = the addrmode's default disp clause; else fixed (8/16)
+    bool        DispBigEndian = false; // `disp be` / `disp8 be` / `disp16 be`: read this
+                                      //   displacement big-endian, overriding the arch endianness.
+    // A displacement may be FIXED-width (DispBits / the addrmode default, the classic CISC form) or
+    // SELF-DESCRIBING variable-length (`disp varlen`): the top bits of its first byte select the width
+    // at decode time (NS32000: 1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit, big-endian, sign-
+    // extended). A rule's `Mem` list may carry several `disp` terms, each consumed left-to-right
+    // against the advancing tail cursor (NS32000 memory-relative modes carry two displacements).
+    enum class DispEncoding { Fixed, VarLen };
+    DispEncoding DispKind = DispEncoding::Fixed;
     // A FIELD-INDEXED base register: `%REG[ <group>, <field> ]` -- the base is group <group>'s element
     // selected at decode by the value of decoder field <field>. Collapses one rule per register into
     // one (the PDP-11's `%M[ %REG[R, dr] + disp ]` covers all eight registers).
     std::string RegGroup;       // "" if not an indexed term
     std::string RegField;       // the decoder field that selects the register within the group
+    // NESTED SCALED-INDEX dispatch (`@<addrmode>[index] + %REG[group, field] * <scale>`): the term
+    // reads ONE extra "index byte" laid out (basegen:NestedSelBits)(ireg:NestedRegBits), recurses into
+    // the named addrmode with `basegen` as its single selector parameter to form the base EA, then adds
+    // R[ireg] * Scale (the NS32000 scaled-index mode [Rn:B/W/D/Q]). The nested base mode may itself read
+    // a `disp varlen`, so the recursion composes with the variable-length displacement path. RegField is
+    // the index-register field name (`ireg`); RegGroup is its register group (`R`).
+    std::string NestedAddrMode;     // "" if not a nested-dispatch term; else the addrmode to recurse into
+    UINT32      NestedSelBits = 0;  // width of the base-gen selector in the index byte (NS32000: 5)
+    UINT32      NestedRegBits = 0;  // width of the index-register field in the index byte (NS32000: 3)
+    UINT32      Scale = 1;          // scale applied to the index register (1/2/4/8)
 };
 class AddrRule {
 public:
@@ -202,6 +245,18 @@ public:
     // of different widths -- the PDP-11 MOVB writes a full 16-bit register (sign-extended) but only a
     // byte to memory, and the register-direct byte modes read the low byte of a 16-bit register.
     UINT32                   DataBits = 0;
+    // The operand is an IMMEDIATE value embedded in the instruction stream (not a register, not a
+    // memory EA): `=> #i32:be imm ;`. It consumes (operand-width / 8) bytes from the tail at the
+    // current cursor and yields a literal of the rule's pinned width. The byte order is the rule
+    // type's `:be`/`:le` endianness suffix (or a trailing `imm be` / `imm le`), big-endian for the
+    // NS32000 immediate (gen 0x14), else the arch endianness. Distinct from `disp varlen` (a self-
+    // describing variable-length displacement): this is fixed-width and a literal, so disasm and
+    // semantics treat it as an immediate.
+    bool                     IsImm = false;
+    bool                     ImmBigEndian = false;    // the immediate is read big-endian
+    bool                     ImmMiddleEndian = false; // the immediate is read in PDP-11 middle-endian
+                                          //   order (2-3-0-1): bytes b0..b3 -> (b1<<24)|(b0<<16)|(b3<<8)|b2.
+                                          //   Only meaningful at 32-bit width; other widths fall back to little.
     std::vector<std::string> RegMap;             // IsReg: the registers the bound field selects
     std::vector<AddrTerm>    Mem;                // !IsReg: base registers + displacement terms
     // Side-effect blocks: `pre { ... }` runs BEFORE the effective address is taken (autodecrement
@@ -244,6 +299,13 @@ public:
     std::string              AddrMode;    // `-> op @ <addrmode>`: the field selects through an
                                           //   addressing mode (a register or a memory address,
                                           //   reading a variable-length displacement).
+    std::vector<std::string> AddrModeArgs;// `-> op @<addrmode>( <field>, ... )`: POSITIONAL
+                                          //   arguments binding the addrmode's declared formal
+                                          //   parameters to these ACTUAL decoder field names, so
+                                          //   one `addrmode gen ( g )` can serve two operand slots
+                                          //   reading different fields (gen1 -> src, gen2 -> dst).
+                                          //   Empty => the legacy by-name binding (fields read from
+                                          //   the global decode map, byte-identical to before).
     bool                     HasImplicitImm = false; // an implicit operand carrying no encoding
     UINT64                   ImplicitImm = 0;     //   bits: `name = <const>` binds the operand to
                                           //   a fixed immediate (e.g. a shift-by-1's count), and
@@ -252,6 +314,10 @@ public:
     bool                     SignExt = false; // `-> op sx`: sign-extend the field value to the
                                           //   machine word width (e.g. `0x83 /digit ib`'s imm8
                                           //   becomes a 16-bit operand). Architecture-neutral.
+    bool                     BigEndian = false; // `-> op be`: extract this field big-endian
+                                          //   regardless of the arch `endian` setting. Needed
+                                          //   for mixed-endian ISAs (e.g. NS32000 stores its
+                                          //   immediates big-endian inside a little-endian arch).
     bool                     Tail = false; // the field follows an `@addrmode` operand, so it is
                                           //   positioned in the byte tail AFTER that mode's
                                           //   variable-length displacement (e.g. the immediate of
@@ -265,6 +331,13 @@ public:
     SRC_LOC                Loc = 0;
     UINT32                 WordBits = 0;   // total instruction width (from the `#iN` word type)
     std::vector<EncField>  Fields;         // MSB-first; widths sum to WordBits
+    // Optional decode priority (`encode #iN ( ... ) priority N`). When SEVERAL encodings match the
+    // same bytes, the highest-priority alternative wins outright; equal priorities fall back to the
+    // existing most-constant-bits rule. The default 0 leaves every existing ISA's decode unchanged --
+    // it only takes effect when an encoding is given an explicit non-zero priority to break a
+    // structural overlap that the constant-bit count resolves wrongly (e.g. an NS32000 Format-0 Bcond
+    // byte vs. a wider Format-4 ALU word that coincidentally matches the same leading byte).
+    INT32                  Priority = 0;
 
     UINT32 TotalBits () CONST {
         UINT32 N = 0;
@@ -574,6 +647,17 @@ public:
     std::string              FullName;      // name "...";
     SRC_LOC                  Loc = 0;
     bool                     Little = true;
+    bool                     LeWord = false; // `endian little word`: the multi-byte fixed opcode
+                                          //   WORD of every encoding is itself a little-endian
+                                          //   INTEGER in memory (low byte at the lowest address),
+                                          //   so each alternative's base word is byte-reversed
+                                          //   before the MSB-first field extraction. Set ONLY for
+                                          //   ISAs whose opcode word is a true LE scalar (NS32000):
+                                          //   byte-stream LE arches (6502/pdp11/8086) place the
+                                          //   opcode byte FIRST and must NOT be reversed, so this
+                                          //   stays false for them. Distinct from the decoder's
+                                          //   uniform-fixed-width auto-detection (Alpha/MIPS), which
+                                          //   needs no opt-in because every word is the same size.
     UINT32                   ByteSize = 0;   // old .def: byte_size
     UINT32                   WordSize = 0;
     UINT32                   FloatSize = 0;  // old .def: float_size

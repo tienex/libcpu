@@ -66,10 +66,90 @@ bool
 Parser::ExpectInt (UINT64 *pOut, CHAR8 CONST *pContext)
 {
     if (m_Cur.Kind == TokInt) { *pOut = m_Cur.Int; Advance (); return true; }
+    // A named constant stands in for an integer literal anywhere one is expected (an encode
+    // match value, a field width, a word size, ...). It must be declared before this use.
+    if (m_Cur.Kind == TokIdent && LookupConst (m_Cur.Text, pOut)) { Advance (); return true; }
     std::string Msg = std::string ("expected an integer ") + pContext
                       + ", found " + TokenName (m_Cur.Kind);
     m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), Msg);
     return false;
+}
+
+// True when Name names a declared `const`; writes its folded value to *pOut.
+bool
+Parser::LookupConst (std::string CONST &Name, UINT64 *pOut) CONST
+{
+    auto It = m_Consts.find (Name);
+    if (It == m_Consts.end ()) { return false; }
+    *pOut = It->second;
+    return true;
+}
+
+// Fold a `const` initializer to an integer at parse time, reusing the expression AST. Only the
+// compile-time-evaluable forms are accepted: integer literals, references to ALREADY-DECLARED
+// consts, and the usual unary / binary / select / parenthesised operators over them. A reference
+// to a register, decode field, meta value or any runtime construct is NOT constant and is rejected
+// by the caller (the fold simply fails). Returns false on a non-constant initializer.
+bool
+Parser::FoldConstExpr (Expr *pExpr, UINT64 *pOut)
+{
+    if (pExpr == nullptr) { return false; }
+    switch (pExpr->Kind) {
+    case ExprInt:
+        *pOut = pExpr->Int;
+        return true;
+
+    case ExprName:
+        return LookupConst (pExpr->Name, pOut);
+
+    case ExprUnary: {
+        UINT64 A;
+        if (!FoldConstExpr (pExpr->Args[0], &A)) { return false; }
+        if (pExpr->Op == TokNot)   { *pOut = (A != 0) ? 0 : 1; return true; }
+        if (pExpr->Op == TokTilde) { *pOut = ~A;               return true; }
+        if (pExpr->Op == TokMinus) { *pOut = (UINT64) (-(INT64) A); return true; }
+        return false;
+    }
+
+    case ExprSelect: {
+        UINT64 C;
+        if (!FoldConstExpr (pExpr->Args[0], &C)) { return false; }
+        return FoldConstExpr ((C != 0) ? pExpr->Args[1] : pExpr->Args[2], pOut);
+    }
+
+    case ExprBinary: {
+        UINT64 A, B;
+        if (!FoldConstExpr (pExpr->Args[0], &A)) { return false; }
+        if (!FoldConstExpr (pExpr->Args[1], &B)) { return false; }
+        switch (pExpr->Op) {
+        case TokPlus:   *pOut = A + B; return true;
+        case TokMinus:  *pOut = A - B; return true;
+        case TokStar:   *pOut = A * B; return true;
+        case TokSlash:  if (B == 0) { return false; } *pOut = A / B; return true;
+        case TokPercent: if (B == 0) { return false; } *pOut = A % B; return true;
+        case TokAmp:    *pOut = A & B; return true;
+        case TokPipe:   *pOut = A | B; return true;
+        case TokCaret:  *pOut = A ^ B; return true;
+        case TokShl:    *pOut = A << (B & 63); return true;
+        case TokShr:    *pOut = A >> (B & 63); return true;
+        case TokAndCom: *pOut = A & ~B; return true;
+        case TokOrCom:  *pOut = A | ~B; return true;
+        case TokXorCom: *pOut = A ^ ~B; return true;
+        case TokEqEq:   *pOut = (A == B) ? 1 : 0; return true;
+        case TokNotEq:  *pOut = (A != B) ? 1 : 0; return true;
+        case TokLt:     *pOut = (A <  B) ? 1 : 0; return true;
+        case TokLtEq:   *pOut = (A <= B) ? 1 : 0; return true;
+        case TokGt:     *pOut = (A >  B) ? 1 : 0; return true;
+        case TokGtEq:   *pOut = (A >= B) ? 1 : 0; return true;
+        case TokAndAnd: *pOut = (A != 0 && B != 0) ? 1 : 0; return true;
+        case TokOrOr:   *pOut = (A != 0 || B != 0) ? 1 : 0; return true;
+        default: return false;
+        }
+    }
+
+    default:
+        return false;
+    }
 }
 
 // Error recovery: consume up to and including the next Kind (or end of file), so a
@@ -85,8 +165,10 @@ Parser::SyncTo (TOKEN_KIND Kind)
 
 // ---- old .def helpers -----------------------------------------------------
 
-// Parse a #i16 / #f80 / #v4:32 type literal (m_Cur is TokType). The spelling carries
-// everything; decode the kind letter, the element width, and the vector lane count.
+// Parse a type literal `#<kind><width>(xN)?(:lsb|:msb)?(:le|:me|:be)?` (m_Cur is TokType). The
+// spelling carries everything; decode the kind letter, the element width, the vector lane count
+// (`#v4:32` legacy `lanes:width` form OR the general `#i32x4` `xlanes` form -- BOTH yield a vector
+// of lanes=4 element width=32), then up to two trailing suffixes: a bit-order then a byte-order.
 Type *
 Parser::ParseType ()
 {
@@ -100,13 +182,49 @@ Parser::ParseType ()
         size_t I = 2;
         UINT32 A = 0;
         while (I < S.size () && S[I] >= '0' && S[I] <= '9') { A = A * 10 + (UINT32) (S[I] - '0'); I++; }
-        if (T->Kind == TypeVector && I < S.size () && S[I] == ':') {
+        if (T->Kind == TypeVector && I < S.size () && S[I] == ':' && I + 1 < S.size () && S[I + 1] >= '0' && S[I + 1] <= '9') {
+            // Legacy `#v<lanes>:<width>`: the digits before ':' are the lane count, those after the
+            // element width.
             T->Lanes = A; I++;
             UINT32 B = 0;
             while (I < S.size () && S[I] >= '0' && S[I] <= '9') { B = B * 10 + (UINT32) (S[I] - '0'); I++; }
             T->Width = B;
+        } else if (I < S.size () && S[I] == 'x' && I + 1 < S.size () && S[I + 1] >= '0' && S[I + 1] <= '9') {
+            // General `#<kind><width>x<lanes>`: the leading digits are the element width, those after 'x'
+            // the lane count. `#i32x4` == `#v4:32` (a vector of 4 lanes of i32). Any kind may be vectored.
+            T->Kind = TypeVector;
+            T->Width = A; I++;
+            UINT32 L = 0;
+            while (I < S.size () && S[I] >= '0' && S[I] <= '9') { L = L * 10 + (UINT32) (S[I] - '0'); I++; }
+            if (L == 0) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a vector type's lane count `xN` must be a positive integer"); L = 1; }
+            T->Lanes = L;
         } else {
             T->Width = A;
+        }
+        // Up to two trailing `:word` suffixes, in this order (both optional): a bit-order
+        // (`:lsb` / `:msb`) then a byte-order (`:be` / `:le` / `:me` / `:big` / `:little` / `:mid`).
+        // Dispatch each by its spelling; bit-order must precede byte-order, and neither may repeat.
+        bool HaveBit = false;
+        bool HaveByte = false;
+        while (I < S.size () && S[I] == ':') {
+            size_t J = I + 1;
+            while (J < S.size () && S[J] != ':') { J++; }
+            std::string W = S.substr (I + 1, J - (I + 1));
+            if (W == "lsb" || W == "msb") {
+                if (HaveByte) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "a bit-order suffix (:lsb/:msb) must precede the byte-order suffix"); }
+                else if (HaveBit) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "duplicate bit-order suffix on a type"); }
+                T->BitOrder = (W == "msb") ? BitMsb : BitLsb;
+                HaveBit = true;
+            } else if (W == "be" || W == "big" || W == "le" || W == "little" || W == "me" || W == "mid") {
+                if (HaveByte) { m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "duplicate byte-order suffix on a type"); }
+                if      (W == "be" || W == "big")    { T->Endian = EndianBig; }
+                else if (W == "le" || W == "little") { T->Endian = EndianLittle; }
+                else                                 { T->Endian = EndianMiddle; }   // me / mid
+                HaveByte = true;
+            } else {
+                m_pDiag->Report (SevError, T->Loc, m_Cur.Range (), "unknown type suffix (expected a bit-order lsb/msb or a byte-order be/le/me)");
+            }
+            I = J;
         }
     }
     Advance ();
@@ -323,6 +441,17 @@ Parser::ParsePrimary ()
         if (m_Cur.Kind == TokLParen) {
             Expr *E = new Expr (ExprCall); E->Loc = Loc; E->Name = Name;
             ParseCallArgs (E);
+            return E;
+        }
+        // A declared `const` resolves here to its literal value: it substitutes for a number
+        // anywhere an expression is parsed (an addrmode condition, a semantic-body mask, ...),
+        // so it folds identically to having written the literal. A call name (handled above)
+        // is never shadowed, and the const table is only consulted for a bare identifier, so
+        // registers / decode fields / addrmode formals -- resolved by name later in Semantics --
+        // are unaffected unless a const deliberately reuses one of their names.
+        UINT64 KVal = 0;
+        if (LookupConst (Name, &KVal)) {
+            Expr *E = new Expr (ExprInt); E->Loc = Loc; E->Int = KVal;
             return E;
         }
         Expr *E = new Expr (ExprName); E->Loc = Loc; E->Name = Name;
@@ -1005,6 +1134,11 @@ Parser::ParseArchItem (Arch *pArch)
         if (AtKeyword ("little") || AtKeyword ("both")) { pArch->Little = true; Advance (); }
         else if (AtKeyword ("big")) { pArch->Little = false; Advance (); }
         else { std::string M = "expected 'little', 'big' or 'both'"; m_pDiag->Report (SevError, m_Cur.Loc, M); }
+        // Optional `word` modifier: the multi-byte fixed opcode word of every encoding is a true
+        // little-endian INTEGER in memory (low byte first), so each alternative's base word is
+        // byte-reversed before MSB-first field extraction (NS32000). Only meaningful for a
+        // little-endian arch; a byte-stream LE ISA (6502/pdp11) places the opcode byte first.
+        if (AtKeyword ("word")) { pArch->LeWord = true; Advance (); }
         Expect (TokSemi, "after endian");
     } else if (AtKeyword ("word_size")) {
         Advance (); UINT64 V = 0; ExpectInt (&V, "as the word size"); pArch->WordSize = (UINT32) V;
@@ -1031,6 +1165,8 @@ Parser::ParseArchItem (Arch *pArch)
         ParseCpu (pArch);
     } else if (AtKeyword ("formats")) {
         ParseFormats (pArch);
+    } else if (AtKeyword ("const")) {
+        ParseConstDecl ();                                          // a named constant, in-arch
     } else if (AtKeyword ("insn") || m_Cur.Kind == TokLBracket) {
         pArch->Insns.push_back (ParseInsnDecl ());                  // [attrs]? insn ...
     } else if (m_Cur.Kind == TokIdent) {
@@ -1154,6 +1290,17 @@ Parser::ParseEncAlt ()
     }
     Expect (TokRParen, "to close the encoding field list");
 
+    // Optional `priority N` -- a decode tie-break weight. When several encodings match the same
+    // bytes the highest priority wins outright; equal priorities fall back to the most-constant-bits
+    // rule (so omitting it, the default 0, is exactly the historical behaviour). It is the minimal
+    // declarative hook for a structural overlap the bit count alone cannot resolve (the NS32000
+    // Format-0 Bcond byte vs. a wider Format-4 ALU word that matches the same leading byte).
+    if (AtKeyword ("priority")) {
+        Advance ();
+        if (m_Cur.Kind == TokInt) { A->Priority = (INT32) m_Cur.Int; Advance (); }
+        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an integer after 'priority'"); }
+    }
+
     // Decide which fields live in the fixed opcode word and which are in the byte tail (read after
     // any addressing-mode extension words). When the word width is known (`encode #iN`), a field is
     // a tail field exactly when it starts BEYOND the word -- so all the selector sub-fields inside
@@ -1241,9 +1388,24 @@ Parser::ParseEncField (EncField *pField)
         if (AtKeyword ("rel")) { pField->Relative = true; Advance (); }
         // -> op sx : sign-extend the field value to the machine word (a short signed immediate).
         if (AtKeyword ("sx")) { pField->SignExt = true; Advance (); }
+        // -> op be : extract this field big-endian, overriding the arch endian setting.
+        if (AtKeyword ("be")) { pField->BigEndian = true; Advance (); }
         // -> op @<addrmode> : the field selects through an addressing mode.
         if (m_Cur.Kind == TokMacroIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
         else if (Accept (TokAt) && m_Cur.Kind == TokIdent) { pField->AddrMode = m_Cur.Text; Advance (); }
+        // -> op @<addrmode>( <field>, ... ) : POSITIONAL arguments (E4). The arguments are decoder
+        // field names bound, in order, to the addrmode's declared formal parameters -- so the same
+        // addrmode serves two operand slots reading different fields (`@gen(gen1)` / `@gen(gen2)`).
+        // A reference with no argument list keeps the legacy by-name binding (AddrModeArgs empty).
+        if (!pField->AddrMode.empty () && Accept (TokLParen)) {
+            if (m_Cur.Kind != TokRParen) {
+                do {
+                    if (m_Cur.Kind == TokIdent) { pField->AddrModeArgs.push_back (m_Cur.Text); Advance (); }
+                    else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a decoder field name as an addrmode argument"); break; }
+                } while (Accept (TokComma));
+            }
+            Expect (TokRParen, "to close the addrmode argument list");
+        }
     }
     return true;
 }
@@ -1288,8 +1450,15 @@ Parser::ParseAddrRule ()
     // `pre { ... }` -- statements run before the effective address is taken (autodecrement -(Rn)).
     if (AtKeyword ("pre")) { Advance (); ParseBlock (&R->Pre); }
     // An optional leading type fixes this rule's operand width (`=> #i8 reg[..]` / `=> #i8 %M[..]`),
-    // overriding the addrmode default -- byte vs word operands, the PDP-11 .B forms.
-    if (m_Cur.Kind == TokType) { Type *T = ParseType (); R->DataBits = (T != nullptr) ? T->Width : 0; }
+    // overriding the addrmode default -- byte vs word operands, the PDP-11 .B forms. A `:be`/`:le`
+    // endianness suffix on the type (`#i32:be imm`) pins the operand's byte order (used by `imm`).
+    TYPE_ENDIAN RuleEndian = EndianDefault;
+    if (m_Cur.Kind == TokType) {
+        Type *T = ParseType ();
+        R->DataBits = (T != nullptr) ? T->Width : 0;
+        RuleEndian  = (T != nullptr) ? T->Endian : EndianDefault;
+        delete T;
+    }
     if (AtKeyword ("reg")) {
         Advance ();
         R->IsReg = true;
@@ -1298,6 +1467,19 @@ Parser::ParseAddrRule ()
             do { if (m_Cur.Kind == TokIdent) { R->RegMap.push_back (m_Cur.Text); Advance (); } } while (Accept (TokComma));
         }
         Expect (TokRBracket, "to close the register list");
+    } else if (AtKeyword ("imm")) {
+        // The operand is an IMMEDIATE value embedded in the instruction stream (E5): `=> #i32:be imm`.
+        // It consumes (operand-width / 8) bytes from the tail and yields a literal of the rule's pinned
+        // width -- a true immediate, not a memory EA and not a self-describing varlen displacement. The
+        // byte order is the type's `:be`/`:le` suffix (NS32000 stores immediates big-endian); a trailing
+        // `imm be` / `imm le` keyword is also accepted. Default = the arch endianness.
+        Advance ();
+        R->IsImm = true;
+        if      (RuleEndian == EndianBig)    { R->ImmBigEndian = true; }
+        else if (RuleEndian == EndianMiddle) { R->ImmMiddleEndian = true; }
+        if (AtKeyword ("be")) { R->ImmBigEndian = true; R->ImmMiddleEndian = false; Advance (); }
+        else if (AtKeyword ("le")) { R->ImmBigEndian = false; R->ImmMiddleEndian = false; Advance (); }
+        else if (AtKeyword ("me")) { R->ImmMiddleEndian = true; R->ImmBigEndian = false; Advance (); }
     } else if (AtKeyword ("mem") || (m_Cur.Kind == TokMeta && (m_Cur.Text == "M" || m_Cur.Text == "MEM"))) {
         // The operand is a MEMORY cell at the address that follows. Spelled `%M[..]` (consistent with
         // memory access elsewhere) or the legacy `mem[..]`; either way it declares the operand's
@@ -1306,7 +1488,34 @@ Parser::ParseAddrRule ()
         Expect (TokLBracket, "to open the address");
         do {
             AddrTerm T;
-            if (m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {        // %REG[ group, field ]
+            if (m_Cur.Kind == TokMacroIdent) {                          // @<addrmode>[index] (+ %REG[..] * N)
+                // NESTED SCALED-INDEX dispatch: read one index byte (basegen:5)(ireg:3), recurse into the
+                // named addrmode with `basegen` to form the base EA, then add R[ireg] * Scale. The index
+                // register and group come from the `%REG[group, field]` term that follows; the scale from
+                // its `* <int>` suffix. NS32000 default index-byte layout: 5-bit base gen + 3-bit ireg.
+                T.NestedAddrMode = m_Cur.Text;
+                T.NestedSelBits  = 5;
+                T.NestedRegBits  = 3;
+                Advance ();
+                Expect (TokLBracket, "after the nested addrmode name");
+                if (m_Cur.Kind == TokIdent) { Advance (); }            // the `[index]` keyword (informational)
+                Expect (TokRBracket, "to close the nested-dispatch index");
+                // `+ %REG[group, field] * <scale>` -- the index register field and its scale, folded onto
+                // this same nested term so it is one self-contained scaled-index operation.
+                if (Accept (TokPlus) && m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {
+                    Advance ();
+                    Expect (TokLBracket, "after %REG");
+                    if (m_Cur.Kind == TokIdent) { T.RegGroup = m_Cur.Text; Advance (); }
+                    Expect (TokComma, "in %REG[group, field]");
+                    if (m_Cur.Kind == TokIdent) { T.RegField = m_Cur.Text; Advance (); }
+                    Expect (TokRBracket, "to close %REG[...]");
+                    if (Accept (TokStar)) {
+                        if (m_Cur.Kind == TokInt) { T.Scale = (UINT32) m_Cur.Int; Advance (); }
+                        else { m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected an integer index scale after '*'"); }
+                    }
+                }
+                R->Mem.push_back (T);
+            } else if (m_Cur.Kind == TokMeta && m_Cur.Text == "REG") {  // %REG[ group, field ]
                 Advance ();
                 Expect (TokLBracket, "after %REG");
                 if (m_Cur.Kind == TokIdent) { T.RegGroup = m_Cur.Text; Advance (); }
@@ -1321,6 +1530,14 @@ Parser::ParseAddrRule ()
                 else if (Id == "disp8")  { T.Disp = true; T.DispBits = 8; }
                 else if (Id == "disp16") { T.Disp = true; T.DispBits = 16; }
                 else                     { T.Reg = Id; }
+                // disp varlen : a SELF-DESCRIBING variable-length displacement -- the first tail byte's
+                // top bits select the encoded width at decode time (the NS32000 scheme; its bytes are
+                // intrinsically big-endian, so DispBits is unused). Several disp terms may appear in one
+                // rule (e.g. NS32000 memory-relative), consumed left-to-right against the advancing tail.
+                if (T.Disp && AtKeyword ("varlen")) { T.DispKind = AddrTerm::DispEncoding::VarLen; Advance (); }
+                // disp be : read this displacement big-endian, overriding the arch endianness. (Redundant
+                // with varlen, which is already big-endian, but accepted so `disp varlen be` parses.)
+                if (T.Disp && AtKeyword ("be")) { T.DispBigEndian = true; Advance (); }
                 R->Mem.push_back (T);
             }
         } while (Accept (TokPlus));
@@ -1564,6 +1781,41 @@ Parser::ParseDecoderOperands (Arch *pArch)
     Expect (TokSemi, "after decoder_operands");
 }
 
+// `const <name> = <const-expr> ;` -- a named integer constant. The initializer is the ordinary
+// compile-time-evaluable expression grammar (literals, prior consts, and the usual operators); it
+// is folded immediately and the name bound in the const table, so it stands in for the literal
+// anywhere a constant is allowed thereafter. Diagnostics: a name that is already a const (a
+// duplicate), or an initializer that is not constant (it names a register / field / runtime value).
+void
+Parser::ParseConstDecl ()
+{
+    Advance ();                                     // 'const'
+    SRC_LOC NameLoc = m_Cur.Loc;
+    std::string Name;
+    if (m_Cur.Kind == TokIdent) { Name = m_Cur.Text; Advance (); }
+    else {
+        m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), "expected a name after 'const'");
+        SyncTo (TokSemi);
+        return;
+    }
+    if (!Expect (TokAssign, "after the const name")) { SyncTo (TokSemi); return; }
+    Expr  *Init = ParseExpr (0);
+    UINT64 Value = 0;
+    bool   Folded = FoldConstExpr (Init, &Value);
+    delete Init;
+    if (!Folded) {
+        m_pDiag->Report (SevError, NameLoc, m_Cur.Range (),
+                         std::string ("the initializer of const '") + Name
+                         + "' is not a compile-time constant");
+    } else if (m_Consts.find (Name) != m_Consts.end ()) {
+        m_pDiag->Report (SevError, NameLoc, m_Cur.Range (),
+                         std::string ("duplicate const '") + Name + "'");
+    } else {
+        m_Consts[Name] = Value;
+    }
+    Expect (TokSemi, "after a const declaration");
+}
+
 // `address_display flat;` (the default) or `address_display segmented shift <N> offset <M>;` --
 // how a code address is shown. Segmented renders it as seg:off (e.g. x86 real-mode CS:IP): off is
 // the low <M> bits, seg is the rest divided by 2^<N>, so seg*2^N + off recovers the linear address.
@@ -1626,7 +1878,7 @@ Parser::SyncToTopLevel ()
             || AtKeyword ("regset") || AtKeyword ("decoder_operands") || AtKeyword ("group")
             || AtKeyword ("features") || AtKeyword ("cpu") || AtKeyword ("formats")
             || AtKeyword ("include") || AtKeyword ("disasm") || AtKeyword ("addrmode")
-            || AtKeyword ("address_display")) {
+            || AtKeyword ("address_display") || AtKeyword ("const")) {
             return;
         }
         Advance ();
@@ -1878,6 +2130,8 @@ Parser::ParseToplevel (Module *M)
             Advance ();
         } else if (AtKeyword ("include")) {
             ParseInclude (M);
+        } else if (AtKeyword ("const")) {
+            ParseConstDecl ();                           // a named constant (arch-independent)
         } else if (AtKeyword ("arch")) {
             M->Archs.push_back (ParseArch ());
         } else if (!M->Archs.empty () && AtKeyword ("features")) {
