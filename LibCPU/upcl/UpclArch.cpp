@@ -1058,17 +1058,35 @@ private:
     }
 };
 
+// Collect features transitively for one Cpu into Out.
+// Visited tracks names already processed (prevents redundant re-traversal and guards
+// against any cycle that slipped past parse-time validation).
+static void
+CollectFeatures (Cpu *C, std::map<std::string, Cpu *> CONST &Index,
+                 std::set<std::string> &Visited, std::set<std::string> &Out)
+{
+    if (!Visited.insert (C->Name).second) { return; }    // already done
+    for (std::string CONST &F : C->Features) { Out.insert (F); }
+    for (std::string CONST &PName : C->Extends) {
+        auto It = Index.find (PName);
+        if (It != Index.end ()) { CollectFeatures (It->second, Index, Visited, Out); }
+    }
+}
+
 // Resolve a CPU-model name to the set of features it enables. A null/unknown model
-// enables EVERY declared feature (the permissive default); a named model enables exactly
-// its feature list.
+// enables EVERY declared feature (the permissive default); a named model enables its
+// own features plus the transitive union of all extended parents' features.
 static std::set<std::string>
 ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
 {
     std::set<std::string> Out;
     if (pCpu != nullptr) {
+        std::map<std::string, Cpu *> Index;
+        for (Cpu *C : pArch->Cpus) { Index[C->Name] = C; }
         for (Cpu *C : pArch->Cpus) {
             if (C->Name == pCpu) {
-                for (std::string CONST &F : C->Features) { Out.insert (F); }
+                std::set<std::string> Visited;
+                CollectFeatures (C, Index, Visited, Out);
                 return Out;
             }
         }

@@ -1,0 +1,11 @@
+arch "_test_ext" {
+    name "extends test"; endian little; byte_size 8; word_size 16; address_size 16;
+    register_file { group R { [ #i16 r0 -> %PC ] } }
+}
+feature a { insn ia : encode #i16 ( op:16 = 0x0001 ), disasm ( mnemonic : "ia" ) { r0 = r0; } }
+feature b { insn ib : encode #i16 ( op:16 = 0x0002 ), disasm ( mnemonic : "ib" ) { r0 = r0; } }
+feature c { insn ic : encode #i16 ( op:16 = 0x0003 ), disasm ( mnemonic : "ic" ) { r0 = r0; } }
+cpu "base"  { a; }
+cpu "mid"   extends "base" { b; }
+cpu "top"   extends "mid", "c_holder" { }     // multiple inheritance: mid (a,b) + c_holder (c)
+cpu "c_holder" { c; }

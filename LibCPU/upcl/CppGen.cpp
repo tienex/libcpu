@@ -380,14 +380,30 @@ ExtractExpr (UINT32 BitPos, UINT32 Width, bool Little)
 
 // ---- feature resolution ---------------------------------------------------
 
+// Collect features transitively for one Cpu into Out.
+static void
+CollectFeatures (Cpu *C, std::map<std::string, Cpu *> CONST &Index,
+                 std::set<std::string> &Visited, std::set<std::string> &Out)
+{
+    if (!Visited.insert (C->Name).second) { return; }
+    for (std::string CONST &F : C->Features) { Out.insert (F); }
+    for (std::string CONST &PName : C->Extends) {
+        auto It = Index.find (PName);
+        if (It != Index.end ()) { CollectFeatures (It->second, Index, Visited, Out); }
+    }
+}
+
 static std::set<std::string>
 ResolveFeatures (Arch *pArch, CHAR8 CONST *pCpu)
 {
     std::set<std::string> Out;
     if (pCpu != nullptr) {
+        std::map<std::string, Cpu *> Index;
+        for (Cpu *C : pArch->Cpus) { Index[C->Name] = C; }
         for (Cpu *C : pArch->Cpus) {
             if (C->Name == pCpu) {
-                for (std::string CONST &F : C->Features) { Out.insert (F); }
+                std::set<std::string> Visited;
+                CollectFeatures (C, Index, Visited, Out);
                 return Out;
             }
         }

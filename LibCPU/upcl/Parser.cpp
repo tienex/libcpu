@@ -760,8 +760,9 @@ Parser::ParseFeatures (Arch *pArch)
     Expect (TokRBrace, "to close the features block");
 }
 
-// cpu "<name>" ("doc")? { <feature> ; ... }   -- a named bundle of features. Selecting it
-// enables exactly those features.
+// cpu "<name>" ("doc")? [extends "<p1>", "<p2>", ...] { <feature> ; ... }
+// A named bundle of features. Selecting it enables exactly those features plus the
+// transitive union of all extended parents' features (resolved post-parse).
 void
 Parser::ParseCpu (Arch *pArch)
 {
@@ -772,6 +773,15 @@ Parser::ParseCpu (Arch *pArch)
     else { std::string M = std::string ("expected the CPU model name as a string, found ") + TokenName (m_Cur.Kind);
            m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); }
     if (m_Cur.Kind == TokString) { C->Doc = m_Cur.Text; Advance (); }
+    // Optional: extends "<parent1>", "<parent2>", ...
+    if (AtKeyword ("extends")) {
+        Advance ();                                 // 'extends'
+        do {
+            if (m_Cur.Kind == TokString) { C->Extends.push_back (m_Cur.Text); Advance (); }
+            else { std::string M = std::string ("expected a parent CPU name as a string, found ") + TokenName (m_Cur.Kind);
+                   m_pDiag->Report (SevError, m_Cur.Loc, m_Cur.Range (), M); break; }
+        } while (Accept (TokComma));
+    }
     if (Expect (TokLBrace, "to open the CPU feature list")) {
         while (m_Cur.Kind != TokRBrace && m_Cur.Kind != TokEof) {
             if (m_Cur.Kind == TokIdent) { C->Features.push_back (m_Cur.Text); Advance (); }
@@ -2111,11 +2121,66 @@ Parser::ParseFeatureBlock (Module *M)
     Expect (TokRBrace, "to close the feature block");
 }
 
+// Inheritance validation state threaded through the DFS.
+struct InhCtx {
+    std::map<std::string, Cpu *>  CONST &Index;
+    std::map<std::string, INT32> &Color;   // 0 = unvisited, 1 = on-stack, 2 = done
+    DiagnosticEngine             *pDiag;
+};
+
+// DFS helper for ResolveInheritance. Returns false on cycle / unknown parent.
+static bool
+VisitCpu (Cpu *C, Cpu *pCaller, InhCtx &Ctx)
+{
+    INT32 &Col = Ctx.Color[C->Name];
+    if (Col == 2) { return true; }
+    if (Col == 1) {
+        std::string Msg = std::string ("cpu \"") + pCaller->Name
+            + "\" extends \"" + C->Name + "\": inheritance cycle detected";
+        Ctx.pDiag->Report (SevError, pCaller->Loc, Msg);
+        return false;
+    }
+    Col = 1;
+    for (std::string CONST &PName : C->Extends) {
+        auto It = Ctx.Index.find (PName);
+        if (It == Ctx.Index.end ()) {
+            std::string Msg = std::string ("cpu \"") + C->Name
+                + "\" extends unknown cpu \"" + PName + "\"";
+            Ctx.pDiag->Report (SevError, C->Loc, Msg);
+            Col = 2;
+            return false;
+        }
+        if (!VisitCpu (It->second, C, Ctx)) { Col = 2; return false; }
+    }
+    Col = 2;
+    return true;
+}
+
+// Post-parse pass: validate cpu `extends` lists and detect cycles.
+// Called after all Cpu nodes have been collected. Reports SevError for unknown parent
+// names and for inheritance cycles (a cpu that transitively extends itself).
+// The Cpu::Features vectors are intentionally LEFT UNCHANGED -- they list only the body's
+// own features. Transitive resolution happens at decode time (ResolveFeatures).
+static void
+ResolveInheritance (Arch *pArch, DiagnosticEngine *pDiag)
+{
+    std::map<std::string, Cpu *> Index;
+    for (Cpu *C : pArch->Cpus) { Index[C->Name] = C; }
+
+    std::map<std::string, INT32> Color;
+    InhCtx Ctx = { Index, Color, pDiag };
+    for (Cpu *C : pArch->Cpus) {
+        if (Color[C->Name] == 0) { VisitCpu (C, C, Ctx); }
+    }
+}
+
 Module *
 Parser::ParseModule ()
 {
     Module *M = new Module ();
     ParseToplevel (M);
+    // Validate cpu inheritance for all arches.
+    for (Arch *A : M->Archs) { ResolveInheritance (A, m_pDiag); }
     return M;
 }
 

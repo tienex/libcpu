@@ -903,6 +903,12 @@ foreach(_upcl ${LIBCPU_UPCL_EXAMPLES})
   add_test(NAME upcl.parse-${_upclname} COMMAND lcx upcl check "${_upcl}")
   set_tests_properties(upcl.parse-${_upclname} PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 endforeach()
+# _test_extends_cycle.upcl is an intentionally invalid file (cycle detection test): override
+# the auto-generated parse test so it passes when the cycle diagnostic is emitted -- clear the
+# FAIL_REGULAR_EXPRESSION and require the cycle error text to be present instead.
+set_tests_properties(upcl.parse-_test_extends_cycle PROPERTIES
+  FAIL_REGULAR_EXPRESSION ""
+  PASS_REGULAR_EXPRESSION "cycle detected")
 
 # The 6502 frontend is GENERATED from 6502.upcl (Cpu6502.generated.cpp, checked in and compiled
 # in place of a hand-written frontend). Guard against drift: regenerate it and confirm the
@@ -1122,6 +1128,31 @@ add_test(NAME upcl.engine-const COMMAND sh -c
    \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q '5 byte' && \
    \"$E\" upcl decode \"$M\" 0x31 0x78 0x56 0x34 0x12 | grep -q 'const.i32 0xf'")
 set_tests_properties(upcl.engine-const PROPERTIES FAIL_REGULAR_EXPRESSION "error|no encoding matched")
+
+# E-EXT -- cpu inheritance: `cpu "x" extends "a", "b" { }`. The test file declares three features
+# (a/b/c), four cpus (base={a}, mid extends base {b}, top extends mid,c_holder {}, c_holder={c}),
+# and one instruction per feature (ia/ib/ic at opcodes 0x0001/0x0002/0x0003).
+# Assertions:
+#   (1) check passes (extends syntax is valid, no errors)
+#   (2) @top disassembles ia (from base via mid -- transitive) -- proves inheritance chain
+#   (3) @top disassembles ic (from c_holder -- multiple inheritance) -- proves union
+#   (4) @base rejects ib (0x0002 -> "db") -- not in base's feature set
+#   (5) @base rejects ic (0x0003 -> "db") -- same
+#   (6) the cycle test file _test_extends_cycle.upcl fails check with a cycle diagnostic
+add_test(NAME upcl.engine-extends COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_extends.upcl'; \
+   MC='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_extends_cycle.upcl'; \
+   E='$<TARGET_FILE:lcx>'; \
+   printf '\\x01\\x00' > '${CMAKE_BINARY_DIR}/ext_ia.bin' && \
+   printf '\\x02\\x00' > '${CMAKE_BINARY_DIR}/ext_ib.bin' && \
+   printf '\\x03\\x00' > '${CMAKE_BINARY_DIR}/ext_ic.bin' && \
+   \"$E\" upcl check \"$M\" | grep -q '_test_ext' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ia.bin' --count 1 --arch \"upcl:$M@top\" | grep -q 'ia' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ic.bin' --count 1 --arch \"upcl:$M@top\" | grep -q 'ic' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ib.bin' --count 1 --arch \"upcl:$M@base\" | grep -q 'db' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ic.bin' --count 1 --arch \"upcl:$M@base\" | grep -q 'db' && \
+   ! \"$E\" upcl check \"$MC\" 2>/dev/null")
+set_tests_properties(upcl.engine-extends PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
 
 # NS32000 arch header + register file: the UPCL description must parse cleanly and report the
 # expected arch properties -- 32-bit little-endian word, R0..R7 general-purpose group, dedicated

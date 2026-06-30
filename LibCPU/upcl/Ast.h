@@ -483,11 +483,15 @@ public:
 // A CPU model: a named bundle of features (`cpu "v30" { base; ext_186; nec; }`).
 // Selecting it enables exactly those features; an instruction gated on a feature not in
 // the set is excluded from decode/translate.
+// An optional `extends "p1", "p2"` clause names parent CPU models; the enabled feature
+// set is the union of the body's features and the transitive closure of all parents'
+// features (multiple inheritance = set union, resolved post-parse with cycle detection).
 class Cpu {
 public:
     std::string              Name;
     SRC_LOC                  Loc = 0;
     std::string              Doc;
+    std::vector<std::string> Extends;    // parent cpu names from `extends "a", "b"`
     std::vector<std::string> Features;
 };
 
