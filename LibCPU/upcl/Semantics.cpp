@@ -1801,6 +1801,32 @@ Translator::EmitMacroStmt (Expr *pCall)
         return true;
     }
 
+    // $exec ( addr ) -- execute-one-instruction-and-return intrinsic (e.g. PDP-1/PDP-10 XCT). The
+    // argument is the effective address of the word to execute. We stash it in the dispatch-target
+    // scratch (CPU_STATE.DispPc -- survives the trap and is NOT a guest register, so it clobbers no
+    // architectural state) and trap with the reserved CPU_EXEC_ONE vector and a return address (the
+    // instruction after this one). The host run loop runs exactly one instruction at DispPc, then
+    // resumes with faithful execute semantics -- no per-frontend ISA copy.
+    if (pCall->Name == "exec") {
+        ICpuSmcEmitter *pSmc = nullptr;
+        if (!pCall->Args.empty ()
+            && SUCCEEDED (m_pE->QueryInterface (IID_ICpuSmcEmitter, (VOID **) &pSmc)) && pSmc != nullptr) {
+            Value Ea = EvalExpr (pCall->Args[0]);
+            pSmc->SetDispatchTarget (Use (Ea));
+            pSmc->Release ();
+        }
+        ICpuSyscallEmitter *pSys = nullptr;
+        if (SUCCEEDED (m_pE->QueryInterface (IID_ICpuSyscallEmitter, (VOID **) &pSys)) && pSys != nullptr) {
+            Value Ret = Const (m_WordBits, m_TrapReturnPc);
+            pSys->EmitSyscall ((UINT32) CPU_EXEC_ONE, Use (Ret));
+            pSys->Release ();
+        }
+        return true;
+    }
+    // A `$name(...)` statement that matched no builtin above is an undefined intrinsic -- never fall
+    // through to the user-macro table (the `@` sigil is for those). Fail the emit.
+    if (pCall->Builtin) { return false; }
+
     Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
     if (M == nullptr) { return false; }
 
@@ -1864,6 +1890,10 @@ Translator::EvalMacroCall (Expr *pCall)
         R.Float = true;
         return R;
     }
+
+    // A `$`-builtin in value position that matched none of the intrinsics above is undefined --
+    // do not resolve it against the user-macro table. Yield a zero constant.
+    if (pCall->Builtin) { return Const (m_WordBits, 0); }
 
     Macro *M = FindMacro (pCall->Name, pCall->Args.size ());
     if (M == nullptr) { return Const (m_WordBits, 0); }

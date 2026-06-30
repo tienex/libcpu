@@ -1736,7 +1736,10 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o700100 | grep -q ': law' && \
    \"$E\" upcl decode \"$P@pdp1\"    0o540100 | grep -q ': mus' && \
    \"$E\" upcl decode \"$P@pdp1mul\" 0o540100 | grep -q ': mul' && \
-   \"$E\" upcl decode \"$P\" 0o720007 | grep -q ': iot'")
+   \"$E\" upcl decode \"$P\" 0o720007 | grep -q ': iot' && \
+   \"$E\" upcl decode \"$P\" 0o100100 > '${CMAKE_BINARY_DIR}/pdp1.xct' && \
+   grep -q '0x0000: xct' '${CMAKE_BINARY_DIR}/pdp1.xct' && \
+   grep -qF 'syscall 0xe5ec' '${CMAKE_BINARY_DIR}/pdp1.xct'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c

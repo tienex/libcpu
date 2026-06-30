@@ -1360,11 +1360,18 @@ public:
     std::string m_Name;
 };
 
-class RecordingEmitter final : public ComObject<ICpuEmitter> {
+class RecordingEmitter final : public ComObject<ICpuEmitter>,
+                               public ICpuSmcEmitter,
+                               public ICpuSyscallEmitter {
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppv) override {
+        if (ppv == nullptr) { return E_POINTER; }
+        if (CompareGuid (&riid, &IID_ICpuSmcEmitter))     { AddRef (); *ppv = static_cast<ICpuSmcEmitter *>     (this); return S_OK; }
+        if (CompareGuid (&riid, &IID_ICpuSyscallEmitter)) { AddRef (); *ppv = static_cast<ICpuSyscallEmitter *> (this); return S_OK; }
         return DefaultQuery (riid, IID_IUnknown, ppv);
     }
+    UINT32 STDMETHODCALLTYPE AddRef  () override { return ComObject<ICpuEmitter>::AddRef ();  }
+    UINT32 STDMETHODCALLTYPE Release () override { return ComObject<ICpuEmitter>::Release (); }
 
     // Make an SSA input for a decoder operand / parameter (returned to the caller to bind).
     ICpuValue *Input (CHAR8 CONST *pName, UINT32 Bits) {
@@ -1449,6 +1456,29 @@ public:
     }
     HRESULT STDMETHODCALLTYPE SetPC (CPU_ADDR Pc) override {
         std::printf ("  setpc 0x%llx\n", (unsigned long long) Pc); return S_OK;
+    }
+
+    // ICpuSmcEmitter -- record the dispatch target and other SMC/indirect operations so
+    // the `lcx upcl decode` output shows $exec / indirect-branch lowering.
+    HRESULT STDMETHODCALLTYPE EmitCodeGuard  (CPU_ADDR /*Pc*/) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE IndirectBranch (ICpuValue *pTargetPc) override {
+        std::printf ("  indbr v%u\n", Id (pTargetPc)); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetDispatchTarget (ICpuValue *pTargetPc) override {
+        std::printf ("  dispatch_target v%u\n", Id (pTargetPc)); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatchTarget (ICpuValue **ppValue) override {
+        UINT32 Id2 = Make (ppValue);
+        std::printf ("  v%u = get_dispatch_target\n", Id2); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetCodeBase (ICpuValue **ppValue) override {
+        UINT32 Id2 = Make (ppValue);
+        std::printf ("  v%u = get_code_base\n", Id2); return S_OK;
+    }
+
+    // ICpuSyscallEmitter -- record EmitSyscall so the $exec / @trap lowering is visible.
+    HRESULT STDMETHODCALLTYPE EmitSyscall (UINT32 Vector, ICpuValue *pReturnPc) override {
+        std::printf ("  syscall 0x%x v%u\n", Vector, Id (pReturnPc)); return S_OK;
     }
 
 private:

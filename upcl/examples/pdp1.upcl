@@ -195,10 +195,12 @@ jump insn jda : type call, encode #i18 ( op:5 = OPC_CALJDA, i:1 = 1, y:12 -> Y )
         ac = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
         pc = m + 1;
     }
-// XCT -- execute M[E] as an instruction (host trap with the EA so the engine re-decodes there).
-jump insn xct : type branch, encode #i18 ( op:5 = OPC_XCT, i:1 -> I, y:12 -> Y ),
+// XCT -- execute the one instruction at the effective address, then continue (DEC PDP-1; SIMH
+// pdp1_cpu.c). Uses the $exec engine intrinsic so the engine re-decodes the target -- the ISA is
+// defined once here, not duplicated.
+jump insn xct : type trap, encode #i18 ( op:5 = OPC_XCT, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "xct", operands : I, Y )
-    { pc = @ea ( I, Y ); }
+    { $exec ( @ea ( I, Y ) ); }
 
 // OPERATE GROUP (op 037).  Combinable micro-ops in the low 13 bits, applied in SIMH order.
 // Masks (octal, within F): CLI=04000 CLA=0200 LAT=02000 LAP=0100 CMA=01000 HLT=0400 ;
