@@ -203,8 +203,8 @@ jump insn opr : type trap, encode #i18 ( op:5 = OPC_OPR, f:13 -> F ),
         ac = ( F & 0o02000 ) ? ( ac | tw ) : ac;                    // LAT  (OR in test word)
         ac = ( F & 0o00100 ) ? ( ac | ( ( ( ov & 1 ) << 17 ) | ( pc & AMASK ) ) ) : ac;  // LAP
         ac = ( F & 0o01000 ) ? ( ac ^ DMASK ) : ac;                 // CMA
-        // program flag set / clear: flag # = F & 7, set when F & 010, else clear.
-        #i6 fbit = ( ( F & 7 ) != 0 ) ? ( 1 << ( ( F & 7 ) - 1 ) ) : 0;
+        // program flag set / clear: flag # 1..6 = that flag; 7 = all flags (0o77); 0 = none.
+        #i6 fbit = ( ( F & 7 ) == 7 ) ? 0o77 : ( ( ( F & 7 ) != 0 ) ? ( 1 << ( ( F & 7 ) - 1 ) ) : 0 );
         pf = ( ( F & 0o010 ) != 0 ) ? ( pf | fbit ) : ( pf & ~fbit );
         // HLT -- stop the machine via the host halt vector.
         if ( ( F & 0o00400 ) != 0 ) { @trap ( HLT_VECTOR ); }
