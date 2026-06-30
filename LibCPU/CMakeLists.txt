@@ -1028,6 +1028,38 @@ add_test(NAME upcl.pdp11 COMMAND sh -c
    grep -q 'fadd '              '${CMAKE_BINARY_DIR}/pdp11.addf'")
 set_tests_properties(upcl.pdp11 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# PDP-10 effective address (index + indirect chain). The 36-bit word is op:9 ac:4 i:1 x:4 y:18.
+#   MOVE AC1, @100(2)  = 0o200062000100  (op=0o200 ac=1 I=1 X=2 Y=0o100): the @ea macro forms the
+#     INDEX step E = Y + right18(AC[X]) -- the AC[X] read, the right-half mask (& 0x3ffff), the
+#     trunc to 18 bits, and Y added -- then enters the INDIRECT CHAIN (a while loop that re-reads
+#     %M[E] and re-extracts I/X/Y). The word is one cell (word-addressed): "(1 word(s))".
+#   MOVE AC1, 200(3)   = 0o200043000200  (I=0 X=3): index only, the chain test is taken as false.
+#   JRST 100           = 0o254000000100  (op=0o254): E is the BARE jump target -- @ea used as an
+#     address (pc <- E), not as %M[E], proving the same macro serves value and address contexts.
+add_test(NAME upcl.pdp10-ea COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o200062000100 > '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q '0x0000: move'          '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'i=0x1'                 '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'x=0x2'                 '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q '(1 word'               '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'and v1'                '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q '0x3ffff'               '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'trunc.i18'             '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'while.head'            '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'while.body'            '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   grep -q 'load.i36'              '${CMAKE_BINARY_DIR}/pdp10.ind' && \
+   \"$E\" upcl decode \"$P\" 0o200043000200 > '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   grep -q '0x0000: move'          '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   grep -q 'i=0x0'                 '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   grep -q 'x=0x3'                 '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   grep -q '(1 word'               '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   grep -q '0x3ffff'               '${CMAKE_BINARY_DIR}/pdp10.idx' && \
+   \"$E\" upcl decode \"$P\" 0o254000000100 > '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   grep -q '0x0000: jrst'          '${CMAKE_BINARY_DIR}/pdp10.jrst' && \
+   grep -q 'put r16 <- '           '${CMAKE_BINARY_DIR}/pdp10.jrst'")
+set_tests_properties(upcl.pdp10-ea PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

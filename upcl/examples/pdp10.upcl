@@ -16,8 +16,24 @@
 // (octal). The `aliases_memory 0` directive routes `%M[0..15]` to the AC bank -- the same
 // physical storage -- replicating the PDP-10's defining architectural property.
 //
-// PHASE 1 (this file): arch header + register file. No instructions yet; later tasks add the
-// @ea effective-address mode and the full instruction set.
+// PHASE 1: arch header + register file. PHASE 2 (this file, Task 6): the @ea effective-address
+// computation -- index + indirect chain. Later tasks add the full instruction set.
+//
+// EFFECTIVE ADDRESS (non-extended, single-section -- DEC PDP-10 Hardware Reference, "Effective
+// Address Calculation"; SIMH pdp10 `calc_ea`). Each instruction word carries three EA fields:
+//   I (bit 13, MSB-first bit 22)  indirect
+//   X (bits 14..17 / 21..18)      index register (an AC number; 0 means "no indexing")
+//   Y (bits 18..35 / 17..0)       18-bit address
+// The effective address E is computed as:
+//   E := Y + (X != 0 ? right18(AC[X]) : 0)            -- index step (right half of AC[X])
+//   while (the word at E has its I bit set):           -- INDIRECT CHAIN (data-dependent loop)
+//       W := M[E];  I := W.I;  X := W.X;  Y := W.Y;
+//       E := Y + (X != 0 ? right18(AC[X]) : 0);
+// i.e. as long as the fetched word is itself indirect, take ITS I/X/Y and recompute, iterating until
+// a word with I=0 is reached. The chain length is RUNTIME DATA-DEPENDENT (it depends on the contents
+// of guest memory), so it cannot be a decode-time/structural construct -- it is computed in the
+// instruction body by the reusable `@ea` macro below, which is the only place in the engine where a
+// data-dependent memory dereference loop can live.
 //
 // PC FLAG LAYOUT -- left half of the 36-bit process context word, bits 35..18 (MSB first):
 //   bit 35 = AROV  arithmetic overflow      bit 34 = CRY0  carry out of bit 0 (left)
@@ -92,3 +108,72 @@ arch "pdp10" {
     }
 
 }
+
+// ---------------------------------------------------------------------------
+// Field bit-masks within a 36-bit PDP-10 instruction word (MSB-first: op:9 ac:4 i:1 x:4 y:18).
+// Used to take the I/X/Y of a word fetched during the indirect chain.
+const EA_I_SHIFT = 22;          // I bit position (bit 22, MSB-first bit 13)
+const EA_X_SHIFT = 18;          // X field low bit (bits 21..18)
+const EA_X_MASK  = 0xf;         // X is 4 bits
+const EA_Y_MASK  = 0x3ffff;     // Y is 18 bits -- also the right-half / address mask
+
+// decoder operands: the EA fields lifted out of the instruction word, plus the AC operand number.
+// `i`, `x`, `y` are bound positionally into the @ea macro; `ac` selects the accumulator operand.
+decoder_operands [
+    #i4  acn,                   // the AC operand (bits 26..23) -- MOVE/MOVEM accumulator
+    #i1  i,                     // indirect bit (bit 22)
+    #i4  x,                     // index-register field (bits 21..18)
+    #i18 y                      // 18-bit address field (bits 17..0)
+];
+
+// ---------------------------------------------------------------------------
+// @ea ( i, x, y ) -- the PDP-10 effective-address calculation, non-extended (18-bit, single
+// section). Returns E in `result`. This is a MACRO, not an `addrmode`: the UPCL `addrmode`
+// construct is purely STRUCTURAL (it composes a decode-time operand `base + base + disp` for
+// disassembly and length, and cannot read memory or loop), whereas the PDP-10 EA needs (a) the
+// RIGHT HALF of AC[X] for indexing -- a mask the addrmode `%M[...]` term grammar cannot express --
+// and (b) the INDIRECT CHAIN, an iterative, runtime-data-dependent memory dereference. Both live
+// naturally in a body macro, which the engine evaluates as an expression: `%M[ @ea(i,x,y) ]` is the
+// memory operand and `@ea(i,x,y)` is the bare effective address (for jumps / immediates).
+//
+// The index uses right18(AC[X]) = AC[X] & EA_Y_MASK (the low 18 bits). X==0 means no indexing.
+// The chain re-reads M[E] while the fetched word's I bit is set, taking ITS I/X/Y each time. The
+// loop is bounded only by encountering a word with I=0 (faithful to the hardware; deep chains are
+// validated by execution in Task 18).
+//
+// NOTE (loop-carried locals): `e`, `ci`, `cx` below are body locals mutated across the `while`. The
+// engine models them as SSA values (no mutable slot / phi), so the iterated update is correct at
+// decode/IR-shape level here but its multi-iteration EXECUTION semantics depend on loop-carried-
+// local support landing for Task 18 (see the task report). The single-level (I=0, and the first
+// dereference of an I=1 word) path is exact today.
+macro ea ( i, x, y ) {
+    // Index step: E = Y + (X != 0 ? right18(AC[X]) : 0).  ac[x] indexes the AC group by the runtime
+    // X field; only its low 18 bits (the right half) participate in address formation.
+    #i18 e = ( x != 0 ) ? ( y + ( ac[ x ] & EA_Y_MASK ) ) : y;
+    // Indirect chain: while the word at E is itself indirect, take its I/X/Y and recompute E.
+    #i1  ci = i;
+    while ( ci != 0 ) {
+        #i36 w  = %M[ e ];                                  // fetch the indirect word
+        #i4  cx = ( w >> EA_X_SHIFT ) & EA_X_MASK;          // its X
+        #i18 wy = w & EA_Y_MASK;                            // its Y
+        e  = ( cx != 0 ) ? ( wy + ( ac[ cx ] & EA_Y_MASK ) ) : wy;
+        ci = ( w >> EA_I_SHIFT ) & 1;                       // its I -- continue while set
+    }
+    result = e;
+}
+
+// ---------------------------------------------------------------------------
+// MOVE family -- the canonical operand-fetch users of @ea, sufficient to exercise the EA path
+// (index + indirect) for the decode milestone. The full instruction set arrives in later tasks.
+//   MOVE  AC, E   AC := M[E]              (op 0o200)
+//   MOVEM AC, E   M[E] := AC              (op 0o202)  -- E used as a store address
+//   JRST  E       PC := E                 (op 0o254)  -- E used as a bare jump target (@ea, not M[E])
+// ---------------------------------------------------------------------------
+insn move : encode #i36 ( op:9 = 0o200, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "move", operands : acn, i, x, y )  => ac[ acn ] = %M[ @ea ( i, x, y ) ];
+
+insn movem : encode #i36 ( op:9 = 0o202, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "movem", operands : acn, i, x, y )  => %M[ @ea ( i, x, y ) ] = ac[ acn ];
+
+jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "jrst", operands : i, x, y )  { pc = @ea ( i, x, y ); }
