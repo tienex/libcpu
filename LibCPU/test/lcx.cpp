@@ -60,6 +60,7 @@
 #include <sys/uio.h>  // writev/readv iovec marshalling
 #include <csignal>    // kill(2) for the obsd-m88k personality
 #include <cstring>
+#include <cctype>     // std::tolower for the case-insensitive .SAV extension match
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
 #endif
@@ -705,6 +706,133 @@ LoadAout (UINT8 *pRam, UINT64 RamSize, UINT64 ImageLen)
     return R;
 }
 
+// The runtime parameters a loaded DEC .SAV image yields (word-addressed: every value is a WORD
+// index, not a byte offset).
+struct SavInfo {
+    bool   Ok    = false;
+    UINT64 Entry = 0;      // start PC (word index), from the final JRST start word
+    UINT64 End   = 0;      // one past the highest word index touched (word count for the CFG walk)
+};
+
+// Loader for a classic DEC PDP-10 .SAV binary into WORD-ADDRESSED guest memory. A .SAV file is a
+// sequence of load blocks terminated by a start word:
+//
+//   IOWD  -count,,addr-1     left half = negative word count, right half = (load address - 1)
+//   word[0]                  count data words, placed at addr, addr+1, ...
+//   ...
+//   word[count-1]
+//   ...(more blocks)...
+//   JRST  ,,start            a JRST (opcode 0o254) word; its right half is the entry PC
+//
+// (DEC PDP-10 software toolkit / TOPS-10 LOADER; verified against the SIMH pdp10 SAV loader in
+// pdp10_sys.c, which reads each 36-bit word as one host cell and iterates the block with the
+// AOB -- "add one to both halves" -- idiom until the negative count reaches zero, then stops at
+// the first JRST it reads as a block header.)
+//
+// ON-DISK ENCODING: one 36-bit word per 8 bytes, LITTLE-ENDIAN, the value held in the low 36 bits
+// (the top 28 bits of each 8-byte slot are zero). This is the DATA8 convention SIMH's `d10`/`fxread`
+// use AND is byte-identical to LibCPU's own word-cell layout (CPU_WORD_CELL_BYTES little-endian
+// cells), so a data word loads by a direct copy into its destination cell with no repacking.
+//
+// The words are laid into `pRam` interpreted as an array of CPU_WORD_CELL_BYTES word cells: word
+// index i occupies pRam[i * CPU_WORD_CELL_BYTES ..]. `pFileBytes`/`FileLen` is the raw .SAV file
+// already read into a buffer (NOT the in-memory image -- the .SAV layout differs from core).
+static SavInfo
+LoadSav (UINT8 CONST *pFileBytes, UINT64 FileLen, UINT8 *pRam, UINT64 RamSize)
+{
+    SavInfo R;
+    if (FileLen == 0 || (FileLen % 8) != 0) {
+        std::printf ("lcx: .SAV size %llu is not a whole number of 8-byte words\n",
+                     (unsigned long long) FileLen);
+        return R;
+    }
+    UINT64 CONST NWords  = FileLen / 8;
+    UINT64 CONST CellCnt = RamSize / CPU_WORD_CELL_BYTES;   // word cells the guest RAM holds
+
+    auto FileWord = [&] (UINT64 I) -> UINT64 {              // 36-bit word from the I-th 8-byte slot
+        UINT64 V = 0;
+        for (UINT32 B = 0; B < 8; B++) { V |= (UINT64) pFileBytes[I * 8 + B] << (8 * B); }
+        return V & ((UINT64_C (1) << 36) - 1);
+    };
+    auto StoreCell = [&] (UINT64 WordIdx, UINT64 Value) -> bool {
+        if (WordIdx >= CellCnt) { return false; }
+        UINT64 Off = WordIdx * CPU_WORD_CELL_BYTES;
+        for (UINT32 B = 0; B < CPU_WORD_CELL_BYTES; B++) {
+            pRam[Off + B] = (UINT8) ((Value >> (8 * B)) & 0xff);
+        }
+        return true;
+    };
+
+    UINT64 CONST Left18Mask  = UINT64_C (0o777777) << 18;   // bits 35..18: the IOWD left half
+    UINT64 CONST Right18Mask = UINT64_C (0o777777);         // bits 17..0:  the IOWD right half
+    UINT64 CONST SignBit     = UINT64_C (1) << 35;          // sign of the left half (negative count)
+    UINT64 CONST OpJrst      = UINT64_C (0o254);            // JRST opcode (bits 35..27) marks the start word
+
+    UINT64 I        = 0;
+    UINT64 HighWord = 0;
+    bool   GotStart = false;
+    while (I < NWords) {
+        UINT64 Header = FileWord (I++);
+        if ((Header & SignBit) != 0) {
+            // IOWD block header: AOB iteration. The left half is the negative word count and the
+            // right half is (load address - 1); each step increments BOTH halves (the count toward
+            // zero, the address up by one) and stores the next data word at the new address.
+            UINT64 Cur = Header;
+            while ((Cur & SignBit) != 0 && I < NWords) {
+                Cur = ((Cur + (UINT64_C (1) << 18)) & Left18Mask)   // bump the left half (count -> 0)
+                      | ((Cur + 1) & Right18Mask);                  // bump the right half (address up)
+                UINT64 Addr = Cur & Right18Mask;                    // destination = right half after AOB
+                UINT64 Data = FileWord (I++);
+                if (!StoreCell (Addr, Data)) {
+                    std::printf ("lcx: .SAV load address 0%llo exceeds guest word memory\n",
+                                 (unsigned long long) Addr);
+                    return R;
+                }
+                if (Addr + 1 > HighWord) { HighWord = Addr + 1; }
+            }
+        } else if (((Header >> 27) & UINT64_C (0o777)) == OpJrst) {
+            // Start word: a JRST whose right half is the entry PC. (Reached as a block header, not
+            // as a data word inside a block -- the in-program HALT is also a JRST, but it lives in
+            // the data stream, never at a header position.)
+            R.Entry  = Header & Right18Mask;
+            GotStart = true;
+            break;
+        } else {
+            std::printf ("lcx: .SAV: unexpected word 0%llo at index %llu (not an IOWD or a JRST start)\n",
+                         (unsigned long long) Header, (unsigned long long) (I - 1));
+            return R;
+        }
+    }
+
+    if (!GotStart) {
+        std::printf ("lcx: .SAV: no JRST start word found\n");
+        return R;
+    }
+    // The CFG walk reads instruction words up to End; cover both the loaded image and the entry so
+    // a program whose entry sits above its last loaded word still has a word to decode there.
+    R.End = (HighWord > R.Entry + 1) ? HighWord : (R.Entry + 1);
+    R.Ok  = true;
+    std::printf ("lcx: loaded pdp10 .SAV: %llu word(s), entry=0%llo\n",
+                 (unsigned long long) HighWord, (unsigned long long) R.Entry);
+    return R;
+}
+
+// Does a path end (case-insensitively) with the given extension (e.g. ".sav")?
+static bool
+HasExtension (CHAR8 CONST *pPath, CHAR8 CONST *pExt)
+{
+    size_t PathLen = std::strlen (pPath);
+    size_t ExtLen  = std::strlen (pExt);
+    if (PathLen < ExtLen) { return false; }
+    CHAR8 CONST *pTail = pPath + (PathLen - ExtLen);
+    for (size_t I = 0; I < ExtLen; I++) {
+        if (std::tolower ((unsigned char) pTail[I]) != std::tolower ((unsigned char) pExt[I])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Shared by `run` (Aot=false: JIT) and `translate` (Aot=true: AOT). The --arch value
 // may be v20, 6502, or upcl:<file> (interpret a UPCL description as the frontend).
 static int
@@ -755,11 +883,13 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     // the interpreter backend: every other backend computes RAM widths as Bits/8, silently
     // truncating to 32 bits and dropping the top 4 bits of a 36-bit word. Fail loudly here so a
     // wrong backend is never silently mis-executed; decode/disasm (no execution) are unaffected.
+    bool WordAddressed = false;
     {
         CPU_ARCH_INFO ArchInfo;
         std::memset (&ArchInfo, 0, sizeof (ArchInfo));
         A.pArch->GetInfo (&ArchInfo);
-        if (ArchInfo.ByteSize != 0 && ArchInfo.ByteSize != 8) {
+        WordAddressed = (ArchInfo.ByteSize != 0 && ArchInfo.ByteSize != 8);
+        if (WordAddressed) {
             CHAR8 CONST *pBeName = pBackend->GetName ();
             if (std::strcmp (pBeName, "interpreter") != 0) {
                 std::printf ("lcx %s: error: word-addressed architectures (byte_size=%u, != 8)"
@@ -772,10 +902,36 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
             }
         }
     }
-    CPU_ADDR Entry = (AoutEntry != ~(UINT64) 0)
-                       ? (CPU_ADDR) AoutEntry
-                       : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
-    CPU_ADDR End   = (CPU_ADDR) Len;
+
+    // DEC .SAV loader: on a word-addressed arch, an image named *.sav (or `--load sav`) is a classic
+    // PDP-10 save image, NOT a raw core dump. LoadImage already read the raw .SAV bytes into Ram; the
+    // SAV block layout differs from core memory, so copy the file bytes out, re-zero the word memory,
+    // and lay each block's words into their word cells. The entry PC and the CFG end come from the
+    // image (the start word / highest word loaded), in WORD units.
+    UINT64 SavEntry = ~(UINT64) 0;
+    UINT64 SavEnd   = 0;
+    bool   WantSav  = WordAddressed
+                      && (HasExtension (pImage, ".sav")
+                          || std::strcmp (Opt (argc, argv, "--load", ""), "sav") == 0);
+    if (WantSav) {
+        std::vector<UINT8> File (Ram, Ram + Len);              // the raw .SAV bytes, before relayout
+        std::memset (Ram, 0, sizeof (Ram));                    // clear the word memory we load into
+        SavInfo Sv = LoadSav (File.data (), Len, Ram, sizeof (Ram));
+        if (!Sv.Ok) {
+            A.pArch->Release ();
+            pBackend->Release ();
+            return 2;
+        }
+        SavEntry = Sv.Entry;
+        SavEnd   = Sv.End;
+    }
+
+    CPU_ADDR Entry = (SavEntry != ~(UINT64) 0) ? (CPU_ADDR) SavEntry
+                   : (AoutEntry != ~(UINT64) 0) ? (CPU_ADDR) AoutEntry
+                   : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
+    // The CFG walk reads units of the arch's addressable size: bytes for a byte ISA, WORDS for a
+    // word-addressed arch. A .SAV gives the end in words directly; otherwise Len is a byte count.
+    CPU_ADDR End   = WantSav ? (CPU_ADDR) SavEnd : (CPU_ADDR) Len;
     bool Cache = Flag (argc, argv, "--cache");
 
     // --reg <i>=<v>: seed an initial general register before running (entry-state setup for a

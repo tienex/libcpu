@@ -2102,6 +2102,23 @@ add_test(NAME upcl.pdp11-unix COMMAND sh -c
    grep -q '^hi' \"$B/pdp11-unix.out\" && \
    grep -q 'r0 =0003' \"$B/pdp11-unix.out\"")
 
+# PDP-10 .SAV binary loader + run-to-HALT (the word-addressed execution path). The checked-in
+# fixture pdp10-add.sav is a classic DEC SAV image: one load block (IOWD -3,,0o137) of three
+# 36-bit words placed at origin 0o140 -- MOVEI AC1,5 ; ADDI AC1,3 ; JRST 4,(HALT) -- followed by
+# the start word JRST,,0o140. The loader (auto-detected from the .sav extension on a word-
+# addressed arch) lays each block's words into the 36-bit word memory at their octal addresses,
+# sets the PC from the start word, and the interpreter runs to the HALT and stops cleanly. This
+# proves the loader's job -- parse the IOWD blocks, place the words at the right origin (memory
+# word 0o140 = byte 0x300 ends up holding the MOVEI word, low bits 0x0005), set the entry, and
+# run to completion (exit 0). The full AC-state assertions are Task 18.
+add_test(NAME upcl.pdp10-load COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
+   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-add.sav' --arch upcl:\"$P\"@kl10 --dump 768 > \"$B/pdp10-load.out\" 2>&1 && \
+   grep -q 'loaded pdp10 .SAV: 99 word(s), entry=0140' \"$B/pdp10-load.out\" && \
+   grep -q '.0x300. = 0x0005' \"$B/pdp10-load.out\" && \
+   grep -q 'pc =' \"$B/pdp10-load.out\"")
+set_tests_properties(upcl.pdp10-load PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
+
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-
