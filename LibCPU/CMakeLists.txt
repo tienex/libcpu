@@ -2119,6 +2119,49 @@ add_test(NAME upcl.pdp10-load COMMAND sh -c
    grep -q 'pc =' \"$B/pdp10-load.out\"")
 set_tests_properties(upcl.pdp10-load PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
 
+# PDP-10 EXECUTION VERIFICATION (Task 18): a real PDP-10 program computed correctly through the
+# interpreter, with its final AC/memory state asserted -- the PDP-10 analog of the ns32k r0/r1 run
+# test. The checked-in fixture pdp10-compute.sav is a classic DEC SAV image (one IOWD block of fifteen
+# 36-bit words at origin 0o140, then the start word JRST,,0o140) hand-assembled per the engine field
+# layout (op:9 ac:4 i:1 x:4 y:18):
+#   0140 MOVEI AC1,5      ; AC1 = 5            (immediate -> AC)
+#   0141 ADDI  AC1,3      ; AC1 = 8            (immediate add -> AC)
+#   0142 MOVEI AC2,4      ; AC2 = 4            (loop counter)
+#   0143 ADDI  AC1,10     ; AC1 += 8 (octal)   (loop body)
+#   0144 SOJG  AC2,0143   ; AC2--; if >0 jump back to 0143  (count-down control-flow loop)
+#   0145 MOVEM AC1,0200   ; M[0200] = AC1                   (store through REAL memory, word 128)
+#   0146 MOVE  AC3,0200   ; AC3 = M[0200]                   (load back from REAL memory)
+#   0147 HRRZI AC4,0123   ; AC4 = 0123 (right-half immediate, left zeroed)
+#   0150 HRLZI AC7,020    ; AC7 = 020,,0   (left half sets the I bit, bit 22)
+#   0151 HRRI  AC7,0202   ; AC7 = 020,,0202 = an indirect word pointing at 0o202
+#   0152 MOVEM AC7,0201   ; M[0201] = the indirect word
+#   0153 MOVEI AC6,0525   ; AC6 = 0525
+#   0154 MOVEM AC6,0202   ; M[0202] = 0525
+#   0155 MOVE  AC5,@0201  ; AC5 = M[@0201]: follow the chain M[0201]->0202, M[0202]=0525 (INDIRECT EA)
+#   0156 JRST 4,          ; HALT
+# The loop runs four times, so AC1 = 8 + 4*8 = 40 = 0x28; AC2 counts down to 0; the MOVEM/MOVE pair
+# round-trips 40 through word 0o200 (byte 0x400, NOT an AC-aliased low word) into AC3; HRRZI puts
+# 0o123 = 0x53 in AC4; the indirect MOVE walks a one-deep indirect chain (the @ea while-loop runs an
+# iteration) so AC5 = 0o525 = 0x155 (AC6/AC7 hold the staged value/pointer). The dump prints registers
+# in hex. This exercises arithmetic-to-AC, a real backward-branch loop, AC<->low-memory aliasing
+# (AC1..AC7 alias words 1..7), a non-aliased memory round-trip, AND a multi-iteration indirect
+# effective-address chain -- all run to the HALT. The root-cause fix that made this compute correctly:
+# loop-carried body locals (the @ea macro's e/ci/cx/w/wy) are promoted to synthesised scratch
+# registers (Semantics.cpp PromoteLoopLocals), so the @ea while-loop carries its locals across the
+# head/body/end blocks -- both the zero-iteration case (which previously read an undefined loop-body
+# temp and yielded AC1=0 instead of 8) and the >=1-iteration indirect chain now compute correctly.
+add_test(NAME upcl.pdp10-run COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
+   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-compute.sav' --arch upcl:\"$P\"@kl10 --dump 1024 > \"$B/pdp10-run.out\" 2>&1 && \
+   grep -q 'loaded pdp10 .SAV' \"$B/pdp10-run.out\" && \
+   grep -q 'ac1=0000000028' \"$B/pdp10-run.out\" && \
+   grep -q 'ac2=0000000000' \"$B/pdp10-run.out\" && \
+   grep -q 'ac3=0000000028' \"$B/pdp10-run.out\" && \
+   grep -q 'ac4=0000000053' \"$B/pdp10-run.out\" && \
+   grep -q 'ac5=0000000155' \"$B/pdp10-run.out\" && \
+   grep -q '.0x400. = 0x0028' \"$B/pdp10-run.out\"")
+set_tests_properties(upcl.pdp10-run PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
+
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
 # full arithmetic flag set (carry as an unsigned-compare, overflow, aux); `inc` must set Z
 # but NOT carry (the `!C` exclusion -- the defining inc/add difference); `cbw` must SIGN-

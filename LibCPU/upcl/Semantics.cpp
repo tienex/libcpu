@@ -30,6 +30,10 @@ Translator::Translator (RegisterLayout CONST &Layout, Arch *pArch, ICpuEmitter *
     : m_Layout (Layout), m_pArch (pArch), m_pE (pEmitter), m_WordBits (WordBits)
 {
     for (Macro *M : pArch->Macros) { m_Macros[M->Name].push_back (M); }
+    // Scratch registers for loop-carried body locals (PromoteLoopLocals) are allocated ABOVE the
+    // architectural register file so they never overlap a real register slot.  They share the
+    // runtime-indexed register bank, so they must fit within CPU_REGBANK_MASK like any bank slot.
+    m_NextScratch = (UINT32) m_Layout.Phys.size ();
 }
 
 // Resolve a macro call to its overload with the matching parameter count (i8086_jump has a
@@ -436,6 +440,8 @@ Translator::WidthOf (Expr *pExpr) CONST
             if (Op.Kind == Operand::Reg && Op.SubWidth == 0) { return m_Layout.Phys[Op.RegIndex].Width; }
             return Op.Bits ? Op.Bits : m_WordBits;
         }
+        auto Sl = m_EnvSlotWidth.find (Name);
+        if (Sl != m_EnvSlotWidth.end ()) { return Sl->second; }
         auto E = m_Env.find (Name);
         if (E != m_Env.end ()) { return E->second.Bits; }
         auto P = m_Layout.PhysIndex.find (Name);
@@ -574,6 +580,15 @@ Translator::EvalName (std::string CONST &Name)
 {
     auto O = m_Operands.find (Name);
     if (O != m_Operands.end ()) { return ReadOperand (O->second); }
+
+    // A loop-carried local promoted to a scratch register (PromoteLoopLocals): read it from the bank.
+    auto Sl = m_EnvSlot.find (Name);
+    if (Sl != m_EnvSlot.end ()) {
+        UINT32 Width = m_EnvSlotWidth[Name];
+        Value  Addr  = Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Const (64, (UINT64) Sl->second));
+        ComPtr<ICpuValue> V; m_pE->Load (Use (Addr), Width, &V);
+        return Pool (std::move (V), Width);
+    }
 
     auto E = m_Env.find (Name);
     if (E != m_Env.end ()) { return E->second; }
@@ -1392,10 +1407,105 @@ Translator::EmitIf (Stmt *pStmt)
     return Ok;
 }
 
+// Collect the names assigned by a statement (and its nested statements), mapping each to the
+// widest declared `<type>` seen for it.  Used by PromoteLoopLocals to find a loop's carried
+// body locals.  A `<type> name = ...` declaration carries the width in LhsType; a later bare
+// `name = ...` carries none (0), so the declared width wins via the max below.
+void
+Translator::CollectAssignedNames (Stmt *pStmt, std::map<std::string, UINT32> &Out) CONST
+{
+    if (pStmt == nullptr) { return; }
+    switch (pStmt->Kind) {
+    case StmtAssign:
+        if (pStmt->Lhs != nullptr && pStmt->Lhs->Kind == ExprName) {
+            UINT32 W = (pStmt->LhsType != nullptr) ? pStmt->LhsType->Width : 0;
+            auto It = Out.find (pStmt->Lhs->Name);
+            if (It == Out.end () || W > It->second) { Out[pStmt->Lhs->Name] = W; }
+        }
+        break;
+    case StmtBlock:
+        CollectAssignedNames (pStmt->Body, Out);
+        break;
+    case StmtIf:
+        CollectAssignedNames (pStmt->Then, Out);
+        CollectAssignedNames (pStmt->Else, Out);
+        break;
+    case StmtWhile:
+        CollectAssignedNames (pStmt->Body, Out);
+        break;
+    case StmtFor:
+        CollectAssignedNames (pStmt->Init, Out);
+        CollectAssignedNames (pStmt->Step, Out);
+        CollectAssignedNames (pStmt->Body, Out);
+        break;
+    default:
+        break;
+    }
+}
+
+void
+Translator::CollectAssignedNames (std::vector<Stmt *> CONST &Body,
+                                  std::map<std::string, UINT32> &Out) CONST
+{
+    for (Stmt *S : Body) { CollectAssignedNames (S, Out); }
+}
+
+// Promote a loop's carried body locals to synthesised scratch registers.  For every env local
+// assigned somewhere inside the loop, allocate a scratch slot (once) and spill the value that is
+// live at loop entry into it, so reads on the first iteration and after a zero-iteration loop see
+// the correct value.  Already-promoted names (an outer loop, or a name a macro re-enters) keep
+// their slot.  Names that are decoder operands, registers, flags, or sub-registers are NOT env
+// locals and are left to their own storage (registers already carry across loops).
+void
+Translator::PromoteLoopLocals (Stmt *pStmt)
+{
+    std::map<std::string, UINT32> Assigned;
+    if (pStmt->Kind == StmtFor) {
+        // The for-loop step/body iterate; the init runs once before promotion below, so the init's
+        // value is what we spill.  Scan body + step (not init -- init declares the carried local).
+        CollectAssignedNames (pStmt->Step, Assigned);
+        CollectAssignedNames (pStmt->Body, Assigned);
+    } else {
+        CollectAssignedNames (pStmt->Body, Assigned);
+    }
+
+    for (auto CONST &Kv : Assigned) {
+        std::string CONST &Name = Kv.first;
+        if (m_EnvSlot.find (Name) != m_EnvSlot.end ()) { continue; }   // already register-backed
+        // Only promote genuine env locals: a name that is a decoder operand, a register, a flag, or
+        // a sub-register has real storage and is left alone (registers persist across loops natively).
+        if (m_Operands.find (Name) != m_Operands.end ()) { continue; }
+        if (m_Layout.PhysIndex.find (Name) != m_Layout.PhysIndex.end ()) { continue; }
+        RegSub CONST *pSub; RegFlag CONST *pFlag;
+        if (FindSub (Name, &pSub) || FindFlag (Name, &pFlag)) { continue; }
+
+        // Determine the width: prefer a declared `<type>` width, else the live value's width, else
+        // the word width.  Allocate a scratch slot; bail (leave as a plain SSA local) if the bank
+        // is exhausted -- the deep multi-iteration case then stays a known deferral rather than
+        // silently aliasing a real register.
+        auto Live = m_Env.find (Name);
+        UINT32 Width = Kv.second;
+        if (Width == 0 && Live != m_Env.end ()) { Width = Live->second.Bits; }
+        if (Width == 0) { Width = m_WordBits; }
+        if (m_NextScratch > (UINT32) CPU_REGBANK_MASK) { continue; }     // no scratch slots left
+        UINT32 Slot = m_NextScratch++;
+        m_EnvSlot[Name]      = Slot;
+        m_EnvSlotWidth[Name] = Width;
+
+        // Spill the value live at loop entry into the scratch slot.  If the local was not yet
+        // assigned before the loop, seed it to zero so a read sees a defined value.
+        Value Init = (Live != m_Env.end ()) ? Live->second : Const (Width, 0);
+        Value Addr = Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Const (64, (UINT64) Slot));
+        m_pE->Store (Use (Coerce (Init, Width, false)), Use (Addr), Width);
+        m_Env.erase (Name);                       // its storage is now the scratch register
+    }
+}
+
 // while (Cond) Body.  head tests, body runs and loops back, end continues.
 bool
 Translator::EmitWhile (Stmt *pStmt)
 {
+    PromoteLoopLocals (pStmt);
     ComPtr<ICpuBlock> Head = NewBlock ("while.head");
     ComPtr<ICpuBlock> Body = NewBlock ("while.body");
     ComPtr<ICpuBlock> End  = NewBlock ("while.end");
@@ -1418,6 +1528,7 @@ bool
 Translator::EmitFor (Stmt *pStmt)
 {
     bool Ok = Emit (pStmt->Init);
+    PromoteLoopLocals (pStmt);                 // after Init: spill the init value into the scratch slot
 
     ComPtr<ICpuBlock> Head = NewBlock ("for.head");
     ComPtr<ICpuBlock> Body = NewBlock ("for.body");
@@ -1471,7 +1582,16 @@ Translator::EmitAssign (Stmt *pStmt)
         && m_Layout.PhysIndex.find (pStmt->Lhs->Name) == m_Layout.PhysIndex.end ()) {
         RegSub CONST *pSub; RegFlag CONST *pFlag;
         if (!FindSub (pStmt->Lhs->Name, &pSub) && !FindFlag (pStmt->Lhs->Name, &pFlag)) {
-            m_Env[pStmt->Lhs->Name] = Coerce (Rhs, pStmt->LhsType->Width, false);
+            // A local promoted to a scratch register (loop-carried) stores through the bank; an
+            // ordinary local keeps its SSA value in m_Env.
+            auto Sl = m_EnvSlot.find (pStmt->Lhs->Name);
+            if (Sl != m_EnvSlot.end ()) {
+                UINT32 Width = m_EnvSlotWidth[pStmt->Lhs->Name];
+                Value  Addr  = Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Const (64, (UINT64) Sl->second));
+                m_pE->Store (Use (Coerce (Rhs, Width, false)), Use (Addr), Width);
+            } else {
+                m_Env[pStmt->Lhs->Name] = Coerce (Rhs, pStmt->LhsType->Width, false);
+            }
             return true;
         }
     }
@@ -1578,6 +1698,18 @@ Translator::StoreTo (Expr *pLhs, Value CONST &Rhs)
 void
 Translator::WriteName (std::string CONST &Name, Value CONST &Rhs)
 {
+    // A loop-carried local promoted to a scratch register (PromoteLoopLocals): store via the bank
+    // so the next iteration and the post-loop read observe the update.  Checked first: a promoted
+    // name shadows any same-named operand/register only for the scope it was promoted in, but no
+    // such collision exists in practice (locals are macro-internal names like `e`/`ci`).
+    auto Sl = m_EnvSlot.find (Name);
+    if (Sl != m_EnvSlot.end ()) {
+        UINT32 Width = m_EnvSlotWidth[Name];
+        Value  Addr  = Bin (BinOr, Const (64, CPU_REGBANK_FLAG), Const (64, (UINT64) Sl->second));
+        m_pE->Store (Use (Coerce (Rhs, Width, false)), Use (Addr), Width);
+        return;
+    }
+
     auto O = m_Operands.find (Name);
     if (O != m_Operands.end ()) {
         Operand CONST &Op = O->second;

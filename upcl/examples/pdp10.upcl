@@ -138,14 +138,17 @@ decoder_operands [
 //
 // The index uses right18(AC[X]) = AC[X] & EA_Y_MASK (the low 18 bits). X==0 means no indexing.
 // The chain re-reads M[E] while the fetched word's I bit is set, taking ITS I/X/Y each time. The
-// loop is bounded only by encountering a word with I=0 (faithful to the hardware; deep chains are
-// validated by execution in Task 18).
+// loop is bounded only by encountering a word with I=0 (faithful to the hardware).
 //
-// NOTE (loop-carried locals): `e`, `ci`, `cx` below are body locals mutated across the `while`. The
-// engine models them as SSA values (no mutable slot / phi), so the iterated update is correct at
-// decode/IR-shape level here but its multi-iteration EXECUTION semantics depend on loop-carried-
-// local support landing for Task 18 (see the task report). The single-level (I=0, and the first
-// dereference of an I=1 word) path is exact today.
+// LOOP-CARRIED LOCALS (Task 18, FIXED): `e`, `ci`, `cx`, `w`, `wy` below are body locals mutated
+// across the `while`.  The engine now promotes any body local assigned inside a loop to a synthesised
+// SCRATCH REGISTER (see Semantics.cpp PromoteLoopLocals), so its value carries across the
+// head/body/end blocks exactly as architectural register state does.  This makes BOTH cases correct
+// at execution: the zero-iteration case (the common non-indirect `result = e` after a `while` that
+// never runs -- it reads the spilled initial value, not an undefined loop-body temp; this is what
+// made MOVEI/ADDI yield the right AC) AND the multi-iteration indirect chain (each iteration's
+// updated I/X/Y/E persist into the next, terminating at I=0).  Verified by execution in
+// test/pdp10-compute.sav (a one-deep indirect MOVE resolves to the chained value).
 macro ea ( i, x, y ) {
     // Index step: E = Y + (X != 0 ? right18(AC[X]) : 0).  ac[x] indexes the AC group by the runtime
     // X field; only its low 18 bits (the right half) participate in address formation.

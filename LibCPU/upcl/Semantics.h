@@ -173,6 +173,21 @@ private:
     bool  EmitFor (Stmt *pStmt);             // for (Init; Cond; Step) Body
     ComPtr<ICpuBlock> NewBlock (CHAR8 CONST *pName);
 
+    // Loop-carried body locals.  A body local (`#i18 e = ...`) assigned INSIDE a loop and read
+    // before/inside/after it cannot be a plain SSA Value: the value assigned in the body block does
+    // not dominate the loop's head/end blocks, so a read after the loop (or on the next iteration)
+    // would reference an out-of-scope temp -- and at runtime, the value of a temp from a block that
+    // ran zero times is undefined (the interpreter leaves it 0).  To carry such a local across the
+    // loop the way architectural register state already is (re-read per block, persisted by the
+    // backend), each one is promoted to a synthesised SCRATCH REGISTER for the rest of the
+    // translation: reads emit a bank Load, writes emit a bank Store.  PromoteLoopLocals scans a
+    // loop's statements, allocates a scratch slot per assigned env local, and spills the live value
+    // into it before the loop is entered.
+    void   PromoteLoopLocals (Stmt *pStmt);              // promote a loop's carried locals to slots
+    void   CollectAssignedNames (Stmt *pStmt, std::map<std::string, UINT32> &Out) CONST;
+    void   CollectAssignedNames (std::vector<Stmt *> CONST &Body,
+                                 std::map<std::string, UINT32> &Out) CONST;
+
     // names -> storage
     void   WriteName (std::string CONST &Name, Value CONST &Rhs);
     void   SetReservation (Value CONST &Addr);     // %LL: remember the reserved address + set LLbit
@@ -218,6 +233,14 @@ private:
     ICpuValue                       *m_IndirectTarget = nullptr; // the captured computed target
     UINT64                           m_TrapReturnPc = 0;    // @trap resume address
     std::map<std::string, Value>     m_Env;        // bound values / locals / %result
+    // Loop-carried env locals promoted to synthesised scratch registers (see PromoteLoopLocals).
+    // Maps a local name to its scratch register slot (used with CPU_REGBANK_FLAG) and the slot's
+    // width.  A name present here is register-backed: EvalName / WriteName route through a bank
+    // Load / Store instead of the SSA m_Env entry.  m_NextScratch is the next free slot, seeded
+    // above the architectural register file so a scratch never overlaps a real register.
+    std::map<std::string, UINT32>    m_EnvSlot;     // local name -> scratch register slot index
+    std::map<std::string, UINT32>    m_EnvSlotWidth;// local name -> scratch register width (bits)
+    UINT32                           m_NextScratch = 0;  // next free scratch slot (0 = uninitialised)
     std::map<std::string, Operand>   m_Operands;   // decoded operand locations (decoder path)
     std::map<std::string, UINT64>    m_Fields;      // addrmode field values in scope (%REG[group, field])
     std::map<UINT32, Value>          m_RegCache;    // memoized physical-register reads (GetReg)
