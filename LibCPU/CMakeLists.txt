@@ -2185,9 +2185,9 @@ add_test(NAME upcl.pdp11-unix COMMAND sh -c
 # run to completion (exit 0). The full AC-state assertions are Task 18.
 add_test(NAME upcl.pdp10-load COMMAND sh -c
   "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
-   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-add.sav' --arch upcl:\"$P\"@kl10 --dump 768 > \"$B/pdp10-load.out\" 2>&1 && \
+   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-add.sav' --arch upcl:\"$P\"@kl10 --dump 96 > \"$B/pdp10-load.out\" 2>&1 && \
    grep -q 'loaded pdp10 .SAV: 99 word(s), entry=0140' \"$B/pdp10-load.out\" && \
-   grep -q '.0x300. = 0x0005' \"$B/pdp10-load.out\" && \
+   grep -q '.0o140. = 0x408800005' \"$B/pdp10-load.out\" && \
    grep -q 'pc =' \"$B/pdp10-load.out\"")
 set_tests_properties(upcl.pdp10-load PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
 
@@ -2224,14 +2224,14 @@ set_tests_properties(upcl.pdp10-load PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|
 # temp and yielded AC1=0 instead of 8) and the >=1-iteration indirect chain now compute correctly.
 add_test(NAME upcl.pdp10-run COMMAND sh -c
   "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
-   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-compute.sav' --arch upcl:\"$P\"@kl10 --dump 1024 > \"$B/pdp10-run.out\" 2>&1 && \
+   \"$E\" run '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp10-compute.sav' --arch upcl:\"$P\"@kl10 --dump 128 > \"$B/pdp10-run.out\" 2>&1 && \
    grep -q 'loaded pdp10 .SAV' \"$B/pdp10-run.out\" && \
    grep -q 'ac1=0000000028' \"$B/pdp10-run.out\" && \
    grep -q 'ac2=0000000000' \"$B/pdp10-run.out\" && \
    grep -q 'ac3=0000000028' \"$B/pdp10-run.out\" && \
    grep -q 'ac4=0000000053' \"$B/pdp10-run.out\" && \
    grep -q 'ac5=0000000155' \"$B/pdp10-run.out\" && \
-   grep -q '.0x400. = 0x0028' \"$B/pdp10-run.out\"")
+   grep -q '.0o200. = 0x000000028' \"$B/pdp10-run.out\"")
 set_tests_properties(upcl.pdp10-run PROPERTIES FAIL_REGULAR_EXPRESSION "cannot|error|could not|unexpected word|no JRST")
 
 # Semantics translation: drive an emitter from an instruction body. `add` must derive the
