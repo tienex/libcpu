@@ -2138,6 +2138,7 @@ VisitCpu (Cpu *C, Cpu *pCaller, InhCtx &Ctx)
         std::string Msg = std::string ("cpu \"") + pCaller->Name
             + "\" extends \"" + C->Name + "\": inheritance cycle detected";
         Ctx.pDiag->Report (SevError, pCaller->Loc, Msg);
+        Col = 2;
         return false;
     }
     Col = 1;

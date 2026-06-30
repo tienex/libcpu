@@ -1135,10 +1135,11 @@ set_tests_properties(upcl.engine-const PROPERTIES FAIL_REGULAR_EXPRESSION "error
 # Assertions:
 #   (1) check passes (extends syntax is valid, no errors)
 #   (2) @top disassembles ia (from base via mid -- transitive) -- proves inheritance chain
-#   (3) @top disassembles ic (from c_holder -- multiple inheritance) -- proves union
-#   (4) @base rejects ib (0x0002 -> "db") -- not in base's feature set
-#   (5) @base rejects ic (0x0003 -> "db") -- same
-#   (6) the cycle test file _test_extends_cycle.upcl fails check with a cycle diagnostic
+#   (3) @top disassembles ib (from mid -- direct parent, full union) -- proves ib is included
+#   (4) @top disassembles ic (from c_holder -- multiple inheritance) -- proves union
+#   (5) @base rejects ib (0x0002 -> "db") -- not in base's feature set
+#   (6) @base rejects ic (0x0003 -> "db") -- same
+#   (7) the cycle test file _test_extends_cycle.upcl fails check with a cycle diagnostic
 add_test(NAME upcl.engine-extends COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_extends.upcl'; \
    MC='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_extends_cycle.upcl'; \
@@ -1148,6 +1149,7 @@ add_test(NAME upcl.engine-extends COMMAND sh -c
    printf '\\x03\\x00' > '${CMAKE_BINARY_DIR}/ext_ic.bin' && \
    \"$E\" upcl check \"$M\" | grep -q '_test_ext' && \
    \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ia.bin' --count 1 --arch \"upcl:$M@top\" | grep -q 'ia' && \
+   \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ib.bin' --count 1 --arch \"upcl:$M@top\" | grep -q 'ib' && \
    \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ic.bin' --count 1 --arch \"upcl:$M@top\" | grep -q 'ic' && \
    \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ib.bin' --count 1 --arch \"upcl:$M@base\" | grep -q 'db' && \
    \"$E\" disasm '${CMAKE_BINARY_DIR}/ext_ic.bin' --count 1 --arch \"upcl:$M@base\" | grep -q 'db' && \
