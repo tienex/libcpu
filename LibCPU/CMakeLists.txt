@@ -1051,8 +1051,8 @@ set_tests_properties(upcl.engine-wordaddr PROPERTIES FAIL_REGULAR_EXPRESSION "no
 # WORD-ADDRESSED EXECUTION: a 36-bit value round-trips through word memory. Guest RAM is an array of
 # 36-bit word cells (each backed by an 8-byte little-endian host slot); the program image is those
 # cells, one per instruction word. The program builds a full 36-bit AC value out of two 18-bit halves
-# (movsi ac1, 0o654321 -> high half; iori ac1, 0o123456 -> low half), stores it to memory WORD 100
-# (movem ac1, 100), loads it back into a DIFFERENT AC (move ac2, 100), then halts. ac2 must equal the
+# (movsi ac1, 0o654321 -> high half; iori ac1, 0o123456 -> low half), stores it to memory WORD 0o144
+# (= 100 decimal; movem ac1, 0o144), loads it back into a DIFFERENT AC (move ac2, 0o144), then halts. ac2 must equal the
 # whole 36-bit value 0d6344a72e -- proving the word cell holds all 36 bits (a byte-array / 32-bit
 # access would drop the top 4 bits). Exercises word-index %M[] Load/Store + word-cell instruction
 # fetch on the interpreter backend. The five 8-byte LE word cells are emitted as octal printf escapes.
@@ -1062,6 +1062,24 @@ if(TARGET interp_backend)
      printf '\\321\\130\\203\\050\\004\\000\\000\\000\\056\\247\\200\\110\\004\\000\\000\\000\\144\\000\\200\\020\\004\\000\\000\\000\\144\\000\\000\\001\\004\\000\\000\\000\\000\\000\\000\\140\\005\\000\\000\\000' > '${CMAKE_BINARY_DIR}/wordmem.bin' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/wordmem.bin' --arch \"upcl:$M\" | grep -q 'ac2=0d6344a72e'")
 endif()
+
+# WORD-ADDRESSED BACKEND GUARD: running a word-addressed arch on any backend other than the
+# interpreter must fail loudly with a clear error rather than silently mis-executing (e.g.
+# dropping the top 4 bits of a 36-bit word due to Bits/8 width computation in the backend's
+# RAM helpers). The bash backend is always built and is a non-interpreter backend; the guard
+# must emit "does not support >8-bit addressable units" and exit non-zero. upcl decode (no
+# execution) must still succeed on the same arch to confirm decode/disasm are unaffected.
+add_test(NAME upcl.engine-wordmem-guard COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='$<TARGET_BUNDLE_DIR:bash_backend>'; \
+   printf '\\000\\000\\000\\000\\000\\000\\000\\000' > '${CMAKE_BINARY_DIR}/wordmem-guard.bin' && \
+   OUT=\"$(\"$E\" run '${CMAKE_BINARY_DIR}/wordmem-guard.bin' --arch \"upcl:$M\" --backend \"$B\" 2>&1)\"; \
+   RC=$?; \
+   echo \"$OUT\" | grep -q 'does not support >8-bit addressable units' && test $RC -ne 0")
+# Decode (no execution) must be unaffected by the guard -- it must still succeed.
+add_test(NAME upcl.engine-wordmem-guard-decode COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/_test_wordaddr.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$M\" 0o201040000005 | grep -q 'movei'")
 
 # Self-describing variable-length displacement (`disp varlen`): the first tail byte's top bits
 # select the encoded width (1 byte / 7-bit, 2 bytes / 14-bit, 4 bytes / 30-bit; big-endian,

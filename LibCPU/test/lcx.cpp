@@ -750,6 +750,27 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         pBackend->Release ();
         return 1;
     }
+    // Word-addressed arches (byte_size != 8, e.g. PDP-10 with 36-bit words) are only correct on
+    // the interpreter backend: every other backend computes RAM widths as Bits/8, silently
+    // truncating to 32 bits and dropping the top 4 bits of a 36-bit word. Fail loudly here so a
+    // wrong backend is never silently mis-executed; decode/disasm (no execution) are unaffected.
+    {
+        CPU_ARCH_INFO ArchInfo;
+        std::memset (&ArchInfo, 0, sizeof (ArchInfo));
+        A.pArch->GetInfo (&ArchInfo);
+        if (ArchInfo.ByteSize != 0 && ArchInfo.ByteSize != 8) {
+            CHAR8 CONST *pBeName = pBackend->GetName ();
+            if (std::strcmp (pBeName, "interpreter") != 0) {
+                std::printf ("lcx %s: error: word-addressed architectures (byte_size=%u, != 8)"
+                             " currently require the interpreter backend;"
+                             " backend '%s' does not support >8-bit addressable units\n",
+                             pVerb, (unsigned) ArchInfo.ByteSize, pBeName);
+                A.pArch->Release ();
+                pBackend->Release ();
+                return 1;
+            }
+        }
+    }
     CPU_ADDR Entry = (AoutEntry != ~(UINT64) 0)
                        ? (CPU_ADDR) AoutEntry
                        : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);

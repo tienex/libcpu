@@ -87,7 +87,9 @@ public:
     HRESULT STDMETHODCALLTYPE GetInfo (CPU_ARCH_INFO *pInfo) override {
         pInfo->pName       = m_pArch->Name.c_str ();
         pInfo->pFullName   = m_pArch->FullName.c_str ();
-        pInfo->ByteSize    = 8;
+        // A word-addressed arch (byte_size != 8) exposes the real addressable-unit size so
+        // callers can detect the constraint and refuse unsupported backends early.
+        pInfo->ByteSize    = (m_pArch->ByteSize != 0) ? m_pArch->ByteSize : 8;
         pInfo->WordSize    = (UINT8) m_WordBits;
         pInfo->AddressSize = m_AddrBits;
         pInfo->PsrSize     = (UINT8) m_WordBits;
