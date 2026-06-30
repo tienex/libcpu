@@ -337,6 +337,7 @@ if(TARGET nix)
 endif()
 
 add_executable(lcx test/lcx.cpp
+  test/Pdp1Io.cpp
   aot/AotGenerator.cpp aot/ShadowCfg.cpp core/Debugger.cpp core/LineEditor.cpp core/TranslationCache.cpp
   core/KnowledgeLibrary.cpp core/System.cpp core/X86System.cpp core/NativeAot.cpp core/ZooArchive.cpp core/CodeCache.cpp
   core/SymbolReader.cpp core/HeaderParser.cpp core/DerivationEngine.cpp core/DeviceTree.cpp
@@ -1734,7 +1735,8 @@ add_test(NAME upcl.decode-pdp1 COMMAND sh -c
    \"$E\" upcl decode \"$P\" 0o661000 | grep -q ': sft' && \
    \"$E\" upcl decode \"$P\" 0o700100 | grep -q ': law' && \
    \"$E\" upcl decode \"$P@pdp1\"    0o540100 | grep -q ': mus' && \
-   \"$E\" upcl decode \"$P@pdp1mul\" 0o540100 | grep -q ': mul'")
+   \"$E\" upcl decode \"$P@pdp1mul\" 0o540100 | grep -q ': mul' && \
+   \"$E\" upcl decode \"$P\" 0o720007 | grep -q ': iot'")
 set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
 add_test(NAME upcl.pdp1-arith COMMAND sh -c

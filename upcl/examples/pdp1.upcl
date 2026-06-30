@@ -414,6 +414,12 @@ feature muldiv_hw {
         { @div1c ( %M[ @ea ( I, Y ) ] ); }
 }
 
+// IOT -- I/O transfer. The whole device/pulse field is left to the host: trap to Pdp1Io, which
+// reads the IOT word at TrapPc-1, decodes dev = word & 0o77, and performs the I/O.
+jump insn iot : type trap, encode #i18 ( op:5 = OPC_IOT, f:13 -> F ),
+    disasm ( mnemonic : "iot", operands : F )
+    { @trap ( IOT_VECTOR ); }
+
 features { muldiv_step; muldiv_hw; }
 cpu "pdp1"    { feature muldiv_step; }    // base PDP-1: multiply-step / divide-step
 cpu "pdp1mul" { feature muldiv_hw;   }    // Type-10 hardware multiply/divide (Spacewar target)

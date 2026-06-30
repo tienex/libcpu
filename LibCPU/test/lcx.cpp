@@ -46,6 +46,7 @@
 #include "../upcl/Decoder.h"
 #include "RunSystem.h"
 #include "RunDosSyscall.h"
+#include "Pdp1Io.h"
 #include "RunHostCall.h"
 #include "RunStruct.h"
 #include "RunDerivedMap.h"
@@ -1016,6 +1017,13 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     Pc = (CPU_ADDR) State.TrapPc;
                     continue;
                 }
+                bool IsPdp1 = std::strstr (pArchName, "pdp1") != nullptr;
+                if (IsPdp1 && State.SyscallVector == 0072) {        // PDP-1 IOT -> host I/O
+                    if (!Pdp1IoTrap (&State, Ram, sizeof (Ram))) { break; }
+                    Pc = (CPU_ADDR) State.TrapPc;
+                    continue;
+                }
+                if (IsPdp1 && State.SyscallVector == 0077) { break; }   // PDP-1 HLT -> stop
                 break;                                   // a HLT/INT trap with no host handler: stop
             }
             Pc = (CPU_ADDR) State.TrapPc;
