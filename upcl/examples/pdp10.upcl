@@ -1637,9 +1637,9 @@ insn rotc : encode #i36 ( op:9 = OP_ROTC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
 //   condition: 00=never, 01=E, 10=A, 11=N.
 //
 // To keep const count manageable, only the group BASE for each {source,modify} pair is defined;
-// per-mnemonic opcodes are base + skip-offset.  Naming: SKIP_E=0 (for base ops that test and
-// never skip), SKIP_E=1, SKIP_A=2, SKIP_N=3 -- but the bit layout is: never=+0, E=+2, A=+4, N=+6
-// within R/L, and never=+0, E=+2, A=+4, N=+6 within D/S.  The L variant is always +1.
+// per-mnemonic opcodes are base + skip-offset (SKIP_NEV/E/A/N = 0/2/4/6).
+// Within R/L pairs: base+0=R-never, base+1=L-never, base+2=R-E, base+3=L-E, etc.
+// Within D/S pairs: base+0=D-never, base+1=S-never, base+2=D-E, base+3=S-E, etc.
 const SKIP_NEV = 0;     // skip condition: never    (+0 within pair)
 const SKIP_E   = 2;     // skip condition: E=0      (+2 within pair)
 const SKIP_A   = 4;     // skip condition: always   (+4 within pair)
@@ -1957,35 +1957,35 @@ const OP_CAMN  = 0o316;         // CAMN  compare AC to M[E], skip if AC != M[E]
 const OP_CAMG  = 0o317;         // CAMG  compare AC to M[E], skip if AC > M[E]  (signed)
 
 // ---------------------------------------------------------------------------
-// CAI instructions -- compare AC (signed) to the immediate operand 0,,E.
-// `%S` sign-extends the 36-bit AC to a signed value for the comparison.
-// NOTE: 0,,E is zero-extended (E occupies the right 18 bits, left 18 = 0), so for signed
-// comparison we sign-extend AC but treat the immediate as a SIGNED 18-bit value (sign-extend E).
-// Per SIMH pdp10_cpu.c `cai()`: the immediate IS the 36-bit value formed as 0,,E (unsigned),
-// but the comparison is signed 36-bit.  E is 18 bits; when placed in 0,,E the left half is 0,
-// making the immediate ALWAYS non-negative (0..0x3ffff).  AC is signed 36-bit.
+// CAI instructions -- compare AC (signed 36-bit) to the immediate operand 0,,E.
+// SIMH pdp10_cpu.c `cai()`: the immediate is 0,,E -- E (18 bits) zero-extended into 36 bits.
+// The left half is always 0, so the immediate is ALWAYS non-negative (0..0x3ffff).
+// Signed inequalities therefore compare %S(AC) against a non-negative 36-bit value `e`.
+// Building `e` as a 36-bit zero-extension avoids the bug of sign-extending E (treating
+// E=0o400000 as negative when it should be +0o400000 = 131072).
+// Equality forms (caie/cain) mask to W36_MASK -- correct, unchanged.
 insn cai   : encode #i36 ( op:9 = OP_CAI,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "cai",   operands : acn, i, x, y )  => ;   // never skip -- compare only
 insn cail  : encode #i36 ( op:9 = OP_CAIL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "cail",  operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) < %S ( e ) ) ? ( pc + 1 ) : pc; }
+    { #i36 e = @ea ( i, x, y ) & HW_MASK; pc = ( %S ( ac[ acn ] ) < %S ( e ) ) ? ( pc + 1 ) : pc; }
 insn caie  : encode #i36 ( op:9 = OP_CAIE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "caie",  operands : acn, i, x, y )
     { #i18 e = @ea ( i, x, y ); pc = ( ( ac[ acn ] & W36_MASK ) == ( e & W36_MASK ) ) ? ( pc + 1 ) : pc; }
 insn caile : encode #i36 ( op:9 = OP_CAILE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "caile", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) <= %S ( e ) ) ? ( pc + 1 ) : pc; }
+    { #i36 e = @ea ( i, x, y ) & HW_MASK; pc = ( %S ( ac[ acn ] ) <= %S ( e ) ) ? ( pc + 1 ) : pc; }
 insn caia  : encode #i36 ( op:9 = OP_CAIA,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "caia",  operands : acn, i, x, y )  => pc = pc + 1;   // always skip
 insn caige : encode #i36 ( op:9 = OP_CAIGE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "caige", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) >= %S ( e ) ) ? ( pc + 1 ) : pc; }
+    { #i36 e = @ea ( i, x, y ) & HW_MASK; pc = ( %S ( ac[ acn ] ) >= %S ( e ) ) ? ( pc + 1 ) : pc; }
 insn cain  : encode #i36 ( op:9 = OP_CAIN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "cain",  operands : acn, i, x, y )
     { #i18 e = @ea ( i, x, y ); pc = ( ( ac[ acn ] & W36_MASK ) != ( e & W36_MASK ) ) ? ( pc + 1 ) : pc; }
 insn caig  : encode #i36 ( op:9 = OP_CAIG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "caig",  operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) > %S ( e ) ) ? ( pc + 1 ) : pc; }
+    { #i36 e = @ea ( i, x, y ) & HW_MASK; pc = ( %S ( ac[ acn ] ) > %S ( e ) ) ? ( pc + 1 ) : pc; }
 
 // ---------------------------------------------------------------------------
 // CAM instructions -- compare AC (signed) to M[E].
@@ -2159,22 +2159,23 @@ const OP_AOBJP = 0o252;
 const OP_AOBJN = 0o253;
 
 // ---------------------------------------------------------------------------
-// AOBJP / AOBJN bodies.  The "1,,1" addend = (1 << 18) | 1.  Both halves wrap at 18 bits; the
-// combined add is: left_half = (left(AC) + 1) & HW_MASK, right_half = (right(AC) + 1) & HW_MASK.
-// Result sign = bit 35 (the sign bit of the left half in the 36-bit word).
-const AOBJN_ADDEND = 0o000001000001;    // 1,,1 = 1<<18 | 1
+// AOBJP / AOBJN bodies.  Each half increments independently, modulo 2^18 (no inter-half carry).
+// SIMH: AOB(x) = INCL(x) | INCR(x), where INCL adds 1 to the left half and INCR adds 1 to the
+// right half, each wrapping at 18 bits.  A flat 36-bit add of 1,,1 would allow a carry from bit 17
+// (top of right half) into bit 18 (bottom of left half) when the right half is 0o777777 -- wrong.
+// Result sign = bit 35 (sign bit of the left half in the 36-bit word).
 
 jump insn aobjp : type branch, encode #i36 ( op:9 = OP_AOBJP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "aobjp", operands : acn, i, x, y )
     {
-        #i36 r   = ( ac[ acn ] + AOBJN_ADDEND ) & W36_MASK;
+        #i36 r = ( ( ( ( ac[ acn ] >> HW_LSHFT ) + 1 ) & HW_MASK ) << HW_LSHFT ) | ( ( ac[ acn ] + 1 ) & HW_MASK );
         ac[ acn ] = r;
         pc = ( ( r & SIGN_BIT36 ) == 0 ) ? @ea ( i, x, y ) : pc;   // jump if left half >= 0 (not negative)
     }
 jump insn aobjn : type branch, encode #i36 ( op:9 = OP_AOBJN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "aobjn", operands : acn, i, x, y )
     {
-        #i36 r   = ( ac[ acn ] + AOBJN_ADDEND ) & W36_MASK;
+        #i36 r = ( ( ( ( ac[ acn ] >> HW_LSHFT ) + 1 ) & HW_MASK ) << HW_LSHFT ) | ( ( ac[ acn ] + 1 ) & HW_MASK );
         ac[ acn ] = r;
         pc = ( ( r & SIGN_BIT36 ) != 0 ) ? @ea ( i, x, y ) : pc;   // jump if left half < 0 (negative)
     }
