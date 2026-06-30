@@ -567,8 +567,8 @@ public:
     // are the SAME storage (PDP-10: accumulators AC0-15 alias words 0-17 octal). When set,
     // the `%M` load/store path routes word-addressed accesses whose index falls in
     // [MemAliasBase, MemAliasBase + group_size) to the register bank rather than RAM.
-    // ~0u means no aliasing (the default for every group).
-    UINT32                  MemAliasBase = ~(UINT32)0;
+    // ~(UINT32) 0 means no aliasing (the default for every group).
+    UINT32                  MemAliasBase = ~(UINT32) 0;
     ~Group () { for (RegDecl *R : Regs) { delete R; } }
 };
 

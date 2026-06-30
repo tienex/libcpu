@@ -325,9 +325,10 @@ insn blt : encode #i36 ( op:9 = OP_BLT, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 ->
 // ---------------------------------------------------------------------------
 // DMOVE / DMOVN -- double-word (72-bit) transfers into the AC pair (AC, AC+1) from the memory pair
 // (E, E+1).  DMOVE copies both words; DMOVN negates the 72-bit two's-complement value (the pair is
-// one big number: high word in AC, low word in AC+1), placing the result in the AC pair.  The low
-// word's sign bit is forced clear in the canonical 72-bit form, but the negate is performed on the
-// full 72-bit magnitude here.  AC+1 wraps within the 16-AC bank (& 0xf).
+// one big number: high word in AC, low word in AC+1), placing the result in the AC pair.  Both
+// result words are stored with all 36 bits intact (flat 72-bit approximation); canonical 70-bit
+// normalisation (forcing the low word's sign bit to match the high word's sign) is deferred.
+// AC+1 wraps within the 16-AC bank (& 0xf).
 insn dmove : encode #i36 ( op:9 = OP_DMOVE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "dmove", operands : acn, i, x, y )
     { #i18 e = @ea ( i, x, y ); ac[ acn ] = %M[ e ]; ac[ ( acn + 1 ) & 0xf ] = %M[ ( e + 1 ) & EA_Y_MASK ]; }
@@ -343,26 +344,25 @@ insn dmovn : encode #i36 ( op:9 = OP_DMOVN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     }
 
 // ---------------------------------------------------------------------------
-// JRST -- the "Jump and ReSToRe flags" family.  The AC field selects the function:
+// JRST -- the "Jump and ReSToRe flags" family.  The AC field selects the function
+// (all AC values in OCTAL, PDP-10 convention):
 //   AC=0   plain jump:        pc = E.
 //   AC=2   JEN (restore PSW): restore pcflags from the LEFT half of M[E-1] (the stacked PCW),
 //          then pc = E.  (Deferred to execution in Task 18; decode only here.)
 //   AC=4   HALT:              stop the machine -- modelled as @trap(0) (host halt vector 0).
-//   AC=10  XJRSTF:            extended jump, KL only -- decode stub.
-//   AC=12  JEN (alternate):   same as AC=2 on some models.
+//   AC=12  XJRSTF:            extended jump, KL only (0o12 = decimal 10) -- decode stub.
+//   AC=14  JEN (alternate):   same as AC=2 on some models (0o14 = decimal 12).
 //   Other AC values: reserved / decode-only stubs in execution.
 //
 // Opcode 0o254, AC field is the function code (4 bits).  Source: DEC PDP-10 HRM ch.2 "JRST"
-// and SIMH pdp10_cpu.c `jrst()`.  Function constants (one-hot in the 4-bit AC):
-const JRST_FN_JUMP  = 0x0;     // AC=0  plain jump
-const JRST_FN_JEN   = 0x2;     // AC=2  restore flags, then jump (JEN)
-const JRST_FN_HALT  = 0x4;     // AC=4  HALT -- halt the machine
-const JRST_FN_XJRSF = 0xa;     // AC=10 XJRSTF (KL extended -- decode stub)
-const JRST_FN_JEN2  = 0xc;     // AC=12 JEN alternate (some models)
+// and SIMH pdp10_cpu.c `jrst()`.  Function constants used in the encode fixed-AC fields
+// (all values decimal; PDP-10 docs use octal -- AC=2 is octal 2, AC=4 is octal 4):
+const JRST_FN_JEN   = 0x2;     // AC=2  (octal 2)  restore flags, then jump (JEN)
+const JRST_FN_HALT  = 0x4;     // AC=4  (octal 4)  HALT -- halt the machine
 
-// JRST is one instruction with a sub-function in the AC field.  We model the three
-// architecturally distinct behaviours as priority-ordered variants that differ only in the
-// ac constant value.  `priority` breaks the tie vs the generic `jrst` fallthrough.
+// JRST is one instruction with a sub-function in the AC field.  We model the two
+// architecturally distinct behaviours (HALT, JEN) as fixed-AC variants that match before
+// the catch-all `jrst` (which captures AC=0 plain jump and all other AC values).
 jump insn jrst_halt : type trap, encode #i36 ( op:9 = 0o254, ac:4 = JRST_FN_HALT, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "jrst", operands : i, x, y )
     { @trap ( 0 ); }   // HALT -- vector 0 = machine halt
@@ -383,8 +383,8 @@ jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i,
 // Transmission"; opcodes verified against SIMH pdp10_sys.c).  Each instruction moves one 18-bit
 // half of a 36-bit word to one half of the destination, and fills the OTHER half according to a
 // fill rule.  The naming is H<src-half><dst-half><fill> where:
-//   src-half  L = left half (bits 17..0 of the source word, i.e. the HIGH 18 bits)
-//             R = right half (bits 35..18 of the source word, i.e. the LOW  18 bits)
+//   src-half  L = left half (bits 0..17 of the source word in PDP-10 MSB-first, i.e. the HIGH 18 bits)
+//             R = right half (bits 18..35 of the source word in PDP-10 MSB-first, i.e. the LOW 18 bits)
 //   dst-half  L = left half of destination
 //             R = right half of destination
 //   fill      (none) = leave the other half unchanged
@@ -393,9 +393,9 @@ jump insn jrst : type branch, encode #i36 ( op:9 = 0o254, ac:4 -> acn, i:1 -> i,
 //             E      = sign-extend: replicate the high bit of the moved half
 //
 // NOTE ON BIT NUMBERING: PDP-10 uses MSB-first numbering (bit 0 = most significant). In a 36-bit
-// word, "left half" = bits 0..17 (PDP-10) = the HIGH 18 bits in our numeric representation =
-// bits 35..18 MSB-first = value >> 18 in the implementation. "Right half" = bits 18..35 (PDP-10)
-// = the LOW 18 bits = value & 0x3ffff.
+// word, "left half" = bits 0..17 (PDP-10, MSB-first) = the HIGH 18 bits in our numeric
+// representation = value >> 18 in the implementation. "Right half" = bits 18..35 (PDP-10,
+// MSB-first) = the LOW 18 bits = value & 0x3ffff.
 //
 // For SIGN-EXTEND (E fill): the "high bit of the moved half" is the most significant bit of the
 // half being moved. For a left-half source that means bit 0 of the PDP-10 word (bit 35 in our
@@ -547,16 +547,16 @@ insn hrls : encode #i36 ( op:9 = OP_HRLS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
 // HLLZ / HLLZI / HLLZM / HLLZS -- left half of src -> left half of dst; right half := 0.
 insn hllz  : encode #i36 ( op:9 = OP_HLLZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hllz",  operands : acn, i, x, y )
-    => ac[ acn ] = @fillr_zero ( @setleft ( 0, @left ( %M[ @ea ( i, x, y ) ] ) ) );
+    => ac[ acn ] = @setleft ( 0, @left ( %M[ @ea ( i, x, y ) ] ) );
 insn hllzi : encode #i36 ( op:9 = OP_HLLZI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hllzi", operands : acn, i, x, y )
     => ac[ acn ] = 0;   // 0,,E: left half = 0; right half = 0 (zero fill)
 insn hllzm : encode #i36 ( op:9 = OP_HLLZM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hllzm", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); %M[ e ] = @fillr_zero ( @setleft ( 0, @left ( ac[ acn ] ) ) ); }
+    { #i18 e = @ea ( i, x, y ); %M[ e ] = @setleft ( 0, @left ( ac[ acn ] ) ); }
 insn hllzs : encode #i36 ( op:9 = OP_HLLZS, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hllzs", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); #i36 v = @fillr_zero ( @setleft ( 0, @left ( %M[ e ] ) ) ); %M[ e ] = v; ac[ acn ] = v; }
+    { #i18 e = @ea ( i, x, y ); #i36 v = @setleft ( 0, @left ( %M[ e ] ) ); %M[ e ] = v; ac[ acn ] = v; }
 
 // ---------------------------------------------------------------------------
 // HRLZ / HRLZI / HRLZM / HRLZS -- right half of src -> left half of dst; right half := 0.
@@ -717,7 +717,7 @@ insn hlro  : encode #i36 ( op:9 = OP_HLRO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:1
     => ac[ acn ] = @filll_ones ( @left ( %M[ @ea ( i, x, y ) ] ) );
 insn hlroi : encode #i36 ( op:9 = OP_HLROI, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hlroi", operands : acn, i, x, y )
-    { #i18 e = @ea ( i, x, y ); ac[ acn ] = ( HW_ONES << HW_LSHFT ) | 0; }   // 0,,E: left half = 0 -> right = 0
+    { #i18 e = @ea ( i, x, y ); ac[ acn ] = HW_ONES << HW_LSHFT; }   // 0,,E: left half = 0 -> right = 0
 insn hlrom : encode #i36 ( op:9 = OP_HLROM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
     disasm ( mnemonic : "hlrom", operands : acn, i, x, y )
     { #i18 e = @ea ( i, x, y ); %M[ e ] = @filll_ones ( @left ( ac[ acn ] ) ); }

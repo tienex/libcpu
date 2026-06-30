@@ -90,12 +90,12 @@ public:
     // MemAliasPhysBase is the layout index of AC0. The `%M[addr]` load/store path routes
     // accesses whose word index falls in this range to the register bank.
     // All three fields are 0/~0u when no group has declared aliasing.
-    UINT32 MemAliasPhysBase = ~(UINT32)0; // index into Phys[] of alias group element 0
+    UINT32 MemAliasPhysBase = ~(UINT32) 0; // index into Phys[] of alias group element 0
     UINT32 MemAliasCount    = 0;          // number of registers that alias memory
     UINT32 MemAliasWordBase = 0;          // guest word address of alias group element 0
 
     // True when any group has declared register/memory aliasing.
-    bool HasMemAlias () CONST { return MemAliasCount > 0 && MemAliasPhysBase != ~(UINT32)0; }
+    bool HasMemAlias () CONST { return MemAliasCount > 0 && MemAliasPhysBase != ~(UINT32) 0; }
 
     // True when word address WordAddr aliases a physical register. When true, *pPhysIndex
     // receives the layout index of the physical register that WordAddr aliases.

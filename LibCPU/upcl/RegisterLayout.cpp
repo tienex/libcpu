@@ -227,7 +227,7 @@ BuildRegisterLayout (Arch *pArch)
         // [MemAliasWordBase, MemAliasWordBase + MemAliasCount), mapping word offset N to the
         // physical register at GroupPhysBase + N. Only the FIRST such group is wired; if a
         // second group also declares aliasing it is silently ignored (no ISA has two such groups).
-        if (pGroup->MemAliasBase != ~(UINT32)0 && !Layout.HasMemAlias ()) {
+        if (pGroup->MemAliasBase != ~(UINT32) 0 && !Layout.HasMemAlias ()) {
             UINT32 Count = (UINT32) Layout.Phys.size () - GroupPhysBase;
             if (Count > 0) {
                 Layout.MemAliasPhysBase = GroupPhysBase;

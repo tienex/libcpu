@@ -1147,6 +1147,9 @@ Parser::ParseInsnDecl ()
 // machine word coincide and that unit is not the conventional octet (PDP-10/PDP-6: 36-bit words,
 // 18-bit word addresses). The default `byte_size 8` (every existing byte-addressed ISA) leaves it
 // false. Recomputed whenever either size directive is parsed, so declaration order does not matter.
+// Note: pdp1.upcl (byte_size 18, word_size 18) also satisfies this rule and is correctly
+// classified as word-addressed -- the PDP-1 is an 18-bit word-addressed machine. This is harmless
+// since pdp1.upcl is currently a parse-only stub with no execution tests.
 static void
 MarkWordAddressed (Arch *pArch)
 {

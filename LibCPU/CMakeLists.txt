@@ -1117,7 +1117,7 @@ add_test(NAME upcl.decode-pdp10-halfword COMMAND sh -c
    grep -q '0x0000: hrro'  '${CMAKE_BINARY_DIR}/pdp10.hrro' && \
    \"$E\" upcl decode \"$P\" 0o530300000600 > '${CMAKE_BINARY_DIR}/pdp10.hlle' && \
    grep -q '0x0000: hlle'  '${CMAKE_BINARY_DIR}/pdp10.hlle'")
-set_tests_properties(upcl.decode-pdp10-halfword PROPERTIES FAIL_REGULAR_EXPRESSION "error:")
+set_tests_properties(upcl.decode-pdp10-halfword PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
 # PDP-10 boolean instructions (16 functions x 4 modes, opcodes 0o400-0o477).
 # Truth table: SETZ=0, AND=AC&M, ANDCA=~AC&M, SETM=M, ANDCM=AC&~M, SETA=AC, XOR=AC^M,
@@ -1371,7 +1371,7 @@ if(TARGET interp_backend)
      \"$E\" run '${CMAKE_BINARY_DIR}/wordmem.bin' --arch \"upcl:$M\" | grep -q 'ac2=0d6344a72e'")
 
   # E-AC: REGISTER/LOW-MEMORY ALIASING. On the PDP-10 the 16 accumulators (AC0-AC15) ARE
-  # memory words 0-17 (octal) -- the same physical storage. This test programs verifies BOTH
+  # memory words 0-17 (octal) -- the same physical storage. This test program verifies BOTH
   # directions of the alias on a word-addressed arch where AC is declared `aliases_memory 0`:
   #
   #   Direction A (AC -> %M): write a literal 42 into ac3 (movei ac=3, y=42), then load
