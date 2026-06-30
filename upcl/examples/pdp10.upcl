@@ -1,0 +1,94 @@
+// DEC PDP-10 -- the 36-bit word-addressed mainframe that defined timesharing. Sixteen 36-bit
+// general-purpose accumulator registers (AC0-AC15) that ARE the low sixteen words of memory
+// (an architectural alias: a `%M[n]` access with n < 16 reads/writes the AC bank, not a
+// separate RAM cell). Instruction words are 36 bits wide and word-indexed; the program counter
+// (PC) is 18 bits (the right half of the "process context word"). PC flags occupy the left
+// half of the same word: AROV, CRY0, CRY1, FOV, FPD, USR, UIO, PUB, AFI, TRAP2, TRAP1, FXU,
+// DCK -- sourced from the DEC PDP-10 Hardware Reference Manual (1968-1975 era) and verified
+// against SIMH pdp10_defs.h (F_V_*/F_* defines).
+//
+// WORD-ADDRESSING: byte_size == word_size == 36 (not 8) marks this arch as word-addressed.
+// The decoder fetches one 36-bit instruction word at a WORD index (not a byte offset), extracts
+// MSB-first fields from the 36-bit value, and `%M[y]` indexes a 36-bit word cell. The canonical
+// PDP-10 instruction format is: op[35:27]:9, ac[26:23]:4, i[22]:1, x[21:18]:4, y[17:0]:18.
+//
+// REGISTER/MEMORY ALIASING (AC group, `aliases_memory 0`): AC0-AC15 are memory words 0-17
+// (octal). The `aliases_memory 0` directive routes `%M[0..15]` to the AC bank -- the same
+// physical storage -- replicating the PDP-10's defining architectural property.
+//
+// PHASE 1 (this file): arch header + register file. No instructions yet; later tasks add the
+// @ea effective-address mode and the full instruction set.
+//
+// PC FLAG LAYOUT -- left half of the 36-bit process context word, bits 35..18 (MSB first):
+//   bit 35 = AROV  arithmetic overflow      bit 34 = CRY0  carry out of bit 0 (left)
+//   bit 33 = CRY1  carry out of bit 1       bit 32 = FOV   floating-point overflow
+//   bit 31 = FPD   first part done          bit 30 = USR   user mode
+//   bit 29 = UIO   user I/O mode            bit 28 = PUB   public mode
+//   bit 27 = AFI   address failure inhibit  bit 26 = TRAP2 software trap 2
+//   bit 25 = TRAP1 software trap 1          bit 24 = FXU   floating-point exponent underflow
+//   bit 23 = DCK   divide check             bits 22..18 = reserved / zero
+// PC (right half): bits 17..0.
+//
+// `const PCF_*` values are one-hot masks within the 18-bit `pcflags` left-half register.
+// (They match the SIMH F_* values: F_AOV=1<<17=0x20000, F_C0=1<<16=0x10000, etc.)
+
+// PC-flag bit masks within the 18-bit left-half (pcflags) register.
+const PCF_AROV  = 0x20000;   // bit 17 -- arithmetic overflow          (SIMH F_AOV)
+const PCF_CRY0  = 0x10000;   // bit 16 -- carry out of bit 0           (SIMH F_C0)
+const PCF_CRY1  = 0x08000;   // bit 15 -- carry out of bit 1           (SIMH F_C1)
+const PCF_FOV   = 0x04000;   // bit 14 -- floating-point overflow       (SIMH F_FOV)
+const PCF_FPD   = 0x02000;   // bit 13 -- first part done               (SIMH F_FPD)
+const PCF_USR   = 0x01000;   // bit 12 -- user mode                     (SIMH F_USR)
+const PCF_UIO   = 0x00800;   // bit 11 -- user I/O mode                 (SIMH F_UIO)
+const PCF_PUB   = 0x00400;   // bit 10 -- public mode                   (SIMH F_PUB)
+const PCF_AFI   = 0x00200;   // bit  9 -- address failure inhibit       (SIMH F_AFI)
+const PCF_TRAP2 = 0x00100;   // bit  8 -- software trap 2               (SIMH F_T2)
+const PCF_TRAP1 = 0x00080;   // bit  7 -- software trap 1               (SIMH F_T1)
+const PCF_FXU   = 0x00040;   // bit  6 -- floating-point exp. underflow (SIMH F_FXU)
+const PCF_DCK   = 0x00020;   // bit  5 -- divide check                  (SIMH F_DCK)
+
+arch "pdp10" {
+
+    name "DEC PDP-10";
+
+    // Big-endian, word-addressed. byte_size == word_size == 36 activates the word-address path:
+    // instruction fetch reads one 36-bit word cell at a WORD index, fields are extracted MSB-first
+    // from that 36-bit value, and `%M[y]` indexes 36-bit word cells in guest RAM.
+    endian big;
+    byte_size 36;
+    word_size 36;
+    address_size 18;
+    float_size 36;
+
+    register_file {
+
+        // AC0..AC15: sixteen 36-bit general-purpose accumulators. Declared `aliases_memory 0`
+        // so that any `%M[n]` access with 0 <= n < 16 is routed to this register bank (the same
+        // physical storage), replicating the PDP-10's AC/low-memory aliasing property.
+        // The `?` suffix + `16 **` repeat generates ac0..ac15 and their positional group aliases
+        // AC0..AC15.
+        group AC aliases_memory 0 {
+            [ 16 ** #i36 ac?:0 ]
+        }
+
+        // Dedicated (special-purpose) registers.
+        //
+        // `pc` carries the %PC meta-role (18-bit right half of the process context word).
+        //
+        // `pcflags` models the 18-bit left half of the process context word. It carries the
+        // %PSR meta-role and an `explicit` flag splitter (MSB-first within the 18-bit register):
+        //   AROV CRY0 CRY1 FOV FPD USR UIO PUB AFI TRAP2 TRAP1 FXU DCK <5-bit zero pad>
+        // AROV (arithmetic overflow) maps to the %V (overflow) meta-flag; CRY0/CRY1 are carry
+        // flags (CRY0 = carry out of bit 0 = the left-most carry = %C in PDP-10 parlance).
+        group S {
+            [ #i18 pc -> %PC ],
+            [ #i18 pcflags -> %PSR #i18 explicit
+                ( #i1 AROV -> %V : #i1 CRY0 -> %C : #i1 CRY1
+                : #i1 FOV : #i1 FPD : #i1 USR : #i1 UIO : #i1 PUB
+                : #i1 AFI : #i1 TRAP2 : #i1 TRAP1 : #i1 FXU : #i1 DCK
+                : #i5 0 ) ]
+        }
+
+    }
+
+}

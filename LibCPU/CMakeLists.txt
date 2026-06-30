@@ -1240,6 +1240,23 @@ add_test(NAME upcl.check-ns32k COMMAND sh -c
    grep -q 'pc '             '${CMAKE_BINARY_DIR}/ns32k.out'")
 set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 
+# DEC PDP-10 arch header + register file (Phase 1 / Task 5). Verify: word=36 addr=18 big-endian
+# word-addressed arch; group AC with AC/low-memory aliasing (aliases_memory 0); group S with
+# 18-bit PC (%PC) and 18-bit pcflags (%PSR) carrying the 13 PC flag bits (AROV->%V, CRY0->%C,
+# CRY1, FOV, FPD, USR, UIO, PUB, AFI, TRAP2, TRAP1, FXU, DCK). No instructions yet (Phase 3
+# adds @ea; Phase 4+ adds instructions). Bit positions sourced from SIMH pdp10_defs.h F_V_*.
+add_test(NAME upcl.check-pdp10 COMMAND sh -c
+  "'$<TARGET_FILE:lcx>' upcl check '${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl' > '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'arch \"pdp10\"'  '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'word=36'         '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'addr=18'         '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'flag AROV'       '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'flag CRY0'       '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'flag DCK'        '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'ac0 '            '${CMAKE_BINARY_DIR}/pdp10.out' && \
+   grep -q 'pc '             '${CMAKE_BINARY_DIR}/pdp10.out'")
+set_tests_properties(upcl.check-pdp10 PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
+
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
 # (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better
