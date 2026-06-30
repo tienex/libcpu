@@ -289,7 +289,7 @@ jump insn sft : type branch, encode #i18 ( op:5 = OPC_SFT, f:13 -> F ),
     }
 
 // LAW -- load AC with the 12-bit Y as an immediate; the indirect bit I loads the complement.
-// AC <- (Y & DAMASK) ^ (I ? DMASK : 0)  (SIMH pdp1_cpu.c case 035)
+// AC <- (Y & DAMASK) ^ (I ? DMASK : 0)  (SIMH pdp1_cpu.c case 034)
 insn law : encode #i18 ( op:5 = OPC_LAW, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "law", operands : I, Y )
     { ac = ( Y & DAMASK ) ^ ( I ? DMASK : 0 ); }
@@ -386,16 +386,15 @@ feature muldiv_step {
             ac = ( ( ac << 1 ) | ( ( io >> 17 ) & 1 ) ) & DMASK;
             io = ( ( io << 1 ) | ( hb ^ 1 ) ) & DMASK;
             #i18 mb = %M[ @ea ( I, Y ) ] & DMASK;
-            // if IO & 1: subtract (add complement+1); else add -- SIMH uses two's-comp arithmetic
+            // if IO & 1: subtract (add one's-complement); else add -- end-around carry on both arms
             if ( ( io & 1 ) != 0 ) {
                 #i32 s = ( ac & DMASK ) + ( mb ^ DMASK );
                 ac = ( s > DMASK ) ? ( ( s + 1 ) & DMASK ) : ( s & DMASK );
             } else {
                 #i32 s = ( ac & DMASK ) + mb + 1;
-                #i18 r = s & DMASK;
-                r = ( s > DMASK ) ? ( ( r + 1 ) & DMASK ) : r;
-                ac = ( r == DMASK ) ? 0 : r;
+                ac = ( s > DMASK ) ? ( ( ( s & DMASK ) + 1 ) & DMASK ) : ( s & DMASK );
             }
+            ac = ( ac == DMASK ) ? 0 : ac;
         }
 }
 feature muldiv_hw {
