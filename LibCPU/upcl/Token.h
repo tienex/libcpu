@@ -30,6 +30,9 @@ typedef enum _TOKEN_KIND {
     TokMeta,         // %word -- an augment (%CC/%S/%U/%M/%MEM/...) or meta-register (%PC/%V/...);
                      //   Text holds the word after '%'. The parser dispatches by spelling.
     TokMacroIdent,   // @word -- a macro reference; Text holds the word after '@'.
+    TokBuiltinIdent, // $word -- a builtin (framework intrinsic) reference; Text holds the word
+                     //   after '$'. '@' is reserved for user macros; '$' invokes a built-in
+                     //   intrinsic ($exec/...).
 
     // punctuation
     TokLBrace, TokRBrace, TokLParen, TokRParen, TokLBracket, TokRBracket,

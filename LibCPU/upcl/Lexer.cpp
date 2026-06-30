@@ -18,6 +18,7 @@ TokenName (TOKEN_KIND Kind)
     case TokType:     return "type (#i16/#f80/#v...)";
     case TokMeta:     return "%meta";
     case TokMacroIdent: return "@macro";
+    case TokBuiltinIdent: return "$builtin";
     case TokLBrace:   return "'{'";
     case TokRBrace:   return "'}'";
     case TokLParen:   return "'('";
@@ -255,7 +256,14 @@ Lexer::Next ()
     case ']': return Make (TokRBracket, Begin);
     case ';': return Make (TokSemi, Begin);
     case ',': return Make (TokComma, Begin);
-    case '$': return Make (TokDollar, Begin);
+    case '$':
+        if (IsWordStart (Peek ())) {                                             // $builtin reference
+            while (IsWordCont (Peek ())) { m_Pos++; }
+            Token T = Make (TokBuiltinIdent, Begin);
+            T.Text = T.Text.substr (1);                                          // strip the '$'
+            return T;
+        }
+        return Make (TokDollar, Begin);
     case '?': return Make (TokQuestion, Begin);
     case '~': return Make (TokTilde, Begin);
     case ':': return Eat (':') ? Make (TokColonColon, Begin) : Make (TokColon, Begin);

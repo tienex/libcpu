@@ -98,6 +98,8 @@ public:
     std::vector<Expr *>      Args;
     Type                    *VType = nullptr;   // ExprCast / ExprMem / ExprIs (owned)
     bool                     Linked = false;     // ExprMem: a load-linked (%LL) memory reference
+    bool                     Builtin = false;     // ExprCall: a $-builtin (framework intrinsic),
+                                                 //   not an @-user-macro ($exec/...)
     bool                     RangeInclusive = true;   // ExprBitSlice: [a:b] (true) vs [a..b] (false)
     std::vector<std::string> Members;           // ExprMember: a.[m,n]
     std::vector<std::string> CcFlags;           // ExprCC: which condition bits

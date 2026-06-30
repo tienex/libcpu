@@ -144,6 +144,12 @@ typedef struct _CPU_ARCH_INFO {
     //
     UINT32       AddrSegShift;
     UINT32       AddrOffBits;
+    //
+    // Index of the program-counter register within CPU_STATE.Reg[]. Used by the host run loop for
+    // the $exec ("execute one instruction") intrinsic to pre-set the guest PC before running the
+    // target instruction. Frontends that do not use $exec may leave it 0 (Reg[0]).
+    //
+    UINT32       PcRegIndex;
 } CPU_ARCH_INFO;
 
 //

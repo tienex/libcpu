@@ -393,9 +393,10 @@ Parser::ParsePrimary ()
         return E;
     }
 
-    // @macro(args)
-    if (m_Cur.Kind == TokMacroIdent) {
+    // @macro(args)  -- a user macro;   $builtin(args)  -- a framework intrinsic
+    if (m_Cur.Kind == TokMacroIdent || m_Cur.Kind == TokBuiltinIdent) {
         Expr *E = new Expr (ExprCall); E->Loc = Loc; E->Name = m_Cur.Text;
+        E->Builtin = (m_Cur.Kind == TokBuiltinIdent);
         Advance ();
         ParseCallArgs (E);
         return E;

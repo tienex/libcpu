@@ -99,6 +99,8 @@ public:
         pInfo->GprBits     = m_WordBits;
         pInfo->AddrSegShift = m_pArch->AddrSegShift;   // segmented (CS:IP) vs flat address display
         pInfo->AddrOffBits  = m_pArch->AddrOffBits;
+        UINT32 PcIdx        = m_Layout.PcIndex ();     // for the $exec intrinsic (execute-one)
+        pInfo->PcRegIndex   = (PcIdx != ~(UINT32) 0) ? PcIdx : 0;
         return S_OK;
     }
 

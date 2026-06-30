@@ -138,6 +138,14 @@ typedef struct _CPU_STATE {
 // Sentinel stored in SyscallVector when no guest system call is pending.
 #define CPU_NO_SYSCALL            (~UINT64_C (0))
 
+// Reserved syscall vector emitted by the UPCL `$exec` builtin (an "execute one instruction"
+// intrinsic, e.g. the PDP-1/PDP-10 XCT). The instruction puts the effective address of the word to
+// execute in CPU_STATE.DispPc and traps with this vector and a return address (the instruction
+// after the $exec). The host run loop runs EXACTLY ONE instruction at DispPc, then resumes with
+// faithful execute semantics -- without the frontend re-implementing the ISA. Picked high
+// (0xE5EC, "EXEC") so it never collides with a guest vector.
+#define CPU_EXEC_ONE              UINT64_C (0xE5EC)
+
 // CPU_STATE.IoCtrl reason codes (low byte). The access width (8/16) is the next byte.
 //
 // These are the GENERIC, CPU-neutral traps a machine understands: port I/O, halt, and the
