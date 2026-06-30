@@ -169,20 +169,22 @@ jump insn jmp : type branch, encode #i18 ( op:5 = OPC_JMP, i:1 -> I, y:12 -> Y )
 jump insn jsp : type call, encode #i18 ( op:5 = OPC_JSP, i:1 -> I, y:12 -> Y ),
     disasm ( mnemonic : "jsp", operands : I, Y )
     { #i18 e = @ea ( I, Y ); ac = ( ( ov & 1 ) << 17 ) | ( pc & AMASK ); pc = e; }
-// CAL -- store AC at 0o100 of the current field, PC <- 0o101.  (op 007, bit5 = 0)
+// CAL -- deposit AC at 0o100 of the current field, load return linkage into AC, PC <- 0o101.  (op 007, bit5 = 0)
 jump insn cal : type call, encode #i18 ( op:5 = OPC_CALJDA, i:1 = 0, y:12 -> Y ),
     disasm ( mnemonic : "cal", operands : Y )
     {
         #i18 m = ( %PC & EPCMASK ) | 0o100;
-        %M[ m ] = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
+        %M[ m ] = ac;
+        ac = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
         pc = m + 1;
     }
-// JDA -- "jump and deposit AC": store AC at E, PC <- E+1.  (op 007, bit5 = 1)
+// JDA -- "jump and deposit AC": deposit AC at E, load return linkage into AC, PC <- E+1.  (op 007, bit5 = 1)
 jump insn jda : type call, encode #i18 ( op:5 = OPC_CALJDA, i:1 = 1, y:12 -> Y ),
     disasm ( mnemonic : "jda", operands : Y )
     {
         #i18 m = ( %PC & EPCMASK ) | ( Y & DAMASK );
-        %M[ m ] = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
+        %M[ m ] = ac;
+        ac = ( ( ov & 1 ) << 17 ) | ( pc & AMASK );
         pc = m + 1;
     }
 // XCT -- execute M[E] as an instruction (host trap with the EA so the engine re-decodes there).
