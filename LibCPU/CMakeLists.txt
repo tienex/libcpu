@@ -1699,6 +1699,16 @@ add_test(NAME upcl.check-pdp1 COMMAND sh -c
    \"$E\" upcl check \"$P\"")
 set_tests_properties(upcl.check-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "error:|no encoding")
 
+add_test(NAME upcl.decode-pdp1 COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o200100 > '${CMAKE_BINARY_DIR}/pdp1.lac' && \
+   grep -q '0x0000: lac' '${CMAKE_BINARY_DIR}/pdp1.lac' && \
+   \"$E\" upcl decode \"$P\" 0o240100 > '${CMAKE_BINARY_DIR}/pdp1.dac' && \
+   grep -q '0x0000: dac' '${CMAKE_BINARY_DIR}/pdp1.dac' && \
+   \"$E\" upcl decode \"$P\" 0o210100 > '${CMAKE_BINARY_DIR}/pdp1.laci' && \
+   grep -q 'while' '${CMAKE_BINARY_DIR}/pdp1.laci'")
+set_tests_properties(upcl.decode-pdp1 PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
 # (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better

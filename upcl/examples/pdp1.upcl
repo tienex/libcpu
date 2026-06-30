@@ -54,3 +54,34 @@ const IOT_VECTOR = 0o72;
 const HLT_VECTOR = 0o77;
 
 decoder_operands [ #i18 Y, #i13 F, #i1 I ];
+
+// 5-bit op codes (OP_* >> 13) -- the raw 5-bit opcode field values extracted from the prototypes.
+const OPC_AND = OP_AND >> 13;  const OPC_IOR = OP_IOR >> 13;  const OPC_XOR = OP_XOR >> 13;
+const OPC_XCT = OP_XCT >> 13;  const OPC_CALJDA = OP_CALJDA >> 13;
+const OPC_LAC = OP_LAC >> 13;  const OPC_LIO = OP_LIO >> 13;  const OPC_DAC = OP_DAC >> 13;
+const OPC_DAP = OP_DAP >> 13;  const OPC_DIP = OP_DIP >> 13;  const OPC_DIO = OP_DIO >> 13;
+const OPC_DZM = OP_DZM >> 13;  const OPC_ADD = OP_ADD >> 13;  const OPC_SUB = OP_SUB >> 13;
+const OPC_IDX = OP_IDX >> 13;  const OPC_ISP = OP_ISP >> 13;  const OPC_SAD = OP_SAD >> 13;
+const OPC_SAS = OP_SAS >> 13;  const OPC_MUL = OP_MUL >> 13;  const OPC_DIV = OP_DIV >> 13;
+const OPC_JMP = OP_JMP >> 13;  const OPC_JSP = OP_JSP >> 13;  const OPC_SKP = OP_SKP >> 13;
+const OPC_SFT = OP_SFT >> 13;  const OPC_LAW = OP_LAW >> 13;  const OPC_IOT = OP_IOT >> 13;
+const OPC_OPR = OP_OPR >> 13;
+
+// EFFECTIVE ADDRESS -- direct EA = (PC field) | Y; if the indirect bit is set, follow the chain:
+// each fetched pointer word's own indirect bit is honored (normal-mode multi-level deferral,
+// SIMH pdp1_cpu.c Ea()). The chain is runtime data-dependent, so it lives in a body macro.
+macro ea ( i, y ) {
+    result = ( %PC & EPCMASK ) | ( y & DAMASK );
+    #i1 defer = i;
+    while ( defer != 0 ) {
+        #i18 w = %M[ result ];
+        result = ( %PC & EPCMASK ) | ( w & DAMASK );
+        defer  = ( w & IA ) ? 1 : 0;
+    }
+}
+
+// LAC -- load AC from M[E].  DAC -- deposit AC to M[E].
+insn lac : encode #i18 ( op:5 = OPC_LAC, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "lac", operands : I, Y )  => ac = %M[ @ea ( I, Y ) ];
+insn dac : encode #i18 ( op:5 = OPC_DAC, i:1 -> I, y:12 -> Y ),
+    disasm ( mnemonic : "dac", operands : I, Y )  => %M[ @ea ( I, Y ) ] = ac;
