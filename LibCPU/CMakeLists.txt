@@ -1766,6 +1766,16 @@ add_test(NAME upcl.pdp1-rim COMMAND sh -c
    \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --rim --dump 0o30 | grep -q '0o30. = 0x00007'")
 set_tests_properties(upcl.pdp1-rim PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
 
+# Type 30 CRT display (dev 007): LAC X / LIO Y / IOT 0o7 / HLT, with M[0o20]=0o123400 (X)
+# and M[0o21]=0o056700 (Y). The host traps IOT and, with PDP1_DPY_DUMP=1, prints a DPY line.
+add_test(NAME upcl.pdp1-display COMMAND sh -c
+  "X='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp1.upcl'; E='$<TARGET_FILE:lcx>'; \
+   B='${CMAKE_BINARY_DIR}/pdp1dpy.raw'; \
+   python3 '${CMAKE_CURRENT_SOURCE_DIR}/test/pdp1_asm.py' \
+     --org 0 0o200020 0o220021 0o720007 0o760400 --at 0o20 0o123400 0o056700 > \"$B\" && \
+   PDP1_DPY_DUMP=1 \"$E\" run \"$B\" --arch \"upcl:$X@pdp1\" --raw18 --start 0 | grep -q 'DPY '")
+set_tests_properties(upcl.pdp1-display PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched")
+
 # NS32000 gen addressing modes: parse + decode. Each gen mode is carried by a REAL `movd
 # <gen>, r0` instruction (Format 4: op=0x5, i=11, dst=r0). The original `_probe` scaffold
 # (Task 5) was removed in Task 11; driving gen modes through `movd` is strictly better

@@ -18,6 +18,7 @@ enum {
     PDP1_OV = 3
 };
 
-bool Pdp1IoTrap (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize);
+bool     Pdp1IoTrap          (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize);
+unsigned Pdp1DisplayPointCount ();
 
 #endif // LIBCPU_TEST_PDP1IO_H
