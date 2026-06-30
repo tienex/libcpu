@@ -209,3 +209,25 @@ jump insn opr : type trap, encode #i18 ( op:5 = OPC_OPR, f:13 -> F ),
         // HLT -- stop the machine via the host halt vector.
         if ( ( F & 0o00400 ) != 0 ) { @trap ( HLT_VECTOR ); }
     }
+
+// SKIP GROUP (op 032).  In F (low 13 bits): SZA=0100 SPA=0200 SMA=0400 SZO=01000 SPI=02000 ;
+// sense-switch select = (F>>3)&07, program-flag select = F&07 ; invert bit 'i' = IA (0o010000).
+jump insn skp : type branch, encode #i18 ( op:5 = OPC_SKP, f:13 -> F ),
+    disasm ( mnemonic : "skp", operands : F )
+    {
+        #i6 sv = ( F >> 3 ) & 7;                 // sense-switch number (1..7)
+        #i6 tv = F & 7;                          // program-flag number (1..7)
+        #i6 ssm = ( sv != 0 ) ? ( ( sv == 7 ) ? 0o77 : ( 1 << ( sv - 1 ) ) ) : 0;  // SZSn mask
+        #i6 tfm = ( tv != 0 ) ? ( ( tv == 7 ) ? 0o77 : ( 1 << ( tv - 1 ) ) ) : 0;  // SZFn mask
+        #i1 sk = 0;
+        sk = ( ( F & 0o02000 ) && ( ( io & SIGN ) == 0 ) ) ? 1 : sk;          // SPI: IO >= 0
+        sk = ( ( F & 0o01000 ) && ( ( ov & 1 ) == 0 ) )    ? 1 : sk;          // SZO: OV == 0
+        sk = ( ( F & 0o00400 ) && ( ( ac & SIGN ) != 0 ) ) ? 1 : sk;          // SMA: AC < 0
+        sk = ( ( F & 0o00200 ) && ( ( ac & SIGN ) == 0 ) ) ? 1 : sk;          // SPA: AC >= 0
+        sk = ( ( F & 0o00100 ) && ( ( ac & DMASK ) == 0 ) ) ? 1 : sk;         // SZA: AC == 0
+        sk = ( ( sv != 0 ) && ( ( ss & ssm ) == 0 ) ) ? 1 : sk;               // SZSn
+        sk = ( ( tv != 0 ) && ( ( pf & tfm ) == 0 ) ) ? 1 : sk;               // SZFn
+        sk = ( ( F & IA ) != 0 ) ? ( sk ^ 1 ) : sk;                           // 'i' inverts
+        ov = ( ( F & 0o01000 ) != 0 ) ? 0 : ov;                               // SZO clears OV
+        pc = ( sk != 0 ) ? ( pc + 1 ) : pc;
+    }
