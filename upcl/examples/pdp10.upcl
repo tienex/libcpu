@@ -2766,3 +2766,420 @@ insn idpb : encode #i36 ( op:9 = OP_IDPB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
         #i18 da      = @bpea ( bp );                   // data word address
         %M[ da ]     = ( ( %M[ da ] & ( ~mask & W36_MASK ) ) | ( ( ac[ acn ] << bp_p ) & mask ) ) & W36_MASK;
     }
+
+// ===========================================================================
+// FLOATING-POINT (DEC PDP-10 Hardware Reference Manual, "Floating-Point Arithmetic";
+// opcodes verified against SIMH pdp10_cpu.c and DEC PDP-10 HRM ch.2 floating-point
+// chapters; also verified against the nocrew.org PDP-10 reference pages).
+//
+// PDP-10 SINGLE-PRECISION FORMAT (36-bit word):
+//   bit 35  = sign (MSB in our numeric representation; MSB-first bit 0 in DEC notation)
+//   bits 34..27 = 8-bit exponent in EXCESS-128 (bias = 128); range 0..255 biases to -128..+127
+//   bits 26..0  = 27-bit fraction: binary point is LEFT of bit 26 (the highest fraction bit);
+//                 normalized: the high fraction bit is 1 for any non-zero value.
+//   NEGATIVE: a NEGATIVE floating-point number is the TWO'S COMPLEMENT of the entire 36-bit
+//   word (NOT sign-magnitude).  To operate on a negative value: negate the whole word first,
+//   then extract exp/frac from the positive magnitude.
+//
+// PDP-10 DOUBLE-PRECISION FORMAT (72-bit, two consecutive 36-bit words):
+//   High word: same layout as single (sign + exp8 + frac27).
+//   Low word: extends the fraction to 62 bits (bits 35..1 of the low word are the extension;
+//   bit 0 of the low word is always 0 in the canonical KL10/KI10 representation).
+//   Together: 62-bit fraction, same sign + exp8 in the high word.
+//
+// HOST-DOUBLE APPROXIMATION (approved per task brief):
+//   Exact PDP-10 rounding/normalization (FADR rounding mode, FXU underflow detection,
+//   FDV two-pass normalizing divide) is documented as APPROXIMATE.  The @pdp10_to_host and
+//   @host_to_pdp10 conversion macros implement the structural shape of the conversion
+//   using integer ops + the engine's [ #f64 x ] int-to-float cast; exact 2^(exp-155)
+//   scaling is an approximation deferred to Task-18 execution.
+//
+// OPCODE MAP (all verified against SIMH pdp10_sys.c opcode table):
+//   FAD  = 0o140  FAD family: basic/L/M/B/R = +0..+4 (float add)
+//   FSB  = 0o150  FSB family: basic/L/M/B/R = +0..+4 (float subtract)
+//   FMP  = 0o160  FMP family: basic/L/M/B/R = +0..+4 (float multiply)
+//   FDV  = 0o170  FDV family: basic/L/M/B/R = +0..+4 (float divide)
+//   DFAD = 0o110  double-precision float add
+//   DFSB = 0o111  double-precision float subtract
+//   DFMP = 0o112  double-precision float multiply
+//   DFDV = 0o113  double-precision float divide
+//   UFA  = 0o130  unnormalized float add (legacy; KA/KI)
+//   DFN  = 0o131  double float negate
+//   FSC  = 0o132  float scale: AC = AC * 2^E (exponent adjust)
+//   FIX  = 0o122  float to integer (truncate toward zero)
+//   FIXR = 0o126  float to integer (round to nearest)
+//   FLTR = 0o127  integer to float
+
+// ---------------------------------------------------------------------------
+// Floating-point opcode base constants (verified SIMH pdp10_sys.c).
+const OP_FAD  = 0o140;          // FAD  family base: float add
+const OP_FSB  = 0o150;          // FSB  family base: float subtract
+const OP_FMP  = 0o160;          // FMP  family base: float multiply
+const OP_FDV  = 0o170;          // FDV  family base: float divide
+const OP_DFAD = 0o110;          // DFAD: double float add
+const OP_DFSB = 0o111;          // DFSB: double float subtract
+const OP_DFMP = 0o112;          // DFMP: double float multiply
+const OP_DFDV = 0o113;          // DFDV: double float divide
+const OP_UFA  = 0o130;          // UFA:  unnormalized float add (legacy)
+const OP_DFN  = 0o131;          // DFN:  double float negate
+const OP_FSC  = 0o132;          // FSC:  float scale (adjust exponent by E)
+const OP_FIX  = 0o122;          // FIX:  float -> integer, truncate
+const OP_FIXR = 0o126;          // FIXR: float -> integer, round
+const OP_FLTR = 0o127;          // FLTR: integer -> float
+
+// Per-mnemonic opcodes: FAD/FSB/FMP/FDV families each have 5 forms at +0..+4.
+// +0 = basic (AC <- op(AC, M[E])), +1 = L (long: AC pair),
+// +2 = M (to memory: M[E] <- op(AC,M[E])), +3 = B (both: M[E] and AC), +4 = R (rounded).
+const OP_FADL = OP_FAD  + 1;   // FADL:  long (AC pair result)
+const OP_FADM = OP_FAD  + 2;   // FADM:  to memory
+const OP_FADB = OP_FAD  + 3;   // FADB:  to both (memory and AC)
+const OP_FADR = OP_FAD  + 4;   // FADR:  rounded
+
+const OP_FSBL = OP_FSB  + 1;   // FSBL:  long
+const OP_FSBM = OP_FSB  + 2;   // FSBM:  to memory
+const OP_FSBB = OP_FSB  + 3;   // FSBB:  to both
+const OP_FSBR = OP_FSB  + 4;   // FSBR:  rounded
+
+const OP_FMPL = OP_FMP  + 1;   // FMPL:  long
+const OP_FMPM = OP_FMP  + 2;   // FMPM:  to memory
+const OP_FMPB = OP_FMP  + 3;   // FMPB:  to both
+const OP_FMPR = OP_FMP  + 4;   // FMPR:  rounded
+
+const OP_FDVL = OP_FDV  + 1;   // FDVL:  long
+const OP_FDVM = OP_FDV  + 2;   // FDVM:  to memory
+const OP_FDVB = OP_FDV  + 3;   // FDVB:  to both
+const OP_FDVR = OP_FDV  + 4;   // FDVR:  rounded
+
+// ---------------------------------------------------------------------------
+// PDP-10 float format field constants.
+const FP_SIGN_SHIFT = 35;               // sign bit position (bit 35 = our MSB for 36-bit word)
+const FP_EXP_SHIFT  = 27;               // exponent field low bit (bits 34..27)
+const FP_EXP_MASK   = 0xff;             // 8-bit exponent mask
+const FP_FRAC_MASK  = 0x7ffffff;        // 27-bit fraction mask (bits 26..0)
+const FP_EXP_BIAS   = 128;              // excess-128 bias
+
+// ---------------------------------------------------------------------------
+// @pdp10_to_host ( w ) -- convert a PDP-10 single-precision word to a host double.
+//
+// PDP-10 float is sign + excess-128-exp8 + frac27 (normalized, binary point left of bit26).
+// NEGATIVE numbers are the two's-complement of the ENTIRE 36-bit word.
+// Conversion steps:
+//   1. If sign bit (bit 35) is set, negate the whole word (2's complement) to get magnitude.
+//   2. Extract exp8 (bits 34..27) and frac27 (bits 26..0).
+//   3. Magnitude value = frac27 * 2^(exp8 - 128 - 27).
+//   4. Apply sign.
+// APPROXIMATE: 2^(exp8 - 155) scaling is best-effort (int-to-float conversion of the fraction;
+// exact exponent scaling deferred to Task-18 execution, when full float semantics land).
+macro pdp10_to_host ( w ) {
+    // Step 1: two's-complement negate if negative to get the unsigned magnitude word.
+    #i36 mw   = ( ( w & SIGN_BIT36 ) != 0 ) ? ( ( 0 - w ) & W36_MASK ) : ( w & W36_MASK );
+    #i1  sgn  = ( ( w & SIGN_BIT36 ) != 0 ) ? 1 : 0;
+    // Step 2: extract the 8-bit biased exponent and 27-bit fraction.
+    #i8  exp8 = ( mw >> FP_EXP_SHIFT ) & FP_EXP_MASK;   // biased exponent (excess-128)
+    #i36 frc  = mw & FP_FRAC_MASK;                        // 27-bit fraction
+    // Step 3: convert fraction to host double; shift by (exp8 - 155) is an approximation here
+    // (exact power-of-two scaling requires runtime floating-point exp2, deferred to Task 18).
+    #f64 ff   = [ #f64 frc ];                              // integer frac -> host double
+    // Step 4: apply sign.
+    result    = ( sgn != 0 ) ? ( 0.0 - ff ) : ff;
+}
+
+// @host_to_pdp10 ( v ) -- convert a host double to a PDP-10 single-precision word (APPROXIMATE).
+//
+// Encode steps:
+//   1. Determine sign; take absolute value.
+//   2. Normalize: scale so 0.5 <= |v| < 1.0 and track the resulting power-of-two exponent.
+//   3. Extract 27-bit fraction: frac27 = floor(|v_normalized| * 2^27).
+//   4. Biased exponent: exp8 = exponent_offset + 128.
+//   5. Pack: sign<<35 | exp8<<27 | frac27.
+//   6. If negative: return two's complement of the packed word.
+// APPROXIMATE: normalization loop is omitted; the conversion is structural only.
+// Exact normalizing is deferred to Task-18 execution.
+macro host_to_pdp10 ( v ) {
+    // Determine sign and absolute value.
+    #i1  sgn  = ( v < 0.0 ) ? 1 : 0;
+    #f64 absv = ( v < 0.0 ) ? ( 0.0 - v ) : v;
+    // Convert absolute value to an integer approximation (structural placeholder for fraction).
+    // Full normalization (finding the binary exponent and 27-bit fraction) is Task-18 territory.
+    #i36 frc  = [ #i36 absv ] & FP_FRAC_MASK;             // approximate fraction (truncation)
+    #i8  exp8 = FP_EXP_BIAS;                               // placeholder exponent = 128 (no scaling)
+    // Pack: (exp8 << FP_EXP_SHIFT) | frac27.
+    #i36 pos  = ( ( exp8 & FP_EXP_MASK ) << FP_EXP_SHIFT ) | frc;
+    // Apply sign via two's complement of the whole word if negative.
+    result    = ( sgn != 0 ) ? ( ( 0 - pos ) & W36_MASK ) : pos;
+}
+
+// @pdp10d_to_host ( hi, lo ) -- convert a PDP-10 double-precision pair to a host double.
+// The high word carries sign + exp8 + upper 27 frac bits; the low word carries the lower
+// 35 fraction bits (bits 35..1; bit 0 is always 0 in the canonical representation).
+// APPROXIMATE: uses the high word only (same as single-precision); full 62-bit fraction
+// extension is deferred to Task-18 execution.
+macro pdp10d_to_host ( hi, lo ) {
+    result = @pdp10_to_host ( hi );   // APPROXIMATE: use high word; low word precision deferred
+}
+
+// @host_to_pdp10d ( v, acn ) -- store a host double into the AC pair as PDP-10 double.
+// APPROXIMATE: high word only; low word set to 0 (fraction extension deferred to Task 18).
+macro host_to_pdp10d ( v, acn ) {
+    ac[ acn ]               = @host_to_pdp10 ( v );
+    ac[ ( acn + 1 ) & 0xf ] = 0;   // low-word fraction extension -- APPROXIMATE (0)
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE `fp` -- all PDP-10 floating-point instructions.  The feature block is selected
+// by any cpu model that includes an FPU (KA10/KI10/KL10/KS10 all support floating-point).
+
+feature fp {
+
+// ---------------------------------------------------------------------------
+// FAD family (float add): op base 0o140.
+//   FAD  (basic, +0)  AC <- AC + M[E]   (normalized)
+//   FADL (long,   +1) AC pair <- AC + M[E] (double-length result; high in AC, ext in AC+1)
+//   FADM (memory, +2) M[E] <- AC + M[E]
+//   FADB (both,   +3) AC <- M[E] <- AC + M[E]
+//   FADR (rounded,+4) AC <- round(AC + M[E])  (APPROXIMATE: same as FAD here)
+// Semantics: @pdp10_to_host converts both operands; add as host doubles;
+// @host_to_pdp10 converts the result back.
+insn fad  : encode #i36 ( op:9 = OP_FAD,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fad",  operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }
+
+insn fadl : encode #i36 ( op:9 = OP_FADL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fadl", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      @host_to_pdp10d ( r, acn ); }
+
+insn fadm : encode #i36 ( op:9 = OP_FADM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fadm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ e ] );
+      %M[ e ] = @host_to_pdp10 ( r ); }
+
+insn fadb : encode #i36 ( op:9 = OP_FADB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fadb", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ e ] );
+      #i36 p = @host_to_pdp10 ( r ); %M[ e ] = p; ac[ acn ] = p; }
+
+// FADR: rounded add.  Rounding is APPROXIMATE (same as FAD here; exact FADR rounding
+// per the HRM (round bit in bit 36 of 37-bit sum) is deferred to Task-18 execution).
+insn fadr : encode #i36 ( op:9 = OP_FADR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fadr", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }  // APPROXIMATE: rounding not yet exact
+
+// ---------------------------------------------------------------------------
+// FSB family (float subtract): op base 0o150.
+insn fsb  : encode #i36 ( op:9 = OP_FSB,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsb",  operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) - @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }
+
+insn fsbl : encode #i36 ( op:9 = OP_FSBL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsbl", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) - @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      @host_to_pdp10d ( r, acn ); }
+
+insn fsbm : encode #i36 ( op:9 = OP_FSBM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsbm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) - @pdp10_to_host ( %M[ e ] );
+      %M[ e ] = @host_to_pdp10 ( r ); }
+
+insn fsbb : encode #i36 ( op:9 = OP_FSBB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsbb", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) - @pdp10_to_host ( %M[ e ] );
+      #i36 p = @host_to_pdp10 ( r ); %M[ e ] = p; ac[ acn ] = p; }
+
+insn fsbr : encode #i36 ( op:9 = OP_FSBR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsbr", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) - @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }  // APPROXIMATE: rounding not yet exact
+
+// ---------------------------------------------------------------------------
+// FMP family (float multiply): op base 0o160.
+insn fmp  : encode #i36 ( op:9 = OP_FMP,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fmp",  operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) * @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }
+
+insn fmpl : encode #i36 ( op:9 = OP_FMPL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fmpl", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) * @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      @host_to_pdp10d ( r, acn ); }
+
+insn fmpm : encode #i36 ( op:9 = OP_FMPM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fmpm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) * @pdp10_to_host ( %M[ e ] );
+      %M[ e ] = @host_to_pdp10 ( r ); }
+
+insn fmpb : encode #i36 ( op:9 = OP_FMPB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fmpb", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) * @pdp10_to_host ( %M[ e ] );
+      #i36 p = @host_to_pdp10 ( r ); %M[ e ] = p; ac[ acn ] = p; }
+
+insn fmpr : encode #i36 ( op:9 = OP_FMPR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fmpr", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) * @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }  // APPROXIMATE: rounding not yet exact
+
+// ---------------------------------------------------------------------------
+// FDV family (float divide): op base 0o170.
+// FDV semantics: the hardware actually normalizes the dividend to 2*AC before dividing
+// (the so-called "FDV doubling" step required by PDP-10 FP divide); modelled as
+// a plain divide here (APPROXIMATE; exact FDV semantics deferred to Task 18).
+insn fdv  : encode #i36 ( op:9 = OP_FDV,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fdv",  operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) / @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }
+
+insn fdvl : encode #i36 ( op:9 = OP_FDVL, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fdvl", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) / @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      @host_to_pdp10d ( r, acn ); }
+
+insn fdvm : encode #i36 ( op:9 = OP_FDVM, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fdvm", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) / @pdp10_to_host ( %M[ e ] );
+      %M[ e ] = @host_to_pdp10 ( r ); }
+
+insn fdvb : encode #i36 ( op:9 = OP_FDVB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fdvb", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y );
+      #f64 r = @pdp10_to_host ( ac[ acn ] ) / @pdp10_to_host ( %M[ e ] );
+      #i36 p = @host_to_pdp10 ( r ); %M[ e ] = p; ac[ acn ] = p; }
+
+insn fdvr : encode #i36 ( op:9 = OP_FDVR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fdvr", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) / @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }  // APPROXIMATE: rounding not yet exact
+
+// ---------------------------------------------------------------------------
+// DFAD / DFSB / DFMP / DFDV -- double-precision floating-point arithmetic (72-bit).
+// Opcodes 0o110..0o113 (SIMH pdp10_sys.c).  Operand pair: M[E],,M[E+1] = double from memory;
+// AC pair = double from registers.  Both use @pdp10d_to_host and @host_to_pdp10d.
+// APPROXIMATE: high-word-only conversion (see @pdp10d_to_host comment above).
+insn dfad : encode #i36 ( op:9 = OP_DFAD, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dfad", operands : acn, i, x, y )
+    { #i18 e   = @ea ( i, x, y );
+      #f64 mhi = @pdp10d_to_host ( %M[ e ], %M[ ( e + 1 ) & EA_Y_MASK ] );
+      #f64 r   = @pdp10d_to_host ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ] ) + mhi;
+      @host_to_pdp10d ( r, acn ); }
+
+insn dfsb : encode #i36 ( op:9 = OP_DFSB, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dfsb", operands : acn, i, x, y )
+    { #i18 e   = @ea ( i, x, y );
+      #f64 mhi = @pdp10d_to_host ( %M[ e ], %M[ ( e + 1 ) & EA_Y_MASK ] );
+      #f64 r   = @pdp10d_to_host ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ] ) - mhi;
+      @host_to_pdp10d ( r, acn ); }
+
+insn dfmp : encode #i36 ( op:9 = OP_DFMP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dfmp", operands : acn, i, x, y )
+    { #i18 e   = @ea ( i, x, y );
+      #f64 mhi = @pdp10d_to_host ( %M[ e ], %M[ ( e + 1 ) & EA_Y_MASK ] );
+      #f64 r   = @pdp10d_to_host ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ] ) * mhi;
+      @host_to_pdp10d ( r, acn ); }
+
+insn dfdv : encode #i36 ( op:9 = OP_DFDV, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dfdv", operands : acn, i, x, y )
+    { #i18 e   = @ea ( i, x, y );
+      #f64 mhi = @pdp10d_to_host ( %M[ e ], %M[ ( e + 1 ) & EA_Y_MASK ] );
+      #f64 r   = @pdp10d_to_host ( ac[ acn ], ac[ ( acn + 1 ) & 0xf ] ) / mhi;
+      @host_to_pdp10d ( r, acn ); }
+
+// ---------------------------------------------------------------------------
+// UFA -- Unnormalized Float Add (legacy; KA10/KI10 only; opcode 0o130).
+// Like FAD but the result is NOT normalized (the hardware leaves the result with the
+// binary point wherever it falls, setting FOV on overflow).  Modelled as a plain FAD
+// (APPROXIMATE; unnormalized semantics deferred to Task 18 execution).
+insn ufa : encode #i36 ( op:9 = OP_UFA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "ufa", operands : acn, i, x, y )
+    { #f64 r = @pdp10_to_host ( ac[ acn ] ) + @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = @host_to_pdp10 ( r ); }   // APPROXIMATE: unnormalized semantics deferred
+
+// ---------------------------------------------------------------------------
+// DFN -- Double Float Negate (opcode 0o131).
+// Negates the double-precision value in the AC pair: negate the high word (two's complement
+// of the 36-bit word), and negate the low word.  For the canonical 72-bit representation
+// the full negation propagates from low to high; modelled here as per-word negation
+// (APPROXIMATE; exact 72-bit carry propagation is deferred to Task 18 execution).
+insn dfn : encode #i36 ( op:9 = OP_DFN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "dfn", operands : acn, i, x, y )
+    {
+        ac[ acn ]               = ( 0 - ac[ acn ] ) & W36_MASK;
+        ac[ ( acn + 1 ) & 0xf ] = ( 0 - ac[ ( acn + 1 ) & 0xf ] ) & W36_MASK;
+    }
+
+// ---------------------------------------------------------------------------
+// FSC -- Float Scale (opcode 0o132).
+// AC = AC * 2^(E as signed 18-bit).
+// The E field (from @ea) is treated as a SIGNED 18-bit integer: if bit 17 is set, it is
+// negative.  The exponent field of AC is adjusted by adding the signed E value; overflow
+// (exponent > 255) sets FOV; underflow (exponent < 0) sets FXU and clears AC.
+// APPROXIMATE: flag side-effects (FOV, FXU) are deferred to Task-18 execution.
+insn fsc : encode #i36 ( op:9 = OP_FSC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fsc", operands : acn, i, x, y )
+    {
+        #i18 scale = @ea ( i, x, y );                   // signed 18-bit scale via %S below
+        // Extract current exponent from AC; adjust by scale; clamp and pack back.
+        #i36 mw   = ( ( ac[ acn ] & SIGN_BIT36 ) != 0 ) ? ( ( 0 - ac[ acn ] ) & W36_MASK ) : ( ac[ acn ] & W36_MASK );
+        #i8  exp8 = ( mw >> FP_EXP_SHIFT ) & FP_EXP_MASK;
+        #i36 frc  = mw & FP_FRAC_MASK;
+        #i36 newe = ( exp8 + %S ( scale ) ) & FP_EXP_MASK;  // APPROXIMATE: clamping deferred
+        #i36 pos  = ( ( newe & FP_EXP_MASK ) << FP_EXP_SHIFT ) | frc;
+        ac[ acn ] = ( ( ac[ acn ] & SIGN_BIT36 ) != 0 ) ? ( ( 0 - pos ) & W36_MASK ) : pos;
+        // NOTE: FOV (overflow) and FXU (underflow) flag setting is APPROXIMATE / deferred.
+    }
+
+// ---------------------------------------------------------------------------
+// FIX -- Float to Integer, truncate toward zero (opcode 0o122).
+// AC = integer part of M[E] (PDP-10 float truncated toward zero), as a 36-bit signed integer.
+// The hardware right-shifts the fraction by (36 - exp8 + FP_EXP_BIAS) positions to align
+// the binary point, then truncates.  Modelled using host double truncation via [ #i36 f ].
+// FXU (exponent underflow / value < 1) flag: set if exp8 <= 128 (i.e., |value| < 1.0).
+// APPROXIMATE: FXU flag setting deferred to Task-18 execution.
+insn fix : encode #i36 ( op:9 = OP_FIX, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fix", operands : acn, i, x, y )
+    { #f64 f = @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      ac[ acn ] = [ #i36 f ] & W36_MASK; }  // truncate toward zero; FXU deferred
+
+// ---------------------------------------------------------------------------
+// FIXR -- Float to Integer, round to nearest (opcode 0o126).
+// Same as FIX but rounds rather than truncates.  Approximated by adding 0.5 * sign before
+// truncation; exact FIXR round-to-nearest behaviour (ties round away from zero) is
+// APPROXIMATE and deferred to Task-18 execution.
+insn fixr : encode #i36 ( op:9 = OP_FIXR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fixr", operands : acn, i, x, y )
+    { #f64 f  = @pdp10_to_host ( %M[ @ea ( i, x, y ) ] );
+      #f64 fr = ( f < 0.0 ) ? ( f - 0.5 ) : ( f + 0.5 );   // round to nearest (APPROXIMATE)
+      ac[ acn ] = [ #i36 fr ] & W36_MASK; }
+
+// ---------------------------------------------------------------------------
+// FLTR -- Integer to Float (opcode 0o127).
+// AC = float representation of the 36-bit signed integer in M[E].
+// The integer is sign-extended, converted to a host double, then packed to PDP-10 format.
+// APPROXIMATE: exact normalization (setting exponent so the high fraction bit is 1)
+// is deferred to Task-18 execution.
+insn fltr : encode #i36 ( op:9 = OP_FLTR, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "fltr", operands : acn, i, x, y )
+    { #f64 f  = [ #f64 %S ( %M[ @ea ( i, x, y ) ] ) ];   // signed integer -> host double
+      ac[ acn ] = @host_to_pdp10 ( f ); }                  // pack as PDP-10 float (APPROXIMATE)
+
+} // end feature fp
+
+// ---------------------------------------------------------------------------
+// CPU models: the KA10, KI10, KL10, and KS10 all include the floating-point unit.
+// The `fp` feature is selected for all standard models.
+features {
+    fp;
+}
+
+cpu "ka10" { fp; }   // DEC KA10 (original PDP-10 CPU, also TOPS-10/TOPS-20 era)
+cpu "ki10" { fp; }   // DEC KI10 (paging; KI-series)
+cpu "kl10" { fp; }   // DEC KL10 (KL-series; supports double-precision G format)
+cpu "ks10" { fp; }   // DEC KS10 (microcode; last PDP-10)

@@ -1548,6 +1548,52 @@ add_test(NAME upcl.check-ns32k COMMAND sh -c
    grep -q 'pc '             '${CMAKE_BINARY_DIR}/ns32k.out'")
 set_tests_properties(upcl.check-ns32k PROPERTIES FAIL_REGULAR_EXPRESSION "error|not valid")
 
+# DEC PDP-10 floating-point (Task 14): `feature fp` with FAD/FSB/FMP/FDV (+L/M/B/R modes),
+# DFAD/DFSB/DFMP/DFDV (double), UFA/DFN/FSC, FIX/FIXR/FLTR.  Real octal instruction words
+# assembled from op:9 ac:4 i:1 x:4 y:18 (MSB-first): acn=1 i=0 x=0 y=0o100 (=64 decimal).
+#   FAD  op=0o140  -> 0o140040000100   FADR op=0o144 -> 0o144040000100
+#   FMP  op=0o160  -> 0o160040000100   FDV  op=0o170 -> 0o170040000100
+#   FSB  op=0o150  -> 0o150040000100   FSC  op=0o132 -> 0o132040000100
+#   FIX  op=0o122  -> 0o122040000100   FIXR op=0o126 -> 0o126040000100
+#   FLTR op=0o127  -> 0o127040000100   DFAD op=0o110 -> 0o110040000100
+# Opcodes verified against SIMH pdp10_sys.c and DEC PDP-10 HRM floating-point chapter.
+# Conversion macros @pdp10_to_host / @host_to_pdp10 use integer extraction of the PDP-10
+# sign+excess-128-exp8+frac27 format; [ #f64 x ] int-to-float for operands (APPROXIMATE).
+add_test(NAME upcl.pdp10-fp COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o140040000100 > '${CMAKE_BINARY_DIR}/pdp10.fad' && \
+   grep -q '0x0000: fad'   '${CMAKE_BINARY_DIR}/pdp10.fad' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fad' && \
+   grep -q 'y=0x40'        '${CMAKE_BINARY_DIR}/pdp10.fad' && \
+   \"$E\" upcl decode \"$P\" 0o144040000100 > '${CMAKE_BINARY_DIR}/pdp10.fadr' && \
+   grep -q '0x0000: fadr'  '${CMAKE_BINARY_DIR}/pdp10.fadr' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fadr' && \
+   \"$E\" upcl decode \"$P\" 0o160040000100 > '${CMAKE_BINARY_DIR}/pdp10.fmp' && \
+   grep -q '0x0000: fmp'   '${CMAKE_BINARY_DIR}/pdp10.fmp' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fmp' && \
+   \"$E\" upcl decode \"$P\" 0o170040000100 > '${CMAKE_BINARY_DIR}/pdp10.fdv' && \
+   grep -q '0x0000: fdv'   '${CMAKE_BINARY_DIR}/pdp10.fdv' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fdv' && \
+   \"$E\" upcl decode \"$P\" 0o150040000100 > '${CMAKE_BINARY_DIR}/pdp10.fsb' && \
+   grep -q '0x0000: fsb'   '${CMAKE_BINARY_DIR}/pdp10.fsb' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fsb' && \
+   \"$E\" upcl decode \"$P\" 0o122040000100 > '${CMAKE_BINARY_DIR}/pdp10.fix' && \
+   grep -q '0x0000: fix'   '${CMAKE_BINARY_DIR}/pdp10.fix' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fix' && \
+   \"$E\" upcl decode \"$P\" 0o126040000100 > '${CMAKE_BINARY_DIR}/pdp10.fixr' && \
+   grep -q '0x0000: fixr'  '${CMAKE_BINARY_DIR}/pdp10.fixr' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fixr' && \
+   \"$E\" upcl decode \"$P\" 0o127040000100 > '${CMAKE_BINARY_DIR}/pdp10.fltr' && \
+   grep -q '0x0000: fltr'  '${CMAKE_BINARY_DIR}/pdp10.fltr' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fltr' && \
+   \"$E\" upcl decode \"$P\" 0o132040000100 > '${CMAKE_BINARY_DIR}/pdp10.fsc' && \
+   grep -q '0x0000: fsc'   '${CMAKE_BINARY_DIR}/pdp10.fsc' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.fsc' && \
+   \"$E\" upcl decode \"$P\" 0o110040000100 > '${CMAKE_BINARY_DIR}/pdp10.dfad' && \
+   grep -q '0x0000: dfad'  '${CMAKE_BINARY_DIR}/pdp10.dfad' && \
+   grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.dfad'")
+set_tests_properties(upcl.pdp10-fp PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # DEC PDP-10 arch header + register file (Phase 1 / Task 5). Verify: word=36 addr=18 big-endian
 # word-addressed arch; group AC with AC/low-memory aliasing (aliases_memory 0); group S with
 # 18-bit PC (%PC) and 18-bit pcflags (%PSR) carrying the 13 PC flag bits (AROV->%V, CRY0->%C,
