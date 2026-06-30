@@ -1200,6 +1200,49 @@ add_test(NAME upcl.decode-pdp10-arith COMMAND sh -c
    grep -q 'acn=0x1'       '${CMAKE_BINARY_DIR}/pdp10.rot'")
 set_tests_properties(upcl.decode-pdp10-arith PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
 
+# TEST/COMPARE/SKIP class (Task 11): T{R,L,D,S}{N,Z,C,O}{-,E,A,N} (64 instructions, 0o6xx),
+# CAI/CAM (0o3xx/0o31x), SKIP/AOS/SOS (0o33x/0o35x/0o37x), AOBJP/AOBJN (0o252/0o253).
+# Opcodes sourced from SIMH pdp10_sys.c / DEC PDP-10 HRM; word encoding verified by hand.
+add_test(NAME upcl.decode-pdp10-test COMMAND sh -c
+  "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp10.upcl'; E='$<TARGET_FILE:lcx>'; \
+   \"$E\" upcl decode \"$P\" 0o600040000100 > '${CMAKE_BINARY_DIR}/pdp10.trn' && \
+   grep -q '0x0000: trn'    '${CMAKE_BINARY_DIR}/pdp10.trn' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.trn' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.trn' && \
+   \"$E\" upcl decode \"$P\" 0o602100000200 > '${CMAKE_BINARY_DIR}/pdp10.trne' && \
+   grep -q '0x0000: trne'   '${CMAKE_BINARY_DIR}/pdp10.trne' && \
+   grep -q 'acn=0x2'        '${CMAKE_BINARY_DIR}/pdp10.trne' && \
+   grep -q 'y=0x80'         '${CMAKE_BINARY_DIR}/pdp10.trne' && \
+   \"$E\" upcl decode \"$P\" 0o621140000377 > '${CMAKE_BINARY_DIR}/pdp10.tlz' && \
+   grep -q '0x0000: tlz'    '${CMAKE_BINARY_DIR}/pdp10.tlz' && \
+   grep -q 'acn=0x3'        '${CMAKE_BINARY_DIR}/pdp10.tlz' && \
+   grep -q 'y=0xff'         '${CMAKE_BINARY_DIR}/pdp10.tlz' && \
+   \"$E\" upcl decode \"$P\" 0o640200177777 > '${CMAKE_BINARY_DIR}/pdp10.trc' && \
+   grep -q '0x0000: trc'    '${CMAKE_BINARY_DIR}/pdp10.trc' && \
+   grep -q 'acn=0x4'        '${CMAKE_BINARY_DIR}/pdp10.trc' && \
+   grep -q 'y=0xffff'       '${CMAKE_BINARY_DIR}/pdp10.trc' && \
+   \"$E\" upcl decode \"$P\" 0o306040000005 > '${CMAKE_BINARY_DIR}/pdp10.cain' && \
+   grep -q '0x0000: cain'   '${CMAKE_BINARY_DIR}/pdp10.cain' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.cain' && \
+   grep -q 'y=0x5'          '${CMAKE_BINARY_DIR}/pdp10.cain' && \
+   \"$E\" upcl decode \"$P\" 0o312140000100 > '${CMAKE_BINARY_DIR}/pdp10.came' && \
+   grep -q '0x0000: came'   '${CMAKE_BINARY_DIR}/pdp10.came' && \
+   grep -q 'acn=0x3'        '${CMAKE_BINARY_DIR}/pdp10.came' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.came' && \
+   \"$E\" upcl decode \"$P\" 0o331040000100 > '${CMAKE_BINARY_DIR}/pdp10.skipl' && \
+   grep -q '0x0000: skipl'  '${CMAKE_BINARY_DIR}/pdp10.skipl' && \
+   grep -q 'acn=0x1'        '${CMAKE_BINARY_DIR}/pdp10.skipl' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.skipl' && \
+   \"$E\" upcl decode \"$P\" 0o354100000200 > '${CMAKE_BINARY_DIR}/pdp10.aosa' && \
+   grep -q '0x0000: aosa'   '${CMAKE_BINARY_DIR}/pdp10.aosa' && \
+   grep -q 'acn=0x2'        '${CMAKE_BINARY_DIR}/pdp10.aosa' && \
+   grep -q 'y=0x80'         '${CMAKE_BINARY_DIR}/pdp10.aosa' && \
+   \"$E\" upcl decode \"$P\" 0o253100000100 > '${CMAKE_BINARY_DIR}/pdp10.aobjn' && \
+   grep -q '0x0000: aobjn'  '${CMAKE_BINARY_DIR}/pdp10.aobjn' && \
+   grep -q 'acn=0x2'        '${CMAKE_BINARY_DIR}/pdp10.aobjn' && \
+   grep -q 'y=0x40'         '${CMAKE_BINARY_DIR}/pdp10.aobjn'")
+set_tests_properties(upcl.decode-pdp10-test PROPERTIES FAIL_REGULAR_EXPRESSION "no encoding matched|error:")
+
 # Per-field big-endian override: bytes 0xAA 0x12 0x34 through a little-endian arch whose
 # imm:16 field carries `be` must decode as 0x1234 (not the LE value 0x3412).
 add_test(NAME upcl.engine-be COMMAND sh -c

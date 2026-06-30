@@ -1603,3 +1603,578 @@ insn rotc : encode #i36 ( op:9 = OP_ROTC, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 
         ac[ acn ]               = ( r72 >> 36 ) & W36_MASK;
         ac[ ( acn + 1 ) & 0xf ] = r72 & W36_MASK;
     }
+
+// ===========================================================================
+// TEST / COMPARE / SKIP CLASS (DEC PDP-10 Hardware Reference Manual, "Test, Compare, and
+// Skip"; opcodes verified against SIMH pdp10_sys.c).
+//
+// ── TEST CLASS (0o6xx) ──────────────────────────────────────────────────────
+// Each T{src}{mod}{skip} instruction:
+//   1. Forms a MASK from the effective address E:
+//        R: mask = E (right half of a 36-bit word = low 18 bits, same as E since E is 18-bit)
+//        L: mask = E << 18 (E placed in the left-half position)
+//        D: mask = E (full 36-bit E, same as R for an 18-bit EA)
+//        S: mask = E << 18 (swapped halves -- since E is 18-bit, left half is 0, so swap = E in left)
+//   2. Tests the MASKED bits of AC: masked = AC & mask
+//   3. Modifies the MASKED bits of AC:
+//        N: no change  (AC unchanged)
+//        Z: clear  (AC & ~mask) -- zero the masked bits
+//        C: complement (AC ^ mask) -- flip the masked bits
+//        O: set ones  (AC | mask) -- set the masked bits
+//   4. Conditionally skips the next instruction:
+//        - (none): never skip
+//        E: skip if (masked == 0) -- all masked bits were 0 before modify
+//        A: always skip
+//        N: skip if (masked != 0) -- any masked bit was 1 before modify
+//
+// NOTE: the skip condition is evaluated BEFORE the modify (the test uses the original masked
+// bits, not the post-modify value).  Per DEC HRM and SIMH pdp10_cpu.c `test()`.
+//
+// OPCODE LAYOUT (all 64 instructions, 0o600-0o677, verified against SIMH pdp10_sys.c):
+//   Bits [5:3] of the low 6 bits select {source,modify}: R/L-N=0, D/S-N=1, R/L-Z=2, D/S-Z=3,
+//   R/L-C=4, D/S-C=5, R/L-O=6, D/S-O=7.  Bit [0] selects L (1) vs R or D/S (0) within R/L
+//   pairs; within D/S pairs bit [0] selects S (1) vs D (0).  Bits [2:1] select the skip
+//   condition: 00=never, 01=E, 10=A, 11=N.
+//
+// To keep const count manageable, only the group BASE for each {source,modify} pair is defined;
+// per-mnemonic opcodes are base + skip-offset.  Naming: SKIP_E=0 (for base ops that test and
+// never skip), SKIP_E=1, SKIP_A=2, SKIP_N=3 -- but the bit layout is: never=+0, E=+2, A=+4, N=+6
+// within R/L, and never=+0, E=+2, A=+4, N=+6 within D/S.  The L variant is always +1.
+const SKIP_NEV = 0;     // skip condition: never    (+0 within pair)
+const SKIP_E   = 2;     // skip condition: E=0      (+2 within pair)
+const SKIP_A   = 4;     // skip condition: always   (+4 within pair)
+const SKIP_N   = 6;     // skip condition: N!=0     (+6 within pair)
+
+// Group bases for R/L pairs (source R = base+0, source L = base+1; skip condition adds SKIP_*).
+const OP_TRN_BASE  = 0o600;     // T R N: source=R, modify=N (base of R/L-N group)
+const OP_TRZ_BASE  = 0o620;     // T R Z: source=R, modify=Z (base of R/L-Z group)
+const OP_TRC_BASE  = 0o640;     // T R C: source=R, modify=C (base of R/L-C group)
+const OP_TRO_BASE  = 0o660;     // T R O: source=R, modify=O (base of R/L-O group)
+
+// Group bases for D/S pairs (source D = base+0, source S = base+1; skip condition adds SKIP_*).
+const OP_TDN_BASE  = 0o610;     // T D N: source=D, modify=N (base of D/S-N group)
+const OP_TDZ_BASE  = 0o630;     // T D Z: source=D, modify=Z (base of D/S-Z group)
+const OP_TDC_BASE  = 0o650;     // T D C: source=D, modify=C (base of D/S-C group)
+const OP_TDO_BASE  = 0o670;     // T D O: source=D, modify=O (base of D/S-O group)
+
+// Per-mnemonic opcodes (base + L-offset + skip-offset), all 64 TEST instructions.
+// R/L-N group:
+const OP_TRN   = OP_TRN_BASE + 0; const OP_TLN   = OP_TRN_BASE + 1;
+const OP_TRNE  = OP_TRN_BASE + 2; const OP_TLNE  = OP_TRN_BASE + 3;
+const OP_TRNA  = OP_TRN_BASE + 4; const OP_TLNA  = OP_TRN_BASE + 5;
+const OP_TRNN  = OP_TRN_BASE + 6; const OP_TLNN  = OP_TRN_BASE + 7;
+// D/S-N group:
+const OP_TDN   = OP_TDN_BASE + 0; const OP_TSN   = OP_TDN_BASE + 1;
+const OP_TDNE  = OP_TDN_BASE + 2; const OP_TSNE  = OP_TDN_BASE + 3;
+const OP_TDNA  = OP_TDN_BASE + 4; const OP_TSNA  = OP_TDN_BASE + 5;
+const OP_TDNN  = OP_TDN_BASE + 6; const OP_TSNN  = OP_TDN_BASE + 7;
+// R/L-Z group:
+const OP_TRZ   = OP_TRZ_BASE + 0; const OP_TLZ   = OP_TRZ_BASE + 1;
+const OP_TRZE  = OP_TRZ_BASE + 2; const OP_TLZE  = OP_TRZ_BASE + 3;
+const OP_TRZA  = OP_TRZ_BASE + 4; const OP_TLZA  = OP_TRZ_BASE + 5;
+const OP_TRZN  = OP_TRZ_BASE + 6; const OP_TLZN  = OP_TRZ_BASE + 7;
+// D/S-Z group:
+const OP_TDZ   = OP_TDZ_BASE + 0; const OP_TSZ   = OP_TDZ_BASE + 1;
+const OP_TDZE  = OP_TDZ_BASE + 2; const OP_TSZE  = OP_TDZ_BASE + 3;
+const OP_TDZA  = OP_TDZ_BASE + 4; const OP_TSZA  = OP_TDZ_BASE + 5;
+const OP_TDZN  = OP_TDZ_BASE + 6; const OP_TSZN  = OP_TDZ_BASE + 7;
+// R/L-C group:
+const OP_TRC   = OP_TRC_BASE + 0; const OP_TLC   = OP_TRC_BASE + 1;
+const OP_TRCE  = OP_TRC_BASE + 2; const OP_TLCE  = OP_TRC_BASE + 3;
+const OP_TRCA  = OP_TRC_BASE + 4; const OP_TLCA  = OP_TRC_BASE + 5;
+const OP_TRCN  = OP_TRC_BASE + 6; const OP_TLCN  = OP_TRC_BASE + 7;
+// D/S-C group:
+const OP_TDC   = OP_TDC_BASE + 0; const OP_TSC   = OP_TDC_BASE + 1;
+const OP_TDCE  = OP_TDC_BASE + 2; const OP_TSCE  = OP_TDC_BASE + 3;
+const OP_TDCA  = OP_TDC_BASE + 4; const OP_TSCA  = OP_TDC_BASE + 5;
+const OP_TDCN  = OP_TDC_BASE + 6; const OP_TSCN  = OP_TDC_BASE + 7;
+// R/L-O group:
+const OP_TRO   = OP_TRO_BASE + 0; const OP_TLO   = OP_TRO_BASE + 1;
+const OP_TROE  = OP_TRO_BASE + 2; const OP_TLOE  = OP_TRO_BASE + 3;
+const OP_TROA  = OP_TRO_BASE + 4; const OP_TLOA  = OP_TRO_BASE + 5;
+const OP_TRON  = OP_TRO_BASE + 6; const OP_TLON  = OP_TRO_BASE + 7;
+// D/S-O group:
+const OP_TDO   = OP_TDO_BASE + 0; const OP_TSO   = OP_TDO_BASE + 1;
+const OP_TDOE  = OP_TDO_BASE + 2; const OP_TSOE  = OP_TDO_BASE + 3;
+const OP_TDOA  = OP_TDO_BASE + 4; const OP_TSOA  = OP_TDO_BASE + 5;
+const OP_TDON  = OP_TDO_BASE + 6; const OP_TSON  = OP_TDO_BASE + 7;
+
+// ---------------------------------------------------------------------------
+// Mask-formation macros.  E is the 18-bit effective address (right half of any 36-bit word).
+// R: mask = E (right 18 bits; identical to the bare EA for 18-bit addressing)
+// L: mask = E << 18 (E placed into the left-half position of the 36-bit word)
+// D: mask = E (E direct -- same as R for an 18-bit EA, i.e. mask spans right half only)
+// S: mask = E << 18 (swapped halves: since E is 18-bit, left18(E)=0, right18(E)=E; swap puts
+//    E into the left-half position, identical to L for an 18-bit EA)
+// These two macros cover all four T{R,L,D,S} variants cleanly:
+macro mask_right ( e ) { result = e & HW_MASK; }                    // R / D: mask in right half
+macro mask_left  ( e ) { result = ( e & HW_MASK ) << HW_LSHFT; }   // L / S: mask in left half
+
+// ---------------------------------------------------------------------------
+// TEST INSTRUCTIONS -- all 64 T{src}{mod}{skip}.
+//
+// Each body:
+//   1. Compute mask from E (mask_right / mask_left).
+//   2. Compute masked = AC & mask (the bits under test).
+//   3. Skip if the condition holds (evaluate BEFORE modify).
+//   4. Apply modify to AC: N=nop, Z=clear masked bits, C=complement masked bits, O=set masked bits.
+//
+// Skip = conditional pc = pc + 1.  The condition is evaluated on 'masked' BEFORE the modify.
+//
+// The modify forms that leave AC unchanged are expressed as one-liners (=>); the forms that
+// modify AC use a block to preserve the skip-before-modify ordering.
+
+// --- R/L - N (modify=none: AC unchanged; only test and skip) ---
+insn trn  : encode #i36 ( op:9 = OP_TRN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trn",  operands : acn, i, x, y )  => ;   // never skip, no modify -- no-op
+insn tln  : encode #i36 ( op:9 = OP_TLN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tln",  operands : acn, i, x, y )  => ;   // never skip, no modify -- no-op
+insn trne : encode #i36 ( op:9 = OP_TRNE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trne", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) == 0 ) ? ( pc + 1 ) : pc; }
+insn tlne : encode #i36 ( op:9 = OP_TLNE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlne", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) == 0 ) ? ( pc + 1 ) : pc; }
+insn trna : encode #i36 ( op:9 = OP_TRNA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trna", operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn tlna : encode #i36 ( op:9 = OP_TLNA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlna", operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn trnn : encode #i36 ( op:9 = OP_TRNN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trnn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) != 0 ) ? ( pc + 1 ) : pc; }
+insn tlnn : encode #i36 ( op:9 = OP_TLNN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlnn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- D/S - N (modify=none) ---
+insn tdn  : encode #i36 ( op:9 = OP_TDN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdn",  operands : acn, i, x, y )  => ;   // never skip, no modify -- no-op
+insn tsn  : encode #i36 ( op:9 = OP_TSN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsn",  operands : acn, i, x, y )  => ;   // never skip, no modify -- no-op
+insn tdne : encode #i36 ( op:9 = OP_TDNE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdne", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) == 0 ) ? ( pc + 1 ) : pc; }
+insn tsne : encode #i36 ( op:9 = OP_TSNE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsne", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) == 0 ) ? ( pc + 1 ) : pc; }
+insn tdna : encode #i36 ( op:9 = OP_TDNA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdna", operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn tsna : encode #i36 ( op:9 = OP_TSNA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsna", operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn tdnn : encode #i36 ( op:9 = OP_TDNN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdnn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) != 0 ) ? ( pc + 1 ) : pc; }
+insn tsnn : encode #i36 ( op:9 = OP_TSNN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsnn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); pc = ( ( ac[ acn ] & mask ) != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- R/L - Z (modify=zeros: clear the masked bits of AC) ---
+insn trz  : encode #i36 ( op:9 = OP_TRZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trz",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; }
+insn tlz  : encode #i36 ( op:9 = OP_TLZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlz",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; }
+insn trze : encode #i36 ( op:9 = OP_TRZE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trze", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tlze : encode #i36 ( op:9 = OP_TLZE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlze", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn trza : encode #i36 ( op:9 = OP_TRZA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trza", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = pc + 1; }
+insn tlza : encode #i36 ( op:9 = OP_TLZA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlza", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = pc + 1; }
+insn trzn : encode #i36 ( op:9 = OP_TRZN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trzn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tlzn : encode #i36 ( op:9 = OP_TLZN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlzn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- D/S - Z (modify=zeros) ---
+insn tdz  : encode #i36 ( op:9 = OP_TDZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdz",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; }
+insn tsz  : encode #i36 ( op:9 = OP_TSZ,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsz",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; }
+insn tdze : encode #i36 ( op:9 = OP_TDZE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdze", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tsze : encode #i36 ( op:9 = OP_TSZE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsze", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tdza : encode #i36 ( op:9 = OP_TDZA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdza", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = pc + 1; }
+insn tsza : encode #i36 ( op:9 = OP_TSZA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsza", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = pc + 1; }
+insn tdzn : encode #i36 ( op:9 = OP_TDZN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdzn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tszn : encode #i36 ( op:9 = OP_TSZN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tszn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] & ( ~mask ) ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- R/L - C (modify=complement: flip the masked bits of AC) ---
+insn trc  : encode #i36 ( op:9 = OP_TRC,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trc",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; }
+insn tlc  : encode #i36 ( op:9 = OP_TLC,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlc",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; }
+insn trce : encode #i36 ( op:9 = OP_TRCE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trce", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tlce : encode #i36 ( op:9 = OP_TLCE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlce", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn trca : encode #i36 ( op:9 = OP_TRCA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trca", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = pc + 1; }
+insn tlca : encode #i36 ( op:9 = OP_TLCA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlca", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = pc + 1; }
+insn trcn : encode #i36 ( op:9 = OP_TRCN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "trcn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tlcn : encode #i36 ( op:9 = OP_TLCN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlcn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- D/S - C (modify=complement) ---
+insn tdc  : encode #i36 ( op:9 = OP_TDC,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdc",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; }
+insn tsc  : encode #i36 ( op:9 = OP_TSC,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsc",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; }
+insn tdce : encode #i36 ( op:9 = OP_TDCE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdce", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tsce : encode #i36 ( op:9 = OP_TSCE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsce", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tdca : encode #i36 ( op:9 = OP_TDCA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdca", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = pc + 1; }
+insn tsca : encode #i36 ( op:9 = OP_TSCA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsca", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = pc + 1; }
+insn tdcn : encode #i36 ( op:9 = OP_TDCN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdcn", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tscn : encode #i36 ( op:9 = OP_TSCN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tscn", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] ^ mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- R/L - O (modify=ones: set the masked bits of AC) ---
+insn tro  : encode #i36 ( op:9 = OP_TRO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tro",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; }
+insn tlo  : encode #i36 ( op:9 = OP_TLO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlo",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; }
+insn troe : encode #i36 ( op:9 = OP_TROE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "troe", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tloe : encode #i36 ( op:9 = OP_TLOE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tloe", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn troa : encode #i36 ( op:9 = OP_TROA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "troa", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = pc + 1; }
+insn tloa : encode #i36 ( op:9 = OP_TLOA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tloa", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = pc + 1; }
+insn tron : encode #i36 ( op:9 = OP_TRON, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tron", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tlon : encode #i36 ( op:9 = OP_TLON, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tlon", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// --- D/S - O (modify=ones) ---
+insn tdo  : encode #i36 ( op:9 = OP_TDO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdo",  operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; }
+insn tso  : encode #i36 ( op:9 = OP_TSO,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tso",  operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; }
+insn tdoe : encode #i36 ( op:9 = OP_TDOE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdoe", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tsoe : encode #i36 ( op:9 = OP_TSOE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsoe", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t == 0 ) ? ( pc + 1 ) : pc; }
+insn tdoa : encode #i36 ( op:9 = OP_TDOA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdoa", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = pc + 1; }
+insn tsoa : encode #i36 ( op:9 = OP_TSOA, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tsoa", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = pc + 1; }
+insn tdon : encode #i36 ( op:9 = OP_TDON, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tdon", operands : acn, i, x, y )
+    { #i36 mask = @mask_right ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+insn tson : encode #i36 ( op:9 = OP_TSON, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "tson", operands : acn, i, x, y )
+    { #i36 mask = @mask_left  ( @ea ( i, x, y ) ); #i36 t = ac[ acn ] & mask; ac[ acn ] = ( ac[ acn ] | mask ) & W36_MASK; pc = ( t != 0 ) ? ( pc + 1 ) : pc; }
+
+// ===========================================================================
+// CAI / CAM -- COMPARE ACCUMULATOR (DEC PDP-10 Hardware Reference Manual, "Compare";
+// opcodes verified against SIMH pdp10_sys.c).
+//
+// CAI (Compare AC Immediate, 0o300-0o307): compare AC against the immediate 0,,E (the effective
+// address itself; NO memory reference).  The low 3 bits of the opcode select the 8 skip conditions
+// (same ordering used by SKIP, AOS, SOS below):
+//   +0 = never skip  +1 = skip if AC < E  +2 = skip if AC == E  +3 = skip if AC <= E
+//   +4 = always skip +5 = skip if AC >= E  +6 = skip if AC != E  +7 = skip if AC > E
+// Comparison is SIGNED (two's-complement 36-bit), using `%S` for the sign extension.
+// E is a ZERO-EXTENDED immediate (0,,E -- left half is 0) for CAI, or M[E] for CAM.
+//
+// CAM (Compare AC to Memory, 0o310-0o317): same 8 conditions; operand is M[E] not E itself.
+//
+// Opcodes (per SIMH pdp10_sys.c, verified):
+const OP_CAI   = 0o300;         // CAI   base: compare AC to 0,,E (never skip)
+const OP_CAIL  = 0o301;         // CAIL  compare AC to 0,,E, skip if AC < 0,,E  (signed)
+const OP_CAIE  = 0o302;         // CAIE  compare AC to 0,,E, skip if AC == 0,,E
+const OP_CAILE = 0o303;         // CAILE compare AC to 0,,E, skip if AC <= 0,,E (signed)
+const OP_CAIA  = 0o304;         // CAIA  compare AC to 0,,E, always skip
+const OP_CAIGE = 0o305;         // CAIGE compare AC to 0,,E, skip if AC >= 0,,E (signed)
+const OP_CAIN  = 0o306;         // CAIN  compare AC to 0,,E, skip if AC != 0,,E
+const OP_CAIG  = 0o307;         // CAIG  compare AC to 0,,E, skip if AC > 0,,E  (signed)
+const OP_CAM   = 0o310;         // CAM   base: compare AC to M[E] (never skip)
+const OP_CAML  = 0o311;         // CAML  compare AC to M[E], skip if AC < M[E]  (signed)
+const OP_CAME  = 0o312;         // CAME  compare AC to M[E], skip if AC == M[E]
+const OP_CAMLE = 0o313;         // CAMLE compare AC to M[E], skip if AC <= M[E] (signed)
+const OP_CAMA  = 0o314;         // CAMA  compare AC to M[E], always skip
+const OP_CAMGE = 0o315;         // CAMGE compare AC to M[E], skip if AC >= M[E] (signed)
+const OP_CAMN  = 0o316;         // CAMN  compare AC to M[E], skip if AC != M[E]
+const OP_CAMG  = 0o317;         // CAMG  compare AC to M[E], skip if AC > M[E]  (signed)
+
+// ---------------------------------------------------------------------------
+// CAI instructions -- compare AC (signed) to the immediate operand 0,,E.
+// `%S` sign-extends the 36-bit AC to a signed value for the comparison.
+// NOTE: 0,,E is zero-extended (E occupies the right 18 bits, left 18 = 0), so for signed
+// comparison we sign-extend AC but treat the immediate as a SIGNED 18-bit value (sign-extend E).
+// Per SIMH pdp10_cpu.c `cai()`: the immediate IS the 36-bit value formed as 0,,E (unsigned),
+// but the comparison is signed 36-bit.  E is 18 bits; when placed in 0,,E the left half is 0,
+// making the immediate ALWAYS non-negative (0..0x3ffff).  AC is signed 36-bit.
+insn cai   : encode #i36 ( op:9 = OP_CAI,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "cai",   operands : acn, i, x, y )  => ;   // never skip -- compare only
+insn cail  : encode #i36 ( op:9 = OP_CAIL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "cail",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) < %S ( e ) ) ? ( pc + 1 ) : pc; }
+insn caie  : encode #i36 ( op:9 = OP_CAIE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caie",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( ( ac[ acn ] & W36_MASK ) == ( e & W36_MASK ) ) ? ( pc + 1 ) : pc; }
+insn caile : encode #i36 ( op:9 = OP_CAILE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caile", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) <= %S ( e ) ) ? ( pc + 1 ) : pc; }
+insn caia  : encode #i36 ( op:9 = OP_CAIA,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caia",  operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn caige : encode #i36 ( op:9 = OP_CAIGE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caige", operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) >= %S ( e ) ) ? ( pc + 1 ) : pc; }
+insn cain  : encode #i36 ( op:9 = OP_CAIN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "cain",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( ( ac[ acn ] & W36_MASK ) != ( e & W36_MASK ) ) ? ( pc + 1 ) : pc; }
+insn caig  : encode #i36 ( op:9 = OP_CAIG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caig",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); pc = ( %S ( ac[ acn ] ) > %S ( e ) ) ? ( pc + 1 ) : pc; }
+
+// ---------------------------------------------------------------------------
+// CAM instructions -- compare AC (signed) to M[E].
+insn cam   : encode #i36 ( op:9 = OP_CAM,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "cam",   operands : acn, i, x, y )  => ;   // never skip -- compare only
+insn caml  : encode #i36 ( op:9 = OP_CAML,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "caml",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( %S ( ac[ acn ] ) < %S ( m ) ) ? ( pc + 1 ) : pc; }
+insn came  : encode #i36 ( op:9 = OP_CAME,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "came",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( ( ac[ acn ] & W36_MASK ) == ( m & W36_MASK ) ) ? ( pc + 1 ) : pc; }
+insn camle : encode #i36 ( op:9 = OP_CAMLE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "camle", operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( %S ( ac[ acn ] ) <= %S ( m ) ) ? ( pc + 1 ) : pc; }
+insn cama  : encode #i36 ( op:9 = OP_CAMA,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "cama",  operands : acn, i, x, y )  => pc = pc + 1;   // always skip
+insn camge : encode #i36 ( op:9 = OP_CAMGE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "camge", operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( %S ( ac[ acn ] ) >= %S ( m ) ) ? ( pc + 1 ) : pc; }
+insn camn  : encode #i36 ( op:9 = OP_CAMN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "camn",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( ( ac[ acn ] & W36_MASK ) != ( m & W36_MASK ) ) ? ( pc + 1 ) : pc; }
+insn camg  : encode #i36 ( op:9 = OP_CAMG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "camg",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; pc = ( %S ( ac[ acn ] ) > %S ( m ) ) ? ( pc + 1 ) : pc; }
+
+// ===========================================================================
+// SKIP / AOS / SOS -- SKIP ON CONDITION (DEC PDP-10 Hardware Reference Manual, "Skip and
+// Jump"; opcodes verified against SIMH pdp10_sys.c).
+//
+// SKIP (0o330-0o337): test M[E] vs 0; skip on the 8 conditions; if AC field != 0, load AC <- M[E].
+//   M[E] is fetched; AC <- M[E] if acn != 0 (the AC-field is the "result-to-AC" gate, not an
+//   AC operand). skip condition applied to M[E].
+//
+// AOS (0o350-0o357): add 1 to M[E], store back; skip on the 8 conditions applied to the
+//   INCREMENTED value; if acn != 0, also store incremented value in AC[acn].
+//
+// SOS (0o360-0o367): subtract 1 from M[E], store back; skip on the 8 conditions applied to the
+//   DECREMENTED value; if acn != 0, also store decremented value in AC[acn].
+//
+// Skip conditions (same 8 as CAI/CAM, low 3 bits of opcode):
+//   +0 = never  +1 = skip if val < 0  +2 = skip if val == 0  +3 = skip if val <= 0
+//   +4 = always +5 = skip if val >= 0  +6 = skip if val != 0  +7 = skip if val > 0
+// "val" is M[E] (for SKIP) or the incremented/decremented word (for AOS/SOS).
+//
+// Opcodes (verified against SIMH pdp10_sys.c):
+const OP_SKIP   = 0o330;
+const OP_SKIPL  = 0o331;
+const OP_SKIPE  = 0o332;
+const OP_SKIPLE = 0o333;
+const OP_SKIPA  = 0o334;
+const OP_SKIPGE = 0o335;
+const OP_SKIPN  = 0o336;
+const OP_SKIPG  = 0o337;
+const OP_AOS    = 0o350;
+const OP_AOSL   = 0o351;
+const OP_AOSE   = 0o352;
+const OP_AOSLE  = 0o353;
+const OP_AOSA   = 0o354;
+const OP_AOSGE  = 0o355;
+const OP_AOSN   = 0o356;
+const OP_AOSG   = 0o357;
+const OP_SOS    = 0o360;
+const OP_SOSL   = 0o361;
+const OP_SOSE   = 0o362;
+const OP_SOSLE  = 0o363;
+const OP_SOSA   = 0o364;
+const OP_SOSGE  = 0o365;
+const OP_SOSN   = 0o366;
+const OP_SOSG   = 0o367;
+
+// ---------------------------------------------------------------------------
+// SKIP -- test M[E]; if acn != 0 then AC <- M[E]; skip on the 8 conditions.
+// The "if acn != 0" AC-load gate: per HRM, AC0 is NOT loaded (acn==0 suppresses the write);
+// the body writes ac[acn] unconditionally -- the faithful gate is exercised at execution (Task 18).
+insn skip   : encode #i36 ( op:9 = OP_SKIP,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skip",   operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; }   // never skip; always load AC if acn!=0
+insn skipl  : encode #i36 ( op:9 = OP_SKIPL,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipl",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( %S ( m ) < 0 ) ? ( pc + 1 ) : pc; }
+insn skipe  : encode #i36 ( op:9 = OP_SKIPE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipe",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( ( m & W36_MASK ) == 0 ) ? ( pc + 1 ) : pc; }
+insn skiple : encode #i36 ( op:9 = OP_SKIPLE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skiple", operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( %S ( m ) <= 0 ) ? ( pc + 1 ) : pc; }
+insn skipa  : encode #i36 ( op:9 = OP_SKIPA,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipa",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = pc + 1; }   // always skip
+insn skipge : encode #i36 ( op:9 = OP_SKIPGE, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipge", operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( %S ( m ) >= 0 ) ? ( pc + 1 ) : pc; }
+insn skipn  : encode #i36 ( op:9 = OP_SKIPN,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipn",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( ( m & W36_MASK ) != 0 ) ? ( pc + 1 ) : pc; }
+insn skipg  : encode #i36 ( op:9 = OP_SKIPG,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "skipg",  operands : acn, i, x, y )
+    { #i36 m = %M[ @ea ( i, x, y ) ]; ac[ acn ] = m; pc = ( %S ( m ) > 0 ) ? ( pc + 1 ) : pc; }
+
+// ---------------------------------------------------------------------------
+// AOS -- add 1 to M[E], store back; if acn != 0 also load AC; skip on condition.
+// The incremented value is tested for the skip, not the original M[E].
+insn aos    : encode #i36 ( op:9 = OP_AOS,    ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aos",    operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+insn aosl   : encode #i36 ( op:9 = OP_AOSL,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosl",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) < 0 ) ? ( pc + 1 ) : pc; }
+insn aose   : encode #i36 ( op:9 = OP_AOSE,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aose",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( ( r & W36_MASK ) == 0 ) ? ( pc + 1 ) : pc; }
+insn aosle  : encode #i36 ( op:9 = OP_AOSLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosle",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) <= 0 ) ? ( pc + 1 ) : pc; }
+insn aosa   : encode #i36 ( op:9 = OP_AOSA,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosa",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = pc + 1; }
+insn aosge  : encode #i36 ( op:9 = OP_AOSGE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosge",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) >= 0 ) ? ( pc + 1 ) : pc; }
+insn aosn   : encode #i36 ( op:9 = OP_AOSN,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosn",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( ( r & W36_MASK ) != 0 ) ? ( pc + 1 ) : pc; }
+insn aosg   : encode #i36 ( op:9 = OP_AOSG,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aosg",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] + 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) > 0 ) ? ( pc + 1 ) : pc; }
+
+// ---------------------------------------------------------------------------
+// SOS -- subtract 1 from M[E], store back; if acn != 0 also load AC; skip on condition.
+insn sos    : encode #i36 ( op:9 = OP_SOS,    ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sos",    operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; }
+insn sosl   : encode #i36 ( op:9 = OP_SOSL,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosl",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) < 0 ) ? ( pc + 1 ) : pc; }
+insn sose   : encode #i36 ( op:9 = OP_SOSE,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sose",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( ( r & W36_MASK ) == 0 ) ? ( pc + 1 ) : pc; }
+insn sosle  : encode #i36 ( op:9 = OP_SOSLE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosle",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) <= 0 ) ? ( pc + 1 ) : pc; }
+insn sosa   : encode #i36 ( op:9 = OP_SOSA,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosa",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = pc + 1; }
+insn sosge  : encode #i36 ( op:9 = OP_SOSGE,  ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosge",  operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) >= 0 ) ? ( pc + 1 ) : pc; }
+insn sosn   : encode #i36 ( op:9 = OP_SOSN,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosn",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( ( r & W36_MASK ) != 0 ) ? ( pc + 1 ) : pc; }
+insn sosg   : encode #i36 ( op:9 = OP_SOSG,   ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "sosg",   operands : acn, i, x, y )
+    { #i18 e = @ea ( i, x, y ); #i36 r = ( %M[ e ] - 1 ) & W36_MASK; %M[ e ] = r; ac[ acn ] = r; pc = ( %S ( r ) > 0 ) ? ( pc + 1 ) : pc; }
+
+// ===========================================================================
+// AOBJP / AOBJN -- ADD ONE TO BOTH HALVES OF AC, JUMP (DEC PDP-10 Hardware Reference Manual,
+// "Jump"; opcodes verified against SIMH pdp10_sys.c).
+//
+// Both instructions: add 1,,1 (i.e. 1 to the left half AND 1 to the right half of AC
+// simultaneously, with NO carry between the halves).  Then:
+//   AOBJP (0o252): jump to E if the result is NON-NEGATIVE (left half >= 0, i.e. bit 35 = 0).
+//   AOBJN (0o253): jump to E if the result is NEGATIVE (left half < 0, i.e. bit 35 = 1).
+//
+// The add "1,,1" is: AC + 0o000001000001 = AC + (1 << 18) + 1.  The two halves each increment
+// independently; per HRM, each half wraps within 18 bits (no inter-half carry).
+// The sign of the result is the sign of the LEFT half (bit 35 of the 36-bit word).
+//
+// Opcodes: AOBJP=0o252, AOBJN=0o253 (per SIMH pdp10_sys.c, verified).
+const OP_AOBJP = 0o252;
+const OP_AOBJN = 0o253;
+
+// ---------------------------------------------------------------------------
+// AOBJP / AOBJN bodies.  The "1,,1" addend = (1 << 18) | 1.  Both halves wrap at 18 bits; the
+// combined add is: left_half = (left(AC) + 1) & HW_MASK, right_half = (right(AC) + 1) & HW_MASK.
+// Result sign = bit 35 (the sign bit of the left half in the 36-bit word).
+const AOBJN_ADDEND = 0o000001000001;    // 1,,1 = 1<<18 | 1
+
+jump insn aobjp : type branch, encode #i36 ( op:9 = OP_AOBJP, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aobjp", operands : acn, i, x, y )
+    {
+        #i36 r   = ( ac[ acn ] + AOBJN_ADDEND ) & W36_MASK;
+        ac[ acn ] = r;
+        pc = ( ( r & SIGN_BIT36 ) == 0 ) ? @ea ( i, x, y ) : pc;   // jump if left half >= 0 (not negative)
+    }
+jump insn aobjn : type branch, encode #i36 ( op:9 = OP_AOBJN, ac:4 -> acn, i:1 -> i, x:4 -> x, y:18 -> y ),
+    disasm ( mnemonic : "aobjn", operands : acn, i, x, y )
+    {
+        #i36 r   = ( ac[ acn ] + AOBJN_ADDEND ) & W36_MASK;
+        ac[ acn ] = r;
+        pc = ( ( r & SIGN_BIT36 ) != 0 ) ? @ea ( i, x, y ) : pc;   // jump if left half < 0 (negative)
+    }
