@@ -15,6 +15,7 @@ ADD_SUBDIRECTORY(tools/sc2int)   # the .sc -> dispatch-table compiler (now built
 # The OpenBSD/m88k ABI personality -- a dylib linking nix; its syscall engine (monitor + us-syscall)
 # now lives in the nix dylib, and it is built against the LibCPU-direct nix_ ABI (no xec-compat).
 ADD_SUBDIRECTORY(obsd79)
+ADD_SUBDIRECTORY(nbsd101)
 
 # Host-op conformance test: drives the portable nix_ primitives against a real host
 # file with no CPU/monitor. Every host backend (POSIX today; win32/haiku/os2/vms next)

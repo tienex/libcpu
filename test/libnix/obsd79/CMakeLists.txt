@@ -19,11 +19,13 @@ CONFIGURE_FILE(nix-obsd79-config.h.cmake ${PROJECT_BINARY_DIR}/nix-obsd79-config
 IF(XCODE)
 ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/obsd79-callbacks.c
                    COMMAND ${PROJECT_BINARY_DIR}/../tools/sc2int/${CMAKE_BUILD_TYPE}/sc2int ${PROJECT_SOURCE_DIR}/obsd79.sc
+                   DEPENDS ${PROJECT_SOURCE_DIR}/obsd79.sc sc2int
                    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
                    COMMENT "Generating System Calls Callbacks")
 ELSE()
 ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/obsd79-callbacks.c
                    COMMAND ${PROJECT_BINARY_DIR}/../tools/sc2int/sc2int ${PROJECT_SOURCE_DIR}/obsd79.sc
+                   DEPENDS ${PROJECT_SOURCE_DIR}/obsd79.sc sc2int
                    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
                    COMMENT "Generating System Calls Callbacks")
 ENDIF()
