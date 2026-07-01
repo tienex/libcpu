@@ -27,7 +27,7 @@
  * This is arc4random(3) using urandom.
  */
 
-#include "nix-obsd41-config.h"
+#include "nix-obsd79-config.h"
 #include "nix-host.h" /* NIX_MIN */
 
 #include <sys/param.h>
