@@ -26,6 +26,13 @@ ICpuBackend *LoadBackendBundle (CHAR8 CONST *pPath);
 //
 ILoader *LoadLoaderBundle (CHAR8 CONST *pPath);
 
+//
+// Load a ".abi" bundle by path and create its IAbi (Release when done), or null on failure. As
+// with the loader/backend bundles, the bundle stays mapped for the process lifetime.
+//
+class IAbi;
+IAbi *LoadAbiBundle (CHAR8 CONST *pPath);
+
 } // namespace LibCPU
 
 #endif // LIBCPU_LOADER_H
