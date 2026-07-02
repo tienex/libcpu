@@ -141,8 +141,9 @@ public:
         pResult->BrkBase  = (LoadEnd + kPePageMask) & ~kPePageMask;
         pResult->Endian   = LoaderEndianLittle;   // PE is always little-endian
         pResult->WordBits = Plus ? 64 : 32;
-        pResult->Arch     = PeArch (Machine);     // canonical name, never interpreted
-        pResult->Abi      = "windows";
+        pResult->Arch      = PeArch (Machine);     // canonical name, never interpreted
+        pResult->Abi       = "windows";
+        pResult->AbiVendor = "microsoft";
 
         pResult->Dynamic.IsDynamic = 1;              // PE resolves imports through the IAT
         pResult->Dynamic.Interp    = nullptr;

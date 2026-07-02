@@ -89,8 +89,9 @@ public:
             }
         }
 
-        pResult->Arch     = "8086";   // CP/M-86 is 16-bit x86
-        pResult->Abi      = "cpm";
+        pResult->Arch      = "8086";   // CP/M-86 is 16-bit x86
+        pResult->Abi       = "cpm";
+        pResult->AbiVendor = "digital-research";
         pResult->Entry    = HaveCode ? CodeLinear : 0;
         pResult->LoadEnd  = LoadEnd;
         pResult->BrkBase  = LoadEnd;

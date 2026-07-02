@@ -44,6 +44,12 @@ libcpu_add_loader(com_loader   com   SOURCES loaders/com/ComLoader.cpp       INC
 libcpu_add_loader(dosexe_loader dosexe SOURCES loaders/dosexe/DosExeLoader.cpp INCLUDES include)
 libcpu_add_loader(cmd_loader   cmd   SOURCES loaders/cmd/CmdLoader.cpp       INCLUDES include)
 libcpu_add_loader(raw_loader   raw   SOURCES loaders/raw/RawLoader.cpp       INCLUDES include)
+libcpu_add_loader(ne_loader    ne    SOURCES loaders/neexe/NeLoader.cpp     INCLUDES include)
+libcpu_add_loader(lx_loader    lx    SOURCES loaders/lx/LxLoader.cpp        INCLUDES include)
+libcpu_add_loader(pef_loader   pef   SOURCES loaders/pef/PefLoader.cpp      INCLUDES include)
+libcpu_add_loader(hunk_loader  hunk  SOURCES loaders/hunk/HunkLoader.cpp    INCLUDES include)
+libcpu_add_loader(som_loader   som   SOURCES loaders/som/SomLoader.cpp      INCLUDES include)
+libcpu_add_loader(vms_loader   vms   SOURCES loaders/vms/VmsLoader.cpp      INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -383,7 +389,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader com_loader dosexe_loader cmd_loader raw_loader)   # .loader bundles for the image loaders
+add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader com_loader dosexe_loader cmd_loader raw_loader ne_loader lx_loader pef_loader hunk_loader som_loader vms_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2286,6 +2292,20 @@ add_test(NAME loader.raw COMMAND sh -c
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/cpm/hello.com'; \
    \"$E\" disasm \"$F\" --load raw --addr 0x2000 --arch upcl:\"$M\" --count 1 | \
    grep -q 'loaded raw blob (16 bytes at 0x2000)'")
+
+# The AmigaOS HUNK .loader module: a minimal HUNK_HEADER + one HUNK_CODE reports arch=m68k/amigaos.
+add_test(NAME loader.hunk COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/amiga/hello.hunk'; \
+   \"$E\" disasm \"$F\" --load hunk --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded HUNK (1 hunks, arch=m68k, abi=amigaos)'")
+
+# The PEF .loader module: a minimal 'Joy!peff' container with one 'pwpc' code section at 0x1000.
+add_test(NAME loader.pef COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/macos/hello.pef'; \
+   \"$E\" disasm \"$F\" --load pef --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded PEF (1 sections, arch=ppc, abi=macos): entry=0x1000'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach

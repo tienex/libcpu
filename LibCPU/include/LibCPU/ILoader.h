@@ -95,6 +95,13 @@ typedef struct _LOADER_RESULT
     //
     CHAR8 CONST   *Abi;
     //
+    // The ABI/OS VENDOR, when the format identifies it -- another open-ended NAME, so DOS flavours
+    // and the like can be told apart: "microsoft", "ibm", "digital-research", "phystechsoft" (PTS),
+    // "datalight" (ROM-DOS), "novell", "apple", "commodore", "hp", "dec". NULL when the binary does
+    // not encode it (a bare DOS/CP-M image does not -- the host/personality supplies the vendor).
+    //
+    CHAR8 CONST   *AbiVendor;
+    //
     // The ABI/OS version the image requires, as a free-form string (e.g. ELF EI_ABIVERSION or the
     // .note.ABI-tag min version, a Mach-O minos "10.15", a PE subsystem "6.1"); NULL if none.
     //

@@ -220,8 +220,9 @@ public:
         pResult->BrkBase  = (LoadEnd + kMachoPageMask) & ~kMachoPageMask;
         pResult->Endian   = m_Big ? LoaderEndianBig : LoaderEndianLittle;
         pResult->WordBits = Is64 ? 64 : 32;
-        pResult->Arch     = MachoArch (CpuType);   // canonical name, never interpreted
-        pResult->Abi      = "darwin";
+        pResult->Arch      = MachoArch (CpuType);   // canonical name, never interpreted
+        pResult->Abi       = "darwin";
+        pResult->AbiVendor = "apple";
         for (std::string CONST &S : m_Slices) {
             m_SlicePtrs.push_back (S.c_str ());
         }
