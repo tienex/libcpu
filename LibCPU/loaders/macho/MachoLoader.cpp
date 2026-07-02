@@ -35,7 +35,7 @@ enum : UINT32
     LC_SEGMENT_64    = 0x19,
     LC_MAIN          = 0x80000028
 };
-enum : UINT32 { MH_DYLDLINK = 0x4 };
+enum : UINT32 { MH_DYLDLINK = 0x4, MH_PIE = 0x200000 };
 
 // Fat-header layout sizes and the heap page-align granularity (loader conventions).
 enum { FAT_HDR_SZ = 8, FAT_ARCH_SZ = 20 };
@@ -223,6 +223,7 @@ public:
         pResult->Arch      = MachoArch (CpuType);   // canonical name, never interpreted
         pResult->Abi       = "darwin";
         pResult->AbiVendor = "apple";
+        pResult->PicKind   = (Flags & MH_PIE) ? "pie" : nullptr;
         for (std::string CONST &S : m_Slices) {
             m_SlicePtrs.push_back (S.c_str ());
         }

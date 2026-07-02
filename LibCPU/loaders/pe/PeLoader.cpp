@@ -144,6 +144,9 @@ public:
         pResult->Arch      = PeArch (Machine);     // canonical name, never interpreted
         pResult->Abi       = "windows";
         pResult->AbiVendor = "microsoft";
+        // DllCharacteristics.DYNAMIC_BASE marks an ASLR-capable (position-independent) image.
+        enum { PE_OPT_DLLCHAR = 0x46, PE_DLL_DYNAMIC_BASE = 0x0040 };
+        pResult->PicKind = ((UINT16) Rd (Opt + PE_OPT_DLLCHAR, 2) & PE_DLL_DYNAMIC_BASE) ? "pie" : nullptr;
 
         pResult->Dynamic.IsDynamic = 1;              // PE resolves imports through the IAT
         pResult->Dynamic.Interp    = nullptr;

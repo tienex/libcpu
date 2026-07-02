@@ -29,6 +29,8 @@ enum { ELFDATA2LSB = 1, ELFDATA2MSB = 2 };
 enum { ET_EXEC = 2, ET_DYN = 3 };
 enum { PT_LOAD = 1, PT_DYNAMIC = 2, PT_INTERP = 3 };
 enum { DT_NULL = 0, DT_NEEDED = 1, DT_STRTAB = 5, DT_STRSZ = 10 };
+enum { EM_ARM = 40, EM_SH = 42 };
+enum : UINT32 { EF_ARM_FDPIC = 0x00400000, EF_SH_FDPIC = 0x8000 };
 
 class ElfLoader final : public ComObject<ILoader>
 {
@@ -64,7 +66,10 @@ public:
             std::printf ("lcx: not an ELF image\n");
             return E_FAIL;
         }
-        (void) pRequest;   /* honoured by the fat/kernel-aware loaders */
+        // A load bias (request LoadAddr) relocates a position-independent object (ET_DYN / PIE):
+        // the run-time linker uses it to place each shared object at a distinct base. It is 0 for a
+        // normal ET_EXEC load, so placement is unchanged there.
+        UINT64 Bias = (pRequest != nullptr) ? pRequest->LoadAddr : 0;
         std::memset (pResult, 0, sizeof (*pResult));
         m_Interp.clear ();
         m_Needed.clear ();
@@ -109,19 +114,19 @@ public:
             }
 
             if (PType == PT_LOAD) {
-                if (POff + PFilesz > Len || PVaddr + PMemsz > RamSize
-                    || PVaddr + PMemsz < PVaddr) {
+                UINT64 Dst = PVaddr + Bias;
+                if (POff + PFilesz > Len || Dst + PMemsz > RamSize || Dst + PMemsz < Dst) {
                     std::printf ("lcx: ELF PT_LOAD out of range\n");
                     return E_FAIL;
                 }
                 if (PFilesz != 0) {
-                    pMem->Write (PVaddr, pImage + POff, PFilesz);
+                    pMem->Write (Dst, pImage + POff, PFilesz);
                 }
                 if (PMemsz > PFilesz) {
-                    pMem->Zero (PVaddr + PFilesz, PMemsz - PFilesz);   // .bss tail
+                    pMem->Zero (Dst + PFilesz, PMemsz - PFilesz);   // .bss tail
                 }
-                if (PVaddr + PMemsz > LoadEnd) {
-                    LoadEnd = PVaddr + PMemsz;
+                if (Dst + PMemsz > LoadEnd) {
+                    LoadEnd = Dst + PMemsz;
                 }
             } else if (PType == PT_INTERP) {
                 if (POff + PFilesz <= Len && PFilesz > 0) {
@@ -140,13 +145,17 @@ public:
 
         ElfFeatures (EMachine, EFlags);   // fills m_Features from e_flags
 
-        pResult->Entry    = Entry;
+        pResult->Entry    = Entry + Bias;
         pResult->LoadEnd  = LoadEnd;
         pResult->BrkBase  = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
         pResult->Endian   = m_Big ? LoaderEndianBig : LoaderEndianLittle;
         pResult->WordBits = m_Is64 ? 64 : 32;
         pResult->Arch     = ElfArch (EMachine);   // canonical name, never interpreted
         pResult->Abi      = ElfAbi (OsAbi);
+        pResult->PicKind  = ((EMachine == EM_ARM && (EFlags & EF_ARM_FDPIC))
+                             || (EMachine == EM_SH && (EFlags & EF_SH_FDPIC))) ? "fdpic"
+                          : (EType == ET_DYN) ? (SawInterp ? "pie" : "pic")
+                          : nullptr;   // ET_EXEC is fixed-address
         if (AbiVer != 0) {
             m_AbiVer        = std::to_string ((unsigned) AbiVer);
             pResult->AbiVersion = m_AbiVer.c_str ();

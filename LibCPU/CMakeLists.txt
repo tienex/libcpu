@@ -2307,6 +2307,22 @@ add_test(NAME loader.pef COMMAND sh -c
    \"$E\" disasm \"$F\" --load pef --arch upcl:\"$M\" --count 1 | \
    grep -q 'loaded PEF (1 sections, arch=ppc, abi=macos): entry=0x1000'")
 
+# The run-time linker: --link resolves a dynamic image's NEEDED graph, loading each shared object
+# via the loader registry. The MIPS ELF NEEDs libc.so.6, resolved from --libpath.
+add_test(NAME loader.link COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/cbmbasic_mips.elf'; \
+   L='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/lib'; \
+   \"$E\" run \"$F\" --load elf --arch upcl:\"$M\" --link --libpath \"$L\" 2>&1 | \
+   grep -q 'libc.so.6 .* -> loaded at 0x450000'")
+
+# ASLR: a position-independent image is relocated to a base derived from --aslr-seed (reproducible).
+add_test(NAME loader.aslr COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/lib/libc.so.6'; \
+   \"$E\" run \"$F\" --load elf --arch upcl:\"$M\" --aslr --aslr-seed 1 2>&1 | \
+   grep -q 'aslr: relocated pic to 0x3dc0000'")
+
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
 # the host through libnix's nix_write (printing 'hi') and return 3 in r0; exit then stops the guest.

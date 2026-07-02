@@ -87,6 +87,14 @@ typedef struct _LOADER_RESULT
     //
     CHAR8 CONST   *Arch;
     //
+    // Position-independence class, as an open NAME: "pie" (position-independent executable, an
+    // ET_DYN main program), "pic" (a position-independent shared object), "fdpic" (function-
+    // descriptor PIC, for MMU-less targets), "half-pic" (partial/legacy PIC), or NULL for a
+    // fixed-address (non-relocatable) image. A relocatable image can be loaded at any base (see the
+    // request's LoadAddr) -- that is what makes ASLR possible.
+    //
+    CHAR8 CONST   *PicKind;
+    //
     // The ABI / operating system the image targets, again a canonical open-ended NAME (not an
     // enumeration): e.g. "sysv", "linux", "freebsd", "netbsd", "openbsd", "solaris", "aix", "hpux",
     // "darwin", "windows", "os2", "dos", "cpm", "unix" (classic V6/V7). A loader derives it from the

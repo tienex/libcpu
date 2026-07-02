@@ -264,6 +264,99 @@ ReadFileBytes (CHAR8 CONST *pPath, std::vector<UINT8> *pOut)
     return true;
 }
 
+// A small deterministic PRNG (SplitMix64) so ASLR is reproducible for a given --aslr-seed.
+static UINT64
+AslrNext (UINT64 *pState)
+{
+    UINT64 Z = (*pState += 0x9e3779b97f4a7615ULL);
+    Z = (Z ^ (Z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    Z = (Z ^ (Z >> 27)) * 0x94d049bb133111ebULL;
+    return Z ^ (Z >> 31);
+}
+
+// Pick a page-aligned (64 KiB) load base for a position-independent image of ImgEnd bytes that fits
+// in RamSize, leaving low memory and stack headroom.
+static UINT64
+AslrPickBase (UINT64 *pState, UINT64 ImgEnd, UINT64 RamSize)
+{
+    UINT64 Lo   = 0x100000;                                  // keep the low 1 MiB clear
+    UINT64 Hi   = (RamSize > ImgEnd + 0x200000) ? (RamSize - ImgEnd - 0x200000) : Lo;
+    UINT64 Span = (Hi > Lo) ? ((Hi - Lo) >> 16) : 1;         // in 64 KiB pages
+    return Lo + ((AslrNext (pState) % Span) << 16);
+}
+
+// --- run-time linker (first phase: resolve the dynamic dependency graph) --------------------------
+//
+// A dynamic image exposes its interpreter + NEEDED shared objects (LOADER_RESULT.Dynamic). The
+// linker resolves the graph: for each NEEDED name it searches the library path, loads the object
+// via the loader registry at the next free base above the image (an ET_DYN load bias), recurses
+// into that object's own NEEDED (dedup by name), and reports the resolved map. With ASLR each object
+// gets a randomized base instead. Symbol/relocation BINDING is the next depth on top of this working
+// dependency loader; a NEEDED with no guest object is reported unresolved and can fall through to
+// the --abi host personality.
+static void
+LinkDynamic (CHAR8 CONST *pArgv0, LOADER_RESULT CONST *pMain, UINT8 *pRam, UINT64 RamSize,
+             std::vector<std::string> CONST &LibPath, bool Aslr, UINT64 *pAslrState)
+{
+    if (!pMain->Dynamic.IsDynamic) {
+        std::printf ("lcx link: image is statically linked; nothing to resolve\n");
+        return;
+    }
+    if (pMain->Dynamic.Interp != nullptr) {
+        std::printf ("lcx link: interpreter %s\n", pMain->Dynamic.Interp);
+    }
+    // Seed the work-list from the main image's NEEDED (copy the names now: the loader objects that
+    // own those strings are reused as we load each dependency).
+    std::vector<std::string> Queue;
+    for (UINT32 I = 0; I < pMain->Dynamic.NeededCount; I++) {
+        Queue.push_back (pMain->Dynamic.Needed[I]);
+    }
+    std::set<std::string> Seen;
+    UINT64                Base = (pMain->LoadEnd + 0xffff) & ~UINT64_C (0xffff);   // 64K above the image
+
+    while (!Queue.empty ()) {
+        std::string Name = Queue.front ();
+        Queue.erase (Queue.begin ());
+        if (Seen.count (Name) != 0) {
+            continue;
+        }
+        Seen.insert (Name);
+
+        std::vector<UINT8> Img;
+        bool               Found = false;
+        for (std::string CONST &Dir : LibPath) {
+            if (ReadFileBytes ((Dir + "/" + Name).c_str (), &Img) && !Img.empty ()) {
+                Found = true;
+                break;
+            }
+            Img.clear ();
+        }
+        if (!Found) {
+            std::printf ("lcx link: %-20s -> unresolved (not in libpath; host personality may cover it)\n",
+                         Name.c_str ());
+            continue;
+        }
+        UINT64         At = Aslr ? AslrPickBase (pAslrState, Img.size (), RamSize) : Base;
+        LOADER_REQUEST Req = { LoaderModeUser, nullptr, At };   // bias the shared object to its base
+        LOADER_RESULT  Lr;
+        if (!RunLoader (pArgv0, "", Img.data (), Img.size (), pRam, RamSize, &Req, &Lr)) {
+            std::printf ("lcx link: %-20s -> no loader recognised it\n", Name.c_str ());
+            continue;
+        }
+        std::printf ("lcx link: %-20s -> loaded at 0x%llx (arch=%s abi=%s pic=%s)\n", Name.c_str (),
+                     (unsigned long long) At, Lr.Arch ? Lr.Arch : "?", Lr.Abi ? Lr.Abi : "?",
+                     Lr.PicKind ? Lr.PicKind : "fixed");
+        for (UINT32 I = 0; I < Lr.Dynamic.NeededCount; I++) {
+            if (Seen.count (Lr.Dynamic.Needed[I]) == 0) {
+                Queue.push_back (Lr.Dynamic.Needed[I]);   // copies the name before the next load
+            }
+        }
+        if (!Aslr) {
+            Base = (Lr.LoadEnd + 0xffff) & ~UINT64_C (0xffff);   // next free base above this object
+        }
+    }
+}
+
 struct ArchSetup {
     ICpuArchitecture        *pArch;
     std::vector<std::string>  Regs;
@@ -677,19 +770,37 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     UINT64      LoadAddr = (UINT64) std::strtoull (Opt (argc, argv, "--addr", "0"), nullptr, 0);
     bool        WordLoad = (std::strcmp (pLoad, "sav") == 0 || std::strcmp (pLoad, "rim") == 0
                             || std::strcmp (pLoad, "raw18") == 0);
+    // ASLR: a reproducible random base for position-independent images (--aslr [--aslr-seed N]).
+    bool           Aslr      = Flag (argc, argv, "--aslr");
+    UINT64         AslrState = (UINT64) std::strtoull (Opt (argc, argv, "--aslr-seed", "0x5eed"), nullptr, 0);
+    LOADER_RESULT      MainLr;
+    bool               HaveMainLr = false;
+    std::vector<UINT8> MainImage;
+    CHAR8 CONST       *pForce = (std::strcmp (pLoad, "auto") == 0) ? "" : pLoad;
     if (pLoad[0] != '\0' && !WordLoad) {
-        CHAR8 CONST       *pForce = (std::strcmp (pLoad, "auto") == 0) ? "" : pLoad;
-        std::vector<UINT8> Image (Ram, Ram + Len);           // the loader writes RAM from a separate copy
+        MainImage.assign (Ram, Ram + Len);                   // the loader writes RAM from a separate copy
         std::memset (Ram, 0, sizeof (Ram));
         LOADER_REQUEST Req = { KernelMode ? LoaderModeKernel : LoaderModeUser, pSlice, LoadAddr };
-        LOADER_RESULT  Lr;
-        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Req, &Lr)) {
+        if (!RunLoader (pArgv0, pForce, MainImage.data (), MainImage.size (), Ram, sizeof (Ram), &Req, &MainLr)) {
             std::printf ("lcx: no loader handled the image (--load %s)\n", pLoad);
             return 2;
         }
-        LoadedEntry   = Lr.Entry;
-        Len           = Lr.LoadEnd;
-        LoadedBrkBase = Lr.BrkBase;
+        // If the image is position-independent (PIE/FDPIC) and ASLR is on with no explicit --addr,
+        // relocate it to a randomized base (reload over the zeroed RAM).
+        // Any position-independent main image (pie/pic/fdpic) can be relocated for ASLR.
+        if (Aslr && LoadAddr == 0 && MainLr.PicKind != nullptr) {
+            UINT64 RandBase = AslrPickBase (&AslrState, MainLr.LoadEnd, sizeof (Ram));
+            std::memset (Ram, 0, sizeof (Ram));
+            LOADER_REQUEST R2 = { LoaderModeUser, pSlice, RandBase };
+            if (RunLoader (pArgv0, pForce, MainImage.data (), MainImage.size (), Ram, sizeof (Ram), &R2, &MainLr)) {
+                std::printf ("lcx aslr: relocated %s to 0x%llx\n", MainLr.PicKind,
+                             (unsigned long long) RandBase);
+            }
+        }
+        LoadedEntry   = MainLr.Entry;
+        Len           = MainLr.LoadEnd;
+        LoadedBrkBase = MainLr.BrkBase;
+        HaveMainLr    = true;
     }
     // --initrd <file>: place a ramdisk/initrd as a raw blob (qemu-style) at --initrd-addr (default
     // kDefaultInitrdAddr) alongside the kernel; the raw loader reports where it landed.
@@ -707,6 +818,25 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
             std::printf ("lcx: failed to place initrd '%s'\n", pInitrd);
             return 2;
         }
+    }
+    // --link: resolve the dynamic dependency graph (recursively load NEEDED shared objects). Search
+    // the image's own directory, then any --libpath (comma-separated), then the current directory.
+    if (HaveMainLr && Flag (argc, argv, "--link")) {
+        std::vector<std::string> LibPath;
+        std::string              Img (pImage);
+        size_t                   Slash = Img.find_last_of ('/');
+        LibPath.push_back (Slash == std::string::npos ? "." : Img.substr (0, Slash));
+        if (CHAR8 CONST *pLp = Opt (argc, argv, "--libpath", nullptr)) {
+            std::string L (pLp);
+            size_t      Comma;
+            while ((Comma = L.find (',')) != std::string::npos) {
+                LibPath.push_back (L.substr (0, Comma));
+                L.erase (0, Comma + 1);
+            }
+            if (!L.empty ()) { LibPath.push_back (L); }
+        }
+        LibPath.push_back (".");
+        LinkDynamic (pArgv0, &MainLr, Ram, sizeof (Ram), LibPath, Aslr, &AslrState);
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
