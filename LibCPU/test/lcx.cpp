@@ -640,21 +640,27 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
-    // --load aout: hand the raw image to the a.out .loader module, which parses the header and lays
-    // its segments into RAM (reporting the machine/endian it read). The break starts at end-of-bss.
-    UINT64 AoutEntry   = ~(UINT64) 0;
-    UINT64 AoutBrkBase = 0;   // a.out end-of-bss; the personality uses it as the initial heap break
-    if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
+    // --load <fmt>: hand the raw image to a .loader module, which parses the format and lays its
+    // segments into RAM (reporting the machine/endian it read). "--load auto" probes every loader
+    // and uses the best match; "--load aout"/"elf"/... forces one by name. The word-addressed
+    // formats (sav/rim/raw18) are handled separately below. The break starts at end-of-bss.
+    UINT64      LoadedEntry   = ~(UINT64) 0;
+    UINT64      LoadedBrkBase = 0;   // end-of-bss; the personality uses it as the initial heap break
+    CHAR8 CONST *pLoad = Opt (argc, argv, "--load", "");
+    bool        WordLoad = (std::strcmp (pLoad, "sav") == 0 || std::strcmp (pLoad, "rim") == 0
+                            || std::strcmp (pLoad, "raw18") == 0);
+    if (pLoad[0] != '\0' && !WordLoad) {
+        CHAR8 CONST       *pForce = (std::strcmp (pLoad, "auto") == 0) ? "" : pLoad;
         std::vector<UINT8> Image (Ram, Ram + Len);           // the loader writes RAM from a separate copy
         std::memset (Ram, 0, sizeof (Ram));
         LOADER_RESULT Lr;
-        if (!RunLoader (pArgv0, "aout", Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
-            std::printf ("lcx: no loader handled the a.out image\n");
+        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+            std::printf ("lcx: no loader handled the image (--load %s)\n", pLoad);
             return 2;
         }
-        AoutEntry   = Lr.Entry;
-        Len         = Lr.LoadEnd;
-        AoutBrkBase = Lr.BrkBase;
+        LoadedEntry   = Lr.Entry;
+        Len           = Lr.LoadEnd;
+        LoadedBrkBase = Lr.BrkBase;
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
@@ -743,7 +749,7 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     CPU_ADDR Entry = (SavEntry   != ~(UINT64) 0) ? (CPU_ADDR) SavEntry
                    : (RimEntry   != ~(UINT64) 0) ? (CPU_ADDR) RimEntry
                    : (Raw18Entry != ~(UINT64) 0) ? (CPU_ADDR) Raw18Entry
-                   : (AoutEntry  != ~(UINT64) 0) ? (CPU_ADDR) AoutEntry
+                   : (LoadedEntry  != ~(UINT64) 0) ? (CPU_ADDR) LoadedEntry
                    : (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
     // The CFG walk reads units of the arch's addressable size: bytes for a byte ISA, WORDS for a
     // word-addressed arch. A .SAV gives the end in words directly; otherwise Len is a byte count.
@@ -789,7 +795,7 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
             }
             std::vector<CHAR8 CONST *> ArgvVec;
             for (std::string CONST &S : GuestArgs) { ArgvVec.push_back (S.c_str ()); }
-            UINT64 BrkBase = (AoutBrkBase != 0) ? AoutBrkBase
+            UINT64 BrkBase = (LoadedBrkBase != 0) ? LoadedBrkBase
                                                 : (((UINT64) End + 0xfff) & ~UINT64_C (0xfff));
             nix_personality_setup (pPersona, &Cpu.Iface, ArgvVec.data (), ArgvVec.size (),
                                    environ, BrkBase);
@@ -1001,15 +1007,17 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
-    // --load aout: the a.out .loader module lays the exec image out and reports the entry, so the
-    // text is disassembled from the entry point.
-    CPU_ADDR EntryDefault = 0;
-    if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
+    // --load <fmt>: a .loader module lays the exec image out and reports the entry, so the text is
+    // disassembled from the entry point ("auto" probes; "aout"/"elf"/... force one by name).
+    CPU_ADDR    EntryDefault = 0;
+    CHAR8 CONST *pDisLoad = Opt (argc, argv, "--load", "");
+    if (pDisLoad[0] != '\0') {
+        CHAR8 CONST       *pForce = (std::strcmp (pDisLoad, "auto") == 0) ? "" : pDisLoad;
         std::vector<UINT8> Image (Ram, Ram + Len);
         std::memset (Ram, 0, sizeof (Ram));
         LOADER_RESULT Lr;
-        if (!RunLoader (pArgv0, "aout", Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
-            std::printf ("lcx: no loader handled the a.out image\n");
+        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+            std::printf ("lcx: no loader handled the image (--load %s)\n", pDisLoad);
             return 2;
         }
         Len          = Lr.LoadEnd;

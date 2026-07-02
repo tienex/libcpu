@@ -36,6 +36,7 @@ endif()
 # machine/endian/word-width it read, and lays segments out through the ILoaderMemory sink. They
 # never know or name a CPU. lcx discovers them next to itself and probes the image. ----
 libcpu_add_loader(aout_loader aout SOURCES loaders/aout/AoutLoader.cpp INCLUDES include)
+libcpu_add_loader(elf_loader  elf  SOURCES loaders/elf/ElfLoader.cpp   INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -375,7 +376,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader)                # .loader bundles must exist for the image loaders
+add_dependencies(lcx aout_loader elf_loader)     # .loader bundles must exist for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2237,6 +2238,15 @@ add_test(NAME upcl.pdp11-aout COMMAND sh -c
    grep -q 'loaded a.out (16-bit OMAGIC)' \"$B/pdp11-aout.out\" && \
    grep -q 'r0 =0008' \"$B/pdp11-aout.out\" && \
    grep -q 'r2 =0008' \"$B/pdp11-aout.out\"")
+
+# The ELF .loader module: disassembling a real 32-bit big-endian MIPS ELF via --load elf must parse
+# the header (reporting machine + endian + width), expose its dynamic-linking facts (PT_INTERP +
+# DT_NEEDED) WITHOUT resolving them, and disassemble from the reported entry point.
+add_test(NAME loader.elf COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/cbmbasic_mips.elf'; \
+   \"$E\" disasm \"$F\" --load elf --arch upcl:\"$M\" --count 4 | \
+   grep -q 'loaded ELF (32-bit BE, machine=8, dynamic).*interp=/lib/ld.so.1 needed=1'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
