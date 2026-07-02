@@ -357,13 +357,13 @@ if(TARGET nix)
 endif()
 
 # Guest-OS ABI personalities, built as dylibs next to lcx and loaded at runtime
-# (`--abi obsd79` -> libobsd79.dylib, `--abi nbsd101` -> libnbsd101.dylib). sc2int
+# (`--abi openbsd` -> libopenbsd.dylib, `--abi netbsd` -> libnetbsd.dylib). sc2int
 # compiles each .sc table into its dispatch; the dylibs link the nix host layer.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/sc2int ${CMAKE_BINARY_DIR}/tools/sc2int)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/obsd79 ${CMAKE_BINARY_DIR}/obsd79)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nbsd101 ${CMAKE_BINARY_DIR}/nbsd101)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/openbsd ${CMAKE_BINARY_DIR}/openbsd)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/netbsd ${CMAKE_BINARY_DIR}/netbsd)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/pdp11unix ${CMAKE_BINARY_DIR}/pdp11unix)
-foreach(_personality sc2int obsd79 nbsd101 pdp11unix)
+foreach(_personality sc2int openbsd netbsd pdp11unix)
   if(TARGET ${_personality})
     target_include_directories(${_personality} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix
@@ -373,7 +373,7 @@ foreach(_personality sc2int obsd79 nbsd101 pdp11unix)
   endif()
 endforeach()
 # Drop the personality dylibs beside the lcx executable so it can dlopen them by name.
-set_target_properties(obsd79 nbsd101 pdp11unix PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set_target_properties(openbsd netbsd pdp11unix PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(lcx test/lcx.cpp
   test/Pdp1Io.cpp
@@ -388,7 +388,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
   ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix ${CMAKE_BINARY_DIR}/libnix)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
-add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
+add_dependencies(lcx openbsd netbsd pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
 add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader com_loader dosexe_loader cmd_loader raw_loader ne_loader lx_loader pef_loader hunk_loader som_loader vms_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
@@ -646,13 +646,13 @@ if(TARGET interp_backend)
   # syscall ABI). The image is a freestanding "hello" writer: it sets r13=4 (SYS_write), r2=1 (stdout),
   # r3=0x20 (the string), r4=6 (length), traps via `tb0 0,r0,450` (the OpenBSD syscall gate -> vector
   # 0x1c2), then sets r13=1 (SYS_exit), r2=0 and traps again. The "hello\n" bytes sit at offset 0x20.
-  # --abi obsd79 routes the trap vector through the host syscall shim, so the guest write reaches
+  # --abi openbsd routes the trap vector through the host syscall shim, so the guest write reaches
   # real stdout. Proves the generated frontend + the trap/syscall seam end to end.
   add_test(NAME upcl.m88k-syscall COMMAND sh -c
     "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
      printf '\\x59\\xa0\\x00\\x04\\x58\\x40\\x00\\x01\\x58\\x60\\x00\\x20\\x58\\x80\\x00\\x06\\xf0\\x00\\xd1\\xc2\\x59\\xa0\\x00\\x01\\x58\\x40\\x00\\x00\\xf0\\x00\\xd1\\xc2\\x68\\x65\\x6c\\x6c\\x6f\\x0a' \
        > '${CMAKE_BINARY_DIR}/hello.m88k' && \
-     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k' --arch \"upcl:$M\" --abi obsd79 | grep -q '^hello$'")
+     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k' --arch \"upcl:$M\" --abi openbsd | grep -q '^hello$'")
 
   # The same image wrapped in a real OpenBSD/m88k a.out exec header (OMAGIC): a_midmag packs
   # MID_M88K(153)<<16 | 0407 = 0x00990107, a_text=0x20, a_data=6, a_entry=0; the 38-byte image
@@ -663,7 +663,7 @@ if(TARGET interp_backend)
     "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
      printf '\\x00\\x99\\x01\\x07\\x00\\x00\\x00\\x20\\x00\\x00\\x00\\x06\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x59\\xa0\\x00\\x04\\x58\\x40\\x00\\x01\\x58\\x60\\x00\\x20\\x58\\x80\\x00\\x06\\xf0\\x00\\xd1\\xc2\\x59\\xa0\\x00\\x01\\x58\\x40\\x00\\x00\\xf0\\x00\\xd1\\xc2\\x68\\x65\\x6c\\x6c\\x6f\\x0a' \
        > '${CMAKE_BINARY_DIR}/hello.m88k.aout' && \
-     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k.aout' --arch \"upcl:$M\" --abi obsd79 --load aout | grep -q '^hello$'")
+     \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k.aout' --arch \"upcl:$M\" --abi openbsd --load aout | grep -q '^hello$'")
 
   # A REAL OpenBSD/m88k binary: test/bin/m88k/openbsd/sync (a ZMAGIC a.out). lcx maps the whole file
   # at the m88k text base (0x1000), builds the argc/argv/envp entry stack, and runs crt0 -> main. The
@@ -676,7 +676,7 @@ if(TARGET interp_backend)
     add_test(NAME upcl.m88k-obsd-sync COMMAND sh -c
       "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
        B='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/m88k/openbsd/sync'; \
-       LCX_STRACE=1 \"$E\" run \"$B\" --arch \"upcl:$M\" --abi obsd79 --load aout 2>&1 | grep -q 'r13=36'")
+       LCX_STRACE=1 \"$E\" run \"$B\" --arch \"upcl:$M\" --abi openbsd --load aout 2>&1 | grep -q 'r13=36'")
     set_tests_properties(upcl.m88k-obsd-sync PROPERTIES TIMEOUT 60)
   endif()
 
