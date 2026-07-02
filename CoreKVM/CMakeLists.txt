@@ -30,3 +30,7 @@ ADD_TEST(NAME base COMMAND test_base)
 ADD_EXECUTABLE(test_framebuffer tests/test_framebuffer.c)
 TARGET_LINK_LIBRARIES(test_framebuffer corekvm)
 ADD_TEST(NAME framebuffer COMMAND test_framebuffer)
+
+ADD_EXECUTABLE(test_pixelconvert tests/test_pixelconvert.c)
+TARGET_LINK_LIBRARIES(test_pixelconvert corekvm)
+ADD_TEST(NAME pixelconvert COMMAND test_pixelconvert)

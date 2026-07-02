@@ -20,6 +20,12 @@ typedef struct _KVMRect {
     KVMInt32 height;
 } KVMRect;
 
+typedef enum _KVMPixelFormat {
+    kKVMPixelFormatBGRA8888 = 0,   /* canonical */
+    kKVMPixelFormatRGB888,
+    kKVMPixelFormatRGB565
+} KVMPixelFormat;
+
 /* Canonical surface is always BGRA8888, 4 bytes per pixel. */
 #define KVM_FRAMEBUFFER_BYTES_PER_PIXEL 4
 
@@ -36,6 +42,15 @@ KVMInt32          KVMFrameBufferGetHeight(KVMFrameBufferRef fb);
  * stride in bytes (width * 4). Storage lives as long as the framebuffer.
  */
 const KVMUInt8 *KVMFrameBufferGetPixels(KVMFrameBufferRef fb, KVMIndex *outStride);
+
+/*
+ * Convert `src` (rows of `srcFormat`, `srcStride` bytes per row) into the
+ * canonical BGRA surface at `rect`. Returns kKVMErrorInvalidArgument if `rect`
+ * lies outside the framebuffer.
+ */
+KVMStatus KVMFrameBufferWriteRect(KVMFrameBufferRef fb, KVMRect rect,
+                                  const void *src, KVMPixelFormat srcFormat,
+                                  KVMIndex srcStride);
 
 #if defined(__cplusplus)
 }

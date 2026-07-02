@@ -84,3 +84,86 @@ KVMFrameBufferGetPixels(KVMFrameBufferRef fb, KVMIndex *outStride)
     }
     return fb->pixels;
 }
+
+static void
+KVMConvertPixel(const KVMUInt8 *src, KVMPixelFormat format, KVMUInt8 *outBgra)
+{
+    KVMUInt16 v;
+
+    switch (format) {
+    case kKVMPixelFormatBGRA8888:
+        outBgra[0] = src[0];
+        outBgra[1] = src[1];
+        outBgra[2] = src[2];
+        outBgra[3] = src[3];
+        break;
+
+    case kKVMPixelFormatRGB888:
+        outBgra[0] = src[2]; /* B */
+        outBgra[1] = src[1]; /* G */
+        outBgra[2] = src[0]; /* R */
+        outBgra[3] = 255;
+        break;
+
+    case kKVMPixelFormatRGB565:
+    default:
+        v = (KVMUInt16)(src[0] | (src[1] << 8));
+        /* Expand 5/6/5 to 8 bits by replicating high bits into low. */
+        outBgra[0] = (KVMUInt8)(((v & 0x001F) << 3) | ((v & 0x001F) >> 2));
+        outBgra[1] = (KVMUInt8)(((v & 0x07E0) >> 3) | ((v & 0x07E0) >> 9));
+        outBgra[2] = (KVMUInt8)(((v & 0xF800) >> 8) | ((v & 0xF800) >> 13));
+        outBgra[3] = 255;
+        break;
+    }
+}
+
+static KVMIndex
+KVMBytesPerSourcePixel(KVMPixelFormat format)
+{
+    switch (format) {
+    case kKVMPixelFormatBGRA8888:
+        return 4;
+    case kKVMPixelFormatRGB888:
+        return 3;
+    case kKVMPixelFormatRGB565:
+    default:
+        return 2;
+    }
+}
+
+KVMStatus
+KVMFrameBufferWriteRect(KVMFrameBufferRef fb, KVMRect rect, const void *src,
+                        KVMPixelFormat srcFormat, KVMIndex srcStride)
+{
+    const KVMUInt8 *srcBytes;
+    KVMIndex srcBpp;
+    KVMInt32 row;
+    KVMInt32 col;
+
+    if (fb == NULL || src == NULL) {
+        return kKVMErrorInvalidArgument;
+    }
+    if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0) {
+        return kKVMErrorInvalidArgument;
+    }
+    if (rect.x + rect.width > fb->width || rect.y + rect.height > fb->height) {
+        return kKVMErrorInvalidArgument;
+    }
+
+    srcBytes = (const KVMUInt8 *)src;
+    srcBpp = KVMBytesPerSourcePixel(srcFormat);
+
+    for (row = 0; row < rect.height; row++) {
+        const KVMUInt8 *srcLine = srcBytes + (KVMIndex)row * srcStride;
+        KVMUInt8 *dstLine =
+            fb->pixels + (KVMIndex)(rect.y + row) * fb->stride +
+            (KVMIndex)rect.x * KVM_FRAMEBUFFER_BYTES_PER_PIXEL;
+
+        for (col = 0; col < rect.width; col++) {
+            KVMConvertPixel(srcLine + (KVMIndex)col * srcBpp, srcFormat,
+                            dstLine + (KVMIndex)col *
+                                          KVM_FRAMEBUFFER_BYTES_PER_PIXEL);
+        }
+    }
+    return kKVMSuccess;
+}
