@@ -12,7 +12,7 @@
 
 %%
 
-"#"[^\n]*   { printf ("aaa\n") ;}
+"#"[^\n]*(\n[\n]*)?  { char const *s = yytext; while (*s != 0) { if (*s == '\n') { g_line++; } s++; } }
 [\n]+       { g_line += strlen (yytext); return T_NEWLINE; }
 [[:space:]]+  ;
 "\""[^"]*"\"" { yylval.sv = (char *)malloc (strlen (yytext) - 1); 
