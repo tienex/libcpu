@@ -33,6 +33,7 @@ ENDIF()
 ADD_LIBRARY(obsd79
 			SHARED
       obsd79-init.c
+      obsd79-personality.c
       obsd79-ioctl.c
       obsd79-structs.c
       obsd79-syscalls.c

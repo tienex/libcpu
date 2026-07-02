@@ -26,8 +26,8 @@ extern void *g_bsd_log;
 
 void
 nbsd101_guest_get_syscall(nbsd101_us_syscall_t *self,
-                         nix_monitor_t       *xmon,
-                         int                 *scno)
+                          nix_monitor_t        *xmon,
+                          int                  *scno)
 {
 	m88k_context_t *ctx = nix_monitor_get_context(xmon);
 	*scno = ctx->gpr[13];
@@ -35,14 +35,14 @@ nbsd101_guest_get_syscall(nbsd101_us_syscall_t *self,
 
 int
 nbsd101_guest_get_next_param(void            *_self,
-                            nix_monitor_t   *xmon,
-                            unsigned         flags,
-                            nix_param_type_t type,
-                            nix_param_t     *param)
+                             nix_monitor_t   *xmon,
+                             unsigned         flags,
+                             nix_param_type_t type,
+                             nix_param_t     *param)
 {
 	nbsd101_us_syscall_t *self = (nbsd101_us_syscall_t *)_self;
-	nix_mem_if_t        *mem = nix_monitor_get_memory(xmon);
-	m88k_context_t      *ctx = nix_monitor_get_context(xmon);
+	nix_mem_if_t         *mem = nix_monitor_get_memory(xmon);
+	m88k_context_t       *ctx = nix_monitor_get_context(xmon);
 
 	param->type = type;
 	if (self->last_param < (10 - 2)) {
@@ -137,17 +137,26 @@ nbsd101_guest_get_next_param(void            *_self,
 
 void
 nbsd101_guest_set_result(void              *self,
-                        nix_monitor_t     *xmon,
-                        int                error,
-                        nix_param_t const *result)
+                         nix_monitor_t     *xmon,
+                         int                error,
+                         nix_param_t const *result)
 {
 	m88k_context_t *ctx = nix_monitor_get_context(xmon);
 
+	/*
+	 * The NetBSD/m88k kernel signals a failed system call by SETTING the
+	 * PSR carry (C) bit, with errno in r2; on success it clears the carry.
+	 * libc's cerror stub branches on that carry.
+	 */
 	if (error != 0) {
 		ctx->gpr[2] = error;
+		ctx->psr |= (uint32_t)1 << 28;
+		ctx->sxip += 4;
 	} else {
 		uint32_t hi, lo;
 		hi = lo = 0;
+
+		ctx->psr &= ~((uint32_t)1 << 28);
 
 		if (result != NULL) {
 			switch (result->type) {
@@ -165,6 +174,10 @@ nbsd101_guest_set_result(void              *self,
 			case NIX_PARAM_INTPTR:
 			case NIX_PARAM_WORD:
 				lo = result->value.tnosign.u64 & 0xffffffff;
+				break;
+			case NIX_PARAM_INVALID:
+				/* a void-returning system call (e.g. sync(2)): no
+				 * return value, r2 stays 0 */
 				break;
 			default:
 				LCBugCheck(g_bsd_log, 5012);

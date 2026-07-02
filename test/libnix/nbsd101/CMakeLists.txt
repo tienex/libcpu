@@ -33,6 +33,7 @@ ENDIF()
 ADD_LIBRARY(nbsd101
 			SHARED
       nbsd101-init.c
+      nbsd101-personality.c
       nbsd101-ioctl.c
       nbsd101-structs.c
       nbsd101-syscalls.c

@@ -21,6 +21,7 @@
 #include "LibCPU/CpuState.h"
 #include "LibCPU/Loader.h"
 #include "nix.h"            // libnix host layer -- drives the PDP-11 UNIX syscall personalities
+#include "nix-personality.h" // generic guest-OS personality plugin seam (loaded as a dylib)
 #include "../aot/AotGenerator.h"
 #include "../core/Debugger.h"
 #include "../core/TranslationCache.h"
@@ -53,14 +54,15 @@
 #include "RunMethodCall.h"
 #include "LibCPU/PCom.h"
 #include <cstdio>
-#include <unistd.h>   // write/read/close/getpid for the obsd-m88k user-space syscall personality
+#include <unistd.h>   // isatty/getcwd and friends used by the loaders
 #include <fcntl.h>    // open
-#include <cerrno>     // errno -> the m88k carry/r2 error convention
-#include <ctime>      // clock_gettime for gettimeofday/clock_gettime
+#include <cerrno>     // errno
+#include <ctime>      // clock_gettime
 #include <sys/time.h> // struct timeval / gettimeofday
-#include <sys/uio.h>  // writev/readv iovec marshalling
-#include <csignal>    // kill(2) for the obsd-m88k personality
+#include <sys/uio.h>  // iovec
+#include <csignal>
 #include <cstring>
+#include <dlfcn.h>    // dlopen/dlsym -- load guest-OS ABI personalities as dylibs
 #include <cctype>     // std::tolower for the case-insensitive .SAV extension match
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
@@ -220,221 +222,126 @@ MakeArch (CHAR8 CONST *pName, UINT8 *pRam, UINT64 RamSize, CPU_STATE *pState)
     return A;
 }
 
-// OpenBSD/m88k process break (heap) pointer, tracked across brk(2)/sbrk calls. g_BrkBase is the
-// initial break set by the loader to the end of bss; g_BrkCur is the current break. A flat-RAM
-// emulator has no page tables, so brk just bumps a pointer and validates it against RAM.
-static UINT64 g_BrkBase = 0;
-static UINT64 g_BrkCur  = 0;
-
-// m88k r[N] maps directly to CPU_STATE.Reg[N] (r0 is the hardwired-zero slot Reg[0]; the frontend
-// reads it as 0 and discards writes). These index the SP and link registers the entry state needs.
-#define M88K_REG(n)  ((UINT32) (n))                           // m88k r[n] -> CPU_STATE.Reg[n]
-#define M88K_SP      M88K_REG (31)                            // r31 stack pointer  -> Reg[31]
-#define M88K_LINK    M88K_REG (1)                             // r1  link register  -> Reg[1]
-
-// One OpenBSD/m88k user-space system call. The guest issues `tb0 0, r0, 450` after loading the
-// syscall number in r13 and arguments in r2.. ; the result is returned in r2. (m88k r[N] maps
-// directly to CPU_STATE Reg[N]; r0 is the hardwired-zero slot.)
+// --- guest-OS ABI personalities, loaded as dylibs -------------------------
 //
-// The OpenBSD/m88k kernel ABI signals an error by SETTING THE CARRY FLAG (PSR C, bit 28) and
-// returning the errno in r2; on success the carry is clear and r2 holds the return value. libc's
-// cerror stub branches on that carry, so this shim must drive Flag[FlagCarry] -- not just r2 --
-// for errno propagation to work. Host errno values are BSD-derived and match OpenBSD's for the
-// common range, so they pass through directly.
-//
-// This is a host-backed personality (the real obsd41 + libnix marshalling is wired on top of the
-// same seam); it covers the syscalls a static OpenBSD/m88k user binary issues at startup and for
-// basic I/O. The numbers are OpenBSD 4.1's (test/libnix/obsd41/obsd41.sc). Returns false when the
-// guest should stop (exit), true to resume after the trap.
-static bool
-ObsdM88kSyscall (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize)
+// lcx knows nothing about any particular guest OS or CPU. A personality dylib
+// (libobsd79, libnbsd101, ...) implements the nix_personality_t seam and drives
+// the host through nix_cpu_if_t / nix_mem_if_t; `--abi <name>` dlopens
+// lib<name>.<dylib|so> and calls its nix_personality_create factory. All the
+// register/stack/brk/errno ABI knowledge lives inside the personality.
+
+// The guest RAM as a flat nix_mem_if_t: guest address N is host byte pRam[N].
+struct LcxFlatMem {
+    nix_mem_if_t Iface;
+    UINT8       *pRam;
+    UINT64       Size;
+};
+
+static nix_gaddr_t
+LcxMemGmap (nix_mem_if_t *pSelf, nix_haddr_t Addr, size_t, unsigned)
 {
-    UINT64 Sc  = pState->Reg[13];                         // r13 = syscall number
-    auto   Arg = [&] (int I) -> UINT64 { return pState->Reg[2 + I]; };   // r2=arg0, r3=arg1, ...
-    if (std::getenv ("LCX_STRACE") != nullptr) {
-        std::fprintf (stderr, "lcx strace: @%#llx vector=%#llx r13=%llu (%#llx, %#llx, %#llx)\n",
-                      (unsigned long long) pState->TrapPc, (unsigned long long) pState->SyscallVector,
-                      (unsigned long long) Sc, (unsigned long long) Arg (0),
-                      (unsigned long long) Arg (1), (unsigned long long) Arg (2));
-        if (std::getenv ("LCX_STRACE_REGS") != nullptr) {
-            for (int K = 0; K < 32; K++) {
-                std::fprintf (stderr, "  Reg[%2d]=%08llx%s", K,
-                              (unsigned long long) (pState->Reg[K] & 0xffffffff), (K % 4 == 3) ? "\n" : "");
-            }
-            UINT64 Tp = pState->TrapPc;
-            if (Tp >= 8 && Tp + 4 <= RamSize) {
-                std::fprintf (stderr, "  code @%#llx: %02x%02x%02x%02x %02x%02x%02x%02x [tb0:%02x%02x%02x%02x]\n",
-                              (unsigned long long) (Tp - 8),
-                              pRam[Tp - 8], pRam[Tp - 7], pRam[Tp - 6], pRam[Tp - 5],
-                              pRam[Tp - 4], pRam[Tp - 3], pRam[Tp - 2], pRam[Tp - 1],
-                              pRam[Tp], pRam[Tp + 1], pRam[Tp + 2], pRam[Tp + 3]);
-            }
-        }
+    return (nix_gaddr_t) (Addr - (nix_haddr_t) ((LcxFlatMem *) pSelf)->pRam);
+}
+static nix_gaddr_t
+LcxMemHtog (nix_mem_if_t *pSelf, nix_haddr_t Addr, nix_memflg_t *pMf)
+{
+    LcxFlatMem *pMem = (LcxFlatMem *) pSelf;
+    nix_gaddr_t G    = (nix_gaddr_t) (Addr - (nix_haddr_t) pMem->pRam);
+    if (pMf != nullptr) { *pMf = (G < pMem->Size) ? 0 : 1; }
+    return G;
+}
+static nix_haddr_t
+LcxMemGtoh (nix_mem_if_t *pSelf, nix_gaddr_t Addr, nix_memflg_t *pMf)
+{
+    LcxFlatMem *pMem = (LcxFlatMem *) pSelf;
+    if (Addr >= pMem->Size) { if (pMf != nullptr) { *pMf = 1; } return 0; }
+    if (pMf != nullptr) { *pMf = 0; }
+    return (nix_haddr_t) (pMem->pRam + Addr);
+}
+static nix_memflg_t
+LcxMemRead (nix_mem_if_t *pSelf, nix_gaddr_t Addr, UINT8 *pBuf, size_t Sz)
+{
+    LcxFlatMem *pMem = (LcxFlatMem *) pSelf;
+    if (Addr + Sz > pMem->Size) { return 1; }
+    std::memcpy (pBuf, pMem->pRam + Addr, Sz);
+    return 0;
+}
+static nix_memflg_t
+LcxMemWrite (nix_mem_if_t *pSelf, nix_gaddr_t Addr, UINT8 CONST *pBuf, size_t Sz)
+{
+    LcxFlatMem *pMem = (LcxFlatMem *) pSelf;
+    if (Addr + Sz > pMem->Size) { return 1; }
+    std::memcpy (pMem->pRam + Addr, pBuf, Sz);
+    return 0;
+}
+static struct _nix_mem_if_vtbl CONST g_LcxMemVtbl = {
+    LcxMemGmap, LcxMemHtog, LcxMemGtoh, LcxMemRead, LcxMemWrite };
+
+// A nix_cpu_if_t backed by lcx's CPU_STATE: register N is CPU_STATE.Reg[N], and
+// the carry flag is CPU_STATE.Flag[FlagCarry] (the BSD system-call error flag).
+struct LcxCpu {
+    nix_cpu_if_t Iface;
+    CPU_STATE   *pState;
+};
+
+static UINT64
+LcxCpuRegGet (nix_cpu_if_t *pSelf, unsigned N)
+{
+    return ((LcxCpu *) pSelf)->pState->Reg[N];
+}
+static void
+LcxCpuRegSet (nix_cpu_if_t *pSelf, unsigned N, UINT64 V)
+{
+    ((LcxCpu *) pSelf)->pState->Reg[N] = V;
+}
+static void
+LcxCpuSetCarry (nix_cpu_if_t *pSelf, int Set)
+{
+    ((LcxCpu *) pSelf)->pState->Flag[FlagCarry] = Set ? 1 : 0;
+}
+static struct _nix_cpu_if_vtbl CONST g_LcxCpuVtbl = {
+    LcxCpuRegGet, LcxCpuRegSet, LcxCpuSetCarry };
+
+// The classic PDP-11 UNIX personalities (V6/V7 lineage) are still serviced in
+// process (see Pdp11UnixSyscall); everything else is a dylib personality.
+static bool
+IsPdp11Abi (CHAR8 CONST *pAbi)
+{
+    static CHAR8 CONST *CONST Abis[] = {
+        "unixv6", "unixv7", "sysiii", "pwb1", "pwb2", "bsd1", "bsd2", "bsd211",
+        "ultrix11", "venix" };
+    for (CHAR8 CONST *N : Abis) { if (std::strcmp (pAbi, N) == 0) { return true; } }
+    return false;
+}
+
+// Load a personality dylib for `--abi <name>`: try the loader's default search
+// path, then the directory of the lcx executable (where the build drops the
+// dylibs). Returns the created personality, or nullptr if none is found.
+static nix_personality_t *
+LoadPersonality (CHAR8 CONST *pAbi, CHAR8 CONST *pArgv0)
+{
+#if defined (__APPLE__)
+    std::string Leaf = std::string ("lib") + pAbi + ".dylib";
+#else
+    std::string Leaf = std::string ("lib") + pAbi + ".so";
+#endif
+    void *pLib = dlopen (Leaf.c_str (), RTLD_NOW | RTLD_LOCAL);
+    if (pLib == nullptr) {
+        std::string Exe (pArgv0 != nullptr ? pArgv0 : "");
+        std::string Dir = Exe.substr (0, Exe.find_last_of ('/') + 1);
+        pLib = dlopen ((Dir + Leaf).c_str (), RTLD_NOW | RTLD_LOCAL);
     }
-    auto   Ok  = [&] (UINT64 V) -> bool {                 // success: r2 = value, carry clear
-        pState->Reg[2] = V;
-        pState->Flag[FlagCarry] = 0;
-        return true;
-    };
-    auto   Fail = [&] (int E) -> bool {                   // error: r2 = errno, carry set
-        pState->Reg[2] = (UINT64) (UINT32) E;
-        pState->Flag[FlagCarry] = 1;
-        return true;
-    };
-    auto   InRam = [&] (UINT64 A, UINT64 N) -> bool { return A <= RamSize && A + N <= RamSize; };
-    auto   WBe32 = [&] (UINT64 A, UINT32 V) {
-        if (InRam (A, 4)) {
-            pRam[A] = (UINT8) (V >> 24); pRam[A + 1] = (UINT8) (V >> 16);
-            pRam[A + 2] = (UINT8) (V >> 8); pRam[A + 3] = (UINT8) V;
-        }
-    };
-    auto   RBe32 = [&] (UINT64 A) -> UINT32 {
-        return InRam (A, 4) ? (UINT32) ((pRam[A] << 24) | (pRam[A + 1] << 16) | (pRam[A + 2] << 8) | pRam[A + 3]) : 0;
-    };
-
-    switch (Sc) {
-    case 1:                                               // exit(code)
-        return false;
-
-    case 3:                                               // read(fd, buf, len)
-    case 4: {                                             // write(fd, buf, len)
-        UINT64 Fd = Arg (0), Buf = Arg (1), Len = Arg (2);
-        if (!InRam (Buf, Len)) { return Fail (EFAULT); }
-        long N = (Sc == 4) ? (long) write ((int) Fd, pRam + Buf, (size_t) Len)
-                           : (long) read ((int) Fd, pRam + Buf, (size_t) Len);
-        return (N < 0) ? Fail (errno) : Ok ((UINT64) N);
+    if (pLib == nullptr) {
+        std::fprintf (stderr, "lcx: cannot load personality '%s': %s\n", Leaf.c_str (), dlerror ());
+        return nullptr;
     }
-
-    case 5: {                                             // open(path, flags, mode)
-        UINT64 PathA = Arg (0);
-        if (PathA >= RamSize) { return Fail (EFAULT); }
-        long Fd = (long) open ((char CONST *) (pRam + PathA), (int) Arg (1), (int) Arg (2));
-        return (Fd < 0) ? Fail (errno) : Ok ((UINT64) Fd);
+    typedef nix_personality_t *(*CreateFn) (void);
+    CreateFn Create = (CreateFn) dlsym (pLib, "nix_personality_create");
+    if (Create == nullptr) {
+        std::fprintf (stderr, "lcx: '%s' has no nix_personality_create entry point\n", Leaf.c_str ());
+        return nullptr;
     }
-
-    case 6: {                                             // close(fd)
-        long R = (long) close ((int) Arg (0));
-        return (R < 0) ? Fail (errno) : Ok (0);
-    }
-
-    case 17: {                                            // brk(addr) -> new break (or current if 0)
-        UINT64 Addr = Arg (0);
-        if (Addr == 0) { return Ok (g_BrkCur); }
-        if (Addr < g_BrkBase || Addr >= RamSize - 0x10000) { return Fail (ENOMEM); }
-        g_BrkCur = Addr;
-        return Ok (Addr);
-    }
-
-    case 20: return Ok ((UINT64) (long) getpid ());       // getpid
-    case 24: return Ok ((UINT64) (long) getuid ());       // getuid
-    case 25: return Ok ((UINT64) (long) geteuid ());      // geteuid
-    case 43: return Ok ((UINT64) (long) getegid ());      // getegid
-    case 47: return Ok ((UINT64) (long) getgid ());       // getgid
-    case 39: return Ok ((UINT64) (long) getppid ());      // getppid
-
-    case 36:                                              // sync(void)
-        sync ();
-        return Ok (0);
-
-    case 37: {                                            // kill(pid, sig) -- only allow self/own group
-        long R = (long) kill ((int) Arg (0), (int) Arg (1));
-        return (R < 0) ? Fail (errno) : Ok (0);
-    }
-
-    case 41: {                                            // dup(fd)
-        long R = (long) dup ((int) Arg (0));
-        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
-    }
-    case 90: {                                            // dup2(from, to)
-        long R = (long) dup2 ((int) Arg (0), (int) Arg (1));
-        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
-    }
-
-    case 92: {                                            // fcntl(fd, cmd, arg)
-        long R = (long) fcntl ((int) Arg (0), (int) Arg (1), (long) Arg (2));
-        return (R < 0) ? Fail (errno) : Ok ((UINT64) R);
-    }
-
-    case 199: {                                           // lseek(fd, pad, off_hi, off_lo, whence)
-        // OpenBSD m88k passes the 64-bit offset as a register pair after a padding word; the
-        // whence follows. r2=fd, r3=pad, r4:r5 = offset, r6 = whence.
-        UINT64 Off = ((UINT64) Arg (2) << 32) | (UINT32) Arg (3);
-        long long R = (long long) lseek ((int) Arg (0), (off_t) Off, (int) Arg (4));
-        if (R < 0) { return Fail (errno); }
-        // 64-bit result returns in r2:r3 (high:low).
-        pState->Reg[3] = (UINT64) (UINT32) ((UINT64) R & 0xffffffff);  // r3 = low
-        return Ok ((UINT64) (UINT32) ((UINT64) R >> 32));              // r2 = high
-    }
-
-    case 120:                                             // readv(fd, iov, iovcnt)
-    case 121: {                                           // writev(fd, iov, iovcnt)
-        UINT64 Fd = Arg (0), IovA = Arg (1), Cnt = Arg (2);
-        long Total = 0;
-        for (UINT64 I = 0; I < Cnt; I++) {
-            UINT64 Base = RBe32 (IovA + I * 8);
-            UINT64 Ln   = RBe32 (IovA + I * 8 + 4);
-            if (Ln == 0) { continue; }
-            if (!InRam (Base, Ln)) { return Fail (EFAULT); }
-            long N = (Sc == 121) ? (long) write ((int) Fd, pRam + Base, (size_t) Ln)
-                                 : (long) read ((int) Fd, pRam + Base, (size_t) Ln);
-            if (N < 0) { return (Total > 0) ? Ok ((UINT64) Total) : Fail (errno); }
-            Total += N;
-            if ((UINT64) N < Ln) { break; }
-        }
-        return Ok ((UINT64) Total);
-    }
-
-    case 116: {                                           // gettimeofday(tv, tz)
-        UINT64 Tv = Arg (0);
-        struct timeval Now;
-        gettimeofday (&Now, nullptr);
-        if (Tv != 0) {
-            WBe32 (Tv, (UINT32) Now.tv_sec);              // struct timeval { int32 tv_sec; int32 tv_usec }
-            WBe32 (Tv + 4, (UINT32) Now.tv_usec);
-        }
-        return Ok (0);
-    }
-
-    case 232: {                                           // clock_gettime(clk_id, tp)
-        UINT64 Tp = Arg (1);
-        struct timespec Ts;
-        clock_gettime (CLOCK_REALTIME, &Ts);
-        if (Tp != 0) {
-            WBe32 (Tp, (UINT32) Ts.tv_sec);              // struct timespec { int32 tv_sec; int32 tv_nsec }
-            WBe32 (Tp + 4, (UINT32) Ts.tv_nsec);
-        }
-        return Ok (0);
-    }
-
-    case 253: return Ok (0);                              // issetugid -> not set-uid/gid
-    case 60:  return Ok (0);                              // umask -> report previous mask 0 (no-op)
-    case 298: return Ok (0);                              // sched_yield
-    case 299: return Ok ((UINT64) (long) getpid ());      // getthrid -> the single thread id
-
-    // Signal + memory-protection calls a static binary issues at startup that a flat-RAM,
-    // single-threaded model can satisfy as a no-op success (carry clear, r2 = 0).
-    case 46:                                              // sigaction
-    case 48:                                              // sigprocmask
-    case 53:                                              // osigaltstack
-    case 288:                                             // sigaltstack
-    case 74:                                              // mprotect
-    case 75:                                              // madvise
-    case 73:                                              // munmap
-        return Ok (0);
-
-    case 54: {                                            // ioctl(fd, request, arg)
-        // The only ioctls a basic CLI binary issues are terminal queries (isatty -> TIOCGETA);
-        // report "not a tty" so output goes to the block path. ENOTTY keeps stdio happy.
-        return Fail (ENOTTY);
-    }
-
-    default:
-        // Unimplemented: return ENOSYS rather than killing the guest, so it can decide how to
-        // cope (most abort, but some probe-and-fall-back). Logged once-per-call for triage.
-        std::fprintf (stderr, "lcx: unhandled obsd-m88k syscall %llu (returning ENOSYS)\n",
-                      (unsigned long long) Sc);
-        return Fail (78);                                 // OpenBSD ENOSYS
-    }
+    return Create ();
 }
 
 static void
@@ -452,49 +359,6 @@ DumpRegs (ArchSetup CONST &A, CPU_STATE CONST *pState)
 // The host environment, for passing envp through to an OpenBSD/m88k guest. (An executable may
 // reference `environ` directly; macOS declares it for the main program image.)
 extern "C" char **environ;
-
-// Build the OpenBSD/m88k user-space entry stack ("uframe") near the top of RAM and return the guest
-// stack pointer. At process entry r31 points at argc, immediately followed by the argv[] pointer
-// vector (NULL-terminated), then the envp[] pointer vector (NULL-terminated); the argument and
-// environment strings are packed above the vectors. argc and every guest pointer are big-endian
-// 32-bit. (Mirrors the old run88 openbsd_m88k_setup_uframe.)
-static UINT64
-SetupObsdM88kStack (UINT8 *pRam, UINT64 RamSize, std::vector<std::string> CONST &Args, char **ppEnv)
-{
-    auto WBe32 = [&] (UINT64 A, UINT32 V) {
-        pRam[A] = (UINT8) (V >> 24); pRam[A + 1] = (UINT8) (V >> 16);
-        pRam[A + 2] = (UINT8) (V >> 8); pRam[A + 3] = (UINT8) V;
-    };
-    std::vector<char CONST *> Env;
-    for (char **p = ppEnv; p != nullptr && *p != nullptr; ++p) { Env.push_back (*p); }
-
-    // Pack the strings downward from a 16-aligned point just below the top of RAM.
-    UINT64 P = (RamSize - 16) & ~UINT64_C (15);
-    std::vector<UINT64> ArgAddr, EnvAddr;
-    for (std::string CONST &S : Args) {
-        P -= S.size () + 1;
-        std::memcpy (pRam + P, S.c_str (), S.size () + 1);
-        ArgAddr.push_back (P);
-    }
-    for (char CONST *e : Env) {
-        size_t L = std::strlen (e);
-        P -= L + 1;
-        std::memcpy (pRam + P, e, L + 1);
-        EnvAddr.push_back (P);
-    }
-
-    // The pointer vector -- argc, argv[0..], NULL, envp[0..], NULL -- sits below the strings with the
-    // stack pointer 16-aligned. The returned SP points at argc, exactly where m88k crt0 expects r31.
-    UINT64 NWords = 1 + Args.size () + 1 + Env.size () + 1;
-    UINT64 Sp = (P - NWords * 4) & ~UINT64_C (15);
-    UINT64 A  = Sp;
-    WBe32 (A, (UINT32) Args.size ()); A += 4;
-    for (UINT64 Ad : ArgAddr) { WBe32 (A, (UINT32) Ad); A += 4; }
-    WBe32 (A, 0); A += 4;
-    for (UINT64 Ad : EnvAddr) { WBe32 (A, (UINT32) Ad); A += 4; }
-    WBe32 (A, 0); A += 4;
-    return Sp;
-}
 
 // --- subcommands -----------------------------------------------------------
 
@@ -920,13 +784,14 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     }
     // --load aout: lay out a classic a.out exec image (the generalized loader auto-detects 16-bit
     // little-endian PDP-11 vs 32-bit big-endian m88k from the header). The break starts at end-of-bss.
-    UINT64 AoutEntry = ~(UINT64) 0;
+    UINT64 AoutEntry   = ~(UINT64) 0;
+    UINT64 AoutBrkBase = 0;   // a.out end-of-bss; the personality uses it as the initial heap break
     if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
         AoutInfo Ao = LoadAout (Ram, sizeof (Ram), Len);
         if (!Ao.Ok) { return 2; }
-        AoutEntry = Ao.Entry;
-        Len       = Ao.LoadedLen;
-        g_BrkBase = g_BrkCur = Ao.BrkBase;
+        AoutEntry   = Ao.Entry;
+        Len         = Ao.LoadedLen;
+        AoutBrkBase = Ao.BrkBase;
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
@@ -1039,24 +904,33 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         }
     }
 
-    // OpenBSD/m88k user-space entry state: build the argc/argv/envp stack frame and point the stack
-    // (r31) and link (r1) registers at it. Guest argv[0] is the image path; tokens after --args
-    // become argv[1..]. (Done after --reg so an explicit --reg can still override if needed.)
-    if (std::strcmp (Opt (argc, argv, "--abi", ""), "obsd-m88k") == 0) {
-        std::vector<std::string> GuestArgs;
-        GuestArgs.push_back (pImage);
-        bool After = false;
-        for (int I = 1; I < argc; I++) {
-            if (After) {
-                GuestArgs.push_back (argv[I]);
-            } else if (std::strcmp (argv[I], "--args") == 0) {
-                After = true;
+    // A guest-OS ABI personality (--abi <name>, e.g. obsd79 / nbsd101) is a dylib: it lays out the
+    // process entry state (argc/argv/envp stack + initial registers + heap break) and services the
+    // system-call traps.  lcx drives it through the generic nix_cpu_if_t / nix_mem_if_t seam and
+    // knows nothing about the guest CPU or OS.  The classic PDP-11 UNIX ABIs are still serviced in
+    // process (below).  (Done after --reg so an explicit --reg can still override if needed.)
+    LcxFlatMem Mem = { { &g_LcxMemVtbl }, Ram, sizeof (Ram) };
+    LcxCpu     Cpu = { { &g_LcxCpuVtbl, &Mem.Iface, sizeof (Ram) }, &State };
+    nix_personality_t *pPersona = nullptr;
+    {
+        CHAR8 CONST *pAbi = Opt (argc, argv, "--abi", "");
+        if (pAbi[0] != '\0' && !IsPdp11Abi (pAbi)) {
+            pPersona = LoadPersonality (pAbi, pArgv0);
+            if (pPersona == nullptr) { return 1; }
+            std::vector<std::string> GuestArgs;      // argv[0] = image path; tokens after --args follow
+            GuestArgs.push_back (pImage);
+            bool After = false;
+            for (int I = 1; I < argc; I++) {
+                if (After) { GuestArgs.push_back (argv[I]); }
+                else if (std::strcmp (argv[I], "--args") == 0) { After = true; }
             }
+            std::vector<CHAR8 CONST *> ArgvVec;
+            for (std::string CONST &S : GuestArgs) { ArgvVec.push_back (S.c_str ()); }
+            UINT64 BrkBase = (AoutBrkBase != 0) ? AoutBrkBase
+                                                : (((UINT64) End + 0xfff) & ~UINT64_C (0xfff));
+            nix_personality_setup (pPersona, &Cpu.Iface, ArgvVec.data (), ArgvVec.size (),
+                                   environ, BrkBase);
         }
-        UINT64 Sp = SetupObsdM88kStack (Ram, sizeof (Ram), GuestArgs, environ);
-        State.Reg[M88K_SP]   = Sp;        // r31 -> argc
-        State.Reg[M88K_LINK] = 0;         // r1: crt0 calls exit(), so the link is never returned through
-        if (g_BrkBase == 0) { g_BrkBase = g_BrkCur = ((UINT64) End + 0xfff) & ~UINT64_C (0xfff); }
     }
 
     std::printf ("lcx %s: %s, %llu bytes, %s%s\n", pVerb, pArchName,
@@ -1179,8 +1053,9 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     continue;
                 }
                 CHAR8 CONST *Abi = Opt (argc, argv, "--abi", "");
-                if (std::strcmp (Abi, "obsd-m88k") == 0) {
-                    if (!ObsdM88kSyscall (&State, Ram, sizeof (Ram))) { break; }   // exit -> stop
+                if (pPersona != nullptr) {
+                    // A dylib personality (obsd79, nbsd101, ...) services the trap through libnix.
+                    if (!nix_personality_syscall (pPersona, &Cpu.Iface)) { break; }   // exit -> stop
                     Pc = (CPU_ADDR) State.TrapPc;        // resume after the syscall trap
                     continue;
                 }
@@ -1259,25 +1134,41 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
 {
     CHAR8 CONST *pImage = Positional (argc, argv, 0);
     if (pImage == nullptr) {
-        std::printf ("usage: lcx disasm <image> [--arch v20|6502] [--count N] [--entry N]\n");
+        std::printf ("usage: lcx disasm <image> [--arch v20|6502|upcl:<file>] [--load aout] [--count N] [--entry N]\n");
         return 2;
     }
-    static UINT8 Ram[65536];
+    // Size the buffer to hold a whole executable (a real a.out such as an m88k binary is megabytes),
+    // not a fixed 64 KiB window: Disassemble reads guest bytes straight from this buffer, so the
+    // program counter MUST stay inside the loaded image or the read walks off the end.
+    static UINT8 Ram[64u * 1024 * 1024];
     std::memset (Ram, 0, sizeof (Ram));
     UINT64 Len = 0;
     if (!LoadImage (pImage, Ram, sizeof (Ram), &Len)) {
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
+    // --load aout: lay out a classic a.out exec image in place and disassemble the text from its
+    // entry point (the generalized loader auto-detects 16-bit PDP-11 vs 32-bit m88k).
+    CPU_ADDR EntryDefault = 0;
+    if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
+        AoutInfo Ao = LoadAout (Ram, sizeof (Ram), Len);
+        if (!Ao.Ok) { return 2; }
+        Len          = Ao.LoadedLen;
+        EntryDefault = (CPU_ADDR) Ao.Entry;
+    }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
+    State.RamSize = sizeof (Ram);
     ArchSetup A = MakeArch (Opt (argc, argv, "--arch", "v20"), Ram, sizeof (Ram), &State);
     CPU_ARCH_INFO Info;
     std::memset (&Info, 0, sizeof (Info));
     A.pArch->GetInfo (&Info);
-    CPU_ADDR Pc = (CPU_ADDR) std::strtoull (Opt (argc, argv, "--entry", "0"), nullptr, 0);
+    CHAR8 CONST *pEntry = Opt (argc, argv, "--entry", nullptr);
+    CPU_ADDR Pc = (pEntry != nullptr) ? (CPU_ADDR) std::strtoull (pEntry, nullptr, 0) : EntryDefault;
     UINT32 Count = (UINT32) std::strtoul (Opt (argc, argv, "--count", "16"), nullptr, 0);
     for (UINT32 I = 0; I < Count; I++) {
+        // Never disassemble past the loaded image: Disassemble reads directly from Ram at Pc.
+        if ((UINT64) Pc >= Len) { break; }
         char Line[64], Addr[32];
         A.pArch->Disassemble (Pc, Line, sizeof (Line));
         FormatAddr (Info, Pc, Addr, sizeof (Addr));
