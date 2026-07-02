@@ -87,6 +87,7 @@ CONFIGURE_FILE(nix-config.h.cmake ${PROJECT_BINARY_DIR}/nix-config.h)
 # first set ported to every host.
 SET(NIX_CORE_SRC
 			nix-host.c
+			nix-version.c
 			nix-monitor.c
 			nix-us-syscall.c
 			nix-common.c
