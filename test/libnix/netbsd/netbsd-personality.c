@@ -46,6 +46,7 @@ typedef struct _netbsd_personality {
 	uint64_t                            ram_size;
 	uint64_t                            brk_base;
 	uint64_t                            brk_cur;
+	nix_version_t                       target_version; /* resolved guest-OS version, gates syscalls */
 	int                                 inited;
 } netbsd_personality_t;
 
@@ -83,6 +84,7 @@ netbsd_ensure_init(netbsd_personality_t *self, nix_cpu_if_t *cpu)
 
 	self->monitor = nix_monitor_create(&self->guest_info, cpu->mem,
 	                                   &self->ctx, NULL);
+	nix_monitor_set_target_version(self->monitor, self->target_version);
 	self->inited = 1;
 }
 
@@ -234,13 +236,15 @@ static struct _nix_personality_vtbl const netbsd_personality_vtbl = {
     netbsd_destroy};
 
 nix_personality_t *
-nix_personality_create(void)
+nix_personality_create(nix_version_t target)
 {
 	netbsd_personality_t *self =
 	    (netbsd_personality_t *)nix_alloc_type(netbsd_personality_t, 0);
 
-	if (self != NULL)
+	if (self != NULL) {
 		self->vtbl = &netbsd_personality_vtbl;
+		self->target_version = target;
+	}
 
 	return (nix_personality_t *)self;
 }

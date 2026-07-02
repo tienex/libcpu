@@ -14,7 +14,8 @@
 #ifndef __nix_personality_h
 #define __nix_personality_h
 
-#include "nix-host.h" /* nix_mem_if_t + the base integer types */
+#include "nix-host.h"    /* nix_mem_if_t + the base integer types */
+#include "nix-version.h" /* nix_version_t -- the resolved guest-OS version */
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,8 +84,9 @@ struct _nix_personality {
 	struct _nix_personality_vtbl const *vtbl;
 };
 
-/* The factory every personality dylib exports. */
-nix_personality_t *nix_personality_create(void);
+/* The factory every personality bundle's IAbi shim calls to build the runtime personality for a
+ * resolved guest-OS version (NIX_VERSION_LATEST = newest / ungated). */
+nix_personality_t *nix_personality_create(nix_version_t target);
 
 #define nix_personality_setup(p, cpu, av, ac, ep, brk) \
 	(p)->vtbl->setup((p), (cpu), (av), (ac), (ep), (brk))

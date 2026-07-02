@@ -530,13 +530,13 @@ LoadPersonality (CHAR8 CONST *pAbi, CHAR8 CONST *pArgv0)
         std::fprintf (stderr, "lcx: cannot load personality '%s': %s\n", Leaf.c_str (), dlerror ());
         return nullptr;
     }
-    typedef nix_personality_t *(*CreateFn) (void);
+    typedef nix_personality_t *(*CreateFn) (nix_version_t);
     CreateFn Create = (CreateFn) dlsym (pLib, "nix_personality_create");
     if (Create == nullptr) {
         std::fprintf (stderr, "lcx: '%s' has no nix_personality_create entry point\n", Leaf.c_str ());
         return nullptr;
     }
-    return Create ();
+    return Create (NIX_VERSION_LATEST);
 }
 
 static void

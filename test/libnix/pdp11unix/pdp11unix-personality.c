@@ -296,10 +296,14 @@ static struct _nix_personality_vtbl const pdp11_personality_vtbl = {
     pdp11_setup, pdp11_syscall, pdp11_destroy};
 
 nix_personality_t *
-nix_personality_create(void)
+nix_personality_create(nix_version_t target)
 {
 	pdp11_personality_t *self =
 	    (pdp11_personality_t *)nix_alloc_type(pdp11_personality_t, 0);
+
+	/* The classic PDP-11 UNIX lineage (V6/V7/2BSD/Venix) is not version-gated in this work; the
+	 * hand-written switch dispatch does not consult the table's since/until ranges. */
+	(void)target;
 
 	if (self != NULL)
 		self->vtbl = &pdp11_personality_vtbl;
