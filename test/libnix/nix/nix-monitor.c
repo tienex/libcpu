@@ -32,6 +32,7 @@ nix_monitor_create(nix_guest_info_t const *guest_info,
 		xmon->opqctx = context;
 		xmon->callback = callback;
 		xmon->guest_info = *guest_info;
+		xmon->target_version = NIX_VERSION_LATEST; /* nothing gated until a personality sets it */
 	}
 
 	return xmon;
@@ -67,4 +68,17 @@ nix_monitor_get_guest_info(nix_monitor_t const *xmon,
                            nix_guest_info_t    *guest_info)
 {
 	*guest_info = xmon->guest_info;
+}
+
+void
+nix_monitor_set_target_version(nix_monitor_t *xmon,
+                               nix_version_t  version)
+{
+	xmon->target_version = (version == NIX_VERSION_NONE) ? NIX_VERSION_LATEST : version;
+}
+
+nix_version_t
+nix_monitor_get_target_version(nix_monitor_t const *xmon)
+{
+	return xmon->target_version;
 }

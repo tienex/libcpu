@@ -10,7 +10,8 @@
  * per-process handle a personality marshals arguments against (it owns the guest memory interface).
  */
 
-#include "nix-host.h" /* nix_mem_if_t, nix_gaddr_t, the base integer types */
+#include "nix-host.h"    /* nix_mem_if_t, nix_gaddr_t, the base integer types */
+#include "nix-version.h" /* nix_version_t for per-call version gating */
 
 /* ---- a marshalled syscall parameter (was xec_param_t) ---- */
 typedef enum _nix_param_type {
@@ -139,6 +140,10 @@ nix_monitor_t *nix_monitor_create (nix_guest_info_t const *guest_info, nix_mem_i
 nix_mem_if_t  *nix_monitor_get_memory (nix_monitor_t const *mon);
 void          *nix_monitor_get_context (nix_monitor_t const *mon);
 void           nix_monitor_get_guest_info (nix_monitor_t const *mon, nix_guest_info_t *guest_info);
+/* The guest-OS version being emulated -- the syscall dispatcher gates each call against it.
+ * Defaults to NIX_VERSION_LATEST (nothing gated) until a personality sets it. */
+void          nix_monitor_set_target_version (nix_monitor_t *mon, nix_version_t version);
+nix_version_t nix_monitor_get_target_version (nix_monitor_t const *mon);
 void           nix_monitor_event (nix_monitor_t *mon, nix_cback_reason_t reason,
                                   nix_param_t *param1, nix_param_t *param2);
 
@@ -159,6 +164,10 @@ typedef struct _nix_us_syscall_desc {
 #define NIX_US_SYSCALL_VARIADIC 1
 	size_t                    nparams;
 	nix_us_syscall_callback_t callback;
+	/* Version range this call exists in; placed last so a legacy 7-field descriptor initializer
+	 * zero-fills both to NONE (= always available), keeping the gate backward compatible. */
+	nix_version_t             since;    /* first guest-OS version this call exists in (NONE = from the start) */
+	nix_version_t             until;    /* first version it is GONE (NONE = never removed) */
 } nix_us_syscall_desc_t;
 
 typedef struct _nix_us_syscall_if_vtbl nix_us_syscall_if_vtbl_t;
@@ -177,6 +186,9 @@ struct _nix_us_syscall_if_vtbl {
 struct _nix_us_syscall_if {
 	struct _nix_us_syscall_if_vtbl const *vtbl;
 };
+
+/* True iff this call exists in the given target version: since <= target && (until == NONE || target < until). */
+bool nix_us_syscall_desc_available (nix_us_syscall_desc_t const *desc, nix_version_t target);
 
 /* The dispatch driver (in nix-us-syscall.c): run one syscall, or re-enter for an indirect call. */
 void nix_us_syscall_dispatch (nix_us_syscall_if_t *us, nix_monitor_t *mon);

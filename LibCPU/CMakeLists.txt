@@ -459,6 +459,12 @@ target_link_libraries(nix-version-test PRIVATE nix)
 target_compile_options(nix-version-test PRIVATE -w)
 add_test(NAME nix.version COMMAND nix-version-test)
 
+add_executable(nix-gate-test ${LIBNIX_NIX_DIR}/nix-gate-test.c)
+target_include_directories(nix-gate-test PRIVATE ${LIBNIX_NIX_DIR} ${CMAKE_BINARY_DIR}/libnix include)
+target_link_libraries(nix-gate-test PRIVATE nix)
+target_compile_options(nix-gate-test PRIVATE -w)
+add_test(NAME nix.gate COMMAND nix-gate-test)
+
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
 set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 load6502 aot6502 loadchip8 aotchip8)
 foreach(_be ${LIBCPU_CFG_BACKENDS})

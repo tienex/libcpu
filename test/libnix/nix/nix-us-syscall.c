@@ -16,6 +16,19 @@
 
 void *g_nix_us_log = NULL;
 
+bool
+nix_us_syscall_desc_available(nix_us_syscall_desc_t const *desc,
+                              nix_version_t                target)
+{
+	if (desc->since != NIX_VERSION_NONE && target < desc->since) {
+		return false;
+	}
+	if (desc->until != NIX_VERSION_NONE && target >= desc->until) {
+		return false;
+	}
+	return true;
+}
+
 void
 nix_us_syscall_dispatch(nix_us_syscall_if_t *xus,
                         nix_monitor_t       *xmon)
@@ -38,6 +51,15 @@ nix_us_syscall_dispatch(nix_us_syscall_if_t *xus,
 
 	if (desc->callback == NULL) {
 		LCLog(g_nix_us_log, LCLogFatal, 0, "system call descriptor callback is NULL.", 0);
+
+		err = ENOSYS;
+		goto error;
+	}
+
+	if (!nix_us_syscall_desc_available(desc, nix_monitor_get_target_version(xmon))) {
+		LCLog(g_nix_us_log, LCLogFatal, 0,
+		      "system call \"%s\" (%d) does not exist in this guest-OS version.",
+		      desc->name, desc->number);
 
 		err = ENOSYS;
 		goto error;
@@ -194,6 +216,10 @@ nix_us_syscall_redispatch(nix_us_syscall_if_t *xus,
 
 	/* Find the syscall */
 	if (!nix_us_syscall_find(xus, scno, &desc) || desc->callback == NULL) {
+		return ENOSYS;
+	}
+
+	if (!nix_us_syscall_desc_available(desc, nix_monitor_get_target_version(xmon))) {
 		return ENOSYS;
 	}
 

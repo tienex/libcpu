@@ -43,6 +43,7 @@ struct _nix_monitor {
 	nix_monitor_callback_t callback;
 	nix_cback_env_t        cbe;
 	nix_guest_info_t       guest_info;
+	nix_version_t          target_version; /* the guest-OS version being emulated (gates syscalls) */
 #if 0
     xec_monitor_cachelines_t cache;
 #endif
