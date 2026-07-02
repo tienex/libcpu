@@ -342,7 +342,8 @@ endif()
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/sc2int ${CMAKE_BINARY_DIR}/tools/sc2int)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/obsd79 ${CMAKE_BINARY_DIR}/obsd79)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nbsd101 ${CMAKE_BINARY_DIR}/nbsd101)
-foreach(_personality sc2int obsd79 nbsd101)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/pdp11unix ${CMAKE_BINARY_DIR}/pdp11unix)
+foreach(_personality sc2int obsd79 nbsd101 pdp11unix)
   if(TARGET ${_personality})
     target_include_directories(${_personality} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix
@@ -352,7 +353,7 @@ foreach(_personality sc2int obsd79 nbsd101)
   endif()
 endforeach()
 # Drop the personality dylibs beside the lcx executable so it can dlopen them by name.
-set_target_properties(obsd79 nbsd101 PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set_target_properties(obsd79 nbsd101 pdp11unix PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(lcx test/lcx.cpp
   test/Pdp1Io.cpp
@@ -367,7 +368,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
   ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/nix ${CMAKE_BINARY_DIR}/libnix)
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
-add_dependencies(lcx obsd79 nbsd101)   # personality dylibs must exist for `--abi` to dlopen them
+add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2231,12 +2232,12 @@ add_test(NAME upcl.pdp11-aout COMMAND sh -c
    grep -q 'r2 =0008' \"$B/pdp11-aout.out\"")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
-# inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi unixv7. The write must reach
+# inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
 # the host through libnix's nix_write (printing 'hi') and return 3 in r0; exit then stops the guest.
 add_test(NAME upcl.pdp11-unix COMMAND sh -c
   "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
    printf '\\007\\001\\017\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\004\\211\\001\\000\\014\\000\\003\\000\\001\\211\\000\\000\\150\\151\\012' > \"$B/pdp11-unix.bin\" && \
-   \"$E\" run \"$B/pdp11-unix.bin\" --arch upcl:\"$P\" --load aout --abi unixv7 > \"$B/pdp11-unix.out\" 2>&1 && \
+   \"$E\" run \"$B/pdp11-unix.bin\" --arch upcl:\"$P\" --load aout --abi pdp11unix > \"$B/pdp11-unix.out\" 2>&1 && \
    grep -q '^hi' \"$B/pdp11-unix.out\" && \
    grep -q 'r0 =0003' \"$B/pdp11-unix.out\"")
 

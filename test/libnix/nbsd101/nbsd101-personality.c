@@ -167,11 +167,13 @@ nbsd101_setup(nix_personality_t *base, nix_cpu_if_t *cpu,
 }
 
 static int
-nbsd101_syscall(nix_personality_t *base, nix_cpu_if_t *cpu)
+nbsd101_syscall(nix_personality_t *base, nix_cpu_if_t *cpu, uint64_t vector)
 {
 	nbsd101_personality_t *self = (nbsd101_personality_t *)base;
 	unsigned               n;
 	int                    scno;
+
+	(void)vector; /* m88k passes the call number in r13, not via the vector */
 
 	nbsd101_ensure_init(self, cpu);
 

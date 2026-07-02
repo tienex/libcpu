@@ -167,11 +167,13 @@ obsd79_setup(nix_personality_t *base, nix_cpu_if_t *cpu,
 }
 
 static int
-obsd79_syscall(nix_personality_t *base, nix_cpu_if_t *cpu)
+obsd79_syscall(nix_personality_t *base, nix_cpu_if_t *cpu, uint64_t vector)
 {
 	obsd79_personality_t *self = (obsd79_personality_t *)base;
 	unsigned              n;
 	int                   scno;
+
+	(void)vector; /* m88k passes the call number in r13, not via the vector */
 
 	obsd79_ensure_init(self, cpu);
 

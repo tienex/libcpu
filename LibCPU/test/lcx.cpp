@@ -299,20 +299,21 @@ LcxCpuSetCarry (nix_cpu_if_t *pSelf, int Set)
 {
     ((LcxCpu *) pSelf)->pState->Flag[FlagCarry] = Set ? 1 : 0;
 }
-static struct _nix_cpu_if_vtbl CONST g_LcxCpuVtbl = {
-    LcxCpuRegGet, LcxCpuRegSet, LcxCpuSetCarry };
-
-// The classic PDP-11 UNIX personalities (V6/V7 lineage) are still serviced in
-// process (see Pdp11UnixSyscall); everything else is a dylib personality.
-static bool
-IsPdp11Abi (CHAR8 CONST *pAbi)
+// The trap-resume PC is CPU_STATE.TrapPc: the host resumes there after the trap,
+// so a personality that decodes its call number/args from the instruction stream
+// (PDP-11) reads relative to it and advances it past the inline arguments.
+static UINT64
+LcxCpuPcGet (nix_cpu_if_t *pSelf)
 {
-    static CHAR8 CONST *CONST Abis[] = {
-        "unixv6", "unixv7", "sysiii", "pwb1", "pwb2", "bsd1", "bsd2", "bsd211",
-        "ultrix11", "venix" };
-    for (CHAR8 CONST *N : Abis) { if (std::strcmp (pAbi, N) == 0) { return true; } }
-    return false;
+    return (UINT64) ((LcxCpu *) pSelf)->pState->TrapPc;
 }
+static void
+LcxCpuPcSet (nix_cpu_if_t *pSelf, UINT64 Pc)
+{
+    ((LcxCpu *) pSelf)->pState->TrapPc = (CPU_ADDR) Pc;
+}
+static struct _nix_cpu_if_vtbl CONST g_LcxCpuVtbl = {
+    LcxCpuRegGet, LcxCpuRegSet, LcxCpuSetCarry, LcxCpuPcGet, LcxCpuPcSet };
 
 // Load a personality dylib for `--abi <name>`: try the loader's default search
 // path, then the directory of the lcx executable (where the build drops the
@@ -361,118 +362,6 @@ DumpRegs (ArchSetup CONST &A, CPU_STATE CONST *pState)
 extern "C" char **environ;
 
 // --- subcommands -----------------------------------------------------------
-
-// PDP-11 classic-UNIX (V6/V7 lineage) syscall personality, dispatched through libnix's nix_ host
-// layer. The `sys` call is the TRAP instruction (0o104400+N); like the kernel, we read the call
-// number from that instruction's low byte at TrapPc-2. Arguments follow inline (the kernel reads
-// them and advances the saved PC); `sys 0` (indir) takes a pointer to an argument block holding the
-// real `sys N` word + its arguments -- how the C library passes runtime values. Results return in
-// r0 (r1 for the second of a pair); the carry flag signals an error, with errno in r0.
-struct Pdp11Sysent { CHAR8 CONST *Name; int Nargs; };
-
-// The V7 syscall table (number -> name + inline argument count); the shared V6 core matches it, and
-// the later PDP-11 systems (System III, PWB, 2.xBSD, Ultrix-11, Venix) extend it. One table drives
-// every `--abi unix*` personality for the common core.
-static Pdp11Sysent CONST *
-Pdp11SyscallTable (UINT32 *pCount)
-{
-    static Pdp11Sysent CONST T[] = {
-        { "indir", 0 }, { "exit", 1 }, { "fork", 0 }, { "read", 3 }, { "write", 3 }, { "open", 2 },
-        { "close", 1 }, { "wait", 0 }, { "creat", 2 }, { "link", 2 }, { "unlink", 1 }, { "exec", 2 },
-        { "chdir", 1 }, { "time", 0 }, { "mknod", 3 }, { "chmod", 2 }, { "chown", 3 }, { "break", 1 },
-        { "stat", 2 }, { "lseek", 3 }, { "getpid", 0 }, { "mount", 3 }, { "umount", 1 }, { "setuid", 1 },
-        { "getuid", 0 }, { "stime", 1 }, { "ptrace", 4 }, { "alarm", 1 }, { "fstat", 2 }, { "pause", 0 },
-        { "utime", 2 }, { "", 0 }, { "", 0 }, { "access", 2 }, { "nice", 1 }, { "ftime", 1 },
-        { "sync", 0 }, { "kill", 2 }, { "", 0 }, { "", 0 }, { "", 0 }, { "dup", 1 }, { "pipe", 0 },
-        { "times", 1 }, { "profil", 4 }, { "", 0 }, { "setgid", 1 }, { "getgid", 0 }, { "signal", 2 },
-    };
-    *pCount = (UINT32) (sizeof (T) / sizeof (T[0]));
-    return T;
-}
-
-static nix_env_t *g_pdp11_env = nullptr;
-
-// Returns false when the guest should stop (exit), true to resume after the trap.
-static bool
-Pdp11UnixSyscall (CPU_STATE *pState, UINT8 *pRam, UINT64 RamSize)
-{
-    if (g_pdp11_env == nullptr) { g_pdp11_env = nix_env_create (nullptr); }
-    nix_env_t *env = g_pdp11_env;
-
-    auto M16 = [&] (UINT64 A) -> UINT32 { return (A + 1 < RamSize) ? (UINT32) (pRam[A] | (pRam[A + 1] << 8)) : 0; };
-    UINT32 Count; Pdp11Sysent CONST *Tab = Pdp11SyscallTable (&Count);
-
-    UINT64 Resume = pState->TrapPc;            // PC just past the 2-byte trap instruction
-    UINT32 Num    = M16 (Resume - 2) & 0xff;   // the trap's low byte = syscall number
-    UINT64 ArgBase;
-    bool   InlineArgs;
-    if (Num == 0) {                            // indir: the operand points to [ sys N | args... ]
-        UINT64 Blk = M16 (Resume);
-        pState->TrapPc = Resume + 2;           // step past the indir operand word
-        Num = M16 (Blk) & 0xff;
-        ArgBase = Blk + 2; InlineArgs = false;
-    } else {
-        ArgBase = Resume; InlineArgs = true;
-    }
-    int    Nargs = (Num < Count) ? Tab[Num].Nargs : 0;
-    UINT64 a[6] = { 0 };
-    for (int I = 0; I < Nargs && I < 6; I++) { a[I] = M16 (ArgBase + 2 * I); }
-    if (InlineArgs) { pState->TrapPc = Resume + 2 * (UINT64) Nargs; }   // advance past inline args
-
-    auto InRam = [&] (UINT64 A, UINT64 N) -> bool { return A <= RamSize && A + N <= RamSize; };
-    auto Ok    = [&] (UINT64 V) -> bool { pState->Reg[0] = V & 0xffff; pState->Flag[FlagCarry] = 0; return true; };
-    auto Fail  = [&] () -> bool {
-        pState->Reg[0] = (UINT64) (UINT32) nix_env_get_errno (env) & 0xffff;
-        pState->Flag[FlagCarry] = 1;
-        return true;
-    };
-    if (std::getenv ("LCX_STRACE") != nullptr) {
-        std::fprintf (stderr, "lcx pdp11 sys %u (%s) %#llx %#llx %#llx\n", Num,
-                      (Num < Count && Tab[Num].Name[0]) ? Tab[Num].Name : "?",
-                      (unsigned long long) a[0], (unsigned long long) a[1], (unsigned long long) a[2]);
-    }
-
-    nix_env_set_errno (env, 0);
-    switch (Num) {
-    case 1:  return false;                                                 // exit
-    case 3: {                                                              // read(fd, buf, n)
-        if (!InRam (a[1], a[2])) { return Fail (); }
-        nix_ssize_t R = nix_read ((int) a[0], pRam + a[1], (size_t) a[2], env);
-        return (R < 0) ? Fail () : Ok ((UINT64) R);
-    }
-    case 4: {                                                              // write(fd, buf, n)
-        if (!InRam (a[1], a[2])) { return Fail (); }
-        nix_ssize_t R = nix_write ((int) a[0], pRam + a[1], (size_t) a[2], env);
-        return (R < 0) ? Fail () : Ok ((UINT64) R);
-    }
-    case 5: {                                                              // open(path, flags, mode)
-        if (a[0] >= RamSize) { return Fail (); }
-        int Fd = nix_open ((char CONST *) (pRam + a[0]), (int) a[1], (int) a[2], env);
-        return (Fd < 0) ? Fail () : Ok ((UINT64) Fd);
-    }
-    case 6:  { int R = nix_close ((int) a[0], env); return (R < 0) ? Fail () : Ok (0); }
-    case 8: {                                                              // creat(path, mode)
-        if (a[0] >= RamSize) { return Fail (); }
-        int Fd = nix_creat ((char CONST *) (pRam + a[0]), (int) a[1], env);
-        return (Fd < 0) ? Fail () : Ok ((UINT64) Fd);
-    }
-    case 10: { if (a[0] >= RamSize) { return Fail (); }
-               int R = nix_unlink ((char CONST *) (pRam + a[0]), env); return (R < 0) ? Fail () : Ok (0); }
-    case 12: { if (a[0] >= RamSize) { return Fail (); }
-               int R = nix_chdir ((char CONST *) (pRam + a[0]), env); return (R < 0) ? Fail () : Ok (0); }
-    case 19: {                                                             // lseek(fd, off, whence)
-        nix_off_t Off = nix_lseek ((int) a[0], (nix_off_t) (INT16) a[1], (int) a[2], env);
-        return (Off < 0) ? Fail () : Ok ((UINT64) Off);
-    }
-    case 20: return Ok ((UINT64) nix_getpid (env));                        // getpid
-    case 24: return Ok ((UINT64) nix_getuid (env));                        // getuid
-    case 41: { int Fd = nix_dup ((int) a[0], env); return (Fd < 0) ? Fail () : Ok ((UINT64) Fd); }
-    default:
-        std::fprintf (stderr, "lcx: unhandled pdp11 unix syscall %u (%s)\n", Num,
-                      (Num < Count && Tab[Num].Name[0]) ? Tab[Num].Name : "?");
-        return Fail ();
-    }
-}
 
 // The runtime parameters a loaded a.out yields.
 struct AoutInfo {
@@ -914,7 +803,7 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     nix_personality_t *pPersona = nullptr;
     {
         CHAR8 CONST *pAbi = Opt (argc, argv, "--abi", "");
-        if (pAbi[0] != '\0' && !IsPdp11Abi (pAbi)) {
+        if (pAbi[0] != '\0') {
             pPersona = LoadPersonality (pAbi, pArgv0);
             if (pPersona == nullptr) { return 1; }
             std::vector<std::string> GuestArgs;      // argv[0] = image path; tokens after --args follow
@@ -1052,24 +941,15 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
                     }
                     continue;
                 }
-                CHAR8 CONST *Abi = Opt (argc, argv, "--abi", "");
                 if (pPersona != nullptr) {
-                    // A dylib personality (obsd79, nbsd101, ...) services the trap through libnix.
-                    if (!nix_personality_syscall (pPersona, &Cpu.Iface)) { break; }   // exit -> stop
+                    // A dylib personality (obsd79, nbsd101, pdp11unix, ...) services the trap
+                    // through libnix.  It is given the trap vector so it can distinguish its
+                    // system-call gate (e.g. the PDP-11 `sys` TRAP, vector 0x1c) from a HALT or
+                    // other trap, for which it returns "stop".
+                    if (!nix_personality_syscall (pPersona, &Cpu.Iface, (UINT64) State.SyscallVector)) {
+                        break;   // exit, or a non-syscall trap -> stop
+                    }
                     Pc = (CPU_ADDR) State.TrapPc;        // resume after the syscall trap
-                    continue;
-                }
-                // The PDP-11 UNIX personalities (V6/V7 lineage) share the classic `sys`-trap dispatch
-                // through libnix. A UNIX `sys` is a TRAP (vector 0o34 = 0x1c); HALT (0x04) and the
-                // other traps stop. One handler serves every --abi unix* variant.
-                static CHAR8 CONST *CONST Pdp11Abis[] = {
-                    "unixv6", "unixv7", "sysiii", "pwb1", "pwb2", "bsd1", "bsd2", "bsd211",
-                    "ultrix11", "venix" };
-                bool IsPdp11 = false;
-                for (CHAR8 CONST *N : Pdp11Abis) { if (std::strcmp (Abi, N) == 0) { IsPdp11 = true; break; } }
-                if (IsPdp11 && State.SyscallVector == 0x1c) {        // 0x1c = TRAP vector (the `sys` gate)
-                    if (!Pdp11UnixSyscall (&State, Ram, sizeof (Ram))) { break; }
-                    Pc = (CPU_ADDR) State.TrapPc;
                     continue;
                 }
                 // Match the PDP-1 frontend without colliding with "pdp11" (which contains "pdp1"

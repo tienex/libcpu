@@ -33,6 +33,15 @@ struct _nix_cpu_if_vtbl {
 	 * return register); libc's cerror stub branches on it.
 	 */
 	void (*set_carry)(nix_cpu_if_t *self, int set);
+	/*
+	 * The trap-resume program counter (the address the host will resume at
+	 * after this trap).  A personality whose call number and arguments are
+	 * encoded in the instruction stream (e.g. the PDP-11 `sys` trap) reads
+	 * them relative to pc_get() and advances it with pc_set() past the
+	 * inline arguments.  Register-passing ABIs (m88k) leave it untouched.
+	 */
+	uint64_t (*pc_get)(nix_cpu_if_t *self);
+	void (*pc_set)(nix_cpu_if_t *self, uint64_t pc);
 };
 
 struct _nix_cpu_if {
@@ -44,6 +53,8 @@ struct _nix_cpu_if {
 #define nix_cpu_reg_get(self, n)     (self)->vtbl->reg_get((self), (n))
 #define nix_cpu_reg_set(self, n, v)  (self)->vtbl->reg_set((self), (n), (v))
 #define nix_cpu_set_carry(self, set) (self)->vtbl->set_carry((self), (set))
+#define nix_cpu_pc_get(self)         (self)->vtbl->pc_get((self))
+#define nix_cpu_pc_set(self, pc)     (self)->vtbl->pc_set((self), (pc))
 
 /* ---- the personality --------------------------------------------------- */
 
@@ -59,9 +70,11 @@ struct _nix_personality_vtbl {
 	              char const *const *argv, size_t argc, char *const *envp,
 	              uint64_t brk_base);
 
-	/* Service one system-call trap.  Returns 0 to stop the guest (the
-	 * process called exit), 1 to resume after the trap. */
-	int (*syscall)(nix_personality_t *self, nix_cpu_if_t *cpu);
+	/* Service one trap taken through `vector` (the guest's trap/gate number).
+	 * Returns 0 to stop the guest (the process called exit, or the trap is
+	 * not this personality's system-call gate -- e.g. a HALT), 1 to resume
+	 * after the trap. */
+	int (*syscall)(nix_personality_t *self, nix_cpu_if_t *cpu, uint64_t vector);
 
 	void (*destroy)(nix_personality_t *self);
 };
@@ -75,7 +88,7 @@ nix_personality_t *nix_personality_create(void);
 
 #define nix_personality_setup(p, cpu, av, ac, ep, brk) \
 	(p)->vtbl->setup((p), (cpu), (av), (ac), (ep), (brk))
-#define nix_personality_syscall(p, cpu) (p)->vtbl->syscall((p), (cpu))
+#define nix_personality_syscall(p, cpu, vec) (p)->vtbl->syscall((p), (cpu), (vec))
 #define nix_personality_destroy(p)      (p)->vtbl->destroy((p))
 
 #ifdef __cplusplus
