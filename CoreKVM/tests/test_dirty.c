@@ -55,11 +55,26 @@ TestOverlapCoalesces(void)
     KVMRelease(dirty);
 }
 
+static void
+TestGrowthKeepsDisjoint(void)
+{
+    KVMDirtyRef dirty = KVMDirtyCreate();
+    KVMInt32 i;
+
+    /* 20 disjoint rects (spaced so none touch) exceed the initial capacity. */
+    for (i = 0; i < 20; i++) {
+        KVMDirtyMark(dirty, MakeRect(i * 10, 0, 2, 2));
+    }
+    KVM_CHECK(KVMDirtyGetCount(dirty) == 20);
+    KVMRelease(dirty);
+}
+
 int
 main(void)
 {
     TestDisjointStaySeparate();
     TestOverlapCoalesces();
+    TestGrowthKeepsDisjoint();
     if (gTestsFailed) {
         printf("test_dirty: FAILED\n");
         return 1;

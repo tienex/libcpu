@@ -9,6 +9,7 @@
 static const KVMTypeID kKVMDirtyTypeID = 0x44495254UL; /* 'DIRT' */
 
 #define KVM_DIRTY_INITIAL_CAPACITY 8
+#define KVM_DIRTY_GROWTH_FACTOR    2
 
 struct _KVMDirty {
     KVMObjectHeader base;
@@ -111,8 +112,19 @@ KVMDirtyMark(KVMDirtyRef dirty, KVMRect rect)
     }
 
     if (dirty->count == dirty->capacity) {
-        KVMIndex newCap = dirty->capacity * 2;
-        KVMRect *grown =
+        KVMIndex newCap;
+        KVMRect *grown;
+
+        /* Guard the capacity multiply against KVMIndex overflow, and the
+         * byte-size multiply against size_t overflow, before allocating. */
+        if (dirty->capacity > KVM_INDEX_MAX / KVM_DIRTY_GROWTH_FACTOR) {
+            return; /* cannot grow further; drop the mark rather than wrap */
+        }
+        newCap = dirty->capacity * KVM_DIRTY_GROWTH_FACTOR;
+        if ((size_t)newCap > (size_t)-1 / sizeof(KVMRect)) {
+            return;
+        }
+        grown =
             (KVMRect *)realloc(dirty->rects, sizeof(KVMRect) * (size_t)newCap);
         if (grown == NULL) {
             return; /* drop the mark rather than corrupt state */

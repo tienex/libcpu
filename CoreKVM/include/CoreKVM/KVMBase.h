@@ -5,6 +5,8 @@
 #ifndef COREKVM_KVMBASE_H
 #define COREKVM_KVMBASE_H
 
+#include <limits.h>
+
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -23,6 +25,9 @@ typedef int            KVMInt32;
 typedef long           KVMIndex;   /* signed length/offset/count */
 typedef int            KVMBool;
 typedef unsigned long  KVMTypeID;
+
+/* KVMIndex is `long`, so LONG_MAX is its exact maximum. */
+#define KVM_INDEX_MAX LONG_MAX
 
 #define KVM_TRUE  1
 #define KVM_FALSE 0
