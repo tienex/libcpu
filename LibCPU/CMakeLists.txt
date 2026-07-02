@@ -18,6 +18,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include(LibCPUUniversal)    # LIBCPU_UNIVERSAL_ARCHS + libcpu_lib_arches()
 include(LibCPUAddBackend)   # libcpu_add_backend()
 include(LibCPUAddDevice)    # libcpu_add_device()
+include(LibCPUAddLoader)    # libcpu_add_loader()
 
 # ---- core framework: LibCPU.framework ----
 add_library(LibCPU SHARED src/LibCPULoader.cpp)
@@ -26,10 +27,15 @@ set_target_properties(LibCPU PROPERTIES
   FRAMEWORK_VERSION A
   MACOSX_FRAMEWORK_IDENTIFIER org.libcpu.LibCPU
   VERSION 1.0.0 SOVERSION 1
-  PUBLIC_HEADER "include/LibCPU/Base.h;include/LibCPU/PCom.h;include/LibCPU/ICpu.h;include/LibCPU/CpuState.h;include/LibCPU/LibCPU.h;include/LibCPU/Loader.h;include/LibCPU/Module.h")
+  PUBLIC_HEADER "include/LibCPU/Base.h;include/LibCPU/PCom.h;include/LibCPU/ICpu.h;include/LibCPU/CpuState.h;include/LibCPU/LibCPU.h;include/LibCPU/Loader.h;include/LibCPU/ILoader.h;include/LibCPU/Module.h")
 if(APPLE)
   target_link_libraries(LibCPU PRIVATE "-framework CoreFoundation")
 endif()
+
+# ---- executable-format loaders (.loader bundles): each parses one file format, reports the
+# machine/endian/word-width it read, and lays segments out through the ILoaderMemory sink. They
+# never know or name a CPU. lcx discovers them next to itself and probes the image. ----
+libcpu_add_loader(aout_loader aout SOURCES loaders/aout/AoutLoader.cpp INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -369,6 +375,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
+add_dependencies(lcx aout_loader)                # .loader bundles must exist for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2227,7 +2234,7 @@ add_test(NAME upcl.pdp11-aout COMMAND sh -c
   "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
    printf '\\007\\001\\006\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\100\\140\\002\\020\\000\\000' > \"$B/pdp11-aout.bin\" && \
    \"$E\" run \"$B/pdp11-aout.bin\" --arch upcl:\"$P\" --load aout --reg 0=5 --reg 1=3 > \"$B/pdp11-aout.out\" && \
-   grep -q 'loaded pdp11 a.out (OMAGIC)' \"$B/pdp11-aout.out\" && \
+   grep -q 'loaded a.out (16-bit OMAGIC)' \"$B/pdp11-aout.out\" && \
    grep -q 'r0 =0008' \"$B/pdp11-aout.out\" && \
    grep -q 'r2 =0008' \"$B/pdp11-aout.out\"")
 

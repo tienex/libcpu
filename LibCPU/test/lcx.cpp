@@ -63,6 +63,7 @@
 #include <csignal>
 #include <cstring>
 #include <dlfcn.h>    // dlopen/dlsym -- load guest-OS ABI personalities as dylibs
+#include <dirent.h>   // opendir/readdir -- discover .loader bundles next to the executable
 #include <cctype>     // std::tolower for the case-insensitive .SAV extension match
 #if defined (__unix__) || defined (__APPLE__)
 #  include <sys/stat.h>
@@ -161,6 +162,83 @@ LoadImage (CHAR8 CONST *pPath, UINT8 *pRam, UINT64 RamSize, UINT64 *pLen)
     *pLen = std::fread (pRam, 1, (size_t) RamSize, pf);
     std::fclose (pf);
     return true;
+}
+
+// --- executable-format loaders (.loader bundles) --------------------------
+//
+// Each format (a.out, ELF, PE, ...) is a COM ILoader in its own .loader bundle. lcx discovers the
+// bundles next to itself, asks each to Probe the image, and lets the best scorer Load it into RAM
+// through this ILoaderMemory sink. A loader reports the machine/endian/word-width it read; lcx (the
+// host) decides what to do with that -- the loader never knows the architecture.
+
+// The flat guest RAM presented to a loader as an ILoaderMemory.
+class LcxLoaderMem final : public ComObject<ILoaderMemory>
+{
+public:
+    LcxLoaderMem (UINT8 *pRam, UINT64 Size) : m_pRam (pRam), m_Size (Size) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, VOID **ppvObject) override
+    {
+        return DefaultQuery (riid, IID_ILoaderMemory, ppvObject);
+    }
+    UINT64 STDMETHODCALLTYPE Size (VOID) override { return m_Size; }
+    HRESULT STDMETHODCALLTYPE Write (UINT64 Addr, VOID CONST *pData, UINT64 Len) override
+    {
+        if (Addr + Len < Addr || Addr + Len > m_Size) { return E_INVALIDARG; }
+        std::memcpy (m_pRam + Addr, pData, (size_t) Len);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Zero (UINT64 Addr, UINT64 Len) override
+    {
+        if (Addr + Len < Addr || Addr + Len > m_Size) { return E_INVALIDARG; }
+        std::memset (m_pRam + Addr, 0, (size_t) Len);
+        return S_OK;
+    }
+private:
+    UINT8 *m_pRam;
+    UINT64 m_Size;
+};
+
+// The .loader bundles sitting next to the lcx executable, loaded once.
+static std::vector<ILoader *> &
+LoaderModules (CHAR8 CONST *pArgv0)
+{
+    static std::vector<ILoader *> Loaders;
+    static bool                   Done = false;
+    if (Done) { return Loaders; }
+    Done = true;
+    std::string Dir (pArgv0 != nullptr ? pArgv0 : "");
+    Dir = Dir.substr (0, Dir.find_last_of ('/') + 1);
+    if (Dir.empty ()) { Dir = "./"; }
+    if (DIR *pD = opendir (Dir.c_str ())) {
+        while (struct dirent *pE = readdir (pD)) {
+            std::string Name = pE->d_name;
+            if (Name.size () < 8 || Name.compare (Name.size () - 7, 7, ".loader") != 0) { continue; }
+            if (ILoader *pL = LoadLoaderBundle ((Dir + Name).c_str ())) { Loaders.push_back (pL); }
+        }
+        closedir (pD);
+    }
+    return Loaders;
+}
+
+// Lay pImage into pRam using the best-matching loader, or the one named by pForce ("" = probe).
+// Returns true and fills pResult on success.
+static bool
+RunLoader (CHAR8 CONST *pArgv0, CHAR8 CONST *pForce, UINT8 CONST *pImage, UINT64 Len,
+           UINT8 *pRam, UINT64 RamSize, LOADER_RESULT *pResult)
+{
+    ILoader *pBest  = nullptr;
+    UINT32   BestSc = 0;
+    for (ILoader *pL : LoaderModules (pArgv0)) {
+        if (pForce != nullptr && *pForce != '\0') {
+            if (std::strcmp (pL->GetName (), pForce) == 0) { pBest = pL; break; }
+        } else {
+            UINT32 Sc = pL->Probe (pImage, Len);
+            if (Sc > BestSc) { BestSc = Sc; pBest = pL; }
+        }
+    }
+    if (pBest == nullptr) { return false; }
+    LcxLoaderMem Mem (pRam, RamSize);
+    return SUCCEEDED (pBest->Load (pImage, Len, &Mem, pResult));
 }
 
 struct ArchSetup {
@@ -363,115 +441,6 @@ extern "C" char **environ;
 
 // --- subcommands -----------------------------------------------------------
 
-// The runtime parameters a loaded a.out yields.
-struct AoutInfo {
-    bool        Ok      = false;
-    UINT64      Entry   = 0;      // program entry point
-    UINT64      BrkBase = 0;      // initial heap break (aligned end of bss)
-    UINT64      LoadedLen = 0;    // bytes of text+data laid into RAM
-    CHAR8 CONST *Kind   = "";     // magic label, for the load message
-};
-
-// Generalized loader for the classic Bell-Labs a.out family. It lays the exec image already read into
-// `pRam` out IN PLACE per its header + magic and reports the entry point and initial break. Two
-// members of the family are recognised from the first header bytes:
-//
-//   * 16-bit little-endian (PDP-11): an 8-word (16-byte) header
-//        a_magic a_text a_data a_bss a_syms a_entry a_unused a_flag
-//     0407 OMAGIC  -- impure: text+data contiguous at 0 (text writable);
-//     0410 NMAGIC  -- pure:   read-only text at 0, data at the next 8 KiB click, bss above;
-//     0411 split I&D / 0413  -- modelled like NMAGIC in one flat space (closest a non-split-I/D
-//                               address space allows), data at the next click.
-//
-//   * 32-bit big-endian (m88k, mid=153): a 32-byte header; ZMAGIC 0413 maps the whole file at 0x1000,
-//     OMAGIC/NMAGIC strip the header and load at 0.
-//
-// They are told apart by the leading bytes: an m88k header begins 00 99 (mid 153, big-endian); a
-// PDP-11 header begins with a little-endian magic word in the 04xx range.
-static AoutInfo
-LoadAout (UINT8 *pRam, UINT64 RamSize, UINT64 ImageLen)
-{
-    AoutInfo R;
-    if (ImageLen < 16) { std::printf ("lcx: a.out too small\n"); return R; }
-
-    bool   IsM88k     = (pRam[0] == 0x00 && pRam[1] == 0x99);
-    UINT16 Pdp11Magic = (UINT16) (pRam[0] | (pRam[1] << 8));
-    bool   IsPdp11    = !IsM88k && (Pdp11Magic == 0407 || Pdp11Magic == 0410 || Pdp11Magic == 0411
-                                    || Pdp11Magic == 0405 || Pdp11Magic == 0413
-                                    || Pdp11Magic == 0430 || Pdp11Magic == 0431);
-
-    if (IsPdp11) {
-        auto   W   = [&] (UINT64 O) -> UINT32 { return (UINT32) (pRam[O] | (pRam[O + 1] << 8)); };
-        UINT32 Mag = W (0), ATxt = W (2), AData = W (4), ABss = W (6), AEntry = W (10);
-        UINT64 Hdr = 16;
-        UINT64 Seg = (UINT64) ATxt + AData;
-        if (Hdr + Seg > ImageLen) { std::printf ("lcx: a.out truncated (text+data)\n"); return R; }
-
-        UINT64 DataBase, BssEnd;
-        if (Mag == 0407) {                                   // OMAGIC: text+data contiguous at 0
-            if (Seg + ABss > RamSize) { std::printf ("lcx: a.out too large\n"); return R; }
-            std::memmove (pRam, pRam + Hdr, (size_t) Seg);
-            std::memset (pRam + Seg, 0, (size_t) (RamSize - Seg));
-            DataBase = ATxt; BssEnd = Seg + ABss; R.Kind = "OMAGIC";
-        } else {                                             // NMAGIC / split I&D: data at next click
-            UINT64 Click = 020000;                           // 8 KiB PDP-11 page
-            DataBase = (ATxt + Click - 1) & ~(Click - 1);
-            BssEnd   = DataBase + AData + ABss;
-            if (BssEnd > RamSize) { std::printf ("lcx: a.out too large\n"); return R; }
-            std::vector<UINT8> Img (pRam + Hdr, pRam + Hdr + Seg);   // copy out before overwriting
-            std::memset (pRam, 0, (size_t) BssEnd);
-            std::memcpy (pRam, Img.data (), (size_t) ATxt);
-            std::memcpy (pRam + DataBase, Img.data () + ATxt, (size_t) AData);
-            R.Kind = (Mag == 0410) ? "NMAGIC" : (Mag == 0411 ? "0411 split-I/D" : "0413");
-        }
-        R.Entry     = AEntry;                                // PDP-11 _start is at 0 for OMAGIC
-        R.LoadedLen = (Mag == 0407) ? Seg : (DataBase + AData);
-        R.BrkBase   = (BssEnd + 1) & ~UINT64_C (1);          // word-align the heap
-        R.Ok        = true;
-        std::printf ("lcx: loaded pdp11 a.out (%s): text=0%o data=0%o bss=0%o entry=0%o\n",
-                     R.Kind, (unsigned) ATxt, (unsigned) AData, (unsigned) ABss, (unsigned) AEntry);
-        return R;
-    }
-
-    // 32-bit big-endian m88k a.out.
-    if (ImageLen < 32) { std::printf ("lcx: a.out too small\n"); return R; }
-    auto   Be32 = [&] (UINT64 O) -> UINT32 {
-        return (UINT32) ((pRam[O] << 24) | (pRam[O + 1] << 16) | (pRam[O + 2] << 8) | pRam[O + 3]);
-    };
-    UINT32 MidMag = Be32 (0);
-    UINT32 Mid    = (MidMag >> 16) & 0x3ff;
-    UINT32 Magic  = MidMag & 0xffff;
-    UINT32 ATxt = Be32 (4), AData = Be32 (8), ABss = Be32 (12), AEntry = Be32 (20);
-    if (Mid != 153) { std::printf ("lcx: not a recognised a.out (mid=%u)\n", (unsigned) Mid); return R; }
-    UINT64 Seg = (UINT64) ATxt + AData;
-    UINT64 TxtBase, BssEnd;
-    if (Magic == 0x10b) {                                    // ZMAGIC: map whole file at the text base
-        TxtBase = 0x1000;
-        if (ImageLen < Seg) { std::printf ("lcx: a.out truncated (text+data)\n"); return R; }
-        if (TxtBase + Seg + ABss > RamSize) { std::printf ("lcx: a.out too large for RAM\n"); return R; }
-        std::memmove (pRam + TxtBase, pRam, (size_t) Seg);
-        std::memset (pRam, 0, (size_t) TxtBase);
-        std::memset (pRam + TxtBase + Seg, 0, (size_t) (RamSize - (TxtBase + Seg)));
-        BssEnd  = TxtBase + Seg + ABss;
-        R.Kind  = "ZMAGIC";
-    } else {                                                 // OMAGIC/NMAGIC: strip header, load at 0
-        TxtBase = 0;
-        if (32 + Seg > RamSize) { std::printf ("lcx: a.out too large for RAM\n"); return R; }
-        std::memmove (pRam, pRam + 32, (size_t) Seg);
-        std::memset (pRam + Seg, 0, (size_t) (RamSize - Seg));
-        BssEnd = Seg + ABss;
-        R.Kind = (Magic == 0x108) ? "NMAGIC" : "OMAGIC";
-    }
-    R.Entry     = AEntry;
-    R.LoadedLen = TxtBase + Seg;
-    R.BrkBase   = (BssEnd + 0xfff) & ~UINT64_C (0xfff);      // page-align the heap base
-    R.Ok        = true;
-    std::printf ("lcx: loaded m88k a.out (%s): text=0x%x data=0x%x bss=0x%x entry=0x%x base=0x%llx\n",
-                 R.Kind, (unsigned) ATxt, (unsigned) AData, (unsigned) ABss, (unsigned) AEntry,
-                 (unsigned long long) TxtBase);
-    return R;
-}
-
 // The runtime parameters a loaded DEC .SAV image yields (word-addressed: every value is a WORD
 // index, not a byte offset).
 struct SavInfo {
@@ -671,16 +640,21 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
-    // --load aout: lay out a classic a.out exec image (the generalized loader auto-detects 16-bit
-    // little-endian PDP-11 vs 32-bit big-endian m88k from the header). The break starts at end-of-bss.
+    // --load aout: hand the raw image to the a.out .loader module, which parses the header and lays
+    // its segments into RAM (reporting the machine/endian it read). The break starts at end-of-bss.
     UINT64 AoutEntry   = ~(UINT64) 0;
     UINT64 AoutBrkBase = 0;   // a.out end-of-bss; the personality uses it as the initial heap break
     if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
-        AoutInfo Ao = LoadAout (Ram, sizeof (Ram), Len);
-        if (!Ao.Ok) { return 2; }
-        AoutEntry   = Ao.Entry;
-        Len         = Ao.LoadedLen;
-        AoutBrkBase = Ao.BrkBase;
+        std::vector<UINT8> Image (Ram, Ram + Len);           // the loader writes RAM from a separate copy
+        std::memset (Ram, 0, sizeof (Ram));
+        LOADER_RESULT Lr;
+        if (!RunLoader (pArgv0, "aout", Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+            std::printf ("lcx: no loader handled the a.out image\n");
+            return 2;
+        }
+        AoutEntry   = Lr.Entry;
+        Len         = Lr.LoadEnd;
+        AoutBrkBase = Lr.BrkBase;
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
@@ -1027,14 +1001,19 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
         std::printf ("lcx: cannot read image '%s'\n", pImage);
         return 2;
     }
-    // --load aout: lay out a classic a.out exec image in place and disassemble the text from its
-    // entry point (the generalized loader auto-detects 16-bit PDP-11 vs 32-bit m88k).
+    // --load aout: the a.out .loader module lays the exec image out and reports the entry, so the
+    // text is disassembled from the entry point.
     CPU_ADDR EntryDefault = 0;
     if (std::strcmp (Opt (argc, argv, "--load", ""), "aout") == 0) {
-        AoutInfo Ao = LoadAout (Ram, sizeof (Ram), Len);
-        if (!Ao.Ok) { return 2; }
-        Len          = Ao.LoadedLen;
-        EntryDefault = (CPU_ADDR) Ao.Entry;
+        std::vector<UINT8> Image (Ram, Ram + Len);
+        std::memset (Ram, 0, sizeof (Ram));
+        LOADER_RESULT Lr;
+        if (!RunLoader (pArgv0, "aout", Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+            std::printf ("lcx: no loader handled the a.out image\n");
+            return 2;
+        }
+        Len          = Lr.LoadEnd;
+        EntryDefault = (CPU_ADDR) Lr.Entry;
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));

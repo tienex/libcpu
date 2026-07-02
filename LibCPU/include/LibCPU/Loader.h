@@ -9,6 +9,7 @@
 #define LIBCPU_LOADER_H
 
 #include "LibCPU/ICpu.h"
+#include "LibCPU/ILoader.h"
 
 namespace LibCPU {
 
@@ -18,6 +19,12 @@ namespace LibCPU {
 // for the process lifetime.
 //
 ICpuBackend *LoadBackendBundle (CHAR8 CONST *pPath);
+
+//
+// Load a ".loader" bundle by path and create its ILoader (Release when done),
+// or null on failure. Like the backend loader, the bundle stays mapped.
+//
+ILoader *LoadLoaderBundle (CHAR8 CONST *pPath);
 
 } // namespace LibCPU
 
