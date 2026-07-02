@@ -37,6 +37,33 @@ enum : UINT32
 };
 enum : UINT32 { MH_DYLDLINK = 0x4 };
 
+// Fat-header layout sizes and the heap page-align granularity (loader conventions).
+enum { FAT_HDR_SZ = 8, FAT_ARCH_SZ = 20 };
+static UINT64 CONST kMachoPageMask = 0xfff;
+
+// Mach-O cpu types (the 64-bit flavours OR in CPU_ARCH_ABI64), for naming the arch (never acted on).
+enum : UINT32
+{
+    CPU_ARCH_ABI64 = 0x01000000,
+    CT_X86   = 7,  CT_X86_64 = CPU_ARCH_ABI64 | 7,
+    CT_ARM   = 12, CT_ARM64  = CPU_ARCH_ABI64 | 12,
+    CT_PPC   = 18, CT_PPC64  = CPU_ARCH_ABI64 | 18,
+    CT_SPARC = 14, CT_M68K   = 6, CT_M88K = 13
+};
+
+static CHAR8 CONST *
+MachoArch (UINT32 Ct)
+{
+    switch (Ct) {
+    case CT_X86:   return "i386";    case CT_X86_64: return "x86_64";
+    case CT_ARM:   return "arm";     case CT_ARM64:  return "aarch64";
+    case CT_PPC:   return "ppc";     case CT_PPC64:  return "ppc64";
+    case CT_SPARC: return "sparc";   case CT_M68K:   return "m68k";
+    case CT_M88K:  return "m88k";
+    default:       return nullptr;
+    }
+}
+
 class MachoLoader final : public ComObject<ILoader>
 {
 public:
@@ -62,7 +89,7 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Load (UINT8 CONST *pImage, UINT64 Len, ILoaderMemory *pMem,
-                                    LOADER_RESULT *pResult) override
+                                    LOADER_REQUEST CONST *pRequest, LOADER_RESULT *pResult) override
     {
         if (pImage == nullptr || pMem == nullptr || pResult == nullptr) {
             return E_POINTER;
@@ -71,17 +98,38 @@ public:
         m_Interp.clear ();
         m_Needed.clear ();
         m_NeededPtrs.clear ();
+        m_Slices.clear ();
+        m_SlicePtrs.clear ();
 
-        // Universal (fat) file: pick the first architecture slice and load it thin. The fat header
-        // is always big-endian.
-        UINT64 Base = 0;
-        if (Len >= 8 && Be32 (pImage, 0) == FAT_MAGIC) {
+        // Universal (fat) file: enumerate every slice (reporting each slice's arch name so the host
+        // can tell the user which are available) and select one -- the arch named by the request, or
+        // the first. The fat header is always big-endian.
+        UINT64      Base = 0;
+        CHAR8 CONST *pWant = (pRequest != nullptr) ? pRequest->SelectArch : nullptr;
+        if (Len >= FAT_HDR_SZ && Be32 (pImage, 0) == FAT_MAGIC) {
             UINT32 NArch = Be32 (pImage, 4);
-            if (NArch == 0 || 8 + 20 > Len) {
-                std::printf ("lcx: empty fat Mach-O\n");
+            UINT64 Chosen = 0;
+            bool   HaveChosen = false;
+            for (UINT32 I = 0; I < NArch; I++) {
+                UINT64 Fa = FAT_HDR_SZ + (UINT64) I * FAT_ARCH_SZ;
+                if (Fa + FAT_ARCH_SZ > Len) {
+                    break;
+                }
+                UINT32       Ct  = Be32 (pImage, Fa + 0);
+                UINT64       Off = Be32 (pImage, Fa + 8);
+                CHAR8 CONST *An  = MachoArch (Ct);
+                m_Slices.push_back (An != nullptr ? An : "unknown");
+                if (!HaveChosen && (pWant == nullptr || (An != nullptr && std::strcmp (An, pWant) == 0))) {
+                    Chosen = Off; HaveChosen = true;
+                }
+            }
+            if (!HaveChosen) {
+                std::printf ("lcx: fat Mach-O has no '%s' slice (have:", pWant != nullptr ? pWant : "");
+                for (std::string CONST &S : m_Slices) { std::printf (" %s", S.c_str ()); }
+                std::printf (")\n");
                 return E_FAIL;
             }
-            Base = Be32 (pImage, 8 + 8);   // fat_arch[0].offset
+            Base = Chosen;
             if (Base + 4 > Len) {
                 std::printf ("lcx: fat Mach-O slice out of range\n");
                 return E_FAIL;
@@ -167,12 +215,18 @@ public:
             Entry = TextVmaddr + EntryOff;
         }
 
-        pResult->Entry       = Entry;
-        pResult->LoadEnd     = LoadEnd;
-        pResult->BrkBase     = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
-        pResult->Endian      = m_Big ? LoaderEndianBig : LoaderEndianLittle;
-        pResult->WordBits    = Is64 ? 64 : 32;
-        pResult->MachineHint = CpuType;   // reported, not interpreted
+        pResult->Entry    = Entry;
+        pResult->LoadEnd  = LoadEnd;
+        pResult->BrkBase  = (LoadEnd + kMachoPageMask) & ~kMachoPageMask;
+        pResult->Endian   = m_Big ? LoaderEndianBig : LoaderEndianLittle;
+        pResult->WordBits = Is64 ? 64 : 32;
+        pResult->Arch     = MachoArch (CpuType);   // canonical name, never interpreted
+        pResult->Abi      = "darwin";
+        for (std::string CONST &S : m_Slices) {
+            m_SlicePtrs.push_back (S.c_str ());
+        }
+        pResult->SliceCount = (UINT32) m_SlicePtrs.size ();
+        pResult->Slices     = m_SlicePtrs.empty () ? nullptr : m_SlicePtrs.data ();
 
         bool Dyn = (Flags & MH_DYLDLINK) != 0 || !m_Interp.empty () || !m_Needed.empty ();
         pResult->Dynamic.IsDynamic = (BOOLEAN) Dyn;
@@ -183,10 +237,17 @@ public:
         pResult->Dynamic.NeededCount = (UINT32) m_NeededPtrs.size ();
         pResult->Dynamic.Needed      = m_NeededPtrs.empty () ? nullptr : m_NeededPtrs.data ();
 
-        std::printf ("lcx: loaded Mach-O (%s %s, cputype=0x%x, %s): entry=0x%llx end=0x%llx",
-                     Is64 ? "64-bit" : "32-bit", m_Big ? "BE" : "LE", (unsigned) CpuType,
-                     Dyn ? "dynamic" : "static", (unsigned long long) Entry,
-                     (unsigned long long) LoadEnd);
+        std::printf ("lcx: loaded Mach-O (%s %s, arch=%s, abi=darwin, %s): entry=0x%llx end=0x%llx",
+                     Is64 ? "64-bit" : "32-bit", m_Big ? "BE" : "LE",
+                     pResult->Arch ? pResult->Arch : "?", Dyn ? "dynamic" : "static",
+                     (unsigned long long) Entry, (unsigned long long) LoadEnd);
+        if (pResult->SliceCount != 0) {
+            std::printf (" fat=%u[", (unsigned) pResult->SliceCount);
+            for (UINT32 I = 0; I < pResult->SliceCount; I++) {
+                std::printf ("%s%s", I ? " " : "", pResult->Slices[I]);
+            }
+            std::printf ("]");
+        }
         if (pResult->Dynamic.NeededCount != 0) {
             std::printf (" needed=%u", (unsigned) pResult->Dynamic.NeededCount);
         }
@@ -224,6 +285,8 @@ private:
     std::string                m_Interp;
     std::vector<std::string>   m_Needed;
     std::vector<CHAR8 CONST *> m_NeededPtrs;
+    std::vector<std::string>   m_Slices;
+    std::vector<CHAR8 CONST *> m_SlicePtrs;
 };
 
 ILoader *

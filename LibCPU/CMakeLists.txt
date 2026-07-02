@@ -40,6 +40,10 @@ libcpu_add_loader(elf_loader  elf  SOURCES loaders/elf/ElfLoader.cpp   INCLUDES 
 libcpu_add_loader(macho_loader macho SOURCES loaders/macho/MachoLoader.cpp INCLUDES include)
 libcpu_add_loader(pe_loader    pe    SOURCES loaders/pe/PeLoader.cpp       INCLUDES include)
 libcpu_add_loader(coff_loader  coff  SOURCES loaders/coff/CoffLoader.cpp   INCLUDES include)
+libcpu_add_loader(com_loader   com   SOURCES loaders/com/ComLoader.cpp       INCLUDES include)
+libcpu_add_loader(dosexe_loader dosexe SOURCES loaders/dosexe/DosExeLoader.cpp INCLUDES include)
+libcpu_add_loader(cmd_loader   cmd   SOURCES loaders/cmd/CmdLoader.cpp       INCLUDES include)
+libcpu_add_loader(raw_loader   raw   SOURCES loaders/raw/RawLoader.cpp       INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -379,7 +383,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader)   # .loader bundles for the image loaders
+add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader com_loader dosexe_loader cmd_loader raw_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2238,7 +2242,7 @@ add_test(NAME upcl.pdp11-aout COMMAND sh -c
   "P='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/pdp11.upcl'; E='$<TARGET_FILE:lcx>'; B='${CMAKE_BINARY_DIR}'; \
    printf '\\007\\001\\006\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\100\\140\\002\\020\\000\\000' > \"$B/pdp11-aout.bin\" && \
    \"$E\" run \"$B/pdp11-aout.bin\" --arch upcl:\"$P\" --load aout --reg 0=5 --reg 1=3 > \"$B/pdp11-aout.out\" && \
-   grep -q 'loaded a.out (16-bit OMAGIC)' \"$B/pdp11-aout.out\" && \
+   grep -q 'loaded a.out (16-bit OMAGIC, arch=pdp11)' \"$B/pdp11-aout.out\" && \
    grep -q 'r0 =0008' \"$B/pdp11-aout.out\" && \
    grep -q 'r2 =0008' \"$B/pdp11-aout.out\"")
 
@@ -2249,7 +2253,7 @@ add_test(NAME loader.elf COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/mips.upcl'; E='$<TARGET_FILE:lcx>'; \
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/cbmbasic_mips.elf'; \
    \"$E\" disasm \"$F\" --load elf --arch upcl:\"$M\" --count 4 | \
-   grep -q 'loaded ELF (32-bit BE, machine=8, dynamic).*interp=/lib/ld.so.1 needed=1'")
+   grep -q 'loaded ELF (32-bit BE, arch=mips, abi=sysv, dynamic).*interp=/lib/ld.so.1 needed=1'")
 
 # The Mach-O .loader module: a minimal thin 64-bit little-endian Mach-O (one __TEXT segment at
 # vmaddr 0x1000 + LC_MAIN) must map the segment and report the cputype/endian/width + entry.
@@ -2257,7 +2261,7 @@ add_test(NAME loader.macho COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/macho/hello.macho'; \
    \"$E\" disasm \"$F\" --load macho --arch upcl:\"$M\" --count 1 | \
-   grep -q 'loaded Mach-O (64-bit LE, cputype=0x1000007, static): entry=0x1080'")
+   grep -q 'loaded Mach-O (64-bit LE, arch=x86_64, abi=darwin, static): entry=0x1080'")
 
 # The PE .loader module: a minimal PE32 (MZ + PE\\0\\0 + COFF + optional header + one .text section
 # at RVA 0x1000, ImageBase 0x400000) must map the section and report machine/width + entry.
@@ -2265,7 +2269,7 @@ add_test(NAME loader.pe COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/pe/hello.pe'; \
    \"$E\" disasm \"$F\" --load pe --arch upcl:\"$M\" --count 1 | \
-   grep -q 'loaded PE (PE32/32-bit LE, machine=0x14c): entry=0x401000'")
+   grep -q 'loaded PE (PE32/32-bit LE, arch=i386, abi=windows): entry=0x401000'")
 
 # The COFF .loader module: a minimal i386 COFF (f_magic 0x14c, a.out-style optional header, one
 # .text section at s_vaddr 0x1000) must map the section and report magic/endian/width + entry.
@@ -2273,7 +2277,15 @@ add_test(NAME loader.coff COMMAND sh -c
   "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/coff/hello.coff'; \
    \"$E\" disasm \"$F\" --load coff --arch upcl:\"$M\" --count 1 | \
-   grep -q 'loaded COFF (magic=0x14c, LE, 32-bit): entry=0x1000'")
+   grep -q 'loaded COFF (arch=i386, abi=sysv, LE, 32-bit): entry=0x1000'")
+
+# The raw/blob .loader module (ramdisk/initrd/headerless kernel): --load raw places the file
+# verbatim at --addr and reports it.
+add_test(NAME loader.raw COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/cpm/hello.com'; \
+   \"$E\" disasm \"$F\" --load raw --addr 0x2000 --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded raw blob (16 bytes at 0x2000)'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach

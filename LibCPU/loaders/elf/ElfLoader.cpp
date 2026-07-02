@@ -55,7 +55,7 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Load (UINT8 CONST *pImage, UINT64 Len, ILoaderMemory *pMem,
-                                    LOADER_RESULT *pResult) override
+                                    LOADER_REQUEST CONST *pRequest, LOADER_RESULT *pResult) override
     {
         if (pImage == nullptr || pMem == nullptr || pResult == nullptr) {
             return E_POINTER;
@@ -64,10 +64,14 @@ public:
             std::printf ("lcx: not an ELF image\n");
             return E_FAIL;
         }
+        (void) pRequest;   /* honoured by the fat/kernel-aware loaders */
         std::memset (pResult, 0, sizeof (*pResult));
         m_Interp.clear ();
         m_Needed.clear ();
         m_NeededPtrs.clear ();
+        m_Features.clear ();
+        m_FeaturePtrs.clear ();
+        m_AbiVer.clear ();
 
         m_pImage = pImage;
         m_Len    = Len;
@@ -81,6 +85,9 @@ public:
         UINT16 EType    = (UINT16) Rd (16, 2);
         UINT16 EMachine = (UINT16) Rd (18, 2);
         UINT64 Entry    = m_Is64 ? Rd (24, 8) : Rd (24, 4);
+        UINT32 EFlags   = (UINT32) (m_Is64 ? Rd (48, 4) : Rd (36, 4));
+        UINT8  OsAbi    = m_pImage[7];   // EI_OSABI
+        UINT8  AbiVer   = m_pImage[8];   // EI_ABIVERSION
 
         UINT64 LoadEnd     = 0;
         UINT64 DynOff = 0, DynSz = 0;   // PT_DYNAMIC file location
@@ -131,12 +138,24 @@ public:
             CollectNeeded (DynOff, DynSz);
         }
 
-        pResult->Entry       = Entry;
-        pResult->LoadEnd     = LoadEnd;
-        pResult->BrkBase     = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
-        pResult->Endian      = m_Big ? LoaderEndianBig : LoaderEndianLittle;
-        pResult->WordBits    = m_Is64 ? 64 : 32;
-        pResult->MachineHint = EMachine;   // reported, not interpreted
+        ElfFeatures (EMachine, EFlags);   // fills m_Features from e_flags
+
+        pResult->Entry    = Entry;
+        pResult->LoadEnd  = LoadEnd;
+        pResult->BrkBase  = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
+        pResult->Endian   = m_Big ? LoaderEndianBig : LoaderEndianLittle;
+        pResult->WordBits = m_Is64 ? 64 : 32;
+        pResult->Arch     = ElfArch (EMachine);   // canonical name, never interpreted
+        pResult->Abi      = ElfAbi (OsAbi);
+        if (AbiVer != 0) {
+            m_AbiVer        = std::to_string ((unsigned) AbiVer);
+            pResult->AbiVersion = m_AbiVer.c_str ();
+        }
+        for (std::string CONST &F : m_Features) {
+            m_FeaturePtrs.push_back (F.c_str ());
+        }
+        pResult->FeatureCount = (UINT32) m_FeaturePtrs.size ();
+        pResult->Features     = m_FeaturePtrs.empty () ? nullptr : m_FeaturePtrs.data ();
 
         pResult->Dynamic.IsDynamic = (BOOLEAN) (EType == ET_DYN || SawInterp || SawDynamic);
         pResult->Dynamic.Interp    = m_Interp.empty () ? nullptr : m_Interp.c_str ();
@@ -146,8 +165,9 @@ public:
         pResult->Dynamic.NeededCount = (UINT32) m_NeededPtrs.size ();
         pResult->Dynamic.Needed      = m_NeededPtrs.empty () ? nullptr : m_NeededPtrs.data ();
 
-        std::printf ("lcx: loaded ELF (%s %s, machine=%u, %s): entry=0x%llx end=0x%llx",
-                     m_Is64 ? "64-bit" : "32-bit", m_Big ? "BE" : "LE", (unsigned) EMachine,
+        std::printf ("lcx: loaded ELF (%s %s, arch=%s, abi=%s, %s): entry=0x%llx end=0x%llx",
+                     m_Is64 ? "64-bit" : "32-bit", m_Big ? "BE" : "LE",
+                     pResult->Arch ? pResult->Arch : "?", pResult->Abi ? pResult->Abi : "?",
                      pResult->Dynamic.IsDynamic ? "dynamic" : "static",
                      (unsigned long long) Entry, (unsigned long long) LoadEnd);
         if (pResult->Dynamic.Interp != nullptr) {
@@ -155,6 +175,9 @@ public:
         }
         if (pResult->Dynamic.NeededCount != 0) {
             std::printf (" needed=%u", (unsigned) pResult->Dynamic.NeededCount);
+        }
+        if (pResult->FeatureCount != 0) {
+            std::printf (" features=%u", (unsigned) pResult->FeatureCount);
         }
         std::printf ("\n");
         return S_OK;
@@ -236,13 +259,71 @@ private:
         }
     }
 
+    // Canonical architecture name for an ELF e_machine (EM_*). Never acted on.
+    static CHAR8 CONST *ElfArch (UINT16 M)
+    {
+        switch (M) {
+        case 2:   return "sparc";   case 3:   return "i386";    case 4:  return "m68k";
+        case 5:   return "m88k";    case 7:   return "i860";    case 8:  return "mips";
+        case 10:  return "mips";    case 15:  return "hppa";    case 18: return "sparc";
+        case 20:  return "ppc";     case 21:  return "ppc64";   case 22: return "s390";
+        case 40:  return "arm";     case 42:  return "sh";      case 43: return "sparc64";
+        case 50:  return "ia64";    case 62:  return "x86_64";  case 183:return "aarch64";
+        case 243: return "riscv";   case 258: return "loongarch";
+        default:  return nullptr;
+        }
+    }
+
+    // Canonical ABI/OS name for an ELF EI_OSABI.
+    static CHAR8 CONST *ElfAbi (UINT8 A)
+    {
+        switch (A) {
+        case 0:  return "sysv";    case 1:  return "hpux";     case 2:  return "netbsd";
+        case 3:  return "linux";   case 6:  return "solaris";  case 7:  return "aix";
+        case 8:  return "irix";    case 9:  return "freebsd";  case 10: return "tru64";
+        case 12: return "openbsd"; case 13: return "dragonfly";case 15: return "nsk";
+        case 97: return "arm";     case 255:return "standalone";
+        default: return nullptr;
+        }
+    }
+
+    // Derive the arch feature/extension names an image needs from ELF e_flags (per e_machine).
+    void ElfFeatures (UINT16 M, UINT32 F)
+    {
+        if (M == 8 || M == 10) {   // MIPS
+            if (F & 0x00000400) { m_Features.push_back ("nan2008"); }
+            if (F & 0x02000000) { m_Features.push_back ("micromips"); }
+            if (F & 0x04000000) { m_Features.push_back ("mips16"); }
+            UINT32 Arch = F & 0xf0000000u;
+            if (Arch == 0x50000000u) { m_Features.push_back ("mips32"); }
+            else if (Arch == 0x70000000u) { m_Features.push_back ("mips32r2"); }
+            else if (Arch == 0x60000000u) { m_Features.push_back ("mips64"); }
+            else if (Arch == 0x80000000u) { m_Features.push_back ("mips64r2"); }
+        } else if (M == 40) {      // ARM
+            UINT32 Ver = (F >> 24) & 0xff;
+            if (Ver != 0) { m_Features.push_back (std::string ("eabi") + std::to_string (Ver)); }
+            if (F & 0x00000400) { m_Features.push_back ("hard-float"); }
+            else if (F & 0x00000200) { m_Features.push_back ("soft-float"); }
+        } else if (M == 243) {     // RISC-V
+            if (F & 0x0001) { m_Features.push_back ("rvc"); }
+            if (F & 0x0008) { m_Features.push_back ("rve"); }
+            UINT32 Fl = F & 0x0006;
+            if (Fl == 0x0002) { m_Features.push_back ("float-abi-single"); }
+            else if (Fl == 0x0004) { m_Features.push_back ("float-abi-double"); }
+            else if (Fl == 0x0006) { m_Features.push_back ("float-abi-quad"); }
+        }
+    }
+
     UINT8 CONST              *m_pImage = nullptr;
     UINT64                    m_Len    = 0;
     bool                      m_Is64   = false;
     bool                      m_Big    = false;
     std::string               m_Interp;
+    std::string               m_AbiVer;
     std::vector<std::string>  m_Needed;
     std::vector<CHAR8 CONST *> m_NeededPtrs;
+    std::vector<std::string>  m_Features;
+    std::vector<CHAR8 CONST *> m_FeaturePtrs;
 };
 
 ILoader *

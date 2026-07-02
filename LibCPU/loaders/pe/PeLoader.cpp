@@ -21,6 +21,34 @@
 namespace LibCPU {
 namespace {
 
+// PE IMAGE_FILE_MACHINE_* values, for naming the architecture (never acted on).
+enum
+{
+    PE_MACH_I386  = 0x014c, PE_MACH_AMD64 = 0x8664, PE_MACH_ARM   = 0x01c0,
+    PE_MACH_ARMNT = 0x01c4, PE_MACH_ARM64 = 0xaa64, PE_MACH_IA64  = 0x0200,
+    PE_MACH_MIPS  = 0x0166, PE_MACH_MIPS16= 0x0266, PE_MACH_PPC   = 0x01f0,
+    PE_MACH_PPCFP = 0x01f1, PE_MACH_SH3   = 0x01a2, PE_MACH_SH4   = 0x01a6,
+    PE_MACH_RISCV32 = 0x5032, PE_MACH_RISCV64 = 0x5064
+};
+
+// Heap-break page-alignment granularity (a loader convention, not a CPU page size).
+static UINT64 CONST kPePageMask = 0xfff;
+
+static CHAR8 CONST *
+PeArch (UINT16 M)
+{
+    switch (M) {
+    case PE_MACH_I386:  return "i386";     case PE_MACH_AMD64: return "x86_64";
+    case PE_MACH_ARM:   case PE_MACH_ARMNT: return "arm";
+    case PE_MACH_ARM64: return "aarch64";  case PE_MACH_IA64:  return "ia64";
+    case PE_MACH_MIPS:  case PE_MACH_MIPS16: return "mips";
+    case PE_MACH_PPC:   case PE_MACH_PPCFP: return "ppc";
+    case PE_MACH_SH3:   case PE_MACH_SH4:  return "sh";
+    case PE_MACH_RISCV32: return "riscv";  case PE_MACH_RISCV64: return "riscv";
+    default:            return nullptr;
+    }
+}
+
 class PeLoader final : public ComObject<ILoader>
 {
 public:
@@ -37,7 +65,7 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Load (UINT8 CONST *pImage, UINT64 Len, ILoaderMemory *pMem,
-                                    LOADER_RESULT *pResult) override
+                                    LOADER_REQUEST CONST *pRequest, LOADER_RESULT *pResult) override
     {
         if (pImage == nullptr || pMem == nullptr || pResult == nullptr) {
             return E_POINTER;
@@ -108,12 +136,13 @@ public:
             CollectImports (ImpRva, ImageBase);
         }
 
-        pResult->Entry       = ImageBase + EntryRva;
-        pResult->LoadEnd     = LoadEnd;
-        pResult->BrkBase     = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
-        pResult->Endian      = LoaderEndianLittle;   // PE is always little-endian
-        pResult->WordBits    = Plus ? 64 : 32;
-        pResult->MachineHint = Machine;              // reported, not interpreted
+        pResult->Entry    = ImageBase + EntryRva;
+        pResult->LoadEnd  = LoadEnd;
+        pResult->BrkBase  = (LoadEnd + kPePageMask) & ~kPePageMask;
+        pResult->Endian   = LoaderEndianLittle;   // PE is always little-endian
+        pResult->WordBits = Plus ? 64 : 32;
+        pResult->Arch     = PeArch (Machine);     // canonical name, never interpreted
+        pResult->Abi      = "windows";
 
         pResult->Dynamic.IsDynamic = 1;              // PE resolves imports through the IAT
         pResult->Dynamic.Interp    = nullptr;
@@ -123,8 +152,8 @@ public:
         pResult->Dynamic.NeededCount = (UINT32) m_NeededPtrs.size ();
         pResult->Dynamic.Needed      = m_NeededPtrs.empty () ? nullptr : m_NeededPtrs.data ();
 
-        std::printf ("lcx: loaded PE (%s LE, machine=0x%x): entry=0x%llx end=0x%llx",
-                     Plus ? "PE32+/64-bit" : "PE32/32-bit", (unsigned) Machine,
+        std::printf ("lcx: loaded PE (%s LE, arch=%s, abi=windows): entry=0x%llx end=0x%llx",
+                     Plus ? "PE32+/64-bit" : "PE32/32-bit", pResult->Arch ? pResult->Arch : "?",
                      (unsigned long long) pResult->Entry, (unsigned long long) LoadEnd);
         if (pResult->Dynamic.NeededCount != 0) {
             std::printf (" needed=%u", (unsigned) pResult->Dynamic.NeededCount);

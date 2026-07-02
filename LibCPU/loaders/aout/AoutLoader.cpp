@@ -34,6 +34,10 @@ namespace {
 // It is a property of the 16-bit a.out ABI, not of any CPU.
 static UINT64 CONST AOUT16_CLICK = 020000;   // 8 KiB
 
+// a.out machine ids (a_info mid field) named for arch reporting; heap page-align granularity.
+enum { AOUT_MID_M88K = 153 };
+static UINT64 CONST kAoutPageMask = 0xfff;
+
 class AoutLoader final : public ComObject<ILoader>
 {
 public:
@@ -56,11 +60,12 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Load (UINT8 CONST *pImage, UINT64 Len, ILoaderMemory *pMem,
-                                    LOADER_RESULT *pResult) override
+                                    LOADER_REQUEST CONST *pRequest, LOADER_RESULT *pResult) override
     {
         if (pImage == nullptr || pMem == nullptr || pResult == nullptr) {
             return E_POINTER;
         }
+        (void) pRequest;   // a.out is thin; kernel/blob placement is a follow-up
         std::memset (pResult, 0, sizeof (*pResult));
         UINT64 RamSize = pMem->Size ();
 
@@ -135,7 +140,9 @@ private:
         pResult->BrkBase  = (BssEnd + 1) & ~UINT64_C (1);   // word-align the heap
         pResult->Endian   = LoaderEndianLittle;
         pResult->WordBits = 16;
-        std::printf ("lcx: loaded a.out (16-bit %s): text=0%o data=0%o bss=0%o entry=0%o\n",
+        pResult->Arch     = "pdp11";   // the 16-bit a.out is the classic PDP-11 exec
+        pResult->Abi      = "unix";    // classic (V6/V7-lineage) UNIX
+        std::printf ("lcx: loaded a.out (16-bit %s, arch=pdp11): text=0%o data=0%o bss=0%o entry=0%o\n",
                      pKind, (unsigned) ATxt, (unsigned) AData, (unsigned) ABss, (unsigned) AEntry);
         return S_OK;
     }
@@ -180,15 +187,15 @@ private:
             BssEnd = Seg + ABss;
             pKind  = (Magic == 0x108) ? "NMAGIC" : "OMAGIC";
         }
-        pResult->Entry       = AEntry;
-        pResult->LoadEnd     = TxtBase + Seg;
-        pResult->BrkBase     = (BssEnd + 0xfff) & ~UINT64_C (0xfff);   // page-align the heap base
-        pResult->Endian      = LoaderEndianBig;
-        pResult->WordBits    = 32;
-        pResult->MachineHint = Mid;   // reported, not interpreted
-        std::printf ("lcx: loaded a.out (32-bit %s, mid=%u): text=0x%x data=0x%x bss=0x%x entry=0x%x base=0x%llx\n",
-                     pKind, (unsigned) Mid, (unsigned) ATxt, (unsigned) AData, (unsigned) ABss,
-                     (unsigned) AEntry, (unsigned long long) TxtBase);
+        pResult->Entry    = AEntry;
+        pResult->LoadEnd  = TxtBase + Seg;
+        pResult->BrkBase  = (BssEnd + kAoutPageMask) & ~kAoutPageMask;   // page-align the heap base
+        pResult->Endian   = LoaderEndianBig;
+        pResult->WordBits = 32;
+        pResult->Arch     = (Mid == AOUT_MID_M88K) ? "m88k" : nullptr;   // reported from mid
+        std::printf ("lcx: loaded a.out (32-bit %s, mid=%u, arch=%s): text=0x%x data=0x%x bss=0x%x entry=0x%x base=0x%llx\n",
+                     pKind, (unsigned) Mid, pResult->Arch ? pResult->Arch : "?", (unsigned) ATxt,
+                     (unsigned) AData, (unsigned) ABss, (unsigned) AEntry, (unsigned long long) TxtBase);
         return S_OK;
     }
 };

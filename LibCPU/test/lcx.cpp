@@ -224,7 +224,7 @@ LoaderModules (CHAR8 CONST *pArgv0)
 // Returns true and fills pResult on success.
 static bool
 RunLoader (CHAR8 CONST *pArgv0, CHAR8 CONST *pForce, UINT8 CONST *pImage, UINT64 Len,
-           UINT8 *pRam, UINT64 RamSize, LOADER_RESULT *pResult)
+           UINT8 *pRam, UINT64 RamSize, LOADER_REQUEST CONST *pReq, LOADER_RESULT *pResult)
 {
     ILoader *pBest  = nullptr;
     UINT32   BestSc = 0;
@@ -237,8 +237,31 @@ RunLoader (CHAR8 CONST *pArgv0, CHAR8 CONST *pForce, UINT8 CONST *pImage, UINT64
         }
     }
     if (pBest == nullptr) { return false; }
-    LcxLoaderMem Mem (pRam, RamSize);
-    return SUCCEEDED (pBest->Load (pImage, Len, &Mem, pResult));
+    LcxLoaderMem   Mem (pRam, RamSize);
+    LOADER_REQUEST Default = { LoaderModeUser, nullptr, 0 };
+    return SUCCEEDED (pBest->Load (pImage, Len, &Mem, pReq != nullptr ? pReq : &Default, pResult));
+}
+
+// Default guest address a ramdisk/initrd blob is placed at when --initrd-addr is not given (a
+// qemu-like sensible default well above a small kernel; override per machine as needed).
+static UINT64 CONST kDefaultInitrdAddr = 0x03000000;
+
+// Read an entire file into a byte vector; returns false if it cannot be opened.
+static bool
+ReadFileBytes (CHAR8 CONST *pPath, std::vector<UINT8> *pOut)
+{
+    std::FILE *pf = std::fopen (pPath, "rb");
+    if (pf == nullptr) { return false; }
+    std::fseek (pf, 0, SEEK_END);
+    long Size = std::ftell (pf);
+    std::fseek (pf, 0, SEEK_SET);
+    if (Size > 0) {
+        pOut->resize ((size_t) Size);
+        size_t Got = std::fread (pOut->data (), 1, (size_t) Size, pf);
+        pOut->resize (Got);
+    }
+    std::fclose (pf);
+    return true;
 }
 
 struct ArchSetup {
@@ -647,20 +670,43 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     UINT64      LoadedEntry   = ~(UINT64) 0;
     UINT64      LoadedBrkBase = 0;   // end-of-bss; the personality uses it as the initial heap break
     CHAR8 CONST *pLoad = Opt (argc, argv, "--load", "");
+    // --kernel loads an OS kernel (no user ABI); --slice picks a fat-container arch; --addr places a
+    // blob/kernel. These feed the loader request; the personality (uframe) is skipped for a kernel.
+    bool        KernelMode = Flag (argc, argv, "--kernel");
+    CHAR8 CONST *pSlice = Opt (argc, argv, "--slice", nullptr);
+    UINT64      LoadAddr = (UINT64) std::strtoull (Opt (argc, argv, "--addr", "0"), nullptr, 0);
     bool        WordLoad = (std::strcmp (pLoad, "sav") == 0 || std::strcmp (pLoad, "rim") == 0
                             || std::strcmp (pLoad, "raw18") == 0);
     if (pLoad[0] != '\0' && !WordLoad) {
         CHAR8 CONST       *pForce = (std::strcmp (pLoad, "auto") == 0) ? "" : pLoad;
         std::vector<UINT8> Image (Ram, Ram + Len);           // the loader writes RAM from a separate copy
         std::memset (Ram, 0, sizeof (Ram));
-        LOADER_RESULT Lr;
-        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+        LOADER_REQUEST Req = { KernelMode ? LoaderModeKernel : LoaderModeUser, pSlice, LoadAddr };
+        LOADER_RESULT  Lr;
+        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Req, &Lr)) {
             std::printf ("lcx: no loader handled the image (--load %s)\n", pLoad);
             return 2;
         }
         LoadedEntry   = Lr.Entry;
         Len           = Lr.LoadEnd;
         LoadedBrkBase = Lr.BrkBase;
+    }
+    // --initrd <file>: place a ramdisk/initrd as a raw blob (qemu-style) at --initrd-addr (default
+    // kDefaultInitrdAddr) alongside the kernel; the raw loader reports where it landed.
+    if (CHAR8 CONST *pInitrd = Opt (argc, argv, "--initrd", nullptr)) {
+        std::vector<UINT8> Blob;
+        if (!ReadFileBytes (pInitrd, &Blob)) {
+            std::printf ("lcx: cannot open initrd '%s'\n", pInitrd);
+            return 2;
+        }
+        UINT64 Addr = (UINT64) std::strtoull (Opt (argc, argv, "--initrd-addr", "0"), nullptr, 0);
+        if (Addr == 0) { Addr = kDefaultInitrdAddr; }
+        LOADER_REQUEST Req = { LoaderModeBlob, nullptr, Addr };
+        LOADER_RESULT  Lr2;
+        if (!RunLoader (pArgv0, "raw", Blob.data (), Blob.size (), Ram, sizeof (Ram), &Req, &Lr2)) {
+            std::printf ("lcx: failed to place initrd '%s'\n", pInitrd);
+            return 2;
+        }
     }
     CPU_STATE State;
     std::memset (&State, 0, sizeof (State));
@@ -783,7 +829,7 @@ CmdRun (int argc, char **argv, CHAR8 CONST *pArgv0, bool Aot)
     nix_personality_t *pPersona = nullptr;
     {
         CHAR8 CONST *pAbi = Opt (argc, argv, "--abi", "");
-        if (pAbi[0] != '\0') {
+        if (pAbi[0] != '\0' && !KernelMode) {   // a kernel gets no user-space entry frame
             pPersona = LoadPersonality (pAbi, pArgv0);
             if (pPersona == nullptr) { return 1; }
             std::vector<std::string> GuestArgs;      // argv[0] = image path; tokens after --args follow
@@ -1015,8 +1061,11 @@ CmdDisasm (int argc, char **argv, CHAR8 CONST *pArgv0)
         CHAR8 CONST       *pForce = (std::strcmp (pDisLoad, "auto") == 0) ? "" : pDisLoad;
         std::vector<UINT8> Image (Ram, Ram + Len);
         std::memset (Ram, 0, sizeof (Ram));
-        LOADER_RESULT Lr;
-        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Lr)) {
+        LOADER_REQUEST Req = { Flag (argc, argv, "--kernel") ? LoaderModeKernel : LoaderModeUser,
+                               Opt (argc, argv, "--slice", nullptr),
+                               (UINT64) std::strtoull (Opt (argc, argv, "--addr", "0"), nullptr, 0) };
+        LOADER_RESULT  Lr;
+        if (!RunLoader (pArgv0, pForce, Image.data (), Image.size (), Ram, sizeof (Ram), &Req, &Lr)) {
             std::printf ("lcx: no loader handled the image (--load %s)\n", pDisLoad);
             return 2;
         }

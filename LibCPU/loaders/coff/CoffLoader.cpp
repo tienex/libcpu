@@ -19,20 +19,56 @@
 namespace LibCPU {
 namespace {
 
-// Known COFF f_magic (machine) values, used only to recognise the format + its byte order.
+// COFF f_magic (machine) values, used only to recognise the format + its byte order + name it.
+enum
+{
+    COFF_MAG_I386    = 0x014c, COFF_MAG_M68K    = 0x0150, COFF_MAG_MIPSEB  = 0x0160,
+    COFF_MAG_MIPSEL  = 0x0162, COFF_MAG_MIPSEL3 = 0x0166, COFF_MAG_ALPHA   = 0x0183,
+    COFF_MAG_ALPHA2  = 0x0184, COFF_MAG_XCOFF32 = 0x01df, COFF_MAG_XCOFF64 = 0x01f7,
+    COFF_MAG_WE32K   = 0x0170, COFF_MAG_WE32K2  = 0x0175, COFF_MAG_CLIPPER = 0x017f,
+    COFF_MAG_M68KSV  = 0x0268, COFF_MAG_SH      = 0x0500
+};
+
+// Heap-break page-alignment granularity (a loader convention, not a CPU page size).
+static UINT64 CONST kCoffPageMask = 0xfff;
+
 static bool
 CoffMagicKnown (UINT16 M)
 {
     switch (M) {
-    case 0x014c: /* i386      */ case 0x0150: /* m68k       */ case 0x0160: /* MIPS BE ECOFF */
-    case 0x0162: /* MIPS LE   */ case 0x0166: /* MIPS LE r3k*/ case 0x0183: /* Alpha        */
-    case 0x0184: /* Alpha     */ case 0x01df: /* XCOFF32    */ case 0x01f7: /* XCOFF64      */
-    case 0x0170: /* WE32K     */ case 0x0175: /* WE32K      */ case 0x017f: /* clipper      */
-    case 0x0268: /* m68k (sysV)*/ case 0x0500: /* SH        */
+    case COFF_MAG_I386:  case COFF_MAG_M68K:    case COFF_MAG_MIPSEB: case COFF_MAG_MIPSEL:
+    case COFF_MAG_MIPSEL3: case COFF_MAG_ALPHA: case COFF_MAG_ALPHA2: case COFF_MAG_XCOFF32:
+    case COFF_MAG_XCOFF64: case COFF_MAG_WE32K: case COFF_MAG_WE32K2: case COFF_MAG_CLIPPER:
+    case COFF_MAG_M68KSV: case COFF_MAG_SH:
         return true;
     default:
         return false;
     }
+}
+
+// Canonical architecture name for a COFF f_magic. Never acted on.
+static CHAR8 CONST *
+CoffArch (UINT16 M)
+{
+    switch (M) {
+    case COFF_MAG_I386:    return "i386";
+    case COFF_MAG_M68K:    case COFF_MAG_M68KSV: return "m68k";
+    case COFF_MAG_MIPSEB:  case COFF_MAG_MIPSEL: case COFF_MAG_MIPSEL3: return "mips";
+    case COFF_MAG_ALPHA:   case COFF_MAG_ALPHA2: return "alpha";
+    case COFF_MAG_XCOFF32: return "ppc";
+    case COFF_MAG_XCOFF64: return "ppc64";
+    case COFF_MAG_WE32K:   case COFF_MAG_WE32K2: return "we32k";
+    case COFF_MAG_CLIPPER: return "clipper";
+    case COFF_MAG_SH:      return "sh";
+    default:               return nullptr;
+    }
+}
+
+// XCOFF is AIX; the rest of the COFF family is System V-derived UNIX.
+static CHAR8 CONST *
+CoffAbi (UINT16 M)
+{
+    return (M == COFF_MAG_XCOFF32 || M == COFF_MAG_XCOFF64) ? "aix" : "sysv";
 }
 
 class CoffLoader final : public ComObject<ILoader>
@@ -65,7 +101,7 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Load (UINT8 CONST *pImage, UINT64 Len, ILoaderMemory *pMem,
-                                    LOADER_RESULT *pResult) override
+                                    LOADER_REQUEST CONST *pRequest, LOADER_RESULT *pResult) override
     {
         if (pImage == nullptr || pMem == nullptr || pResult == nullptr) {
             return E_POINTER;
@@ -119,18 +155,21 @@ public:
             }
         }
 
-        pResult->Entry       = Entry;
-        pResult->LoadEnd     = LoadEnd;
-        pResult->BrkBase     = (LoadEnd + 0xfff) & ~UINT64_C (0xfff);
-        pResult->Endian      = m_Big ? LoaderEndianBig : LoaderEndianLittle;
-        pResult->WordBits    = (Magic == 0x01f7) ? 64 : 32;
-        pResult->MachineHint = Magic;   // reported, not interpreted
+        (void) pRequest;   // kernel/blob placement is a follow-up for COFF
+        pResult->Entry    = Entry;
+        pResult->LoadEnd  = LoadEnd;
+        pResult->BrkBase  = (LoadEnd + kCoffPageMask) & ~kCoffPageMask;
+        pResult->Endian   = m_Big ? LoaderEndianBig : LoaderEndianLittle;
+        pResult->WordBits = (Magic == COFF_MAG_XCOFF64) ? 64 : 32;
+        pResult->Arch     = CoffArch (Magic);   // canonical name, never interpreted
+        pResult->Abi      = CoffAbi (Magic);
         // Classic COFF/ECOFF executables are statically linked; XCOFF imports live in a .loader
         // section whose parse is deferred to the run-time-linker phase.
         pResult->Dynamic.IsDynamic = 0;
 
-        std::printf ("lcx: loaded COFF (magic=0x%x, %s, %s): entry=0x%llx end=0x%llx\n",
-                     (unsigned) Magic, m_Big ? "BE" : "LE", (Magic == 0x01f7) ? "64-bit" : "32-bit",
+        std::printf ("lcx: loaded COFF (arch=%s, abi=%s, %s, %s): entry=0x%llx end=0x%llx\n",
+                     pResult->Arch ? pResult->Arch : "?", pResult->Abi ? pResult->Abi : "?",
+                     m_Big ? "BE" : "LE", (Magic == COFF_MAG_XCOFF64) ? "64-bit" : "32-bit",
                      (unsigned long long) Entry, (unsigned long long) LoadEnd);
         return S_OK;
     }

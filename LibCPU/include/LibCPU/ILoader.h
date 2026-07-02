@@ -31,6 +31,29 @@ typedef enum _LOADER_ENDIAN
 } LOADER_ENDIAN;
 
 //
+// Loaders are dual-sided: they can lay out a user-space program, an OS kernel (qemu-style
+// `--kernel`, placed at physical addresses with no user ABI), or a raw payload / ramdisk placed
+// verbatim. This is a MODE, not an architecture, so a small closed enum is appropriate.
+//
+typedef enum _LOADER_MODE
+{
+    LoaderModeUser   = 0,   // user-space program (entry stack + dynamic linking apply)
+    LoaderModeKernel = 1,   // OS kernel: physical addresses, no user ABI
+    LoaderModeBlob   = 2    // raw payload placed verbatim (ramdisk/initrd, firmware, dtb)
+} LOADER_MODE;
+
+//
+// What the host asks a loader to do. Consolidated into a request so new inputs do not churn the
+// Load() signature. A NULL request means {User, default slice, LoadAddr ignored}.
+//
+typedef struct _LOADER_REQUEST
+{
+    LOADER_MODE  Mode;        // user / kernel / blob
+    CHAR8 CONST *SelectArch;  // which slice of a multi-arch container to load; NULL = default
+    UINT64       LoadAddr;    // placement for Blob (and an optional kernel override); else ignored
+} LOADER_REQUEST;
+
+//
 // The dynamic-linking facts a loader EXPOSES but does not resolve: whether the image needs a
 // run-time linker, its requested interpreter (ELF PT_INTERP and the like), and the shared objects
 // it names. The strings are owned by the loader object and stay valid until it is released.
@@ -54,8 +77,44 @@ typedef struct _LOADER_RESULT
     UINT64         LoadEnd;     // one past the highest address written
     LOADER_ENDIAN  Endian;      // guest byte order this image implies
     UINT32         WordBits;    // guest word width in bits (16/32/36/64), 0 = unknown
-    UINT32         MachineHint; // the format's machine id (ELF EM_*, a.out mid, ...), 0 = none
-    LOADER_DYNAMIC Dynamic;     // dynamic-linking metadata (exposed, unresolved)
+    //
+    // The architecture the image targets, as a canonical NAME -- deliberately an open-ended string,
+    // not an enumeration, so a loader can name any target (existing or future) the host may map to a
+    // frontend: e.g. "i386", "x86_64", "8086", "m68k", "m88k", "mips", "arm", "aarch64", "ppc",
+    // "ppc64", "sparc", "alpha", "pdp11". A loader translates its format-specific machine id (ELF
+    // EM_*, COFF f_magic, Mach-O cputype, a.out mid, PE Machine) into this name; NULL if unknown.
+    // The string is a literal / loader-owned and stays valid until the loader is released.
+    //
+    CHAR8 CONST   *Arch;
+    //
+    // The ABI / operating system the image targets, again a canonical open-ended NAME (not an
+    // enumeration): e.g. "sysv", "linux", "freebsd", "netbsd", "openbsd", "solaris", "aix", "hpux",
+    // "darwin", "windows", "os2", "dos", "cpm", "unix" (classic V6/V7). A loader derives it from the
+    // format (ELF EI_OSABI, PE/Mach-O by construction, ...); NULL if unknown. The host can use this
+    // (with Arch) to pick a syscall personality. Literal / loader-owned; valid until release.
+    //
+    CHAR8 CONST   *Abi;
+    //
+    // The ABI/OS version the image requires, as a free-form string (e.g. ELF EI_ABIVERSION or the
+    // .note.ABI-tag min version, a Mach-O minos "10.15", a PE subsystem "6.1"); NULL if none.
+    //
+    CHAR8 CONST   *AbiVersion;
+    //
+    // Extra architecture features / CPU extensions the image needs, as canonical NAMES (open set,
+    // not an enumeration) -- e.g. from ELF e_flags: "mips32r2", "nan2008", "fp64" (MIPS); "thumb",
+    // "vfp" (ARM); "rvc", "float-abi-double" (RISC-V). The host can check the chosen CPU provides
+    // them. Empty when the format carries none. Loader-owned; valid until release.
+    //
+    UINT32               FeatureCount;
+    CHAR8 CONST * CONST *Features;
+    //
+    // A multi-architecture container (Mach-O universal/"fat", FatELF) holds several slices. The
+    // loader reports each slice's arch NAME here so the host can tell the user which are available
+    // and which to pick (via Load's pSelectArch); SliceCount is 1 (Slices NULL) for a thin image.
+    //
+    UINT32               SliceCount;
+    CHAR8 CONST * CONST *Slices;   // each slice's arch name (loader-owned); NULL if thin
+    LOADER_DYNAMIC Dynamic;        // dynamic-linking metadata (exposed, unresolved)
 } LOADER_RESULT;
 
 //
@@ -85,8 +144,11 @@ DECLARE_INTERFACE_ (ILoader, IUnknown)
 
     STDMETHOD_ (CHAR8 CONST *, GetName)(THIS) PURE;                     // format name ("elf", "aout", ...)
     STDMETHOD_ (UINT32, Probe)(THIS_ IN UINT8 CONST *pImage, UINT64 Len) PURE;   // confidence 0..100
-    STDMETHOD (Load)(THIS_ IN UINT8 CONST *pImage, UINT64 Len,
-                     IN ILoaderMemory *pMem, OUT LOADER_RESULT *pResult) PURE;
+    // Lay the image into guest memory and report the result. For a multi-arch container, pSelectArch
+    // (a canonical arch name, or NULL for the default/first slice) chooses which slice to load; the
+    // available slices are always reported in LOADER_RESULT.Slices.
+    STDMETHOD (Load)(THIS_ IN UINT8 CONST *pImage, UINT64 Len, IN ILoaderMemory *pMem,
+                     IN LOADER_REQUEST CONST *pRequest, OUT LOADER_RESULT *pResult) PURE;
 };
 
 typedef ILoader       *PILOADER;
