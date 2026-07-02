@@ -102,7 +102,7 @@ KVMConvertPixel(const KVMUInt8 *src, KVMPixelFormat format, KVMUInt8 *outBgra)
         outBgra[0] = src[2]; /* B */
         outBgra[1] = src[1]; /* G */
         outBgra[2] = src[0]; /* R */
-        outBgra[3] = 255;
+        outBgra[3] = KVM_ALPHA_OPAQUE;
         break;
 
     case kKVMPixelFormatRGB565:
@@ -112,7 +112,7 @@ KVMConvertPixel(const KVMUInt8 *src, KVMPixelFormat format, KVMUInt8 *outBgra)
         outBgra[0] = (KVMUInt8)(((v & 0x001F) << 3) | ((v & 0x001F) >> 2));
         outBgra[1] = (KVMUInt8)(((v & 0x07E0) >> 3) | ((v & 0x07E0) >> 9));
         outBgra[2] = (KVMUInt8)(((v & 0xF800) >> 8) | ((v & 0xF800) >> 13));
-        outBgra[3] = 255;
+        outBgra[3] = KVM_ALPHA_OPAQUE;
         break;
     }
 }
@@ -146,22 +146,34 @@ KVMFrameBufferWriteRect(KVMFrameBufferRef fb, KVMRect rect, const void *src,
     if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0) {
         return kKVMErrorInvalidArgument;
     }
-    if (rect.x + rect.width > fb->width || rect.y + rect.height > fb->height) {
+    if (rect.width > fb->width || rect.x > fb->width - rect.width) {
+        return kKVMErrorInvalidArgument;
+    }
+    if (rect.height > fb->height || rect.y > fb->height - rect.height) {
+        return kKVMErrorInvalidArgument;
+    }
+    if (srcFormat != kKVMPixelFormatBGRA8888 &&
+        srcFormat != kKVMPixelFormatRGB888 &&
+        srcFormat != kKVMPixelFormatRGB565) {
         return kKVMErrorInvalidArgument;
     }
 
     srcBytes = (const KVMUInt8 *)src;
     srcBpp = KVMBytesPerSourcePixel(srcFormat);
 
+    if (srcStride < (KVMIndex)srcBpp * rect.width) {
+        return kKVMErrorInvalidArgument;
+    }
+
     for (row = 0; row < rect.height; row++) {
-        const KVMUInt8 *srcLine = srcBytes + (KVMIndex)row * srcStride;
+        const KVMUInt8 *srcLine = srcBytes + (size_t)row * (size_t)srcStride;
         KVMUInt8 *dstLine =
-            fb->pixels + (KVMIndex)(rect.y + row) * fb->stride +
-            (KVMIndex)rect.x * KVM_FRAMEBUFFER_BYTES_PER_PIXEL;
+            fb->pixels + (size_t)(rect.y + row) * (size_t)fb->stride +
+            (size_t)rect.x * KVM_FRAMEBUFFER_BYTES_PER_PIXEL;
 
         for (col = 0; col < rect.width; col++) {
-            KVMConvertPixel(srcLine + (KVMIndex)col * srcBpp, srcFormat,
-                            dstLine + (KVMIndex)col *
+            KVMConvertPixel(srcLine + (size_t)col * (size_t)srcBpp, srcFormat,
+                            dstLine + (size_t)col *
                                           KVM_FRAMEBUFFER_BYTES_PER_PIXEL);
         }
     }
