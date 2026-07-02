@@ -12,10 +12,10 @@ INCLUDE_DIRECTORIES(nix ${PROJECT_BINARY_DIR}/nix ${CMAKE_CURRENT_SOURCE_DIR}/..
 ADD_SUBDIRECTORY(nix)
 ADD_SUBDIRECTORY(tools/sc2int)   # the .sc -> dispatch-table compiler (now built against nix-syscall.h)
 
-# The OpenBSD/m88k ABI personality -- a dylib linking nix; its syscall engine (monitor + us-syscall)
-# now lives in the nix dylib, and it is built against the LibCPU-direct nix_ ABI (no xec-compat).
-ADD_SUBDIRECTORY(obsd79)
-ADD_SUBDIRECTORY(nbsd101)
+# The guest-OS ABI personalities (openbsd/netbsd/pdp11unix) are now COM .abi bundles that link the
+# LibCPU framework, so they are built by the main LibCPU CMake (libcpu_add_abi), NOT by this
+# standalone libnix build -- which exists purely to cross-verify the nix_ host layer (nixtest)
+# under the win32/haiku/os2/vms source profiles.
 
 # Host-op conformance test: drives the portable nix_ primitives against a real host
 # file with no CPU/monitor. Every host backend (POSIX today; win32/haiku/os2/vms next)
