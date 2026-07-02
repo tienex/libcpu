@@ -32,7 +32,7 @@ TestCreateAndAccess(void)
     stride = 0;
     pixels = KVMFrameBufferGetPixels(fb, &stride);
     KVM_CHECK(pixels != NULL);
-    KVM_CHECK(stride == 4 * 4);
+    KVM_CHECK(stride == 4 * KVM_FRAMEBUFFER_BYTES_PER_PIXEL);
 
     allZero = KVM_TRUE;
     for (i = 0; i < stride * 3; i++) {
@@ -50,6 +50,8 @@ TestRejectsBadSize(void)
 {
     KVM_CHECK(KVMFrameBufferCreate(0, 10) == NULL);
     KVM_CHECK(KVMFrameBufferCreate(10, -1) == NULL);
+    KVM_CHECK(KVMFrameBufferCreate(KVM_FRAMEBUFFER_MAX_DIMENSION + 1, 10) == NULL);
+    KVM_CHECK(KVMFrameBufferCreate(10, KVM_FRAMEBUFFER_MAX_DIMENSION + 1) == NULL);
 }
 
 int

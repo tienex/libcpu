@@ -37,6 +37,11 @@ KVMFrameBufferCreate(KVMInt32 width, KVMInt32 height)
         return NULL;
     }
 
+    if (width > KVM_FRAMEBUFFER_MAX_DIMENSION ||
+        height > KVM_FRAMEBUFFER_MAX_DIMENSION) {
+        return NULL;
+    }
+
     fb = (struct _KVMFrameBuffer *)KVMRuntimeCreate(
         kKVMFrameBufferTypeID, (KVMIndex)sizeof(*fb), KVMFrameBufferDealloc);
     if (fb == NULL) {
@@ -44,7 +49,7 @@ KVMFrameBufferCreate(KVMInt32 width, KVMInt32 height)
     }
 
     stride = (KVMIndex)width * KVM_FRAMEBUFFER_BYTES_PER_PIXEL;
-    fb->pixels = (KVMUInt8 *)calloc((size_t)(stride * height), 1);
+    fb->pixels = (KVMUInt8 *)calloc((size_t)height, (size_t)stride);
     if (fb->pixels == NULL) {
         KVMRelease((KVMRef)fb);
         return NULL;

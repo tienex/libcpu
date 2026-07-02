@@ -23,6 +23,10 @@ typedef struct _KVMRect {
 /* Canonical surface is always BGRA8888, 4 bytes per pixel. */
 #define KVM_FRAMEBUFFER_BYTES_PER_PIXEL 4
 
+/* Upper bound per axis for a single canonical surface; keeps stride and the
+ * total allocation well within size_t on 32-bit (LLP64/ILP32) targets. */
+#define KVM_FRAMEBUFFER_MAX_DIMENSION 32767
+
 KVMFrameBufferRef KVMFrameBufferCreate(KVMInt32 width, KVMInt32 height);
 KVMInt32          KVMFrameBufferGetWidth(KVMFrameBufferRef fb);
 KVMInt32          KVMFrameBufferGetHeight(KVMFrameBufferRef fb);
