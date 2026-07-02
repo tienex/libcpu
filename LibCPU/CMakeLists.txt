@@ -38,6 +38,7 @@ endif()
 libcpu_add_loader(aout_loader aout SOURCES loaders/aout/AoutLoader.cpp INCLUDES include)
 libcpu_add_loader(elf_loader  elf  SOURCES loaders/elf/ElfLoader.cpp   INCLUDES include)
 libcpu_add_loader(macho_loader macho SOURCES loaders/macho/MachoLoader.cpp INCLUDES include)
+libcpu_add_loader(pe_loader    pe    SOURCES loaders/pe/PeLoader.cpp       INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -377,7 +378,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader elf_loader macho_loader)   # .loader bundles for the image loaders
+add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2256,6 +2257,14 @@ add_test(NAME loader.macho COMMAND sh -c
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/macho/hello.macho'; \
    \"$E\" disasm \"$F\" --load macho --arch upcl:\"$M\" --count 1 | \
    grep -q 'loaded Mach-O (64-bit LE, cputype=0x1000007, static): entry=0x1080'")
+
+# The PE .loader module: a minimal PE32 (MZ + PE\\0\\0 + COFF + optional header + one .text section
+# at RVA 0x1000, ImageBase 0x400000) must map the section and report machine/width + entry.
+add_test(NAME loader.pe COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/pe/hello.pe'; \
+   \"$E\" disasm \"$F\" --load pe --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded PE (PE32/32-bit LE, machine=0x14c): entry=0x401000'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
