@@ -37,6 +37,7 @@ endif()
 # never know or name a CPU. lcx discovers them next to itself and probes the image. ----
 libcpu_add_loader(aout_loader aout SOURCES loaders/aout/AoutLoader.cpp INCLUDES include)
 libcpu_add_loader(elf_loader  elf  SOURCES loaders/elf/ElfLoader.cpp   INCLUDES include)
+libcpu_add_loader(macho_loader macho SOURCES loaders/macho/MachoLoader.cpp INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -376,7 +377,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader elf_loader)     # .loader bundles must exist for the image loaders
+add_dependencies(lcx aout_loader elf_loader macho_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2247,6 +2248,14 @@ add_test(NAME loader.elf COMMAND sh -c
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/mips/cbmbasic_mips.elf'; \
    \"$E\" disasm \"$F\" --load elf --arch upcl:\"$M\" --count 4 | \
    grep -q 'loaded ELF (32-bit BE, machine=8, dynamic).*interp=/lib/ld.so.1 needed=1'")
+
+# The Mach-O .loader module: a minimal thin 64-bit little-endian Mach-O (one __TEXT segment at
+# vmaddr 0x1000 + LC_MAIN) must map the segment and report the cputype/endian/width + entry.
+add_test(NAME loader.macho COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/macho/hello.macho'; \
+   \"$E\" disasm \"$F\" --load macho --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded Mach-O (64-bit LE, cputype=0x1000007, static): entry=0x1080'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
