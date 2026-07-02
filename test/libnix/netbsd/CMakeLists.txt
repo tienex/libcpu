@@ -30,8 +30,11 @@ ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/netbsd-callbacks.c
                    COMMENT "Generating System Calls Callbacks")
 ENDIF()
 
-ADD_LIBRARY(netbsd
-			SHARED
+# Built as a real COM .abi bundle (netbsd.abi), matched by lcx on `--abi netbsd` (or the legacy
+# alias `nbsd101`). netbsd-abi.cpp is the IAbi shim bridging COM discovery to nix_personality_create.
+libcpu_add_abi(netbsd netbsd
+  MATCH netbsd nbsd101
+  SOURCES
       netbsd-init.c
       netbsd-personality.c
       netbsd-ioctl.c
@@ -40,8 +43,8 @@ ADD_LIBRARY(netbsd
       arc4random.c
       ${PROJECT_BINARY_DIR}/netbsd-callbacks.c
       # For the time being
-      arch/${GUEST}/netbsd-guest.c)
+      arch/${GUEST}/netbsd-guest.c
+      netbsd-abi.cpp
+  LIBS nix LibCPU)   # the engine (monitor + us-syscall) lives in nix; LibCPU provides IAbi/ComObject
 ADD_DEPENDENCIES(netbsd sc2int)
-
-TARGET_LINK_LIBRARIES(netbsd nix)   # the engine (monitor + us-syscall) now lives in the nix dylib
 

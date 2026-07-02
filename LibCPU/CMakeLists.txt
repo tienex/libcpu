@@ -19,6 +19,7 @@ include(LibCPUUniversal)    # LIBCPU_UNIVERSAL_ARCHS + libcpu_lib_arches()
 include(LibCPUAddBackend)   # libcpu_add_backend()
 include(LibCPUAddDevice)    # libcpu_add_device()
 include(LibCPUAddLoader)    # libcpu_add_loader()
+include(LibCPUAddAbi)       # libcpu_add_abi()
 
 # ---- core framework: LibCPU.framework ----
 add_library(LibCPU SHARED src/LibCPULoader.cpp)

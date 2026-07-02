@@ -30,8 +30,11 @@ ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/openbsd-callbacks.c
                    COMMENT "Generating System Calls Callbacks")
 ENDIF()
 
-ADD_LIBRARY(openbsd
-			SHARED
+# Built as a real COM .abi bundle (openbsd.abi), matched by lcx on `--abi openbsd` (or the legacy
+# alias `obsd79`). openbsd-abi.cpp is the IAbi shim bridging COM discovery to nix_personality_create.
+libcpu_add_abi(openbsd openbsd
+  MATCH openbsd obsd79
+  SOURCES
       openbsd-init.c
       openbsd-personality.c
       openbsd-ioctl.c
@@ -40,8 +43,8 @@ ADD_LIBRARY(openbsd
       arc4random.c
       ${PROJECT_BINARY_DIR}/openbsd-callbacks.c
       # For the time being
-      arch/${GUEST}/openbsd-guest.c)
+      arch/${GUEST}/openbsd-guest.c
+      openbsd-abi.cpp
+  LIBS nix LibCPU)   # the engine (monitor + us-syscall) lives in nix; LibCPU provides IAbi/ComObject
 ADD_DEPENDENCIES(openbsd sc2int)
-
-TARGET_LINK_LIBRARIES(openbsd nix)   # the engine (monitor + us-syscall) now lives in the nix dylib
 

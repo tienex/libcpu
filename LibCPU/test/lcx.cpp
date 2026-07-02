@@ -20,6 +20,7 @@
 #include "Cpu6502.h"
 #include "LibCPU/CpuState.h"
 #include "LibCPU/Loader.h"
+#include "LibCPU/IAbi.h"
 #include "nix.h"            // libnix host layer -- drives the PDP-11 UNIX syscall personalities
 #include "nix-personality.h" // generic guest-OS personality plugin seam (loaded as a dylib)
 #include "../aot/AotGenerator.h"
@@ -509,34 +510,95 @@ LcxCpuPcSet (nix_cpu_if_t *pSelf, UINT64 Pc)
 static struct _nix_cpu_if_vtbl CONST g_LcxCpuVtbl = {
     LcxCpuRegGet, LcxCpuRegSet, LcxCpuSetCarry, LcxCpuPcGet, LcxCpuPcSet };
 
-// Load a personality dylib for `--abi <name>`: try the loader's default search
-// path, then the directory of the lcx executable (where the build drops the
-// dylibs). Returns the created personality, or nullptr if none is found.
+// Read a plist <array> of <string>s under the given key, WITHOUT loading the bundle's code -- the
+// same lightweight text scan the machine builder uses for LCDeviceMatch. Returns the strings found.
+static std::vector<std::string>
+AbiPlistMatch (std::string CONST &Plist)
+{
+    std::vector<std::string> Out;
+    std::FILE               *pF = std::fopen (Plist.c_str (), "rb");
+    if (pF == nullptr) { return Out; }
+    std::fseek (pF, 0, SEEK_END);
+    long Size = std::ftell (pF);
+    std::fseek (pF, 0, SEEK_SET);
+    std::string Text (Size > 0 ? (size_t) Size : 0, '\0');
+    if (!Text.empty () && std::fread (&Text[0], 1, Text.size (), pF) != Text.size ()) { Text.clear (); }
+    std::fclose (pF);
+
+    std::string KeyTag = std::string ("<key>") + LIBCPU_ABI_MATCH_KEY + "</key>";
+    size_t      K      = Text.find (KeyTag);
+    if (K == std::string::npos) { return Out; }
+    size_t A = Text.find ("<array>", K);
+    if (A == std::string::npos) { return Out; }
+    size_t End = Text.find ("</array>", A);
+    if (End == std::string::npos) { End = Text.size (); }
+    size_t P = A;
+    for (;;) {
+        size_t S = Text.find ("<string>", P);
+        if (S == std::string::npos || S >= End) { break; }
+        S += 8;
+        size_t E = Text.find ("</string>", S);
+        if (E == std::string::npos || E > End) { break; }
+        Out.push_back (Text.substr (S, E - S));
+        P = E + 9;
+    }
+    return Out;
+}
+
+// Resolve `--abi family[:version]` to a personality via the .abi COM bundles next to lcx. The
+// family is matched against each bundle's LCAbiMatch array (family name or a legacy alias, read
+// without loading code); the matched bundle is loaded, its [min,max] version range clamps the
+// request ("closest approximation"), and CreatePersonality builds the runtime personality.
 static nix_personality_t *
 LoadPersonality (CHAR8 CONST *pAbi, CHAR8 CONST *pArgv0)
 {
-#if defined (__APPLE__)
-    std::string Leaf = std::string ("lib") + pAbi + ".dylib";
-#else
-    std::string Leaf = std::string ("lib") + pAbi + ".so";
-#endif
-    void *pLib = dlopen (Leaf.c_str (), RTLD_NOW | RTLD_LOCAL);
-    if (pLib == nullptr) {
-        std::string Exe (pArgv0 != nullptr ? pArgv0 : "");
-        std::string Dir = Exe.substr (0, Exe.find_last_of ('/') + 1);
-        pLib = dlopen ((Dir + Leaf).c_str (), RTLD_NOW | RTLD_LOCAL);
+    std::string            Spec (pAbi);
+    std::string            Family = Spec, VerStr;
+    std::string::size_type Colon = Spec.find (':');
+    if (Colon != std::string::npos) {
+        Family = Spec.substr (0, Colon);
+        VerStr = Spec.substr (Colon + 1);
     }
-    if (pLib == nullptr) {
-        std::fprintf (stderr, "lcx: cannot load personality '%s': %s\n", Leaf.c_str (), dlerror ());
+
+    std::string Dir (pArgv0 != nullptr ? pArgv0 : "");
+    Dir = Dir.substr (0, Dir.find_last_of ('/') + 1);
+    if (Dir.empty ()) { Dir = "./"; }
+
+    std::string BundlePath;
+    if (DIR *pD = opendir (Dir.c_str ())) {
+        while (struct dirent *pE = readdir (pD)) {
+            std::string Name = pE->d_name;
+            if (Name.size () < 5 || Name.compare (Name.size () - 4, 4, ".abi") != 0) { continue; }
+            std::string Plist = Dir + Name + "/Contents/Info.plist";
+            for (std::string CONST &M : AbiPlistMatch (Plist)) {
+                if (M == Family) { BundlePath = Dir + Name; break; }
+            }
+            if (!BundlePath.empty ()) { break; }
+        }
+        closedir (pD);
+    }
+    if (BundlePath.empty ()) {
+        std::fprintf (stderr, "lcx: no .abi bundle matches '--abi %s'\n", Family.c_str ());
         return nullptr;
     }
-    typedef nix_personality_t *(*CreateFn) (nix_version_t);
-    CreateFn Create = (CreateFn) dlsym (pLib, "nix_personality_create");
-    if (Create == nullptr) {
-        std::fprintf (stderr, "lcx: '%s' has no nix_personality_create entry point\n", Leaf.c_str ());
+
+    LibCPU::IAbi *pAbiObj = LibCPU::LoadAbiBundle (BundlePath.c_str ());
+    if (pAbiObj == nullptr) {
+        std::fprintf (stderr, "lcx: cannot load .abi bundle '%s'\n", BundlePath.c_str ());
         return nullptr;
     }
-    return Create (NIX_VERSION_LATEST);
+
+    // Clamp the requested version into [min, max]; empty request -> max (latest).
+    nix_version_t Min  = nix_version_parse (pAbiObj->GetVersionMin ());
+    nix_version_t Max  = nix_version_parse (pAbiObj->GetVersionMax ());
+    nix_version_t Want = VerStr.empty () ? Max : nix_version_parse (VerStr.c_str ());
+    if (Want < Min) { Want = Min; }
+    if (Want > Max) { Want = Max; }
+
+    CHAR8              Buf[16];
+    nix_personality_t *pPersona = pAbiObj->CreatePersonality (nix_version_format (Want, Buf, sizeof (Buf)));
+    pAbiObj->Release ();
+    return pPersona;
 }
 
 static void
