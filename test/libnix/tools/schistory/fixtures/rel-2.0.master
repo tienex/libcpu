@@ -1,0 +1,5 @@
+; @(#)syscalls.master  fixture 2.0
+0	STD		{ int nosys(void); }
+1	STD		{ void exit(int rval); }
+4	STD		{ ssize_t write(int fd, const void *buf, size_t nbyte); }
+42	STD		{ int oldcall(int x); }

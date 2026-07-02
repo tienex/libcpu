@@ -361,6 +361,7 @@ endif()
 # (`--abi openbsd` -> libopenbsd.dylib, `--abi netbsd` -> libnetbsd.dylib). sc2int
 # compiles each .sc table into its dispatch; the dylibs link the nix host layer.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/sc2int ${CMAKE_BINARY_DIR}/tools/sc2int)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/schistory ${CMAKE_BINARY_DIR}/tools/schistory)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/openbsd ${CMAKE_BINARY_DIR}/openbsd)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/netbsd ${CMAKE_BINARY_DIR}/netbsd)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/pdp11unix ${CMAKE_BINARY_DIR}/pdp11unix)
@@ -475,6 +476,15 @@ add_test(NAME sc2int.gate
     -DWORKDIR=${CMAKE_BINARY_DIR}/tools/sc2int
     -DOUT=${CMAKE_BINARY_DIR}/tools/sc2int/gatefix-callbacks.c
     -P ${SC2INT_GATE_DIR}/check-gate.cmake)
+
+# schistory must derive correct @since..until ranges by diffing syscalls.master across releases.
+set(SCHISTORY_GATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/schistory/fixtures)
+add_test(NAME schistory.gate
+  COMMAND ${CMAKE_COMMAND}
+    -DSCHISTORY=$<TARGET_FILE:schistory>
+    -DDIR=${SCHISTORY_GATE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/tools/schistory/gatefix.sc
+    -P ${SCHISTORY_GATE_DIR}/check-schistory.cmake)
 
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
 set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 load6502 aot6502 loadchip8 aotchip8)

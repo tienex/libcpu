@@ -1,0 +1,6 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
+
+PROJECT(schistory C)
+
+ADD_EXECUTABLE(schistory schistory.c)
+TARGET_COMPILE_OPTIONS(schistory PRIVATE -w)

@@ -1,0 +1,6 @@
+; @(#)syscalls.master  fixture 7.9
+0	STD		{ int nosys(void); }
+1	STD		{ void exit(int rval); }
+4	STD		{ ssize_t write(int fd, const void *buf, size_t nbyte); }
+73	STD		{ int munmap(void *addr, size_t len); }
+336	STD		{ int pinsyscall(int syscall, void *base, size_t len); }
