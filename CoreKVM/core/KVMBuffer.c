@@ -1,7 +1,7 @@
 /*
- * CoreKVM byte buffer implementation. Bytes are stored contiguously; the read
- * cursor advances on Consume and the buffer compacts when the cursor grows
- * large relative to the remaining contents.
+ * CoreKVM byte buffer implementation. Bytes are stored contiguously; Consume
+ * advances a read cursor, and the buffer compacts (slides remaining bytes to
+ * the front) whenever it must make room for an append.
  */
 #include "CoreKVM/KVMBuffer.h"
 #include "KVMRuntime.h"
@@ -68,6 +68,9 @@ KVMBufferEnsureRoom(struct _KVMBuffer *buffer, KVMIndex extra)
         buffer->tail = used;
     }
 
+    if (used > KVM_INDEX_MAX - extra) {
+        return kKVMErrorNoMemory;
+    }
     needed = used + extra;
     if (needed <= buffer->capacity) {
         return kKVMSuccess;
