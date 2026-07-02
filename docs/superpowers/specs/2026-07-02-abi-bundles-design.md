@@ -60,37 +60,67 @@ real per-family floors are `openbsd:2.0` and `netbsd:1.0`. "From 1.0" is interpr
 
 ## Design
 
-### 1. `.abi` bundle packaging
+### 1. `.abi` COM bundles (parallel to `.loader` / `.device`)
 
+ABIs become **real COM bundles**, exactly like `.loader`/`.device`: a COM `IAbi` interface,
+a `LibCPUModuleCreateAbi` entry symbol, and an `LCAbiMatch` plist array — discovered,
+matched, and loaded by the same machinery. The C `nix_personality_t` seam stays as the
+*runtime* interface that `IAbi::CreatePersonality` vends; only discovery/creation move onto
+COM.
+
+- New public header `LibCPU/include/LibCPU/IAbi.h` — mirrors `ILoader.h`:
+  ```cpp
+  DECLARE_INTERFACE_ (IAbi, IUnknown) {
+      QueryInterface / AddRef / Release
+      STDMETHOD_ (CHAR8 CONST *, GetFamily)(THIS) PURE;        // "openbsd"
+      STDMETHOD_ (CHAR8 CONST *, GetVersionMin)(THIS) PURE;    // "2.0"
+      STDMETHOD_ (CHAR8 CONST *, GetVersionMax)(THIS) PURE;    // "7.9"
+      // Vend the C runtime personality configured for the resolved guest-OS version
+      // ("MAJOR.MINOR[.PATCH]"; NULL = latest). Caller owns it; destroy via its own vtbl
+      // (nix_personality_destroy). The IAbi may be Released afterwards.
+      STDMETHOD_ (struct _nix_personality *, CreatePersonality)(THIS_ IN CHAR8 CONST *pVersion) PURE;
+  };
+  ```
+  plus `IID_IAbi` (abi family GUID base), the export macro
+  `LIBCPU_MODULE_CREATE_ABI(Creator)` exporting `LibCPUModuleCreateAbi` (entry name
+  `"LibCPUModuleCreateAbi"`), and the match key `#define LIBCPU_ABI_MATCH_KEY "LCAbiMatch"`.
+- `LibCPU/src/LibCPULoader.cpp` gains `LoadAbiBundle(path) -> IAbi *` (CFBundle on macOS,
+  `dlopen` elsewhere), a verbatim parallel of `LoadLoaderBundle`. Declared in
+  `LibCPU/include/LibCPU/Loader.h`.
 - New `LibCPU/cmake/LibCPUAddAbi.cmake` + `LibCPU/cmake/AbiInfo.plist.in`
-  (`LibCPUModuleKind = abi`). The three personalities become CFBundle `MODULE` targets
-  (`BUNDLE TRUE`) producing `openbsd.abi`, `netbsd.abi`, `pdp11unix.abi`, dropped beside
-  `lcx`, replacing the `SHARED` + `LIBRARY_OUTPUT_DIRECTORY` block at
-  `LibCPU/CMakeLists.txt:349-378`.
-- Plist match metadata:
-  - `LCAbiFamily` — e.g. `openbsd`.
-  - `LCAbiVersionMin` / `LCAbiVersionMax` — e.g. `2.0` / `7.9`.
-  - `LCAbiAliases` — array of legacy names (`obsd79`, `nbsd101`) so `--abi obsd79` and the
-    existing ctest invocations keep working.
-- Entry point: keep the C `nix_personality_create` seam but pass the **resolved target
-  version** in via a new `nix_abi_config_t` (family string + packed version). Signature
-  becomes `nix_personality_create(const nix_abi_config_t *)`. A convenience macro
-  `LIBCPU_MODULE_CREATE_ABI(Creator)` exports the standardized entry symbol, paralleling
-  `LIBCPU_MODULE_CREATE_LOADER/DEVICE`. The runtime seam (`setup`/`syscall`, `nix_cpu_if_t`,
-  `nix_mem_if_t`) is unchanged.
+  (`LibCPUModuleKind = abi`), built like `libcpu_add_device`: the three personalities become
+  CFBundle `MODULE` targets (`BUNDLE TRUE`, `BUNDLE_EXTENSION "abi"`) producing
+  `openbsd.abi`, `netbsd.abi`, `pdp11unix.abi` beside `lcx`, replacing the `SHARED` +
+  `LIBRARY_OUTPUT_DIRECTORY` block at `LibCPU/CMakeLists.txt:349-378`.
+- Plist metadata: `LCAbiMatch` array — the family plus legacy aliases, e.g.
+  `["openbsd", "obsd79"]` / `["netbsd", "nbsd101"]` / `["pdp11unix", "pdp11"]`. Read WITHOUT
+  loading code (`ReadPlistStringArray`, like `LCDeviceMatch`). Min/max versions come from the
+  loaded `IAbi` (`GetVersionMin/Max`), not the plist — only the matched bundle is loaded.
+- Per-bundle COM shim: each personality dir gains one small C++ file
+  (`<family>-abi.cpp`) implementing `IAbi` via `ComObject<IAbi>`; `GetFamily/Min/Max` return
+  literals, `CreatePersonality` parses the version and calls the C factory
+  `nix_personality_create(nix_version_t target)`. A one-line
+  `LIBCPU_MODULE_CREATE_ABI(LibCPU::CreateOpenBsdAbi)` exports the entry.
+- The C factory signature changes `nix_personality_create(void)` →
+  `nix_personality_create(nix_version_t target)` (family is implicit per bundle); the
+  personality stamps the target version onto its monitor. Runtime seam
+  (`setup`/`syscall`, `nix_cpu_if_t`, `nix_mem_if_t`) is otherwise unchanged.
 
 ### 2. `--abi family[:version]` resolution in `lcx`
 
 - Replace `LoadPersonality` (dlopen `lib<name>`) with an `AddBundleDirectory`-style
-  enumerator over `*.abi` next to the exe, reusing `ReadPlistStringArray` and the `.device`
-  CFBundle/`dlopen` path.
+  enumerator over `*.abi` next to the exe, reusing `ReadPlistStringArray` (for `LCAbiMatch`)
+  and `LoadAbiBundle`.
 - Parse `family[:version]`:
-  - Match a bundle whose `LCAbiFamily` (or an `LCAbiAliases` entry) equals `family`.
+  - Match a bundle whose `LCAbiMatch` array contains `family` (family name or a legacy alias
+    such as `obsd79`). Load it → `IAbi`.
   - Resolve version: parse dotted-numeric, compare **component-wise** (so `10.1 > 9.0`,
-    not lexical). Use the requested version directly for gating; **clamp** to
-    `[LCAbiVersionMin, LCAbiVersionMax]` when outside (this is the "closest approximation").
-  - `--abi family` with no version → `LCAbiVersionMax` (latest).
-  - `--abi obsd79` (legacy alias) → resolves the openbsd bundle at its declared version.
+    not lexical). Use the requested version directly; **clamp** to
+    `[GetVersionMin(), GetVersionMax()]` when outside (the "closest approximation").
+  - `--abi family` with no version → `GetVersionMax()` (latest).
+  - `--abi obsd79` (legacy alias) → the openbsd bundle at its latest.
+  - `pAbi->CreatePersonality(clampedVersionString)` → `nix_personality_t *`; the run loop is
+    unchanged.
 - Version packing: `(major << 16) | (minor << 8) | patch` (32-bit), enough for BSD
   major.minor[.patch].
 
@@ -143,16 +173,21 @@ real per-family floors are `openbsd:2.0` and `netbsd:1.0`. "From 1.0" is interpr
   the committed `openbsd.sc` / `netbsd.sc`.
 - `pdp11unix` becomes an `.abi` bundle for packaging parity but **keeps its hand-switch
   dispatch** and its own lineage; version-gating is OpenBSD/NetBSD-only in this work. Its
-  plist declares `LCAbiFamily = pdp11` with a nominal version range; the PDP-11 lineage
-  (V6/V7/2BSD/Venix) as gated versions is flagged future work.
+  `LCAbiMatch` is `["pdp11unix", "pdp11"]` and its `IAbi::CreatePersonality` ignores the
+  version for gating; the PDP-11 lineage (V6/V7/2BSD/Venix) as gated versions is future work.
 
 ## Isolation / units
 
+- `IAbi.h` + `LoadAbiBundle` — COM discovery/creation seam; a verbatim parallel of
+  `ILoader`/`LoadLoaderBundle`.
+- `<family>-abi.cpp` COM shims — bridge COM `IAbi` to the C `nix_personality_create`; one
+  tiny file per bundle, no syscall logic.
 - `LibCPUAddAbi.cmake` + `AbiInfo.plist.in` — packaging only; no logic.
 - `schistory` — pure master→`.sc` transform; testable on fixtures with no runtime deps.
 - `sc2int` range support — additive to the existing generator; NULL-range = today's behavior.
 - `nix-us-syscall.c` version gate — one predicate at dispatch; target version on the monitor.
-- lcx bundle resolver — enumerate/match/clamp; the `nix_personality_*` runtime seam untouched.
+- lcx bundle resolver — enumerate/match `LCAbiMatch`/load `IAbi`/clamp/`CreatePersonality`;
+  the `nix_personality_*` runtime seam untouched.
 
 Each unit is independently testable and communicates through the existing typed seams.
 
