@@ -39,6 +39,7 @@ libcpu_add_loader(aout_loader aout SOURCES loaders/aout/AoutLoader.cpp INCLUDES 
 libcpu_add_loader(elf_loader  elf  SOURCES loaders/elf/ElfLoader.cpp   INCLUDES include)
 libcpu_add_loader(macho_loader macho SOURCES loaders/macho/MachoLoader.cpp INCLUDES include)
 libcpu_add_loader(pe_loader    pe    SOURCES loaders/pe/PeLoader.cpp       INCLUDES include)
+libcpu_add_loader(coff_loader  coff  SOURCES loaders/coff/CoffLoader.cpp   INCLUDES include)
 
 # ---- dependency-light backends (universal) ----
 libcpu_add_backend(interp_backend interp
@@ -378,7 +379,7 @@ target_include_directories(lcx PRIVATE frontends/v20 frontends/i8080 frontends/m
 target_compile_definitions(lcx PRIVATE LIBCPU_HAVE_ZSTD)
 target_link_libraries(lcx PRIVATE LibCPU upcl nix ${CMAKE_DL_LIBS})   # nix: libnix host layer; dl for HeaderParser's dlopen(libclang)
 add_dependencies(lcx obsd79 nbsd101 pdp11unix)   # personality dylibs must exist for `--abi` to dlopen them
-add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader)   # .loader bundles for the image loaders
+add_dependencies(lcx aout_loader elf_loader macho_loader pe_loader coff_loader)   # .loader bundles for the image loaders
 if(APPLE)
   target_link_libraries(load6502 PRIVATE "-framework CoreFoundation")
   target_link_libraries(lcx PRIVATE "-framework CoreFoundation")   # MachineBuilder loads .device CFBundles
@@ -2265,6 +2266,14 @@ add_test(NAME loader.pe COMMAND sh -c
    F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/pe/hello.pe'; \
    \"$E\" disasm \"$F\" --load pe --arch upcl:\"$M\" --count 1 | \
    grep -q 'loaded PE (PE32/32-bit LE, machine=0x14c): entry=0x401000'")
+
+# The COFF .loader module: a minimal i386 COFF (f_magic 0x14c, a.out-style optional header, one
+# .text section at s_vaddr 0x1000) must map the section and report magic/endian/width + entry.
+add_test(NAME loader.coff COMMAND sh -c
+  "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+   F='${CMAKE_CURRENT_SOURCE_DIR}/../test/bin/coff/hello.coff'; \
+   \"$E\" disasm \"$F\" --load coff --arch upcl:\"$M\" --count 1 | \
+   grep -q 'loaded COFF (magic=0x14c, LE, 32-bit): entry=0x1000'")
 
 # PDP-11 UNIX personality through libnix: a 0407 a.out whose text issues write(1,"hi\\n",3) via an
 # inline-argument `sys 4` (TRAP) then exit via `sys 1`, run under --abi pdp11unix. The write must reach
