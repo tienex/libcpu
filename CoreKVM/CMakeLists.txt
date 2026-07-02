@@ -14,6 +14,7 @@ INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 ADD_LIBRARY(corekvm STATIC
     core/KVMBase.c
+    core/KVMFrameBuffer.c
 )
 TARGET_INCLUDE_DIRECTORIES(corekvm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -25,3 +26,7 @@ INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/core)
 ADD_EXECUTABLE(test_base tests/test_base.c)
 TARGET_LINK_LIBRARIES(test_base corekvm)
 ADD_TEST(NAME base COMMAND test_base)
+
+ADD_EXECUTABLE(test_framebuffer tests/test_framebuffer.c)
+TARGET_LINK_LIBRARIES(test_framebuffer corekvm)
+ADD_TEST(NAME framebuffer COMMAND test_framebuffer)
