@@ -690,6 +690,19 @@ if(TARGET interp_backend)
        > '${CMAKE_BINARY_DIR}/hello.m88k' && \
      \"$E\" run '${CMAKE_BINARY_DIR}/hello.m88k' --arch \"upcl:$M\" --abi openbsd | grep -q '^hello$'")
 
+  # End-to-end version gating: the SAME m88k program invokes SYS_pledge (108, introduced in OpenBSD
+  # 5.9 per the derived table) then exit. Under --abi openbsd:2.0 the dispatcher must reject pledge
+  # ("does not exist in this guest-OS version"); under --abi openbsd:7.9 it must NOT (the call
+  # exists there). Program: `or r13,r0,108; tb0 <gate>; or r13,r0,1; or r2,r0,0; tb0 <gate>`. The
+  # gate fires before argument marshalling, so no valid pledge args are needed. Proves --abi
+  # family:version drives per-call availability from the vendored syscalls.master history.
+  add_test(NAME upcl.m88k-abi-gate COMMAND sh -c
+    "M='${CMAKE_CURRENT_SOURCE_DIR}/../upcl/examples/m88k.upcl'; E='$<TARGET_FILE:lcx>'; \
+     printf '\\x59\\xa0\\x00\\x6c\\xf0\\x00\\xd1\\xc2\\x59\\xa0\\x00\\x01\\x58\\x40\\x00\\x00\\xf0\\x00\\xd1\\xc2' \
+       > '${CMAKE_BINARY_DIR}/pledge.m88k' && \
+     \"$E\" run '${CMAKE_BINARY_DIR}/pledge.m88k' --arch \"upcl:$M\" --abi openbsd:2.0 2>&1 | grep -q 'does not exist in this guest-OS version' && \
+     ! \"$E\" run '${CMAKE_BINARY_DIR}/pledge.m88k' --arch \"upcl:$M\" --abi openbsd:7.9 2>&1 | grep -q 'does not exist in this guest-OS version'")
+
   # The same image wrapped in a real OpenBSD/m88k a.out exec header (OMAGIC): a_midmag packs
   # MID_M88K(153)<<16 | 0407 = 0x00990107, a_text=0x20, a_data=6, a_entry=0; the 38-byte image
   # follows the 32-byte header. --load aout validates the machine id, strips the header, loads
