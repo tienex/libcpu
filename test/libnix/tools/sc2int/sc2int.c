@@ -292,13 +292,31 @@ call_get_flags(call_t const *c)
 		return strdup("0");
 }
 
+/*
+ * Emit a nix_version_t initializer from a raw ".sc" version string.  The descriptor table is a
+ * static const array, so the initializer must be a CONSTANT EXPRESSION: parse "MAJOR.MINOR[.PATCH]"
+ * here and emit the NIX_VERSION(maj,min,pat) macro (NULL -> NIX_VERSION_NONE).
+ */
+static void
+emit_version(FILE *out, char const *ver)
+{
+	unsigned major = 0, minor = 0, patch = 0;
+
+	if (ver == NULL) {
+		fprintf(out, "NIX_VERSION_NONE");
+		return;
+	}
+	sscanf(ver, "%u.%u.%u", &major, &minor, &patch);
+	fprintf(out, "NIX_VERSION (%u, %u, %u)", major, minor, patch);
+}
+
 static void
 call_emit(FILE         *out,
           call_t const *call)
 {
 	if (call == NULL) {
 		fprintf(out,
-		        "{ %u, %s, %s, %s, %s, %u, NULL }",
+		        "{ %u, %s, %s, %s, %s, %u, NULL, NIX_VERSION_NONE, NIX_VERSION_NONE }",
 		        0,
 		        "NULL",
 		        "NULL",
@@ -323,7 +341,7 @@ call_emit(FILE         *out,
 		sprintf(scname, "%s_SYS_%s", g_gbl_NS, call->name);
 
 		fprintf(out,
-		        "{ %s, %s, %s, %s, %s, %u, __%s_%s_callback }",
+		        "{ %s, %s, %s, %s, %s, %u, __%s_%s_callback, ",
 		        scname,
 		        name,
 		        format,
@@ -332,6 +350,10 @@ call_emit(FILE         *out,
 		        nparams,
 		        g_gbl_ns,
 		        call->name);
+		emit_version(out, call->since);
+		fprintf(out, ", ");
+		emit_version(out, call->until);
+		fprintf(out, " }");
 
 		free(flags);
 		free(rettype);

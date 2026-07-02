@@ -21,6 +21,8 @@ typedef struct _call {
 	char         *name;
 	param_t      *rettype;
 	param_list_t *params;
+	char         *since; /* raw "MAJOR.MINOR[.PATCH]" or NULL (= from the start) */
+	char         *until; /* raw upper-bound version or NULL (= never removed) */
 } call_t;
 
 typedef TAILQ_HEAD(_call_list, _call) call_list_t;
@@ -52,6 +54,8 @@ call_t *
 call_new(int           scno,
          char         *name,
          param_t      *rettype,
-         param_list_t *params);
+         param_list_t *params,
+         char         *since,
+         char         *until);
 
 #endif /* !__lists_h */

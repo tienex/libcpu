@@ -465,6 +465,16 @@ target_link_libraries(nix-gate-test PRIVATE nix)
 target_compile_options(nix-gate-test PRIVATE -w)
 add_test(NAME nix.gate COMMAND nix-gate-test)
 
+# sc2int must emit the per-call @since..until ranges as NIX_VERSION() constant initializers.
+set(SC2INT_GATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../test/libnix/tools/sc2int/fixtures)
+add_test(NAME sc2int.gate
+  COMMAND ${CMAKE_COMMAND}
+    -DSC2INT=$<TARGET_FILE:sc2int>
+    -DSC=${SC2INT_GATE_DIR}/gate.sc
+    -DWORKDIR=${CMAKE_BINARY_DIR}/tools/sc2int
+    -DOUT=${CMAKE_BINARY_DIR}/tools/sc2int/gatefix-callbacks.c
+    -P ${SC2INT_GATE_DIR}/check-gate.cmake)
+
 set(LIBCPU_CFG_BACKENDS interp_backend cc_backend cpython_backend jvm_backend clr_backend)
 set(LIBCPU_CHECK_DEPS aotv20 tiered tiered6502 load6502 aot6502 loadchip8 aotchip8)
 foreach(_be ${LIBCPU_CFG_BACKENDS})

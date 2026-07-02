@@ -101,7 +101,9 @@ call_t *
 call_new(int           scno,
          char         *name,
          param_t      *rettype,
-         param_list_t *params)
+         param_list_t *params,
+         char         *since,
+         char         *until)
 {
 	call_t *c;
 
@@ -112,6 +114,8 @@ call_new(int           scno,
 		c->name = name;
 		c->rettype = rettype;
 		c->params = params;
+		c->since = since;
+		c->until = until;
 	}
 	return c;
 }

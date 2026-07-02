@@ -17,9 +17,12 @@ extern int yylex(void);
 
 %token T_BYTE T_HALF T_WORD T_DWORD T_SINGLE T_DOUBLE T_EXTENDED T_VECTOR T_PTR T_ELLIPSIS T_VOID T_INTPTR
 
+%token T_AT T_DOTDOT
+
 %token<iv> T_NUMBER
 %token<sv> T_IDENTIFIER
 %token<sv> T_STRING
+%token<sv> T_VERSION
 
 %token T_NEWLINE
 
@@ -29,6 +32,8 @@ extern int yylex(void);
 %type <prm>  return_result
 %type <prms> syscall_parameters
 %type <prms> syscall0_parameters
+
+%type <sv> version_since version_until
 
 %type <call> syscall_declaration
 
@@ -77,11 +82,22 @@ return_result:
   | param
   ;
 
+version_since:
+  /* empty */          { $$ = NULL; }
+  | T_AT T_VERSION     { $$ = $2; }
+  ;
+
+version_until:
+  /* empty */          { $$ = NULL; }
+  | T_DOTDOT           { $$ = NULL; }
+  | T_DOTDOT T_VERSION { $$ = $2; }
+  ;
+
 syscall_declaration:
-  T_NUMBER return_result T_IDENTIFIER '(' void_or_empty ')'
-    { $$ = call_new ($1, $3, $2, NULL); }
-  | T_NUMBER return_result T_IDENTIFIER '(' syscall_parameters ')'
-    { $$ = call_new ($1, $3, $2, $5); }
+  T_NUMBER return_result T_IDENTIFIER '(' void_or_empty ')' version_since version_until
+    { $$ = call_new ($1, $3, $2, NULL, $7, $8); }
+  | T_NUMBER return_result T_IDENTIFIER '(' syscall_parameters ')' version_since version_until
+    { $$ = call_new ($1, $3, $2, $5, $7, $8); }
   ;
 
 syscall_declarations:

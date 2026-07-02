@@ -38,6 +38,10 @@
 "void"      return T_VOID;
 "..."       return T_ELLIPSIS;
 
+"@"                         return T_AT;
+".."                        return T_DOTDOT;
+[0-9]+"."[0-9]+("."[0-9]+)?  { yylval.sv = strdup (yytext); return T_VERSION; }
+
 [\(\):,]    return yytext[0];
 
 [0-9]+      { yylval.iv = atoi (yytext); return T_NUMBER; }
