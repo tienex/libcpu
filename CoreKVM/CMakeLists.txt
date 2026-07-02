@@ -15,6 +15,7 @@ INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include)
 ADD_LIBRARY(corekvm STATIC
     core/KVMBase.c
     core/KVMFrameBuffer.c
+    core/KVMDirty.c
 )
 TARGET_INCLUDE_DIRECTORIES(corekvm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -34,3 +35,7 @@ ADD_TEST(NAME framebuffer COMMAND test_framebuffer)
 ADD_EXECUTABLE(test_pixelconvert tests/test_pixelconvert.c)
 TARGET_LINK_LIBRARIES(test_pixelconvert corekvm)
 ADD_TEST(NAME pixelconvert COMMAND test_pixelconvert)
+
+ADD_EXECUTABLE(test_dirty tests/test_dirty.c)
+TARGET_LINK_LIBRARIES(test_dirty corekvm)
+ADD_TEST(NAME dirty COMMAND test_dirty)
